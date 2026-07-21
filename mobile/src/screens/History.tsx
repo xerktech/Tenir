@@ -7,7 +7,7 @@ import { Linking, Text, View } from "react-native";
 import { useHistory } from "../lib/controllers";
 import { conversationLabel, errText, msToClock } from "../lib/format";
 import { useNotify } from "../lib/notify";
-import { Button, Card, Field, Heading, ListItem, Muted, Row, Screen, Spinner } from "../ui/components";
+import { Button, Field, Heading, ListItem, Muted, Row, Screen, Spinner } from "../ui/components";
 import { colors } from "../ui/theme";
 
 export function HistoryScreen(): JSX.Element {
@@ -29,6 +29,15 @@ export function HistoryScreen(): JSX.Element {
         if (selected?.id === id) setSelected(null);
       })
       .catch((e) => notify(errText(e), "err"));
+
+  // Opening a session shows its transcript on its own screen, replacing the list.
+  // It used to render inline below the list, where it read as the tap doing
+  // nothing (XERK-65).
+  if (selected) {
+    return (
+      <Detail conv={selected} onDelete={() => void remove(selected.id)} onBack={() => setSelected(null)} />
+    );
+  }
 
   return (
     <Screen>
@@ -57,10 +66,6 @@ export function HistoryScreen(): JSX.Element {
           </Row>
         </ListItem>
       ))}
-
-      {selected && (
-        <Detail conv={selected} onDelete={() => void remove(selected.id)} onClose={() => setSelected(null)} />
-      )}
     </Screen>
   );
 }
@@ -68,17 +73,17 @@ export function HistoryScreen(): JSX.Element {
 function Detail({
   conv,
   onDelete,
-  onClose,
+  onBack,
 }: {
   conv: Conversation;
   onDelete: () => void;
-  onClose: () => void;
+  onBack: () => void;
 }): JSX.Element {
   return (
-    <Card>
+    <Screen>
       <Row>
+        <Button title="← History" onPress={onBack} />
         <Heading>Session detail</Heading>
-        <Button title="Close" onPress={onClose} />
       </Row>
       <Muted>{conversationLabel(conv)}</Muted>
       <View>
@@ -95,6 +100,6 @@ function Detail({
         <Button title="Play audio" onPress={() => void Linking.openURL(history.audioUrl(conv.id))} />
       )}
       <Button title="Delete session" kind="danger" onPress={onDelete} />
-    </Card>
+    </Screen>
   );
 }

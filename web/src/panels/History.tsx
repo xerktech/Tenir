@@ -84,6 +84,19 @@ export function HistoryPanel(): JSX.Element {
       })
       .catch((e) => notify(errText(e), "err"));
 
+  // Opening a conversation shows its transcript on its own page, replacing the
+  // list. It used to render inline at the bottom of the list, below the fold,
+  // where it read as the click doing nothing (XERK-65).
+  if (selected) {
+    return (
+      <ConversationDetail
+        conv={selected}
+        onDelete={() => void remove(selected.id)}
+        onBack={() => setSelected(null)}
+      />
+    );
+  }
+
   return (
     <section>
       <h2>History &amp; search</h2>
@@ -143,7 +156,7 @@ export function HistoryPanel(): JSX.Element {
           </thead>
           <tbody>
             {rows.map((c) => (
-              <tr key={c.id} className={selected?.id === c.id ? "history-row selected" : "history-row"}>
+              <tr key={c.id} className="history-row">
                 <td className="history-col-date">
                   <button className="link" onClick={() => void open(c.id)}>
                     {new Date(c.startedAt).toLocaleString()}
@@ -162,10 +175,6 @@ export function HistoryPanel(): JSX.Element {
           </tbody>
         </table>
       )}
-
-      {selected && (
-        <ConversationDetail conv={selected} onDelete={() => void remove(selected.id)} onClose={() => setSelected(null)} />
-      )}
     </section>
   );
 }
@@ -178,21 +187,21 @@ function segmentTiming(s: SegmentView): string {
 function ConversationDetail({
   conv,
   onDelete,
-  onClose,
+  onBack,
 }: {
   conv: Conversation;
   onDelete: () => void;
-  onClose: () => void;
+  onBack: () => void;
 }): JSX.Element {
   return (
     <Card className="detail">
       <div className="row">
+        <Button variant="ghost" onClick={onBack}>
+          ← History
+        </Button>
         <h3 className="grow">Conversation detail</h3>
         <Button variant="danger" onClick={onDelete}>
           Delete
-        </Button>
-        <Button variant="ghost" onClick={onClose}>
-          Close
         </Button>
       </div>
       <p className="muted">
