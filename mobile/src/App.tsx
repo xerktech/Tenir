@@ -28,6 +28,7 @@ import { StatusScreen } from "./screens/Status";
 import { normalizeServerUrl } from "./lib/serverUrl";
 import { saveServerUrl } from "./storage";
 import { Button } from "./ui/components";
+import { UpdateBanner } from "./ui/UpdateBanner";
 import { colors, space } from "./ui/theme";
 
 const TABS = ["Live", "History", "Status", "Settings", "Privacy"] as const;
@@ -86,6 +87,7 @@ function Root({ initialWsUrl }: { initialWsUrl: string }): JSX.Element {
 
   return (
     <View style={styles.fill}>
+      <UpdateBanner />
       <View style={styles.header}>
         <Text style={styles.title}>Tenir</Text>
         <Text style={styles.identity}>

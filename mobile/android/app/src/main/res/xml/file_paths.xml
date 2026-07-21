@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the `${applicationId}.updates` FileProvider may hand to the system package
+  installer (AppUpdaterModule): the downloaded APK lives in cacheDir/updates/.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

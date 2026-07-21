@@ -12,14 +12,19 @@ import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.SoLoader
 import com.tenir.pcmaudio.PcmAudioPackage
+import com.tenir.update.AppUpdaterPackage
 
 class MainApplication : Application(), ReactApplication {
 
   override val reactNativeHost: ReactNativeHost =
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
-            // Autolinked packages plus the app's own PcmAudio microphone module.
-            PackageList(this).packages.apply { add(PcmAudioPackage()) }
+            // Autolinked packages plus the app's own native modules: PcmAudio
+            // (microphone capture) and AppUpdater (in-app APK self-update, XERK-63).
+            PackageList(this).packages.apply {
+              add(PcmAudioPackage())
+              add(AppUpdaterPackage())
+            }
 
         override fun getJSMainModuleName(): String = "index"
 
