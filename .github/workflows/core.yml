@@ -1,0 +1,42 @@
+name: Core
+
+on:
+  # The shared contract + client-core packages every frontend builds on. Rebuild
+  # when the workspace packages or the lockfile they install from change.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/core.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Shared core (typecheck + tests)
+    # GitHub-hosted: npm install + typecheck + unit tests. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspace @tenir/client-core
+
+      - name: Test
+        run: npm run test --workspace @tenir/client-core

@@ -1,0 +1,138 @@
+name: Build and push image
+description: >-
+  Build a Docker image from this repo and push it to a registry (GHCR) under one
+  or more tags. Shared by the unified release pipeline's image build jobs (api,
+  vllm-stt in release.yml) so the login/build/tag/push logic
+  lives in exactly one place. Set `push: false` to build without publishing (the
+  release's dry-run rehearsal). Uses the plain `docker` CLI already present on
+  the self-hosted runner (matching the image-scan jobs) rather than buildx, so it
+  needs no extra setup.
+
+inputs:
+  image:
+    description: Fully-qualified image ref WITHOUT a tag, e.g. ghcr.io/owner/tenir.
+    required: true
+  tags:
+    description: |
+      Newline-separated list of tags to publish (e.g. "0.1.0\nlatest"). The image
+      is built once tagged with the first entry, then re-tagged and pushed for each.
+    required: true
+  context:
+    description: Docker build context directory.
+    required: true
+  dockerfile:
+    description: Path to the Dockerfile, relative to the repo root.
+    required: true
+  build-args:
+    description: Newline-separated --build-arg values (KEY=value). Optional.
+    required: false
+    default: ""
+  registry:
+    description: Registry to log in to and push to.
+    required: false
+    default: ghcr.io
+  username:
+    description: Registry username (defaults to the workflow actor).
+    required: false
+    default: ${{ github.actor }}
+  token:
+    description: Registry password/token (pass secrets.GITHUB_TOKEN for GHCR).
+    required: true
+  push:
+    description: >-
+      "true" (default) builds, tags and pushes. "false" builds and tags only,
+      pushing nothing and skipping the registry login — the dry-run rehearsal the
+      unified release (release.yml) uses to exercise a build without publishing.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to ${{ inputs.registry }}
+      if: inputs.push == 'true'
+      shell: bash
+      run: echo "${{ inputs.token }}" | docker login "${{ inputs.registry }}" -u "${{ inputs.username }}" --password-stdin
+
+    # The self-hosted runners persist Docker state between jobs, so every build
+    # leaves superseded image layers and a fat build cache behind. Left unchecked
+    # these fill the disk and a later run dies mid-build with "No space left on
+    # device" (the GPU/vLLM images are multi-GB). Clear leftover dangling layers
+    # and cache from previous runs before we start. Dangling-only so a sibling
+    # matrix build sharing this runner keeps its in-use layers and cache.
+    - name: Free leftover disk space
+      shell: bash
+      run: |
+        echo "Disk before reclaim:"; df -h / || true
+        docker image prune -f || true
+        docker builder prune -f || true
+        echo "Disk after reclaim:"; df -h / || true
+
+    - name: Build and push ${{ inputs.image }}
+      shell: bash
+      # No `set -u`: empty arrays expand unbound on older bash, and the build-args
+      # input is often empty.
+      env:
+        PUSH: ${{ inputs.push }}
+      run: |
+        set -eo pipefail
+
+        # Collect the (optional) --build-arg flags from the newline-separated input.
+        build_arg_flags=()
+        while IFS= read -r arg; do
+          [ -n "$arg" ] && build_arg_flags+=(--build-arg "$arg")
+        done <<< "${{ inputs.build-args }}"
+
+        # Collect the tags; the first one is what we build against. Reject any
+        # malformed tag up front: docker's own "invalid reference format" error
+        # is cryptic and only fires mid-build, so validate here against docker's
+        # tag grammar (start with an alphanumeric, then [A-Za-z0-9._-], <=128).
+        tags=()
+        while IFS= read -r tag; do
+          [ -z "$tag" ] && continue
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+            echo "::error::build-push-image: invalid image tag '$tag' for ${{ inputs.image }} (must start with a letter or digit; allowed chars: A-Z a-z 0-9 . _ -)"; exit 1
+          fi
+          tags+=("$tag")
+        done <<< "${{ inputs.tags }}"
+        if [ ${#tags[@]} -eq 0 ]; then
+          echo "::error::build-push-image: no tags provided"; exit 1
+        fi
+        first="${tags[0]}"
+
+        echo "Building ${{ inputs.image }}:$first from ${{ inputs.dockerfile }} (context ${{ inputs.context }})"
+        docker build \
+          -f "${{ inputs.dockerfile }}" \
+          -t "${{ inputs.image }}:$first" \
+          "${build_arg_flags[@]}" \
+          "${{ inputs.context }}"
+
+        for tag in "${tags[@]}"; do
+          if [ "$tag" != "$first" ]; then
+            docker tag "${{ inputs.image }}:$first" "${{ inputs.image }}:$tag"
+          fi
+          if [ "$PUSH" = "true" ]; then
+            echo "Pushing ${{ inputs.image }}:$tag"
+            docker push "${{ inputs.image }}:$tag"
+          else
+            echo "Dry run — built ${{ inputs.image }}:$tag, not pushing"
+          fi
+        done
+
+    # The image now lives in GHCR, so the local copy and its build cache are dead
+    # weight that would otherwise accumulate on this persistent runner until the
+    # disk fills. Drop the tags we just built and trim the cache. Runs on failure
+    # too (`always`) so a build that errors part-way still cleans up after itself.
+    # Scoped to this job's tags; the full builder prune is safe here because the
+    # push has completed and we no longer need any of this image's cache.
+    - name: Reclaim disk space
+      if: always()
+      shell: bash
+      run: |
+        while IFS= read -r tag; do
+          [ -z "$tag" ] && continue
+          docker image rm -f "${{ inputs.image }}:$tag" || true
+        done <<< "${{ inputs.tags }}"
+        docker image prune -f || true
+        docker builder prune -af || true
+        echo "Disk after release cleanup:"; df -h / || true

@@ -1,0 +1,88 @@
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+/**
+ * React Native build configuration. Paths are relative to this file
+ * (mobile/android/app); react-native and its tooling are hoisted to the
+ * repo-root node_modules (mobile/android/app/../../../node_modules).
+ */
+react {
+    // JS application root (where index.js / package.json live).
+    root = file("../../")
+    reactNativeDir = file("../../../node_modules/react-native")
+    codegenDir = file("../../../node_modules/@react-native/codegen")
+    cliFile = file("../../../node_modules/react-native/cli.js")
+
+    // Hermes compiler. The plugin's auto-detection looks for hermesc under the JS app
+    // `root` (mobile/node_modules/...), but in this hoisted monorepo react-native lives
+    // in the repo-root node_modules — so point at it explicitly. %OS-BIN% is replaced
+    // with the host arch (e.g. linux64-bin) by the plugin.
+    hermesCommand = file("../../../node_modules/react-native/sdks/hermesc/%OS-BIN%/hermesc").toString()
+
+    // Apply the autolinked native modules to this app module.
+    autolinkLibrariesWithApp()
+}
+
+def enableProguardInReleaseBuilds = false
+def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+
+android {
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "com.tenir"
+
+    buildFeatures {
+        // The React Native gradle plugin writes IS_NEW_ARCHITECTURE_ENABLED /
+        // IS_HERMES_ENABLED into BuildConfig; AGP 8 needs the feature enabled.
+        buildConfig true
+    }
+
+    defaultConfig {
+        applicationId "com.tenir"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode((project.findProperty("TENIR_VERSION_CODE") ?: "1").toString().toInteger())
+        versionName((project.findProperty("TENIR_VERSION_NAME") ?: "0.1.1").toString())
+    }
+
+    signingConfigs {
+        release {
+            // Populated from -P properties (set by CI from repository secrets). When
+            // absent, the release build falls back to the debug signing config below
+            // so the APK is still installable for local/dev distribution.
+            if (project.hasProperty("TENIR_UPLOAD_STORE_FILE")) {
+                storeFile file(project.property("TENIR_UPLOAD_STORE_FILE"))
+                storePassword project.property("TENIR_UPLOAD_STORE_PASSWORD")
+                keyAlias project.property("TENIR_UPLOAD_KEY_ALIAS")
+                keyPassword project.property("TENIR_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            signingConfig project.hasProperty("TENIR_UPLOAD_STORE_FILE") ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+
+    // Used by the PcmAudio foreground service / permission checks.
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation jscFlavor
+    }
+}

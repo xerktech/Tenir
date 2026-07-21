@@ -1,0 +1,132 @@
+# tenir — single-host stack: `docker compose up --build`.
+#
+# Bare minimum: one app container (api + web UI), Postgres for transcripts,
+# the LiteLLM gateway, and the Voxtral STT server (the only GPU container —
+# needs the NVIDIA Container Toolkit). Real prod values come from .env (the
+# ${VAR:-default} fallbacks are this host's defaults).
+
+name: tenir
+
+services:
+  app:
+    # ONE container: FastAPI serves the WS/REST api AND the built web SPA on
+    # :8080 (same origin, so no CORS and no separate web container). The build
+    # context is the repo root — the web build needs the workspace packages.
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      args:
+        API_EXTRAS: "persistence"
+    image: tenir:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Backend selectors are hardcoded — this file starts the matching services, so a
+      # .env override would only desync the api. Endpoints/secrets/models come from .env.
+      API_LITELLM_ENDPOINT: ${API_LITELLM_ENDPOINT:-http://litellm:4000/v1}
+      API_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
+      API_STT_BACKEND: voxtral
+      API_STT_MODEL: ${API_STT_MODEL:-voxtral}
+      API_HOUSEHOLD_ID: ${API_HOUSEHOLD_ID:-default}
+      # You MUST override API_AUTH_SECRET — the api refuses to boot with the default.
+      API_AUTH_SECRET: ${API_AUTH_SECRET:-dev-insecure-change-me}
+      API_AUTH_ADMIN_USERNAME: ${API_AUTH_ADMIN_USERNAME:-}
+      API_AUTH_ADMIN_PASSWORD: ${API_AUTH_ADMIN_PASSWORD:-}
+      API_AUTH_ADMIN_HOUSEHOLD: ${API_AUTH_ADMIN_HOUSEHOLD:-default}
+      API_PERSISTENCE_BACKEND: postgres
+      API_AUDIO_BACKEND: disk
+      API_AUDIO_DIR: /data/audio
+      API_DATABASE_URL: postgresql://tenir:tenir@postgres-tenir:5432/tenir
+      # Status page: on this single-host stack the api shares a network with the
+      # STT server, so it probes it directly for a per-model light. Leave unset in
+      # a split-host deploy — the light then follows the LiteLLM gateway probe.
+      API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://vllm-stt:8000}
+    volumes:
+      # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
+      # container recreation.
+      - "C:/docker/tenir/audio:/data/audio"
+    depends_on:
+      postgres-tenir:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-tenir:
+    # Transcripts + users. Plain Postgres — no pgvector needed anymore.
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tenir
+      POSTGRES_PASSWORD: tenir
+      POSTGRES_DB: tenir
+    ports:
+      - "5432:5432"
+    volumes:
+      - "C:/docker/tenir/postgres:/var/lib/postgresql/data"
+      # Applied once on first boot of an empty data dir.
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenir"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litellm:
+    # OpenAI-compatible gateway fronting vllm-stt, so the api uses one base URL +
+    # key. Routing lives in litellm/config.yaml. CPU-only — it proxies, it doesn't
+    # run the model. The non-database image: master-key auth, no Postgres needed.
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      # OVERRIDE in prod.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----- GPU model server (needs the NVIDIA Container Toolkit) -----------------
+
+  vllm-stt:
+    # Live STT: Voxtral. Serves under its real model id (mistralai/Voxtral-Mini-3B-2507,
+    # no --served-model-name); the LiteLLM gateway aliases it as "voxtral" for the api.
+    # Built from vllm-stt/Dockerfile (vllm-openai + soundfile) — Voxtral's audio path
+    # needs mistral_common[soundfile].
+    build:
+      context: ./vllm-stt
+      dockerfile: Dockerfile
+    image: tenir-vllm-stt:soundfile
+    command:
+      - "--model"
+      - "${VOXTRAL_MODEL:-mistralai/Voxtral-Mini-3B-2507}"
+      # Card share for live STT: Voxtral's weights are ~8.7 GiB; the remainder of
+      # this fraction becomes KV cache. With the co-tenant models gone the card is
+      # Voxtral's alone — 0.5 leaves ample KV headroom while keeping half the card
+      # free for anything else the host runs.
+      - "--gpu-memory-utilization"
+      - "${VLLM_STT_GPU_MEMORY_UTILIZATION:-0.5}"
+      # Live STT turns are short (the api caps segments at 12s), so a small context
+      # is ample and keeps CUDA graphs (speed) without grabbing more GPU.
+      - "--max-model-len"
+      - "${VLLM_STT_MAX_MODEL_LEN:-2048}"
+    ports:
+      - "9400:8000"
+    volumes:
+      - "C:/docker/tenir/vllm-stt:/root/.cache/huggingface"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

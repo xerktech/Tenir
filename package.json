@@ -1,0 +1,22 @@
+{
+  "name": "tenir",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Self-hosted recorded + stored STT sessions for Even G2 glasses, web and Android. npm-workspaces monorepo root: shared TS packages live in packages/, the Even Hub glasses client in even/, the Android client in mobile/, the React web UI in web/, the backend API (which also serves the built web UI) in api/, and the deployment stack (Docker Compose + Postgres schema) at the repo root.",
+  "workspaces": [
+    "packages/*",
+    "even",
+    "mobile",
+    "web"
+  ],
+  "scripts": {
+    "gen:ts": "json2ts --input contract/ws-messages.schema.json --output packages/contract/src/messages.ts --additionalProperties false",
+    "gen": "make gen",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4"
+  }
+}

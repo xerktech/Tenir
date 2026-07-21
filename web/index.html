@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <!-- Mobile browser UI chrome matches the Lumen surfaces (dark default; light counterpart). -->
+    <meta name="theme-color" content="#0E1116" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#F7F9FB" media="(prefers-color-scheme: light)" />
+    <!-- Lumen favicon: scalable SVG for modern browsers, PNG + .ico fallbacks. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>Tenir</title>
+    <script>
+      // Apply a pinned theme before first paint to avoid a flash.
+      try {
+        var t = localStorage.getItem("tenir.theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

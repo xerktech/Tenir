@@ -1,0 +1,29 @@
+{
+  "name": "tenir-even",
+  "version": "0.1.1",
+  "private": true,
+  "description": "tenir Even G2 app: the Even Hub glasses client. Captures mic audio, streams PCM to the api over WSS, renders live captions on the G2 lens.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "appjson": "node scripts/gen-app-json.mjs",
+    "pack": "node scripts/gen-app-json.mjs && evenhub pack app.packed.json dist -o tenir.ehpk"
+  },
+  "dependencies": {
+    "@tenir/client-core": "*",
+    "@tenir/contract": "*",
+    "@evenrealities/even_hub_sdk": "0.0.10",
+    "@evenrealities/pretext": "^0.1.4"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.13",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.8"
+  }
+}

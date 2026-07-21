@@ -1,0 +1,13 @@
+pluginManagement { includeBuild("../../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+
+// Autolink native modules. The default working directory is this settings dir's
+// parent — i.e. the RN app package `mobile/` — and the default command is
+// `npx @react-native-community/cli config`, which resolves react-native and the
+// native deps (AsyncStorage, …) from the hoisted repo-root node_modules. That is
+// exactly what this workspace needs, so the default call is correct here.
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex -> ex.autolinkLibrariesFromCommand() }
+
+rootProject.name = "tenir"
+include ":app"
+includeBuild("../../node_modules/@react-native/gradle-plugin")

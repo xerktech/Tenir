@@ -1,0 +1,53 @@
+name: Mobile
+
+# PR gate for the Android app. It compiles against the shared workspace packages,
+# so its checks depend on mobile/ plus packages/** and the lockfile. On a PR:
+# typecheck + tests + build. Assembling the release APK and publishing it is no
+# longer here — the unified release pipeline (release.yml) assembles
+# tenir-android-v<version>.apk (versionName + packed versionCode from the release
+# version) and attaches it to the release on a push to main.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/mobile.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Mobile app (typecheck + tests + build)
+    # GitHub-hosted: npm install + tests for the mobile package. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspace tenir-mobile
+
+      - name: Test
+        run: npm run test --workspace tenir-mobile
+
+      - name: Build
+        run: npm run build --workspace tenir-mobile

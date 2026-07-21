@@ -1,0 +1,27 @@
+# React Native / Android build artifacts (this package; the repo-root .gitignore
+# covers node_modules and friends).
+
+# Android / Gradle
+android/.gradle/
+android/.cxx/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/captures/
+android/.kotlin/
+
+# NB: the Gradle wrapper (gradlew + gradle/wrapper/gradle-wrapper.jar) IS committed
+# so `./gradlew` is self-contained in CI and locally — do not ignore it.
+
+# Bundled JS produced by the release build.
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/res/drawable-*/
+android/app/src/main/res/raw/
+
+# Signing material — never commit keystores.
+*.keystore
+*.jks
+
+# Misc
+*.hprof

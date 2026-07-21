@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tenir</title>
+  </head>
+  <body>
+    <!--
+      The lens UI is driven entirely through the SDK bridge (no DOM rendering on
+      the glasses). This page is the WebView host; the off-lens companion page
+      (server setting + sign-in) lives at /companion.html — everything else is
+      the server-hosted web app.
+    -->
+    <main id="app">
+      <h1>Tenir</h1>
+      <p>Live transcription is running on the glasses.</p>
+      <p><a href="/companion.html">Open the companion page →</a></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

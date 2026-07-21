@@ -1,0 +1,106 @@
+name: Build and scan image
+description: >-
+  Build a Docker image from this repo and scan it for known CVEs with Trivy,
+  failing on fixable CRITICAL/HIGH findings. Used by the per-component PR CI jobs
+  (api) so the build/scan/cleanup logic lives in one place. Nothing is
+  pushed — this is the PR gate; publishing to GHCR is the main-push job's
+  build-push-image action.
+
+inputs:
+  image:
+    description: Local image tag to build, e.g. tenir:ci-<sha>.
+    required: true
+  context:
+    description: Docker build context directory.
+    required: true
+  dockerfile:
+    description: Path to the Dockerfile, relative to the repo root.
+    required: true
+  build-args:
+    description: Newline-separated --build-arg values (KEY=value). Optional.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The self-hosted runner reuses one workspace across jobs. An earlier version
+    # of this scan ran Trivy as root and could leave root-owned files behind that
+    # actions/checkout (run as the runner user) can't delete, breaking checkout
+    # for every later job. Purge any such leftovers, as root via a throwaway
+    # container, before we start. Guarded so it never creates the workspace dir.
+    - name: Purge root-owned scan leftovers from prior jobs
+      shell: bash
+      run: |
+        ws="${{ github.workspace }}"
+        if [ -d "$ws" ]; then
+          docker run --rm -v "$ws:/w" alpine:3 \
+            sh -c 'rm -rf /w/.trivycache /w/image.tar' || true
+        fi
+
+    # The runner builds a uniquely-tagged ci-<sha> image on every PR and never
+    # removed them, so old CI images + build cache piled up until the disk filled
+    # — which surfaces as Trivy's DB download failing with ENOSPC, not as a build
+    # error. Reclaim that space first: drop stale CI images and dangling layers,
+    # prune the build cache, clear any leftover scan tarball/cache. Targeted (not
+    # `system prune -af --volumes`) so it can't disturb volumes or images other
+    # jobs on this shared runner depend on.
+    - name: Reclaim disk before build
+      shell: bash
+      run: |
+        repo="${{ inputs.image }}"; repo="${repo%%:*}"
+        docker images --format '{{.Repository}}:{{.Tag}}' \
+          | grep "^${repo}:ci-" | xargs -r docker rmi -f || true
+        docker image prune -f || true
+        docker builder prune -f || true
+        rm -rf "$RUNNER_TEMP/image.tar" "$RUNNER_TEMP/trivycache" || true
+        df -h / "$RUNNER_TEMP" || true
+
+    - name: Build image
+      shell: bash
+      run: |
+        build_arg_flags=()
+        while IFS= read -r arg; do
+          [ -n "$arg" ] && build_arg_flags+=(--build-arg "$arg")
+        done <<< "${{ inputs.build-args }}"
+        docker build \
+          -f "${{ inputs.dockerfile }}" \
+          -t "${{ inputs.image }}" \
+          "${build_arg_flags[@]}" \
+          "${{ inputs.context }}"
+
+    # Scan with Trivy via its official container. The runner already has a working
+    # Docker, and this avoids trivy-action's binary installer (which can't run on
+    # this self-hosted runner). Everything lives under RUNNER_TEMP (outside the
+    # checked-out workspace) and the container runs as the runner user, so no
+    # root-owned files are left in the shared workspace. Scanning the saved tarball
+    # (--input) needs no Docker socket. Fail on fixable CRITICAL/HIGH CVEs;
+    # ignore-unfixed keeps the gate to actionable findings.
+    - name: Scan image for vulnerabilities (Trivy)
+      shell: bash
+      run: |
+        docker save "${{ inputs.image }}" -o "$RUNNER_TEMP/image.tar"
+        mkdir -p "$RUNNER_TEMP/trivycache"
+        docker run --rm \
+          --user "$(id -u):$(id -g)" \
+          -e HOME=/tmp \
+          -e TRIVY_CACHE_DIR=/cache \
+          -e TMPDIR=/cache \
+          -v "$RUNNER_TEMP:/work" \
+          -v "$RUNNER_TEMP/trivycache:/cache" \
+          aquasec/trivy:0.65.0 image \
+            --input /work/image.tar \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --no-progress \
+            --exit-code 1
+
+    # Don't leave this run's image + saved tarball behind to fill the shared runner
+    # for the next job (runs even if the scan found CVEs and failed).
+    - name: Clean up build artifacts
+      if: always()
+      shell: bash
+      run: |
+        docker rmi -f "${{ inputs.image }}" || true
+        rm -rf "$RUNNER_TEMP/image.tar" || true

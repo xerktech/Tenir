@@ -1,0 +1,52 @@
+name: Even
+
+# PR gate for the Even G2 glasses app. It compiles against the shared workspace
+# packages, so its checks depend on even/ plus packages/** and the lockfile. On a
+# PR: typecheck + test + build. Packing the .ehpk and publishing it is no longer
+# here — the unified release pipeline (release.yml) stamps the version, packs, and
+# attaches tenir-even-v<version>.ehpk to the release on a push to main.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'even/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/even.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Even G2 app (typecheck + test + build)
+    # GitHub-hosted: npm install + build of the even package. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspace tenir-even
+
+      - name: Test
+        run: npm run test --workspace tenir-even
+
+      - name: Build
+        run: npm run build --workspace tenir-even

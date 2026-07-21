@@ -1,0 +1,60 @@
+name: Contract drift
+
+on:
+  # `make gen` writes the TS types (packages/contract/) and Pydantic models
+  # (api/) from the JSON schema, so any of those — or the Makefile — can make the
+  # committed contract drift.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contract/**'
+      - 'Makefile'
+      - 'packages/contract/**'
+      - 'api/**'
+      - 'package.json'
+      - '.github/workflows/contract-drift.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-drift:
+    name: Contract is up to date
+    # GitHub-hosted: regenerates the contract and diffs it. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install generators
+        # Drop any stale editable install first (see the api job for the full
+        # story). A no-op on a hosted runner's fresh VM; kept for the same reason
+        # it's kept there.
+        run: |
+          npm ci
+          pip uninstall -y tenir-api tenir-gateway 2>/dev/null || true
+          pip install -e './api[dev]'
+
+      - name: Regenerate contract
+        run: make gen
+
+      - name: Fail if generated files drifted from the schema
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated contract is stale. Run 'make gen' and commit the result."
+            exit 1
+          fi
