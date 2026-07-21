@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+*.ehpk
+# Generated at pack time from app.json + TENIR_API_HOSTS (even/).
+even/app.packed.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-codegen/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+
+# Env / secrets
+.env
+
+# OS / editor
+.DS_Store
+
+# Visual brainstorm companion (local only)
+.superpowers/
+.venv-work/

@@ -1,0 +1,35 @@
+{
+  "name": "tenir-mobile",
+  "version": "0.1.1",
+  "private": true,
+  "description": "tenir mobile app (iOS + Android): the phone client built on @tenir/client-core. Server-URL + login, live phone-mic speech-to-text capture, plus browse on the go — recorded session history/search with retained audio.",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit",
+    "start": "react-native start",
+    "android": "react-native run-android"
+  },
+  "dependencies": {
+    "@tenir/client-core": "*",
+    "@tenir/contract": "*",
+    "@react-native-async-storage/async-storage": "^2.1.0",
+    "react": "^18.3.1",
+    "react-native": "^0.76.5",
+    "react-native-url-polyfill": "^4.0.0"
+  },
+  "devDependencies": {
+    "@react-native-community/cli": "15.0.1",
+    "@react-native-community/cli-platform-android": "15.0.1",
+    "@react-native/babel-preset": "0.76.9",
+    "@react-native/metro-config": "0.76.9",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "jsdom": "^25.0.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

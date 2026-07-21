@@ -1,0 +1,16 @@
+{
+  "name": "@tenir/contract",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Generated WS+REST message contract (TS) — the single source of truth shared by every TS frontend. Generated from contract/ws-messages.schema.json; do not hand-edit src/messages.ts.",
+  "type": "module",
+  "types": "./src/messages.ts",
+  "//react-native": "Entry for Metro, whose default resolution ignores `exports` and falls back to the main fields. Other consumers (Vite/vitest/tsc) keep using `exports`.",
+  "react-native": "./src/messages.ts",
+  "exports": {
+    ".": {
+      "types": "./src/messages.ts",
+      "default": "./src/messages.ts"
+    }
+  }
+}

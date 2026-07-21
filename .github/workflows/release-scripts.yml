@@ -1,0 +1,42 @@
+name: Release scripts
+
+# PR gate for the release toolchain. release.yml's version math, path->component
+# map, changelog rendering and manifest carry-forward all live as pure, testable
+# Node modules under .github/scripts/ (see its README). This runs their unit
+# tests (node:test, stdlib-only) so a change to the release machinery can't ship
+# a broken release. Replaces version.yml, which guarded the old committed-version
+# sync the tag-derived scheme retired.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/scripts/**'
+      # changes.test.js asserts release.yml's push:main paths stay in lockstep
+      # with the path->component map, so a release.yml edit must re-run these.
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-scripts.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Release scripts (unit tests)
+    # GitHub-hosted: provisions node and runs the stdlib-only test suite in well
+    # under a minute — no docker cache to keep warm, nothing large on disk.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Unit test the release scripts
+        run: node --test .github/scripts/tests/*.test.js

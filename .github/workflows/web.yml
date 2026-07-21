@@ -1,0 +1,53 @@
+name: Web
+
+# PR gate for the React web UI. It compiles against the shared workspace
+# packages, so its checks depend on web/ plus packages/** and the lockfile. On a
+# PR: typecheck + test + build. There is no separate web image any more — the
+# SPA is baked into the api image (api/Dockerfile, repo-root context), so the
+# image build/scan lives in api.yml and the unified release pipeline
+# (release.yml) publishes it as part of the tenir image.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/web.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Web UI (typecheck + tests + build)
+    # GitHub-hosted: npm install + typecheck + tests. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck --workspace @tenir/web
+
+      - name: Test
+        run: npm run test --workspace @tenir/web
+
+      - name: Build
+        run: npm run build --workspace @tenir/web

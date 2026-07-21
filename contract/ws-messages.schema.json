@@ -1,0 +1,189 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tenir.local/contract/ws-messages.schema.json",
+  "title": "TenirWsMessages",
+  "description": "Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.",
+
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/ClientMessage" },
+    { "$ref": "#/$defs/ServerMessage" }
+  ],
+
+  "$defs": {
+    "MicSource": {
+      "title": "MicSource",
+      "type": "string",
+      "enum": ["g2-microphone", "phone-microphone"],
+      "description": "Which microphone the client is currently capturing from."
+    },
+
+    "Lang": {
+      "title": "Lang",
+      "type": "string",
+      "enum": ["en", "es", "fr", "de", "pt", "it"],
+      "description": "Languages the STT engine may detect/report on captions."
+    },
+
+    "Word": {
+      "title": "Word",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "startMs", "endMs"],
+      "properties": {
+        "text": { "type": "string" },
+        "startMs": { "type": "integer", "minimum": 0 },
+        "endMs": { "type": "integer", "minimum": 0 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+
+    "SessionStart": {
+      "title": "SessionStart",
+      "description": "Client -> server. Opens a live session before any audio frames are sent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "micSource"],
+      "properties": {
+        "type": { "const": "session.start" },
+        "sessionId": {
+          "type": "string",
+          "description": "Optional client-provided id to resume a dropped session; the server echoes the authoritative id in session.ready."
+        },
+        "micSource": { "$ref": "#/$defs/MicSource" },
+        "sourceLang": { "$ref": "#/$defs/Lang" }
+      }
+    },
+
+    "MicSwitch": {
+      "title": "MicSwitch",
+      "description": "Client -> server. Runtime microphone source change.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "micSource"],
+      "properties": {
+        "type": { "const": "mic.switch" },
+        "micSource": { "$ref": "#/$defs/MicSource" }
+      }
+    },
+
+    "SessionEnd": {
+      "title": "SessionEnd",
+      "description": "Client -> server. Finalizes the session; the transcript and retained audio are persisted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "session.end" }
+      }
+    },
+
+    "Ping": {
+      "title": "Ping",
+      "description": "Client -> server. Liveness probe; server replies with Pong.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "ping" },
+        "t": { "type": "integer", "description": "Client send timestamp (ms epoch), echoed back." }
+      }
+    },
+
+    "ClientMessage": {
+      "title": "ClientMessage",
+      "oneOf": [
+        { "$ref": "#/$defs/SessionStart" },
+        { "$ref": "#/$defs/MicSwitch" },
+        { "$ref": "#/$defs/SessionEnd" },
+        { "$ref": "#/$defs/Ping" }
+      ]
+    },
+
+    "SessionReady": {
+      "title": "SessionReady",
+      "description": "Server -> client. Session accepted; client may begin streaming audio.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "session.ready" },
+        "sessionId": { "type": "string" },
+        "resumed": { "type": "boolean", "default": false }
+      }
+    },
+
+    "CaptionPartial": {
+      "title": "CaptionPartial",
+      "description": "Server -> client. Fast, unstable hypothesis for the live caption band.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "caption.partial" },
+        "text": { "type": "string" },
+        "lang": { "$ref": "#/$defs/Lang" }
+      }
+    },
+
+    "CaptionFinal": {
+      "title": "CaptionFinal",
+      "description": "Server -> client. Stable finalized segment with timing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "segmentId", "text", "startMs", "endMs"],
+      "properties": {
+        "type": { "const": "caption.final" },
+        "segmentId": { "type": "string" },
+        "text": { "type": "string" },
+        "lang": { "$ref": "#/$defs/Lang" },
+        "startMs": { "type": "integer", "minimum": 0 },
+        "endMs": { "type": "integer", "minimum": 0 },
+        "words": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Word" }
+        }
+      }
+    },
+
+    "Pong": {
+      "title": "Pong",
+      "description": "Server -> client. Reply to Ping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "pong" },
+        "t": { "type": "integer", "description": "Echoed client timestamp from Ping." }
+      }
+    },
+
+    "ErrorMessage": {
+      "title": "ErrorMessage",
+      "description": "Server -> client. Recoverable or fatal error for the current session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "code", "message"],
+      "properties": {
+        "type": { "const": "error" },
+        "code": {
+          "type": "string",
+          "enum": ["bad_request", "unauthorized", "session_not_found", "rate_limited", "internal"]
+        },
+        "message": { "type": "string" },
+        "fatal": { "type": "boolean", "default": false }
+      }
+    },
+
+    "ServerMessage": {
+      "title": "ServerMessage",
+      "oneOf": [
+        { "$ref": "#/$defs/SessionReady" },
+        { "$ref": "#/$defs/CaptionPartial" },
+        { "$ref": "#/$defs/CaptionFinal" },
+        { "$ref": "#/$defs/Pong" },
+        { "$ref": "#/$defs/ErrorMessage" }
+      ]
+    }
+  }
+}

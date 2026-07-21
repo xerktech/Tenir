@@ -1,0 +1,11 @@
+# Force LF for files that are interpreted inside Linux containers or by a POSIX
+# shell. Without this, a Windows checkout (core.autocrlf=true) gives these files
+# CRLF endings; when such a script is COPYed into a Linux image its shebang
+# becomes `#!/bin/sh\r`, so the kernel looks for an interpreter literally named
+# `/bin/sh\r`, can't find it, and the container exits 127 ("not found").
+#
+# Scoped to container-interpreted file types on purpose, to avoid renormalizing
+# the whole tree in an unrelated change.
+*.sh        text eol=lf
+Dockerfile* text eol=lf
+*.conf      text eol=lf

@@ -1,0 +1,22 @@
+# Build context for the app image is the repo root (the web build needs the
+# workspace packages @tenir/client-core + @tenir/contract, and the api stage
+# needs api/). Keep the context lean: drop installed deps, VCS/CI metadata, and
+# everything the image build never reads.
+**/node_modules
+**/dist
+**/.vite
+**/coverage
+.git
+.github
+.claude
+.venv
+.venv-work
+**/__pycache__
+api/tests
+docs
+docker-compose.yml
+schema.sql
+scripts
+litellm
+.env.example
+*.log
