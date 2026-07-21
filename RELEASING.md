@@ -21,6 +21,26 @@ the Even `app.json` `version` (Even Hub keys sideloads on it) and the Android
 `package.json`/`pyproject.toml`/FastAPI-banner versions are ordinary dev metadata
 and are not release-managed.
 
+## Android signing
+
+Every release APK is signed with the committed, stable release keystore
+(`mobile/android/app/tenir-release.keystore`, alias `tenir`). This is deliberate:
+Android refuses an update whose signing certificate differs from the installed
+one, so a *stable* key is what lets a sideloaded install be **updated in place**
+rather than uninstalled and reinstalled. For a self-hosted, sideloaded app that
+shared key is the app's signing identity, not a Play Store upload secret, so it
+is checked in on purpose (the `*.keystore` ignore rule has an explicit exception
+for it in `mobile/.gitignore`).
+
+If you ever distribute through the Play Store, generate a private upload keystore
+and set `TENIR_UPLOAD_STORE_FILE` / `TENIR_UPLOAD_STORE_PASSWORD` /
+`TENIR_UPLOAD_KEY_ALIAS` / `TENIR_UPLOAD_KEY_PASSWORD` as repository secrets;
+`release.yml` passes them as `-P` props and `build.gradle` prefers them over the
+committed default — no code change needed. Note that switching signing keys
+(including the first release after this change, which moves off the old
+per-runner debug key) requires one final uninstall/reinstall, because the
+certificate itself changes; every update after that installs in place.
+
 ## Patch releases (automatic)
 
 Every merge to `main` that touches a component's source cuts a patch release — a

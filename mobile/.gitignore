@@ -19,9 +19,13 @@ android/app/src/main/assets/index.android.bundle
 android/app/src/main/res/drawable-*/
 android/app/src/main/res/raw/
 
-# Signing material — never commit keystores.
+# Signing material — private/upload keystores are never committed.
 *.keystore
 *.jks
+# ...except the release keystore below: a stable, intentionally non-secret signing
+# identity shared by every build so sideloaded installs can be UPDATED in place
+# (see android/app/build.gradle). Force-tracked despite the *.keystore rule above.
+!android/app/tenir-release.keystore
 
 # Misc
 *.hprof
