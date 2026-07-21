@@ -49,15 +49,20 @@ android {
 
     signingConfigs {
         release {
-            // Populated from -P properties (set by CI from repository secrets). When
-            // absent, the release build falls back to the debug signing config below
-            // so the APK is still installable for local/dev distribution.
-            if (project.hasProperty("TENIR_UPLOAD_STORE_FILE")) {
-                storeFile file(project.property("TENIR_UPLOAD_STORE_FILE"))
-                storePassword project.property("TENIR_UPLOAD_STORE_PASSWORD")
-                keyAlias project.property("TENIR_UPLOAD_KEY_ALIAS")
-                keyPassword project.property("TENIR_UPLOAD_KEY_PASSWORD")
-            }
+            // A STABLE signing identity is what lets an installed build be UPDATED
+            // in place: Android refuses an update whose signing certificate differs
+            // from the installed one, forcing an uninstall/reinstall. So the release
+            // build signs, by default, with the committed `tenir-release.keystore` —
+            // a fixed, intentionally non-secret key shared by every build. For a
+            // self-hosted, sideloaded app that shared key IS the signing identity;
+            // it is not a Play Store upload secret.
+            //
+            // A private upload key can override this default via -P properties
+            // (typically set by CI from repository secrets) without a code change.
+            storeFile file(project.findProperty("TENIR_UPLOAD_STORE_FILE") ?: "tenir-release.keystore")
+            storePassword project.findProperty("TENIR_UPLOAD_STORE_PASSWORD") ?: "tenirandroid"
+            keyAlias project.findProperty("TENIR_UPLOAD_KEY_ALIAS") ?: "tenir"
+            keyPassword project.findProperty("TENIR_UPLOAD_KEY_PASSWORD") ?: "tenirandroid"
         }
     }
 
@@ -66,7 +71,11 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig project.hasProperty("TENIR_UPLOAD_STORE_FILE") ? signingConfigs.release : signingConfigs.debug
+            // Always the stable release key (the committed default, or a -P upload
+            // key). NEVER the debug config: its auto-generated ~/.android/debug.keystore
+            // is random per machine and per CI runner, so debug-signed releases get a
+            // different certificate each build and cannot be updated in place.
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

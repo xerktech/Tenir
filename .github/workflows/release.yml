@@ -296,8 +296,10 @@ jobs:
   # -------------------------------------------------------- build: mobile -----
   # GitHub-hosted: ubuntu-latest ships a JDK + the Android SDK, so assembleRelease
   # is a first-class hosted workload. Version name from the unified version;
-  # versionCode from the tested version.js packing (NOT run_number). Falls back to
-  # the debug signing key unless TENIR_UPLOAD_* secrets are wired in as -P props.
+  # versionCode from the tested version.js packing (NOT run_number). Signing uses
+  # the committed, stable release keystore by default (so each build shares one
+  # certificate and installs can be updated in place); a private upload key can
+  # override it via TENIR_UPLOAD_* secrets wired in as -P props.
   build-mobile:
     needs: [plan, bump]
     if: >-
