@@ -32,6 +32,15 @@ shared key is the app's signing identity, not a Play Store upload secret, so it
 is checked in on purpose (the `*.keystore` ignore rule has an explicit exception
 for it in `mobile/.gitignore`).
 
+The Android app **self-updates from these releases** (XERK-63): on launch it checks
+the project's public GitHub releases for a `tenir-android-v<x.y.z>.apk` newer than
+the installed `versionName` and offers a one-tap download + install. That in-place
+update only works because of the stable key above — an update whose signing
+certificate differs from the installed one is refused. See `mobile/README.md`
+("In-app update") for the client side. Nothing extra is needed at release time: the
+existing `tenir-android-v<version>.apk` asset (versioned by content, carried forward
+under its original name) is exactly what the updater reads.
+
 If you ever distribute through the Play Store, generate a private upload keystore
 and set `TENIR_UPLOAD_STORE_FILE` / `TENIR_UPLOAD_STORE_PASSWORD` /
 `TENIR_UPLOAD_KEY_ALIAS` / `TENIR_UPLOAD_KEY_PASSWORD` as repository secrets;

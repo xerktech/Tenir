@@ -39,6 +39,30 @@ The **Android** project under `android/` implements all of the above: `PcmAudioM
 `RECORD_AUDIO` / `FOREGROUND_SERVICE*` permissions in `AndroidManifest.xml`. (The iOS
 project is still to come.)
 
+### In-app update (Android, XERK-63)
+
+A sideloaded app has no store to push updates, so — like the Turma Android client — it
+**self-updates from the project's public GitHub releases**. On launch (Android only) it
+checks `https://api.github.com/repos/xerktech/Tenir/releases` anonymously for a
+`tenir-android-v<x.y.z>.apk` newer than the installed `versionName`, and if one exists shows
+a dismissible **Update** banner. Tapping it downloads the APK to app cache and hands it to
+the system package installer for a user-confirmed sideload.
+
+- **Pure logic** (`src/lib/updater.ts`): parse the version from the asset *filename* (the
+  release pipeline versions each APK by content, carrying it forward under its original
+  name — see `.github/scripts/manifest.js`), compare against the installed version, pick the
+  newest across recent releases. Unit-tested under vitest (`tests/updater.test.ts`).
+- **`AppUpdater` native module** (`android/.../update/AppUpdaterModule.kt`, JS wrapper
+  `src/native/appUpdater.ts`): reads the installed `versionName`, downloads the APK with
+  progress events, and installs it via a `FileProvider` + `ACTION_VIEW` intent. Needs the
+  `REQUEST_INSTALL_PACKAGES` permission and a `${applicationId}.updates` FileProvider (both
+  in `AndroidManifest.xml`); on API 26+ it routes the user through "install unknown apps"
+  the first time. The OS verifies the signature on install — which is why the release keeps
+  a **stable** signing key (XERK-60), so an update installs in place.
+- **UI**: `src/lib/useUpdater.ts` (state machine) + `src/ui/UpdateBanner.tsx`, mounted at the
+  top of the authenticated dashboard. Inert on iOS and under the test runner (no native
+  module), so nothing renders there.
+
 ## Android build & release
 
 The app is a standard React Native 0.76 (Hermes, legacy architecture) Android project,
