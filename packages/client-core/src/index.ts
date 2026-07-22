@@ -13,6 +13,7 @@
 export type { CueLevel } from "@tenir/contract";
 
 export * from "./config";
+export * from "./serverUrl";
 export * from "./auth";
 export * from "./api";
 export * from "./ws";

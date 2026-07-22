@@ -46,12 +46,17 @@ Users choose how eagerly cues appear with a global toggle in the client UI
 
 - **web**: on the Live panel.
 - **mobile**: on the Live screen.
-- **glasses**: on the companion page.
 
 The choice is persisted per client and sent on `session.start` as `cueLevel`. The
 server maps the level to a prompt strictness and a minimum gap between cues
 (`api/src/api/cue/levels.py`): conservative spaces cues out and only fires on
 unambiguous facts; aggressive lets them come thick and fast.
+
+The **glasses** display cues but have no on-lens settings surface (post-XERK-82
+their companion page is the web UI, and the Even host's `localStorage` doesn't
+survive restarts), so they omit `cueLevel` on `session.start` and the server
+default (`API_CUE_DEFAULT_LEVEL`, balanced) applies — a deliberate platform
+difference.
 
 ## Backends (`API_CUE_BACKEND`)
 

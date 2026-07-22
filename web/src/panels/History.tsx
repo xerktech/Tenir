@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Button, Card, EmptyState, Input, Modal, Spinner } from "../ui";
+import { Button, Card, ConfirmButton, EmptyState, Input, Modal, Spinner } from "../ui";
 
 type SortKey = "date" | "duration" | "turns" | "status";
 type SortDir = "asc" | "desc";
@@ -172,9 +172,11 @@ export function HistoryPanel(): JSX.Element {
                 <td className="history-col-turns">{c.segmentCount}</td>
                 <td className="history-col-status">{c.status}</td>
                 <td className="history-col-actions">
-                  <Button variant="danger" onClick={() => void remove(c.id)}>
+                  {/* Destructive actions arm on the first click and commit on the
+                      second (Turma's two-step pattern) — no confirm dialog. */}
+                  <ConfirmButton confirmLabel="Confirm delete" onConfirm={() => void remove(c.id)}>
                     Delete
-                  </Button>
+                  </ConfirmButton>
                 </td>
               </tr>
             ))}
@@ -227,9 +229,9 @@ function ConversationDetail({
           ← History
         </Button>
         <h3 className="grow">Conversation detail</h3>
-        <Button variant="danger" onClick={onDelete}>
+        <ConfirmButton confirmLabel="Confirm delete" onConfirm={onDelete}>
           Delete
-        </Button>
+        </ConfirmButton>
       </div>
       <p className="muted">
         {new Date(conv.startedAt).toLocaleString()} · {formatDuration(conv.durationMs)} · {conv.segmentCount} turns

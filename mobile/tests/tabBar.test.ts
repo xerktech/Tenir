@@ -27,9 +27,36 @@ describe("mobile bottom tab bar", () => {
     expect(app).toContain("<TabIcon name={t} color={color} />");
   });
 
+  it("marks the active tab with the 28×3 top accent indicator (web parity)", () => {
+    // The web bottom nav marks the active item with a 28×3 accent bar; the
+    // native bar carries the same indicator.
+    expect(app).toContain("{active && <View style={styles.tabActiveBar} />}");
+    expect(app).toContain("width: 28");
+    expect(app).toContain("height: 3");
+  });
+
   it("lists exactly the five dashboard tabs", () => {
     const decl = app.match(/const TABS = \[([^\]]*)\]/)?.[1] ?? "";
     for (const t of TABS) expect(decl).toContain(`"${t}"`);
+  });
+});
+
+// XERK-80 parity: the web SPA keeps its tab across a page refresh (URL hash);
+// the mobile equivalent is restoring the last tab across an app relaunch.
+describe("last-tab restore across relaunches", () => {
+  const app = readText("src/App.tsx");
+  const bootstrap = readText("src/bootstrap.ts");
+
+  it("boots into the persisted tab instead of hardcoding Live", () => {
+    expect(bootstrap).toContain("loadLastTab");
+    expect(app).toContain("useState<Tab>(initialTab)");
+    // Unknown/absent persisted values still land on Live.
+    expect(app).toContain('function asTab(');
+  });
+
+  it("persists each tab switch", () => {
+    expect(app).toContain("saveLastTab(deviceKeyValue(), next)");
+    expect(app).toContain("<TabBar tab={tab} onSelect={selectTab} />");
   });
 });
 

@@ -5,9 +5,10 @@ import { Text } from "react-native";
 
 import { DISCLOSURES } from "@tenir/client-core";
 import { Card, Heading, Muted, Screen } from "../ui/components";
-import { colors } from "../ui/theme";
+import { useTheme } from "../ui/ThemeContext";
 
 export function DisclosureScreen(): JSX.Element {
+  const { colors } = useTheme();
   return (
     <Screen>
       <Heading>Privacy &amp; recording</Heading>

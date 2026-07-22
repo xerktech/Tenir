@@ -93,26 +93,30 @@ describe("UsersPanel", () => {
     expect(await screen.findByText("Password must be at least 8 characters")).toBeInTheDocument();
   });
 
-  it("removes a user after confirmation", async () => {
+  it("removes a user after the two-step arm-then-confirm", async () => {
     list.mockResolvedValue([{ userId: "u2", username: "bob", role: "member", isEnvAdmin: false }]);
     remove.mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     renderPanel();
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
+    // First click arms the control (no browser dialog, nothing removed yet)…
     await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(remove).not.toHaveBeenCalled();
+    // …the second click commits.
+    await user.click(screen.getByRole("button", { name: "Confirm remove" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("u2"));
   });
 
-  it("does not remove when confirmation is dismissed", async () => {
+  it("does not remove on a single (arming) click", async () => {
     list.mockResolvedValue([{ userId: "u2", username: "bob", role: "member", isEnvAdmin: false }]);
-    vi.spyOn(window, "confirm").mockReturnValue(false);
     const user = userEvent.setup();
     renderPanel();
     await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(remove).not.toHaveBeenCalled();
+    // The armed button names the commitment instead of firing it.
+    expect(screen.getByRole("button", { name: "Confirm remove" })).toBeInTheDocument();
   });
 });

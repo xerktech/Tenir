@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import { defineConfig } from "vite";
 
 // For dev, a proxy can front the api to sidestep CORS (master plan §4.4).
@@ -12,12 +10,7 @@ export default defineConfig({
   build: {
     target: "es2021",
     outDir: "dist",
-    rollupOptions: {
-      // Two entrypoints: the lens app (index) and the off-lens companion/admin UI.
-      input: {
-        main: resolve(__dirname, "index.html"),
-        companion: resolve(__dirname, "companion.html"),
-      },
-    },
+    // A single entrypoint (index.html): the phone login/web-UI surface and the
+    // lens app share one page — navigating the WebView would unload the lens.
   },
 });

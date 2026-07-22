@@ -11,6 +11,7 @@ import { describeLoginError, login, logout, me, type Principal } from "@tenir/cl
 import { useState, type FormEvent } from "react";
 
 import { useAsync } from "./lib/hooks";
+import { useHashTab } from "./lib/route";
 import { useNotify } from "./lib/toast";
 import { HistoryPanel } from "./panels/History";
 import { LivePanel } from "./panels/Live";
@@ -121,10 +122,12 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }): JSX.Element {
 function Dashboard({ principal }: { principal: Principal }): JSX.Element {
   const isAdmin = principal.role === "admin";
   const tabs: Tab[] = [...BASE_TABS, ...(isAdmin ? ADMIN_TABS : [])];
-  const [tab, setTab] = useState<Tab>("Live");
+  // The active tab is mirrored into the URL hash so a page refresh (or a
+  // shared link) restores the same tab instead of resetting to Live (XERK-80).
+  const [tab, setTab] = useHashTab<Tab>(tabs, "Live");
   return (
     <div className="shell">
-      <nav className="sidebar" aria-label="Sections">
+      <nav className="nav-tabs" aria-label="Sections">
         {tabs.map((t) => (
           <button
             key={t}

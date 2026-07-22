@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Badge, Button, EmptyState, Field, Input, Spinner } from "../ui";
+import { Badge, Button, ConfirmButton, EmptyState, Field, Input, Spinner } from "../ui";
 
 type Role = "member" | "admin";
 
@@ -35,8 +35,9 @@ export function UsersPanel({ me }: { me: Principal }): JSX.Element {
     }
   };
 
+  // Removal confirms in place: the danger button arms on the first click and
+  // commits on the second (Turma's two-step pattern) — no browser dialog.
   const remove = (u: User) => () => {
-    if (!window.confirm(`Remove ${u.username}? This cannot be undone.`)) return;
     users
       .remove(u.userId)
       .then(() => {
@@ -113,9 +114,9 @@ function UserRow({
         {user.role === "admin" && <Badge>admin</Badge>}
         {reason && <Badge>{reason}</Badge>}
       </span>
-      <Button variant="danger" disabled={locked} onClick={onRemove}>
+      <ConfirmButton confirmLabel="Confirm remove" disabled={locked} onConfirm={onRemove}>
         Remove
-      </Button>
+      </ConfirmButton>
     </div>
   );
 }

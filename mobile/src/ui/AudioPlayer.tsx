@@ -22,9 +22,11 @@ import { useAudioPlayer } from "../lib/useAudioPlayer";
 import { msToClock } from "../lib/format";
 import { progressFraction, scrubFraction } from "../lib/audioPlayer";
 import { Button } from "./components";
-import { colors, space } from "./theme";
+import { useThemedStyles } from "./ThemeContext";
+import { space, type Palette } from "./theme";
 
 export function AudioPlayer({ url }: { url: string }): JSX.Element {
+  const styles = useThemedStyles(makeStyles);
   const { state, toggle, beginScrub, scrubTo, commitScrub } = useAudioPlayer(url);
   const width = useRef(0);
 
@@ -124,34 +126,35 @@ export function AudioPlayer({ url }: { url: string }): JSX.Element {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { gap: space.sm, marginVertical: space.sm },
-  row: { flexDirection: "row", alignItems: "center", gap: space.md },
-  clock: { color: colors.muted, fontSize: 13, fontVariant: ["tabular-nums"] },
-  error: { color: colors.danger, fontSize: 13 },
-  // A tall touch target around a thin visible track so the whole strip is grabbable.
-  track: { height: 28, justifyContent: "center" },
-  base: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-  },
-  fill: {
-    position: "absolute",
-    left: 0,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.accent,
-  },
-  thumb: {
-    position: "absolute",
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginLeft: -6,
-    backgroundColor: colors.accent,
-  },
-});
+const makeStyles = (colors: Palette) =>
+  StyleSheet.create({
+    container: { gap: space.sm, marginVertical: space.sm },
+    row: { flexDirection: "row", alignItems: "center", gap: space.md },
+    clock: { color: colors.muted, fontSize: 13, fontVariant: ["tabular-nums"] },
+    error: { color: colors.danger, fontSize: 13 },
+    // A tall touch target around a thin visible track so the whole strip is grabbable.
+    track: { height: 28, justifyContent: "center" },
+    base: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.border,
+    },
+    fill: {
+      position: "absolute",
+      left: 0,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.accent,
+    },
+    thumb: {
+      position: "absolute",
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      marginLeft: -6,
+      backgroundColor: colors.accent,
+    },
+  });

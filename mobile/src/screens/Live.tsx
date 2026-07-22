@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Text } from "react-native";
+import { Text, View } from "react-native";
 
 import { DISCLOSURES, type CueLevel } from "@tenir/client-core";
 import { useCapture } from "../lib/useCapture";
@@ -17,8 +17,18 @@ import { useNotify } from "../lib/notify";
 import { deviceKeyValue } from "../secureStorage";
 import { loadCueLevel, saveCueLevel } from "../storage";
 import { CueLevelToggle, LiveCueBand } from "../ui/cue";
-import { Button, Card, Heading, ListItem, Muted, Row, Screen } from "../ui/components";
-import { colors } from "../ui/theme";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Heading,
+  ListItem,
+  Muted,
+  Row,
+  Screen,
+} from "../ui/components";
+import { useTheme } from "../ui/ThemeContext";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording")?.body ?? "";
 
@@ -33,6 +43,7 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const [cueLevel, setCueLevel] = useState<CueLevel>("balanced");
   const cap = useCapture(wsUrl, cueLevel);
   const notify = useNotify();
+  const { colors } = useTheme();
   const [busy, setBusy] = useState(false);
   const { state } = cap;
 
@@ -63,6 +74,7 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   };
 
   const mic = state.micSource === "g2-microphone" ? "glasses mic" : "phone mic";
+  const live = state.running && state.connection === "open" && state.listening;
 
   return (
     <Screen>
@@ -70,9 +82,9 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
 
       <Card>
         <Row>
-          <Text style={{ color: colors.text, fontWeight: "700", flexGrow: 1 }}>
-            {connectionLabel(state)}
-          </Text>
+          {/* Connection state as a tinted pill, matching the web Live badge. */}
+          <Badge tone={live ? "accent" : "neutral"}>{connectionLabel(state)}</Badge>
+          <View style={{ flexGrow: 1 }} />
           <Muted>{mic}</Muted>
         </Row>
         <Row>
@@ -104,6 +116,9 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
 
       <LiveCueBand cues={state.cues} />
 
+      {state.segments.length === 0 && !state.partial && !state.running ? (
+        <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />
+      ) : null}
       {state.segments.length === 0 && !state.partial && state.running ? (
         <Muted>Listening…</Muted>
       ) : null}
