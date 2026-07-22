@@ -110,3 +110,15 @@ export function seekTargetMs(fraction: number, durationMs: number): number {
   if (durationMs <= 0) return 0;
   return Math.round(clamp(fraction, 0, 1) * durationMs);
 }
+
+/**
+ * Map a touch's x-offset within a `trackWidth`-pixel seek bar to a 0..1 scrub
+ * position, or `null` when there's nothing to scrub yet — the bar hasn't been
+ * measured (`trackWidth <= 0`) or the offset isn't a finite number. Returning
+ * `null` (rather than defaulting to 0) is what stops a stray touch before layout
+ * from seeking to the start.
+ */
+export function scrubFraction(locationX: number, trackWidth: number): number | null {
+  if (!(trackWidth > 0) || !Number.isFinite(locationX)) return null;
+  return clamp(locationX / trackWidth, 0, 1);
+}

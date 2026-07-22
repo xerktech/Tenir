@@ -4,6 +4,7 @@ import {
   initialPlayerState,
   playerReducer,
   progressFraction,
+  scrubFraction,
   seekTargetMs,
   type PlayerState,
 } from "../src/lib/audioPlayer";
@@ -136,5 +137,22 @@ describe("seekTargetMs", () => {
 
   it("is 0 when the duration is unknown", () => {
     expect(seekTargetMs(0.5, 0)).toBe(0);
+  });
+});
+
+describe("scrubFraction", () => {
+  it("maps a touch offset to a clamped 0..1 position along the track", () => {
+    expect(scrubFraction(75, 300)).toBe(0.25);
+    expect(scrubFraction(-20, 300)).toBe(0); // dragged left off the track
+    expect(scrubFraction(400, 300)).toBe(1); // dragged right off the track
+  });
+
+  it("returns null before the track is measured, so a stray touch can't seek to 0", () => {
+    // The seek bar's width is only known after onLayout; until then (and for a
+    // non-finite offset) there is nothing to scrub to. Regression for the
+    // seek-restart bug where an unmeasured/duration-0 gesture jumped to the start.
+    expect(scrubFraction(50, 0)).toBeNull();
+    expect(scrubFraction(50, -1)).toBeNull();
+    expect(scrubFraction(Number.NaN, 300)).toBeNull();
   });
 });

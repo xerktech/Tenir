@@ -20,7 +20,7 @@ import {
 
 import { useAudioPlayer } from "../lib/useAudioPlayer";
 import { msToClock } from "../lib/format";
-import { progressFraction } from "../lib/audioPlayer";
+import { progressFraction, scrubFraction } from "../lib/audioPlayer";
 import { Button } from "./components";
 import { colors, space } from "./theme";
 
@@ -32,19 +32,27 @@ export function AudioPlayer({ url }: { url: string }): JSX.Element {
     width.current = e.nativeEvent.layout.width;
   };
 
-  // Map a touch anywhere on the track to a 0..1 position and scrub to it. Both the
-  // initial tap and the drag route through here so a tap jumps and a drag scrubs.
+  // Map a touch anywhere on the track to a 0..1 position and scrub to it — the
+  // initial tap and every drag move both route through here, so a tap jumps and a
+  // drag scrubs.
   const scrubTo = (e: GestureResponderEvent) => {
-    if (width.current <= 0) return;
-    seekToFraction(e.nativeEvent.locationX / width.current);
+    const fraction = scrubFraction(e.nativeEvent.locationX, width.current);
+    if (fraction !== null) seekToFraction(fraction);
   };
+
+  // The PanResponder is created once, so its handlers must not close over this
+  // render's scrubTo — that one captured seekToFraction while the clip's duration
+  // was still 0, which made every touch seek to the start (a restart) instead of
+  // scrubbing. Route through a ref that always holds the latest scrubTo.
+  const scrubRef = useRef(scrubTo);
+  scrubRef.current = scrubTo;
 
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: scrubTo,
-      onPanResponderMove: scrubTo,
+      onPanResponderGrant: (e) => scrubRef.current(e),
+      onPanResponderMove: (e) => scrubRef.current(e),
     }),
   ).current;
 
@@ -76,11 +84,13 @@ export function AudioPlayer({ url }: { url: string }): JSX.Element {
           accessibilityValue={{ min: 0, max: 100, now: Math.round(fraction * 100) }}
           {...responder.panHandlers}
         >
-          {/* Base rule (full width) → played fill → draggable thumb, stacked. */}
-          <View style={styles.base} />
-          <View style={[styles.fill, { width: `${fraction * 100}%` }]} />
+          {/* Base rule (full width) → played fill → draggable thumb, stacked. The
+              bars are non-interactive so a touch always lands on the track and its
+              locationX is measured against the full width, not a child. */}
+          <View style={styles.base} pointerEvents="none" />
+          <View style={[styles.fill, { width: `${fraction * 100}%` }]} pointerEvents="none" />
           {/* `marginLeft: -6` centres the 12px thumb on the fill's leading edge. */}
-          <View style={[styles.thumb, { left: `${fraction * 100}%` }]} />
+          <View style={[styles.thumb, { left: `${fraction * 100}%` }]} pointerEvents="none" />
         </View>
       )}
     </View>
