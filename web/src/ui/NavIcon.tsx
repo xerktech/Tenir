@@ -47,11 +47,13 @@ function HistoryIcon({ size = 18 }: IconProps): JSX.Element {
   );
 }
 
-/** Heartbeat line — system health / status. */
+/** Ascending bars — system health / status (matches the mobile tab icon). */
 function StatusIcon({ size = 18 }: IconProps): JSX.Element {
   return (
     <svg {...svgProps(size)}>
-      <path d="M3 12h4l2.5 7 5-14 2.5 7H21" />
+      <line x1="5" y1="20" x2="5" y2="14" />
+      <line x1="12" y1="20" x2="12" y2="9" />
+      <line x1="19" y1="20" x2="19" y2="4" />
     </svg>
   );
 }

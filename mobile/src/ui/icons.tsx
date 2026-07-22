@@ -24,36 +24,41 @@ function Box({ size = BOX, children }: { size?: number; children: ReactNode }): 
   );
 }
 
-/** Record ring + dot — live capture. */
+/** Microphone — live capture (same metaphor as the web nav's mic icon). */
 function LiveIcon({ color, size }: IconProps): JSX.Element {
   return (
     <Box size={size}>
-      <View
-        style={{
-          width: 18,
-          height: 18,
-          borderRadius: 9,
-          borderWidth: 2,
-          borderColor: color,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
+      <View style={{ alignItems: "center" }}>
+        {/* Capsule body. */}
+        <View style={{ width: 8, height: 11, borderRadius: 4, borderWidth: 2, borderColor: color }} />
+        {/* Cradle: bottom half of a rounded rect (no top edge). */}
+        <View
+          style={{
+            width: 14,
+            height: 7,
+            borderWidth: 2,
+            borderColor: color,
+            borderTopWidth: 0,
+            borderBottomLeftRadius: 7,
+            borderBottomRightRadius: 7,
+            marginTop: -4,
+          }}
+        />
+        {/* Stand. */}
+        <View style={{ width: 2, height: 3, backgroundColor: color }} />
       </View>
     </Box>
   );
 }
 
-/** Stacked rows — the recorded session list / history. */
+/** Clock — recorded, browsable history (same metaphor as the web nav icon). */
 function HistoryIcon({ color, size }: IconProps): JSX.Element {
-  const bar = { height: 2.5, borderRadius: 2, backgroundColor: color } as const;
   return (
     <Box size={size}>
-      <View style={{ width: 18, gap: 4 }}>
-        <View style={[bar, { width: 18 }]} />
-        <View style={[bar, { width: 14 }]} />
-        <View style={[bar, { width: 18 }]} />
+      <View style={{ width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: color }}>
+        {/* Hands: minute up, hour out — positioned inside the 14px dial. */}
+        <View style={{ position: "absolute", left: 6, top: 2, width: 2, height: 5, backgroundColor: color }} />
+        <View style={{ position: "absolute", left: 6, top: 6, width: 5, height: 2, backgroundColor: color }} />
       </View>
     </Box>
   );

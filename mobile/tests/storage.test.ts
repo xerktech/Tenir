@@ -5,9 +5,11 @@ import {
   createMirroredTokenStore,
   loadServerUrl,
   loadSessionId,
+  loadThemeMode,
   memoryKeyValue,
   saveServerUrl,
   saveSessionId,
+  saveThemeMode,
 } from "../src/storage";
 
 describe("memoryKeyValue", () => {
@@ -68,6 +70,23 @@ describe("server URL persistence", () => {
     expect(await loadServerUrl(kv)).toBeNull();
     await saveServerUrl(kv, "wss://home.example/ws");
     expect(await loadServerUrl(kv)).toBe("wss://home.example/ws");
+  });
+});
+
+describe("theme mode persistence", () => {
+  it("saves and loads the chosen theme mode", async () => {
+    const kv = memoryKeyValue();
+    expect(await loadThemeMode(kv)).toBeNull();
+    await saveThemeMode(kv, "light");
+    expect(await loadThemeMode(kv)).toBe("light");
+  });
+
+  it("uses the same key as the web SPA and rejects junk values", async () => {
+    // One `tenir.theme` mental model across clients (web/src/theme.ts).
+    const kv = memoryKeyValue({ "tenir.theme": "dark" });
+    expect(await loadThemeMode(kv)).toBe("dark");
+    await kv.setItem("tenir.theme", "solarized");
+    expect(await loadThemeMode(kv)).toBeNull();
   });
 });
 

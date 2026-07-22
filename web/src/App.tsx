@@ -124,7 +124,7 @@ function Dashboard({ principal }: { principal: Principal }): JSX.Element {
   const [tab, setTab] = useState<Tab>("Live");
   return (
     <div className="shell">
-      <nav className="sidebar" aria-label="Sections">
+      <nav className="nav-tabs" aria-label="Sections">
         {tabs.map((t) => (
           <button
             key={t}

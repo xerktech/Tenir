@@ -9,8 +9,19 @@ import { conversationLabel, errText, msToClock } from "../lib/format";
 import { useNotify } from "../lib/notify";
 import { audioPlayerAvailable } from "../native/audioPlayer";
 import { AudioPlayer } from "../ui/AudioPlayer";
-import { Button, Field, Heading, ListItem, Muted, Row, Screen, Spinner } from "../ui/components";
-import { colors } from "../ui/theme";
+import {
+  Button,
+  ConfirmButton,
+  EmptyState,
+  Field,
+  Heading,
+  ListItem,
+  Muted,
+  Row,
+  Screen,
+  Spinner,
+} from "../ui/components";
+import { useTheme } from "../ui/ThemeContext";
 
 export function HistoryScreen(): JSX.Element {
   const notify = useNotify();
@@ -54,22 +65,35 @@ export function HistoryScreen(): JSX.Element {
           having recorded nothing (XERK-58). Say so, and offer a retry. */}
       {!ctrl.loading && ctrl.error != null && (
         <>
-          <Muted>Could not load history: {errText(ctrl.error)}</Muted>
+          <EmptyState title="Could not load history" hint={errText(ctrl.error)} />
           <Button title="Retry" onPress={() => ctrl.reload()} />
         </>
       )}
-      {ctrl.error == null && ctrl.data?.length === 0 && <Muted>No sessions.</Muted>}
+      {ctrl.error == null && ctrl.data?.length === 0 && (
+        <EmptyState title="No conversations yet" hint="Captured conversations will appear here." />
+      )}
       {ctrl.data?.map((c) => (
         <ListItem key={c.id}>
-          <Text style={{ color: colors.text }}>{conversationLabel(c)}</Text>
+          <ConversationRow label={conversationLabel(c)} />
           <Row>
             <Button title="Open" onPress={() => void open(c.id)} />
-            <Button title="Delete" kind="danger" onPress={() => void remove(c.id)} />
+            {/* Destructive actions arm on the first press and commit on the
+                second (Turma's two-step pattern) — no confirm dialog. */}
+            <ConfirmButton
+              title="Delete"
+              confirmTitle="Confirm delete"
+              onConfirm={() => void remove(c.id)}
+            />
           </Row>
         </ListItem>
       ))}
     </Screen>
   );
+}
+
+function ConversationRow({ label }: { label: string }): JSX.Element {
+  const { colors } = useTheme();
+  return <Text style={{ color: colors.text }}>{label}</Text>;
 }
 
 function Detail({
@@ -81,6 +105,7 @@ function Detail({
   onDelete: () => void;
   onBack: () => void;
 }): JSX.Element {
+  const { colors } = useTheme();
   return (
     <Screen>
       <Row>
@@ -106,7 +131,7 @@ function Detail({
         ) : (
           <Button title="Play audio" onPress={() => void Linking.openURL(history.audioUrl(conv.id))} />
         ))}
-      <Button title="Delete session" kind="danger" onPress={onDelete} />
+      <ConfirmButton title="Delete session" confirmTitle="Confirm delete" onConfirm={onDelete} />
     </Screen>
   );
 }

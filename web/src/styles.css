@@ -15,9 +15,9 @@
   --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --font-display: "Space Grotesk", var(--font-sans);
 
-  /* radius + shadow */
+  /* radius + shadow (soft two-layer elevation, à la Turma) */
   --radius-sm: 8px; --radius-md: 11px; --radius-lg: 14px;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.35), 0 2px 10px rgba(0,0,0,.30);
   --shadow-md: 0 8px 24px rgba(0,0,0,.45);
 
   /* semantic colors (dark) */
@@ -61,7 +61,7 @@
   --danger-ink: #FFFFFF;
   --success: #0E8C5A;
   --warning: #B8860B;
-  --shadow-sm: 0 1px 2px rgba(16,22,30,.08);
+  --shadow-sm: 0 1px 2px rgba(16,22,30,.06), 0 2px 8px rgba(16,22,30,.05);
   --shadow-md: 0 8px 24px rgba(16,22,30,.12);
 }
 /* System users on a light OS get the light counterpart unless they pinned dark. */
@@ -75,7 +75,7 @@
     --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
     --focus-ring: color-mix(in srgb, var(--accent) 35%, transparent);
     --danger: #C0392B; --danger-ink: #FFFFFF; --success: #0E8C5A; --warning: #B8860B;
-    --shadow-sm: 0 1px 2px rgba(16,22,30,.08);
+    --shadow-sm: 0 1px 2px rgba(16,22,30,.06), 0 2px 8px rgba(16,22,30,.05);
     --shadow-md: 0 8px 24px rgba(16,22,30,.12);
   }
 }
@@ -96,8 +96,9 @@ body {
   padding: var(--space-5) var(--space-4);
 }
 
-h1, h2, h3 { font-family: var(--font-display); color: var(--text); }
-h1 { font-size: var(--text-2xl); margin: 0 0 var(--space-3); letter-spacing: .01em; }
+/* Display type tracks slightly tight (-0.01em), matching Turma's headings. */
+h1, h2, h3 { font-family: var(--font-display); color: var(--text); letter-spacing: -0.01em; }
+h1 { font-size: var(--text-2xl); margin: 0 0 var(--space-3); }
 h2 { font-size: var(--text-xl); margin: 0 0 var(--space-3); }
 h3 { font-size: var(--text-lg); margin: 0; }
 
@@ -165,6 +166,7 @@ section, .detail, .card {
 .history-table th, .history-table td {
   text-align: left; padding: var(--space-3) var(--space-3);
   border-bottom: 1px solid var(--border); vertical-align: middle;
+  font-variant-numeric: tabular-nums;
 }
 .history-table thead th {
   border-bottom: 1px solid var(--border-strong);
@@ -174,7 +176,7 @@ section, .detail, .card {
   display: inline-flex; align-items: center; gap: var(--space-1);
   background: none; border: none; padding: 0;
   font: inherit; font-weight: 600; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: .06em; font-size: var(--text-xs);
+  text-transform: uppercase; letter-spacing: .04em; font-size: var(--text-xs);
 }
 button.history-sort { cursor: pointer; }
 button.history-sort:hover { color: var(--text); }
@@ -188,14 +190,24 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .history-col-status { white-space: nowrap; }
 .history-col-actions { text-align: right; white-space: nowrap; }
 
-.badge, .badge-accent {
+/* Badges are fully-round tinted pills (Turma's chip formula: the semantic colour
+   at 45% for the border and 10% for the fill, full strength for the text). */
+.badge, .badge-accent, .badge-neutral {
   font-size: var(--text-xs); font-weight: 600;
-  background: var(--accent-soft); color: var(--accent);
-  border-radius: var(--radius-sm); padding: 1px var(--space-2);
+  border-radius: 999px; padding: 1px var(--space-2);
+  border: 1px solid transparent;
   margin-left: var(--space-2);
+  white-space: nowrap;
+}
+.badge, .badge-accent {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .badge-neutral {
-  background: var(--surface-raised); color: var(--text-muted);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
 }
 
 .danger { color: var(--danger); }
@@ -218,23 +230,28 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .toast.err { background: var(--danger); color: var(--danger-ink); }
 .toast.ok  { background: var(--accent); color: var(--accent-ink); }
 
-/* ---- Primitives (used by later tasks) ---- */
+/* ---- Primitives (used by later tasks) ----
+   Buttons follow Turma's discipline: quiet outlines by default, one solid
+   primary per surface, and destructive actions that arm (outline) then fill. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
-  font-weight: 600; font-size: var(--text-sm);
-  padding: var(--space-2) var(--space-4);
+  font-weight: 500; font-size: var(--text-sm);
+  padding: 6px 14px;
   border-radius: var(--radius-sm); border: 1px solid transparent;
-  transition: background .12s, border-color .12s, opacity .12s;
+  transition: background .12s, border-color .12s, color .12s, opacity .12s;
 }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
-.btn-secondary { background: var(--surface-raised); color: var(--text); border-color: var(--border-strong); }
-.btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
+.btn-secondary { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--text-muted); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--surface-raised); }
-.btn-danger { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.btn-danger { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); font-weight: 600; }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* Armed = the second, committing click of a two-step destructive control. */
+.btn-danger.armed { background: var(--danger); color: var(--danger-ink); border-color: var(--danger); }
+.btn-danger.armed:hover:not(:disabled) { background: var(--danger); }
 
 .input {
   width: 100%;
@@ -246,7 +263,7 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .textarea { min-height: 6rem; resize: vertical; }
 
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
-.field-label { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.field-label { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .field-hint { font-size: var(--text-xs); color: var(--text-muted); }
 .field-error { font-size: var(--text-xs); color: var(--danger); }
 
@@ -266,9 +283,11 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
+/* Empty states are dashed-border blocks (Turma's "nothing here yet" idiom). */
 .empty {
-  text-align: center; padding: var(--space-6) var(--space-4);
+  text-align: center; padding: var(--space-8) var(--space-4);
   color: var(--text-muted);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
 }
 .empty-title { font-family: var(--font-display); color: var(--text); margin: 0 0 var(--space-1); }
 .empty-hint { font-size: var(--text-sm); margin: 0; }
@@ -281,47 +300,54 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 }
 .wordmark {
   font-family: var(--font-display); font-weight: 600; font-size: var(--text-xl);
-  letter-spacing: .04em; display: inline-flex; align-items: center; gap: var(--space-2);
+  letter-spacing: -0.01em; display: inline-flex; align-items: center; gap: var(--space-2);
   margin: 0;
 }
 .wordmark-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
 
-/* Status dashboard "lights" — the wordmark glow-dot, recoloured per state. */
-.status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.status-dot--ready { background: var(--success); box-shadow: 0 0 10px var(--success); }
-.status-dot--connecting { background: var(--warning); box-shadow: 0 0 10px var(--warning); animation: status-pulse 1.4s ease-in-out infinite; }
-.status-dot--down { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+/* Status dashboard "lights" — 8px glowing dots (Turma's status-light motif:
+   the glow is the semantic colour softened to 75%). */
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.status-dot--ready { background: var(--success); box-shadow: 0 0 8px color-mix(in srgb, var(--success) 75%, transparent); }
+.status-dot--connecting { background: var(--warning); box-shadow: 0 0 8px color-mix(in srgb, var(--warning) 75%, transparent); animation: status-pulse 1.4s ease-in-out infinite; }
+.status-dot--down { background: var(--danger); box-shadow: 0 0 8px color-mix(in srgb, var(--danger) 75%, transparent); }
 @keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .status-dot--connecting { animation: none; } }
 .status-summary { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-4); font-weight: 600; }
 .status-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
-.status-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--surface); flex-wrap: wrap; }
+/* Rows nested inside a surface card step back to the page background — Turma's
+   two-level background alternation. */
+.status-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--bg); flex-wrap: wrap; }
 .status-name { font-weight: 500; min-width: 12rem; }
 .status-state { width: 7rem; }
 .status-detail { flex: 1; font-size: var(--text-xs); min-width: 8rem; }
-.status-banner { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-sm); background: var(--surface); }
+.status-banner { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-sm); background: var(--bg); }
 .header-spacer { flex: 1; }
 .theme-toggle { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
 .theme-toggle:hover { border-color: var(--accent); color: var(--text); }
 
-.shell { display: grid; grid-template-columns: 208px 1fr; gap: var(--space-5); margin-top: var(--space-4); }
-.sidebar { display: flex; flex-direction: column; gap: var(--space-1); }
+/* Section navigation: a row of pill tabs under the header (Turma's desktop nav
+   pattern) that becomes a fixed bottom bar on phones. */
+.shell { margin-top: var(--space-4); }
+.nav-tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .nav-item {
-  display: flex; align-items: center; gap: var(--space-2);
-  padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); border-radius: 999px;
   background: transparent; border: none; color: var(--text-muted); text-align: left; font-weight: 500;
+  font-size: var(--text-sm);
   position: relative;
+  transition: background .12s, color .12s;
 }
 .nav-item svg { flex: none; }
 .nav-item:hover { color: var(--text); background: var(--surface-raised); }
-.nav-item.active { color: var(--text); background: var(--surface-raised); }
-.nav-item.active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--accent); }
+/* Active pill = accent text on the accent wash, Turma's selection treatment. */
+.nav-item.active { color: var(--accent); background: var(--accent-soft); }
 .content { min-width: 0; }
 
 /* ---- Mobile layout ----
-   Below 760px the desktop sidebar shell gives way to a stacked layout with a
-   fixed bottom navigation bar (the native-app pattern), touch-sized controls,
-   and safe-area insets for notched/home-indicator devices. */
+   Below 760px the desktop pill tabs give way to a fixed, frosted bottom
+   navigation bar (the native-app pattern, matching Turma's phone nav), with
+   touch-sized controls and safe-area insets for notched/home-indicator devices. */
 @media (max-width: 760px) {
   .container {
     padding: var(--space-4) var(--space-3);
@@ -331,13 +357,15 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   .app-header { padding-bottom: var(--space-3); }
   .app-header .muted { font-size: var(--text-xs); }
 
-  .shell { grid-template-columns: 1fr; gap: var(--space-3); margin-top: var(--space-3); }
+  .shell { margin-top: var(--space-3); }
 
-  /* Sidebar -> fixed bottom navigation bar. */
-  .sidebar {
+  /* Pill tabs -> fixed frosted bottom navigation bar. */
+  .nav-tabs {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-    flex-direction: row; gap: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
+    flex-wrap: nowrap; gap: 0;
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border);
     box-shadow: var(--shadow-md);
     padding: var(--space-1) var(--space-1) calc(var(--space-1) + env(safe-area-inset-bottom));
   }
@@ -345,11 +373,15 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
     flex: 1; flex-direction: column; gap: 2px; justify-content: center;
     min-height: 48px; padding: var(--space-2) var(--space-1);
     font-size: var(--text-xs); text-align: center;
+    border-radius: var(--radius-sm);
   }
-  /* Active indicator moves from the left edge to a top accent bar. */
+  /* In the bar the pill wash gives way to a top accent indicator. */
+  .nav-item.active { background: transparent; }
   .nav-item.active::before {
-    left: 50%; right: auto; transform: translateX(-50%);
-    top: 0; bottom: auto; width: 28px; height: 3px;
+    content: ""; position: absolute;
+    left: 50%; transform: translateX(-50%);
+    top: 0; width: 28px; height: 3px;
+    border-radius: 3px; background: var(--accent);
   }
   /* Keep the last rows clear of the fixed nav (bar height + safe area). */
   .content { padding-bottom: calc(var(--space-8) + env(safe-area-inset-bottom)); }
