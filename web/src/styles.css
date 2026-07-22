@@ -149,6 +149,14 @@ section, .detail, .card {
 }
 .link:hover { text-decoration: underline; }
 
+/* Retained-audio player in the conversation detail (XERK-67): native transport
+   with a seek bar, and a download fallback beneath it. */
+.audio-player {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.audio-player-el { width: 100%; }
+
 /* History: conversation list as a sortable table. */
 .history-table {
   width: 100%; border-collapse: collapse;
