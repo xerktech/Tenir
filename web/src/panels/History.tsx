@@ -221,11 +221,20 @@ function ConversationDetail({
         )}
       </div>
       {conv.hasAudio && (
-        <p>
-          <a href={history.audioUrl(conv.id)} download>
-            audio.wav
+        <div className="audio-player">
+          {/* Native playback with the browser's built-in transport + seek bar
+              (XERK-67). The api serves the clip inline with byte-range support so
+              the scrubber can seek. The nested link is the no-<audio> fallback and
+              keeps the clip downloadable. */}
+          <audio className="audio-player-el" controls preload="metadata" src={history.audioUrl(conv.id)}>
+            <a href={history.audioUrl(conv.id)} download>
+              audio.wav
+            </a>
+          </audio>
+          <a className="link" href={history.audioUrl(conv.id)} download>
+            Download audio.wav
           </a>
-        </p>
+        </div>
       )}
     </Card>
   );

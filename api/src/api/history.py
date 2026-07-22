@@ -8,7 +8,7 @@ Everything is scoped to the caller's household.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from api.auth import Principal, current_principal
@@ -131,20 +131,77 @@ def export_conversation(
     return ConversationOut.of(_require(principal.household, conversation_id))
 
 
+def _parse_byte_range(range_header: str, size: int) -> tuple[int, int] | None:
+    """Parse a single ``Range: bytes=start-end`` against a body of ``size`` bytes.
+
+    Returns an inclusive ``(start, end)`` span, or ``None`` when the header isn't a
+    single satisfiable byte range — a malformed, multi-range or out-of-bounds ask,
+    for which we fall back to a full ``200`` (RFC 7233 lets a server ignore Range).
+    Handles the open-ended (``bytes=500-``) and suffix (``bytes=-500``) forms.
+    """
+    if not range_header.startswith("bytes="):
+        return None
+    spec = range_header[len("bytes=") :]
+    if "," in spec:  # multiple ranges — not worth it for one small clip
+        return None
+    start_s, sep, end_s = spec.partition("-")
+    if not sep:
+        return None
+    try:
+        if start_s == "":
+            # Suffix range: the final N bytes of the body.
+            suffix = int(end_s)
+            if suffix <= 0:
+                return None
+            start, end = max(0, size - suffix), size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start > end or start >= size:
+        return None
+    return start, min(end, size - 1)
+
+
+def _audio_response(data: bytes, filename: str, range_header: str | None) -> Response:
+    """Serve retained audio, honouring a single HTTP Range request.
+
+    A native media seek bar (the web ``<audio>`` element, Android ``MediaPlayer``)
+    scrubs by asking for byte ranges; without a ``206`` the player can't seek within
+    the clip. We always advertise ``Accept-Ranges: bytes`` and switch to ``206
+    Partial Content`` when the client asks for a satisfiable range. ``inline`` (not
+    ``attachment``) so navigating the URL plays it rather than forcing a download.
+    """
+    size = len(data)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+    span = _parse_byte_range(range_header, size) if range_header else None
+    if span is None:
+        return Response(content=data, media_type="audio/wav", headers=headers)
+    start, end = span
+    return Response(
+        content=data[start : end + 1],
+        status_code=206,
+        media_type="audio/wav",
+        headers={**headers, "Content-Range": f"bytes {start}-{end}/{size}"},
+    )
+
+
 @router.get("/conversations/{conversation_id}/audio")
 def get_conversation_audio(
-    conversation_id: str, principal: Principal = Depends(principal_from_request)
+    conversation_id: str,
+    principal: Principal = Depends(principal_from_request),
+    range_header: str | None = Header(default=None, alias="Range"),
 ) -> Response:
     conv = _require(principal.household, conversation_id)
     store = get_audio_store()
     data = store.get(conv.audio_key) if (store is not None and conv.audio_key) else None
     if data is None:
         raise HTTPException(status_code=404, detail="no audio retained for this conversation")
-    return Response(
-        content=data,
-        media_type="audio/wav",
-        headers={"Content-Disposition": f'attachment; filename="{conversation_id}.wav"'},
-    )
+    return _audio_response(data, f"{conversation_id}.wav", range_header)
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)

@@ -89,7 +89,7 @@ describe("HistoryPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens a detail with segments, timing and an audio download", async () => {
+  it("opens a detail with segments, timing and a native audio player", async () => {
     list.mockResolvedValue([summary({ hasAudio: true })]);
     get.mockResolvedValue({
       ...summary({ hasAudio: true }),
@@ -98,7 +98,7 @@ describe("HistoryPanel", () => {
         { segmentId: "s2", text: "how are you", startMs: 61_000, endMs: 65_000, lang: "en" },
       ],
     });
-    renderPanel();
+    const { container } = renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
 
     await screen.findByText(/hello there/);
@@ -107,9 +107,17 @@ describe("HistoryPanel", () => {
     expect(screen.getByText("0:00–0:02")).toBeInTheDocument();
     expect(screen.getByText("1:01–1:05")).toBeInTheDocument();
     expect(screen.getByText(/how are you/)).toBeInTheDocument();
-    // Retained audio is downloadable from the detail.
-    const audio = screen.getByRole("link", { name: "audio.wav" });
-    expect(audio).toHaveAttribute("href", "/conversations/c1/audio");
+    // Retained audio plays inline via a native <audio controls> element (with its
+    // seek bar), pointed at the audio endpoint (XERK-67).
+    const player = container.querySelector("audio");
+    expect(player).not.toBeNull();
+    expect(player).toHaveAttribute("controls");
+    expect(player).toHaveAttribute("src", "/conversations/c1/audio");
+    // …and remains downloadable.
+    expect(screen.getByRole("link", { name: "Download audio.wav" })).toHaveAttribute(
+      "href",
+      "/conversations/c1/audio",
+    );
   });
 
   it("opens the transcript as its own page, replacing the list, with a back button", async () => {
@@ -143,13 +151,14 @@ describe("HistoryPanel", () => {
     expect(screen.getByText("No transcript was recorded for this session.")).toBeInTheDocument();
   });
 
-  it("omits the audio link when no audio was retained", async () => {
+  it("omits the audio player when no audio was retained", async () => {
     list.mockResolvedValue([summary()]);
     get.mockResolvedValue({ ...summary(), segments: [] });
-    renderPanel();
+    const { container } = renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
     await screen.findByText("Conversation detail");
-    expect(screen.queryByRole("link", { name: "audio.wav" })).not.toBeInTheDocument();
+    expect(container.querySelector("audio")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Download audio.wav" })).not.toBeInTheDocument();
   });
 
   it("deletes a conversation from its row", async () => {

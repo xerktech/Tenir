@@ -102,9 +102,51 @@ def test_audio_download_and_404_without_audio() -> None:
         assert r.status_code == 200
         assert r.headers["content-type"] == "audio/wav"
         assert r.content.startswith(b"RIFF")
+        # Playable inline (not force-downloaded) and range-seekable so the native
+        # web/Android seek bar can scrub (XERK-67).
+        assert r.headers["accept-ranges"] == "bytes"
+        assert r.headers["content-disposition"].startswith("inline")
 
         assert client.get("/conversations/no-audio/audio").status_code == 404
         assert client.get("/conversations/ghost/audio").status_code == 404
+
+
+def test_audio_range_request_serves_partial_content() -> None:
+    with TestClient(app) as client:
+        _make_conversation("c1", "spoken words", with_audio=True)
+        full = client.get("/conversations/c1/audio").content
+        size = len(full)
+
+        # A leading range: 206 with the exact slice and a Content-Range header.
+        r = client.get("/conversations/c1/audio", headers={"Range": "bytes=0-3"})
+        assert r.status_code == 206
+        assert r.headers["content-range"] == f"bytes 0-3/{size}"
+        assert r.headers["accept-ranges"] == "bytes"
+        assert r.content == full[:4]
+
+        # An open-ended range runs to the end of the clip.
+        r = client.get("/conversations/c1/audio", headers={"Range": "bytes=4-"})
+        assert r.status_code == 206
+        assert r.headers["content-range"] == f"bytes 4-{size - 1}/{size}"
+        assert r.content == full[4:]
+
+        # A suffix range returns the final N bytes.
+        r = client.get("/conversations/c1/audio", headers={"Range": "bytes=-5"})
+        assert r.status_code == 206
+        assert r.headers["content-range"] == f"bytes {size - 5}-{size - 1}/{size}"
+        assert r.content == full[-5:]
+
+
+def test_audio_unsatisfiable_or_malformed_range_falls_back_to_full() -> None:
+    # RFC 7233 lets the server ignore a Range it can't (or won't) satisfy; we
+    # serve the whole clip with 200 rather than erroring the player.
+    with TestClient(app) as client:
+        _make_conversation("c1", "spoken words", with_audio=True)
+        full = client.get("/conversations/c1/audio").content
+        for bad in ("bytes=99999-100000", "bytes=abc-def", "kilobytes=0-1", "bytes=5-1"):
+            r = client.get("/conversations/c1/audio", headers={"Range": bad})
+            assert r.status_code == 200, bad
+            assert r.content == full
 
 
 def test_delete_removes_transcript_and_audio() -> None:

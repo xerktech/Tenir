@@ -7,6 +7,8 @@ import { Linking, Text, View } from "react-native";
 import { useHistory } from "../lib/controllers";
 import { conversationLabel, errText, msToClock } from "../lib/format";
 import { useNotify } from "../lib/notify";
+import { audioPlayerAvailable } from "../native/audioPlayer";
+import { AudioPlayer } from "../ui/AudioPlayer";
 import { Button, Field, Heading, ListItem, Muted, Row, Screen, Spinner } from "../ui/components";
 import { colors } from "../ui/theme";
 
@@ -96,9 +98,14 @@ function Detail({
           </Text>
         ))}
       </View>
-      {conv.hasAudio && (
-        <Button title="Play audio" onPress={() => void Linking.openURL(history.audioUrl(conv.id))} />
-      )}
+      {/* Retained audio plays in-app with a seek bar (XERK-67). Where the native
+          player isn't available (iOS), fall back to opening it in the browser. */}
+      {conv.hasAudio &&
+        (audioPlayerAvailable ? (
+          <AudioPlayer url={history.audioUrl(conv.id)} />
+        ) : (
+          <Button title="Play audio" onPress={() => void Linking.openURL(history.audioUrl(conv.id))} />
+        ))}
       <Button title="Delete session" kind="danger" onPress={onDelete} />
     </Screen>
   );
