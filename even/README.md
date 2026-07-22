@@ -5,26 +5,35 @@ audio, streams PCM to the api over a WebSocket, and renders live captions on
 the G2 lens. Scaffolded in the spirit of the `asr` template: the mic→STT seam
 is the WS client, replacing the template's HTTP STT stub.
 
-Like the web client, the api is a **required, user-editable setting**: you point
-Tenir at your own self-hosted instance on the companion page and then sign in
-(auth is always required). The chosen server URL and bearer token are persisted
-and shared with the on-lens app, so the glasses connect to the same instance.
-Everything beyond server + sign-in (session history, system status, user
-management) lives in the server-hosted web app, which the companion page links
-to. `VITE_API_WS` is only a build-time *seed* for dev / first run — a saved
-choice always wins.
+It is a **single page** on purpose (XERK-82): the lens renders through the SDK
+bridge while the phone side of the same WebView shows the login page and, once
+signed in, the server-hosted **Tenir web UI embedded full-bleed** — the phone
+companion *is* the web UI. (Navigating the WebView to a separate page would
+unload the lens app, so nothing here ever navigates.)
+
+Like the web client, the api is a **required, user-editable setting**: the
+login page collects your self-hosted server address plus the household
+username + password, styled to match the web UI's login. The server URL, the
+bearer token, **and the credentials** are persisted in the *device* store —
+the SDK's `setLocalStorage`/`getLocalStorage`, the only storage that survives
+app restarts in this host (browser `localStorage` does not) — so everything is
+entered once, ever: later launches sign in from cache, and an expired token
+re-logs-in silently. `VITE_API_WS` is only a build-time *seed* for dev / first
+run — a saved choice always wins.
 
 ## Layout
 
 ```
 src/
-  main.ts              boot order, lens render loop, input + lifecycle
-  config.ts            resolves the effective api URL (saved → seed → localhost); configures client-core
+  main.ts              bridge/dev boot, lens render loop gated on auth, input + lifecycle
+  config.ts            initConfig(storage): effective api URL (saved → seed → localhost) + device token store
+  phone/login.ts       phone-side login page + embedded web UI (token handed over via #token= fragment)
+  state/storage.ts     KeyValueStorage: BridgeStorage (device, survives restarts) / BrowserStorage (dev)
   state/settings.ts    required, user-editable server URL: validate + persist (shared with the lens)
+  state/credentials.ts cached username/password + silent re-login when the token expires
   lens/layout.ts       576x288 HUD: status line / caption band
   audio/capture.ts     audioControl + PCM extraction (16kHz s16le mono)
   state/persist.ts     session persistence across background/foreground (Even SDK)
-  companion/           slim off-lens page: server setting + sign-in + web-app link
 app.json               Even Hub manifest (permissions, languages)
 ```
 
@@ -74,7 +83,7 @@ and `pack` packs that.
 
 ### BYO self-hosting (arbitrary user servers)
 
-The api URL is a **runtime, user-editable setting** (companion → Server), so the
+The api URL is a **runtime, user-editable setting** (phone login → Server), so the
 wearer points the app at *their own* server — a host we can't enumerate at pack
 time. Because the Even Hub host enforces the whitelist, the user's URL must fall
 inside it. To allow any user-supplied host, pack with a wildcard:

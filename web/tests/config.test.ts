@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// configureApi is the only client-core symbol web/src/config.ts touches; stub it so
-// importing the module (which configures the REST client as a side effect) is inert.
-const { configureApi } = vi.hoisted(() => ({ configureApi: vi.fn() }));
-vi.mock("@tenir/client-core", () => ({ configureApi }));
+// Stub the client-core symbols web/src/config.ts touches so importing the module
+// (which configures the REST client as a side effect) is inert.
+const { configureApi, setToken } = vi.hoisted(() => ({ configureApi: vi.fn(), setToken: vi.fn() }));
+vi.mock("@tenir/client-core", () => ({ configureApi, setToken }));
 
 afterEach(() => {
   vi.resetModules();
   vi.unstubAllEnvs();
   configureApi.mockClear();
+  setToken.mockClear();
 });
 
 describe("web api config", () => {
@@ -38,6 +39,49 @@ describe("web api config", () => {
       expect(getServerUrl()).toBe("https://localhost");
     } finally {
       delete (window as unknown as Record<string, unknown>).__TENIR_SERVER_URL__;
+    }
+  });
+});
+
+describe("adoptTokenFromUrl (XERK-82: Even G2 phone page hand-over)", () => {
+  // A minimal window stand-in: jsdom's real location.hash is awkward to mutate
+  // per-test, and the function only touches location + history.replaceState.
+  const fakeWin = (hash: string) => {
+    const history = { replaceState: vi.fn() };
+    return {
+      win: {
+        location: { hash, pathname: "/", search: "" } as unknown as Location,
+        history: history as unknown as History,
+      },
+      history,
+    };
+  };
+
+  it("adopts the token from the #token= fragment and strips it from the URL", async () => {
+    const { adoptTokenFromUrl } = await import("../src/config");
+    const { win, history } = fakeWin("#token=abc%2F123");
+    adoptTokenFromUrl(win);
+    expect(setToken).toHaveBeenCalledWith("abc/123");
+    // The fragment (with the token) is removed from the address bar/history.
+    expect(history.replaceState).toHaveBeenCalledWith(null, "", "/");
+  });
+
+  it("does nothing when the fragment carries no token", async () => {
+    const { adoptTokenFromUrl } = await import("../src/config");
+    const { win, history } = fakeWin("#other=1");
+    adoptTokenFromUrl(win);
+    expect(setToken).not.toHaveBeenCalled();
+    expect(history.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("is adopted on module import (before the app's first me())", async () => {
+    vi.stubEnv("VITE_API_HTTP", "");
+    window.location.hash = "#token=boot-token";
+    try {
+      await import("../src/config");
+      expect(setToken).toHaveBeenCalledWith("boot-token");
+    } finally {
+      window.location.hash = "";
     }
   });
 });
