@@ -20,31 +20,66 @@ import {
 
 import { useAudioPlayer } from "../lib/useAudioPlayer";
 import { msToClock } from "../lib/format";
-import { progressFraction } from "../lib/audioPlayer";
+import { progressFraction, scrubFraction } from "../lib/audioPlayer";
 import { Button } from "./components";
 import { colors, space } from "./theme";
 
 export function AudioPlayer({ url }: { url: string }): JSX.Element {
-  const { state, toggle, seekToFraction } = useAudioPlayer(url);
+  const { state, toggle, beginScrub, scrubTo, commitScrub } = useAudioPlayer(url);
   const width = useRef(0);
 
   const onLayout = (e: LayoutChangeEvent) => {
     width.current = e.nativeEvent.layout.width;
   };
 
-  // Map a touch anywhere on the track to a 0..1 position and scrub to it. Both the
-  // initial tap and the drag route through here so a tap jumps and a drag scrubs.
-  const scrubTo = (e: GestureResponderEvent) => {
-    if (width.current <= 0) return;
-    seekToFraction(e.nativeEvent.locationX / width.current);
+  // Drag handlers for the seek bar. A grab starts the drag and moves the thumb;
+  // each move slides it; the release commits the one real seek. `active` keeps
+  // begin/commit balanced — a grab that lands before the track is measured never
+  // starts a drag, so its release can't seek to a stale position. `last` holds the
+  // most recent finger position to commit on release (which carries no coordinate).
+  const active = useRef(false);
+  const last = useRef(0);
+  const gesture = {
+    grab(e: GestureResponderEvent) {
+      const fraction = scrubFraction(e.nativeEvent.locationX, width.current);
+      if (fraction === null) return;
+      active.current = true;
+      last.current = fraction;
+      beginScrub();
+      scrubTo(fraction);
+    },
+    move(e: GestureResponderEvent) {
+      if (!active.current) return;
+      const fraction = scrubFraction(e.nativeEvent.locationX, width.current);
+      if (fraction === null) return;
+      last.current = fraction;
+      scrubTo(fraction);
+    },
+    release() {
+      if (!active.current) return;
+      active.current = false;
+      commitScrub(last.current);
+    },
   };
+
+  // The PanResponder is created once, so its handlers must not close over this
+  // render's `gesture` — that one captured the drag callbacks while the clip's
+  // duration was still 0, which made every touch seek to the start (a restart)
+  // instead of scrubbing. Route through a ref that always holds the latest set.
+  const gestureRef = useRef(gesture);
+  gestureRef.current = gesture;
 
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: scrubTo,
-      onPanResponderMove: scrubTo,
+      // Hold the gesture once grabbed so the enclosing ScrollView can't steal a
+      // horizontal scrub and turn it into a page scroll.
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: (e) => gestureRef.current.grab(e),
+      onPanResponderMove: (e) => gestureRef.current.move(e),
+      onPanResponderRelease: () => gestureRef.current.release(),
+      onPanResponderTerminate: () => gestureRef.current.release(),
     }),
   ).current;
 
@@ -76,11 +111,13 @@ export function AudioPlayer({ url }: { url: string }): JSX.Element {
           accessibilityValue={{ min: 0, max: 100, now: Math.round(fraction * 100) }}
           {...responder.panHandlers}
         >
-          {/* Base rule (full width) → played fill → draggable thumb, stacked. */}
-          <View style={styles.base} />
-          <View style={[styles.fill, { width: `${fraction * 100}%` }]} />
+          {/* Base rule (full width) → played fill → draggable thumb, stacked. The
+              bars are non-interactive so a touch always lands on the track and its
+              locationX is measured against the full width, not a child. */}
+          <View style={styles.base} pointerEvents="none" />
+          <View style={[styles.fill, { width: `${fraction * 100}%` }]} pointerEvents="none" />
           {/* `marginLeft: -6` centres the 12px thumb on the fill's leading edge. */}
-          <View style={[styles.thumb, { left: `${fraction * 100}%` }]} />
+          <View style={[styles.thumb, { left: `${fraction * 100}%` }]} pointerEvents="none" />
         </View>
       )}
     </View>

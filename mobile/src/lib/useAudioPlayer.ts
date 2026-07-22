@@ -12,7 +12,7 @@
  * runs off-device.
  */
 
-import { useCallback, useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import {
   initialPlayerState,
@@ -37,12 +37,24 @@ export interface AudioPlayerControls {
   available: boolean;
   /** Play when paused/ready/ended, pause when playing. */
   toggle: () => void;
-  /** Scrub to a 0..1 position along the clip. */
-  seekToFraction: (fraction: number) => void;
+  /**
+   * Drag-to-scrub, in three phases so the slide feels smooth like the web
+   * `<audio>` scrubber: `beginScrub` starts a drag, `scrubTo` moves the thumb to a
+   * 0..1 position on every finger move (updating the UI only), and `commitScrub`
+   * ends the drag and performs the one real native seek. While a drag is in flight
+   * the native position ticks are ignored so the finger — not the player — drives
+   * the thumb.
+   */
+  beginScrub: () => void;
+  scrubTo: (fraction: number) => void;
+  commitScrub: (fraction: number) => void;
 }
 
 export function useAudioPlayer(url: string): AudioPlayerControls {
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
+  // True between beginScrub and commitScrub: while dragging, ignore native ticks so
+  // they don't yank the thumb away from the finger.
+  const dragging = useRef(false);
 
   // Prepare the clip on mount / URL change; release it on the way out so a second
   // opened session doesn't leave the first one's MediaPlayer holding the audio.
@@ -64,12 +76,14 @@ export function useAudioPlayer(url: string): AudioPlayerControls {
     };
   }, [url]);
 
-  // Position ticks from the native player keep the seek bar tracking playback.
+  // Position ticks from the native player keep the seek bar tracking playback —
+  // except mid-drag, where the finger owns the thumb.
   useEffect(() => {
     if (audioPlayerEvents === null) return;
-    const sub = audioPlayerEvents.addListener("AudioPlayer.tick", (t: AudioTick) =>
-      dispatch({ type: "tick", positionMs: t.positionMs, durationMs: t.durationMs, playing: t.playing, ended: t.ended }),
-    );
+    const sub = audioPlayerEvents.addListener("AudioPlayer.tick", (t: AudioTick) => {
+      if (dragging.current) return;
+      dispatch({ type: "tick", positionMs: t.positionMs, durationMs: t.durationMs, playing: t.playing, ended: t.ended });
+    });
     return () => sub.remove();
   }, []);
 
@@ -85,14 +99,29 @@ export function useAudioPlayer(url: string): AudioPlayerControls {
     }
   }, [state.status]);
 
-  const seekToFraction = useCallback(
+  const beginScrub = useCallback(() => {
+    dragging.current = true;
+  }, []);
+
+  // Move the thumb to `fraction` without touching the native player, so the drag
+  // stays at UI framerate instead of stuttering behind repeated MediaPlayer seeks.
+  const scrubTo = useCallback(
     (fraction: number) => {
-      const positionMs = seekTargetMs(fraction, state.durationMs);
-      dispatch({ type: "seek", positionMs });
-      void seek(positionMs);
+      dispatch({ type: "seek", positionMs: seekTargetMs(fraction, state.durationMs) });
     },
     [state.durationMs],
   );
 
-  return { state, available: audioPlayerAvailable, toggle, seekToFraction };
+  // End the drag with the single real seek to where the finger left off.
+  const commitScrub = useCallback(
+    (fraction: number) => {
+      const positionMs = seekTargetMs(fraction, state.durationMs);
+      dispatch({ type: "seek", positionMs });
+      void seek(positionMs);
+      dragging.current = false;
+    },
+    [state.durationMs],
+  );
+
+  return { state, available: audioPlayerAvailable, toggle, beginScrub, scrubTo, commitScrub };
 }
