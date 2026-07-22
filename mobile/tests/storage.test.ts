@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   clearSessionId,
   createMirroredTokenStore,
+  loadLastTab,
   loadServerUrl,
   loadSessionId,
   memoryKeyValue,
+  saveLastTab,
   saveServerUrl,
   saveSessionId,
 } from "../src/storage";
@@ -68,6 +70,25 @@ describe("server URL persistence", () => {
     expect(await loadServerUrl(kv)).toBeNull();
     await saveServerUrl(kv, "wss://home.example/ws");
     expect(await loadServerUrl(kv)).toBe("wss://home.example/ws");
+  });
+});
+
+describe("last tab persistence", () => {
+  it("saves and loads the last dashboard tab (XERK-80 relaunch parity)", async () => {
+    const kv = memoryKeyValue();
+    expect(await loadLastTab(kv)).toBeNull(); // first launch: no saved tab
+    await saveLastTab(kv, "History");
+    expect(await loadLastTab(kv)).toBe("History");
+  });
+
+  it("swallows storage failures (best-effort persistence)", async () => {
+    const failing = {
+      getItem: () => Promise.reject(new Error("boom")),
+      setItem: () => Promise.reject(new Error("boom")),
+      removeItem: () => Promise.resolve(),
+    };
+    await expect(saveLastTab(failing, "Status")).resolves.toBeUndefined();
+    await expect(loadLastTab(failing)).resolves.toBeNull();
   });
 });
 
