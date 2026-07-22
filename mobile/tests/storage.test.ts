@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   clearSessionId,
   createMirroredTokenStore,
+  loadLastTab,
   loadServerUrl,
   loadSessionId,
   loadThemeMode,
   memoryKeyValue,
+  saveLastTab,
   saveServerUrl,
   saveSessionId,
   saveThemeMode,
@@ -87,6 +89,25 @@ describe("theme mode persistence", () => {
     expect(await loadThemeMode(kv)).toBe("dark");
     await kv.setItem("tenir.theme", "solarized");
     expect(await loadThemeMode(kv)).toBeNull();
+  });
+});
+
+describe("last tab persistence", () => {
+  it("saves and loads the last dashboard tab (XERK-80 relaunch parity)", async () => {
+    const kv = memoryKeyValue();
+    expect(await loadLastTab(kv)).toBeNull(); // first launch: no saved tab
+    await saveLastTab(kv, "History");
+    expect(await loadLastTab(kv)).toBe("History");
+  });
+
+  it("swallows storage failures (best-effort persistence)", async () => {
+    const failing = {
+      getItem: () => Promise.reject(new Error("boom")),
+      setItem: () => Promise.reject(new Error("boom")),
+      removeItem: () => Promise.resolve(),
+    };
+    await expect(saveLastTab(failing, "Status")).resolves.toBeUndefined();
+    await expect(loadLastTab(failing)).resolves.toBeNull();
   });
 });
 

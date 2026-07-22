@@ -41,6 +41,25 @@ describe("mobile bottom tab bar", () => {
   });
 });
 
+// XERK-80 parity: the web SPA keeps its tab across a page refresh (URL hash);
+// the mobile equivalent is restoring the last tab across an app relaunch.
+describe("last-tab restore across relaunches", () => {
+  const app = readText("src/App.tsx");
+  const bootstrap = readText("src/bootstrap.ts");
+
+  it("boots into the persisted tab instead of hardcoding Live", () => {
+    expect(bootstrap).toContain("loadLastTab");
+    expect(app).toContain("useState<Tab>(initialTab)");
+    // Unknown/absent persisted values still land on Live.
+    expect(app).toContain('function asTab(');
+  });
+
+  it("persists each tab switch", () => {
+    expect(app).toContain("saveLastTab(deviceKeyValue(), next)");
+    expect(app).toContain("<TabBar tab={tab} onSelect={selectTab} />");
+  });
+});
+
 describe("mobile tab icons", () => {
   const icons = readText("src/ui/icons.tsx");
 

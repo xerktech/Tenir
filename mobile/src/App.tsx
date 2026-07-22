@@ -38,7 +38,7 @@ import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
 import { normalizeServerUrl } from "./lib/serverUrl";
-import { saveServerUrl } from "./storage";
+import { saveLastTab, saveServerUrl } from "./storage";
 import { UpdateBanner } from "./ui/UpdateBanner";
 import { TabIcon } from "./ui/icons";
 import { ThemeProvider, useTheme, useThemedStyles } from "./ui/ThemeContext";
@@ -47,9 +47,14 @@ import { space, type Palette } from "./ui/theme";
 const TABS = ["Live", "History", "Status", "Settings", "Privacy"] as const;
 type Tab = (typeof TABS)[number];
 
+/** Narrow a persisted string back to a Tab; unknown/absent values mean Live. */
+function asTab(value: string | null): Tab {
+  return (TABS as readonly string[]).includes(value ?? "") ? (value as Tab) : "Live";
+}
+
 export function App(): JSX.Element {
   const kv = useMemo(() => deviceKeyValue(), []);
-  const [booted, setBooted] = useState<{ wsUrl: string } | null>(null);
+  const [booted, setBooted] = useState<{ wsUrl: string; lastTab: string | null } | null>(null);
 
   useEffect(() => {
     bootstrap().then(setBooted);
@@ -60,7 +65,7 @@ export function App(): JSX.Element {
       <Chrome>
         {booted ? (
           <NotifyProvider>
-            <Root initialWsUrl={booted.wsUrl} />
+            <Root initialWsUrl={booted.wsUrl} initialTab={asTab(booted.lastTab)} />
           </NotifyProvider>
         ) : (
           <FullScreenSpinner />
@@ -84,7 +89,7 @@ function Chrome({ children }: { children: React.ReactNode }): JSX.Element {
   );
 }
 
-function Root({ initialWsUrl }: { initialWsUrl: string }): JSX.Element {
+function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: Tab }): JSX.Element {
   const styles = useThemedStyles(makeStyles);
   const auth = useAuth();
   const [wsUrl, setWsUrl] = useState(initialWsUrl);
@@ -133,6 +138,7 @@ function Root({ initialWsUrl }: { initialWsUrl: string }): JSX.Element {
       </View>
       <Dashboard
         wsUrl={wsUrl}
+        initialTab={initialTab}
         settings={
           <SettingsScreen
             wsUrl={wsUrl}
@@ -146,9 +152,24 @@ function Root({ initialWsUrl }: { initialWsUrl: string }): JSX.Element {
   );
 }
 
-function Dashboard({ wsUrl, settings }: { wsUrl: string; settings: JSX.Element }): JSX.Element {
+function Dashboard({
+  wsUrl,
+  initialTab,
+  settings,
+}: {
+  wsUrl: string;
+  initialTab: Tab;
+  settings: JSX.Element;
+}): JSX.Element {
   const styles = useThemedStyles(makeStyles);
-  const [tab, setTab] = useState<Tab>("Live");
+  // Start on the tab the user last had open (restored at bootstrap) and
+  // persist each switch, so relaunching the app keeps the user's place — the
+  // mobile equivalent of the web SPA surviving a page refresh (XERK-80).
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    saveLastTab(deviceKeyValue(), next);
+  };
   return (
     <View style={styles.fill}>
       {/* Content fills the space above the fixed bottom tab bar. */}
@@ -159,7 +180,7 @@ function Dashboard({ wsUrl, settings }: { wsUrl: string; settings: JSX.Element }
         {tab === "Settings" && settings}
         {tab === "Privacy" && <DisclosureScreen />}
       </View>
-      <TabBar tab={tab} onSelect={setTab} />
+      <TabBar tab={tab} onSelect={selectTab} />
     </View>
   );
 }

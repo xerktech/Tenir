@@ -113,6 +113,22 @@ export function saveThemeMode(kv: KeyValueStore, mode: ThemeMode): Promise<void>
   return kv.setItem(THEME_KEY, mode).catch(() => undefined);
 }
 
+const LAST_TAB_KEY = "tenir.lastTab";
+
+/**
+ * The last dashboard tab the user was on, persisted per device. Parity with the
+ * web SPA's hash routing (XERK-80): where a browser refresh restores the tab
+ * from the URL, relaunching the app restores it from storage.
+ */
+export function loadLastTab(kv: KeyValueStore): Promise<string | null> {
+  return kv.getItem(LAST_TAB_KEY).catch(() => null);
+}
+
+/** Persist the selected dashboard tab (best-effort; ignores storage failures). */
+export function saveLastTab(kv: KeyValueStore, tab: string): Promise<void> {
+  return kv.setItem(LAST_TAB_KEY, tab).catch(() => undefined);
+}
+
 const SESSION_ID_KEY = "tenir.sessionId";
 
 /**
