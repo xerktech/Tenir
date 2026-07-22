@@ -123,6 +123,23 @@ describe("App auth gating", () => {
     expect(nav.querySelector("button")?.textContent).toBe("Live");
   });
 
+  it("gives every nav item a decorative icon without changing its accessible name", async () => {
+    me.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "admin" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Live" })).toBeInTheDocument());
+
+    const nav = screen.getByRole("navigation", { name: "Sections" });
+    // Each page button renders exactly one icon glyph...
+    for (const tab of ["Live", "History", "Status", "Users"]) {
+      const button = screen.getByRole("button", { name: tab });
+      expect(button.querySelectorAll("svg")).toHaveLength(1);
+      // ...and the icon is decorative, so the label still names the button.
+      expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    }
+    // Every nav button has an icon (one svg per page button in the sidebar).
+    expect(nav.querySelectorAll("button svg")).toHaveLength(4);
+  });
+
   it("marks only the active nav item with aria-current and moves it on tab change", async () => {
     me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
     renderApp();

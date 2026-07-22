@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 
 import { bootstrap } from "./bootstrap";
 import { configureApiFromWs } from "./config";
@@ -27,8 +27,8 @@ import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
 import { normalizeServerUrl } from "./lib/serverUrl";
 import { saveServerUrl } from "./storage";
-import { Button } from "./ui/components";
 import { UpdateBanner } from "./ui/UpdateBanner";
+import { TabIcon } from "./ui/icons";
 import { colors, space } from "./ui/theme";
 
 const TABS = ["Live", "History", "Status", "Settings", "Privacy"] as const;
@@ -113,11 +113,7 @@ function Dashboard({ wsUrl, settings }: { wsUrl: string; settings: JSX.Element }
   const [tab, setTab] = useState<Tab>("Live");
   return (
     <View style={styles.fill}>
-      <View style={styles.tabs}>
-        {TABS.map((t) => (
-          <Button key={t} title={t} kind={t === tab ? "primary" : "default"} onPress={() => setTab(t)} />
-        ))}
-      </View>
+      {/* Content fills the space above the fixed bottom tab bar. */}
       <View style={styles.fill}>
         {tab === "Live" && <LiveScreen wsUrl={wsUrl} />}
         {tab === "History" && <HistoryScreen />}
@@ -125,6 +121,35 @@ function Dashboard({ wsUrl, settings }: { wsUrl: string; settings: JSX.Element }
         {tab === "Settings" && settings}
         {tab === "Privacy" && <DisclosureScreen />}
       </View>
+      <TabBar tab={tab} onSelect={setTab} />
+    </View>
+  );
+}
+
+/**
+ * Bottom tab bar — icon over label per page, mirroring the web SPA's mobile nav.
+ * The active tab is tinted with the accent colour; the rest sit muted.
+ */
+function TabBar({ tab, onSelect }: { tab: Tab; onSelect: (t: Tab) => void }): JSX.Element {
+  return (
+    <View style={styles.tabBar}>
+      {TABS.map((t) => {
+        const active = t === tab;
+        const color = active ? colors.accent : colors.muted;
+        return (
+          <Pressable
+            key={t}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={t}
+            onPress={() => onSelect(t)}
+            style={styles.tabItem}
+          >
+            <TabIcon name={t} color={color} />
+            <Text style={[styles.tabLabel, { color }]}>{t}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -149,10 +174,20 @@ const styles = StyleSheet.create({
   },
   title: { color: colors.text, fontSize: 18, fontWeight: "700" },
   identity: { color: colors.muted, fontSize: 12 },
-  tabs: {
+  tabBar: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: space.xs,
-    padding: space.sm,
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    backgroundColor: colors.bg,
+    paddingTop: space.sm,
+    paddingBottom: space.sm,
   },
+  tabItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs,
+    paddingVertical: space.xs,
+  },
+  tabLabel: { fontSize: 11, fontWeight: "600" },
 });

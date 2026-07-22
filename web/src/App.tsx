@@ -16,7 +16,7 @@ import { HistoryPanel } from "./panels/History";
 import { LivePanel } from "./panels/Live";
 import { StatusPanel } from "./panels/Status";
 import { UsersPanel } from "./panels/Users";
-import { Button, Field, Input, ThemeToggle } from "./ui";
+import { Button, Field, Input, NavIcon, ThemeToggle } from "./ui";
 
 const BASE_TABS = ["Live", "History", "Status"] as const;
 // User management is an admin-only surface (the server 403s members), so the
@@ -132,7 +132,8 @@ function Dashboard({ principal }: { principal: Principal }): JSX.Element {
             aria-current={t === tab ? "page" : undefined}
             onClick={() => setTab(t)}
           >
-            {t}
+            <NavIcon page={t} />
+            <span className="nav-label">{t}</span>
           </button>
         ))}
       </nav>
