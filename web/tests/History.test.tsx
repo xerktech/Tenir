@@ -112,6 +112,26 @@ describe("HistoryPanel", () => {
     expect(audio).toHaveAttribute("href", "/conversations/c1/audio");
   });
 
+  it("opens the transcript as its own page, replacing the list, with a back button", async () => {
+    // The detail used to render inline at the bottom of the list; it now takes over
+    // the panel as its own page, so the transcript isn't lost below the fold (XERK-65).
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({ ...summary(), segments: [] });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    await screen.findByText("Conversation detail");
+    // The list is gone — the detail is the whole view now.
+    expect(screen.queryByText("History & search")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    // Back returns to the list without re-fetching the detail.
+    fireEvent.click(screen.getByRole("button", { name: "← History" }));
+    await screen.findByText("History & search");
+    expect(screen.queryByText("Conversation detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+
   it("says so when the session has no transcript", async () => {
     // A session that stored no turns used to open a detail with an empty body,
     // indistinguishable from the link doing nothing (XERK-58).
