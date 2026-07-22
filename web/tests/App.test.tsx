@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../src/App";
 import { ToastProvider } from "../src/lib/toast";
@@ -57,6 +57,13 @@ function renderApp() {
     </ToastProvider>,
   );
 }
+
+// Tab navigation writes the URL fragment (XERK-80); drop it after every test so
+// each one starts from the default (Live) tab. replaceState avoids firing a
+// stray hashchange at unmounted listeners.
+afterEach(() => {
+  window.history.replaceState(null, "", window.location.pathname);
+});
 
 // Each test sets `me`'s behaviour outright (resolve/reject), so no reset is needed
 // between them — and `mockReset()` here would make vitest flag the deliberate 401
@@ -158,5 +165,69 @@ describe("App auth gating", () => {
     expect(
       screen.getAllByRole("button").filter((b) => b.getAttribute("aria-current") === "page"),
     ).toHaveLength(1);
+  });
+});
+
+// XERK-80: the active tab lives in the URL hash, so refreshing any page keeps
+// the user on that page instead of resetting to Live.
+describe("URL hash routing", () => {
+  it("restores the tab named in the URL on load — a refresh keeps the page", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+    // Simulate reloading while on History: the fragment survives the refresh.
+    window.history.replaceState(null, "", "#/history");
+    renderApp();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "History" })).toHaveAttribute("aria-current", "page"),
+    );
+    expect(screen.getByRole("button", { name: "Live" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("writes the selected tab into the URL when navigating", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Status" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Status" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/status"));
+  });
+
+  it("follows browser back/forward via hashchange", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Live" })).toBeInTheDocument());
+    // pushState doesn't fire hashchange itself, so dispatch it as the browser
+    // would on back/forward.
+    window.history.pushState(null, "", "#/status");
+    fireEvent(window, new Event("hashchange"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Status" })).toHaveAttribute("aria-current", "page"),
+    );
+  });
+
+  it("falls back to Live for an unknown fragment", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+    window.history.replaceState(null, "", "#/no-such-page");
+    renderApp();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-current", "page"),
+    );
+  });
+
+  it("keeps non-admins deep-linking #/users on Live", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "member" });
+    window.history.replaceState(null, "", "#/users");
+    renderApp();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-current", "page"),
+    );
+    expect(screen.queryByRole("button", { name: "Users" })).not.toBeInTheDocument();
+  });
+
+  it("lands admins deep-linking #/users on the Users panel", async () => {
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "lab", role: "admin" });
+    window.history.replaceState(null, "", "#/users");
+    renderApp();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Users" })).toHaveAttribute("aria-current", "page"),
+    );
   });
 });
