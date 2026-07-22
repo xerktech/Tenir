@@ -1,12 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   FALLBACK_WS_URL,
-  localStorageServerUrlStore,
+  loadServerUrl,
   normalizeWsUrl,
   resolveWsUrl,
+  saveServerUrl,
   SERVER_URL_KEY,
 } from "../src/state/settings";
+import { MemStorage } from "./memStorage";
 
 describe("normalizeWsUrl", () => {
   it("accepts ws:// and wss:// URLs, trimming whitespace and a trailing slash", () => {
@@ -41,18 +43,19 @@ describe("resolveWsUrl", () => {
   });
 });
 
-describe("localStorageServerUrlStore", () => {
-  beforeEach(() => localStorage.clear());
+describe("loadServerUrl / saveServerUrl", () => {
+  it("round-trips the saved URL through the device store", async () => {
+    const storage = new MemStorage();
+    expect(await loadServerUrl(storage)).toBeNull();
 
-  it("round-trips and clears the saved URL", () => {
-    const store = localStorageServerUrlStore();
-    expect(store.load()).toBeNull();
+    await saveServerUrl(storage, "wss://home.example/ws");
+    expect(await loadServerUrl(storage)).toBe("wss://home.example/ws");
+    expect(storage.map.get(SERVER_URL_KEY)).toBe("wss://home.example/ws");
+  });
 
-    store.save("wss://home.example/ws");
-    expect(store.load()).toBe("wss://home.example/ws");
-    expect(localStorage.getItem(SERVER_URL_KEY)).toBe("wss://home.example/ws");
-
-    store.clear();
-    expect(store.load()).toBeNull();
+  it("treats a malformed persisted value as unconfigured", async () => {
+    const storage = new MemStorage();
+    storage.map.set(SERVER_URL_KEY, "garbage");
+    expect(await loadServerUrl(storage)).toBeNull();
   });
 });

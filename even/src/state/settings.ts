@@ -1,17 +1,20 @@
 /**
  * Api server-URL setting for the Even Hub app (master plan §8.5).
  *
- * The Even G2 app used to bake its api URL in at build time. It now carries a
- * REQUIRED, user-editable server setting like the web/mobile clients: the wearer
- * points the app at their own self-hosted instance on the companion page, and the
- * lens picks the same URL up at boot. The chosen URL is persisted in `localStorage`,
- * which the off-lens companion page and the on-lens app share (same Even Hub WebView
- * origin) — the same store `client-core` uses for the bearer token.
+ * The api URL is a REQUIRED, user-editable setting like the web/mobile clients:
+ * the wearer points the app at their own self-hosted instance on the phone login
+ * page, and the lens picks the same URL up at boot. The chosen URL is persisted
+ * through `KeyValueStorage` — bridge-backed on device (XERK-82: browser
+ * `localStorage` does NOT survive app restarts in this host, so persisting there
+ * meant re-entering the URL every launch), `window.localStorage` in plain-browser
+ * dev.
  *
- * The build-time `VITE_API_WS` becomes a *seed* (a sensible default for dev / first
- * run), not the source of truth: a saved choice always wins. Everything here is pure
- * or storage-only so it's unit-tested without the Even SDK.
+ * The build-time `VITE_API_WS` is a *seed* (a sensible default for dev / first
+ * run), not the source of truth: a saved choice always wins. Everything here is
+ * pure or storage-only so it's unit-tested without the Even SDK.
  */
+
+import type { KeyValueStorage } from "./storage";
 
 export const SERVER_URL_KEY = "tenir.serverUrl";
 
@@ -19,9 +22,11 @@ export const SERVER_URL_KEY = "tenir.serverUrl";
 export const FALLBACK_WS_URL = "ws://localhost:8080/ws";
 
 /**
- * Validate + normalize a user-entered WS URL. Returns the cleaned `ws://`/`wss://`
- * URL (trimmed, no trailing slash), or null when it's empty or not a ws(s) URL — so
- * callers can reject a bad value instead of persisting it.
+ * Validate + normalize an already-canonical WS URL. Returns the cleaned
+ * `ws://`/`wss://` URL (trimmed, no trailing slash), or null when it's empty or
+ * not a ws(s) URL — so callers can reject a bad value instead of persisting it.
+ * (Loose user input — bare hosts, http(s) — goes through client-core's
+ * `normalizeServerUrl` first; this guards persisted/seed values.)
  */
 export function normalizeWsUrl(input: string): string | null {
   const trimmed = input.trim();
@@ -54,43 +59,13 @@ export function resolveWsUrl(
   );
 }
 
-/** A synchronous server-URL store (localStorage in the app; in-memory under tests). */
-export interface ServerUrlStore {
-  /** The saved WS URL, or null when the user hasn't configured one yet. */
-  load(): string | null;
-  /** Persist the chosen WS URL. */
-  save(wsUrl: string): void;
-  /** Forget the saved URL. */
-  clear(): void;
+/** The saved WS URL, or null when the user hasn't configured a valid one yet. */
+export async function loadServerUrl(storage: KeyValueStorage): Promise<string | null> {
+  const raw = await storage.get(SERVER_URL_KEY);
+  return normalizeWsUrl(raw ?? "");
 }
 
-/**
- * `localStorage`-backed store, shared by the lens app and the companion page.
- * Storage failures are swallowed (a dropped read/write just means we fall back to
- * the seed), mirroring `client-core`'s token store.
- */
-export function localStorageServerUrlStore(): ServerUrlStore {
-  return {
-    load() {
-      try {
-        return localStorage.getItem(SERVER_URL_KEY);
-      } catch {
-        return null;
-      }
-    },
-    save(wsUrl) {
-      try {
-        localStorage.setItem(SERVER_URL_KEY, wsUrl);
-      } catch {
-        /* storage unavailable — the choice just won't persist */
-      }
-    },
-    clear() {
-      try {
-        localStorage.removeItem(SERVER_URL_KEY);
-      } catch {
-        /* ignore */
-      }
-    },
-  };
+/** Persist the chosen WS URL. */
+export async function saveServerUrl(storage: KeyValueStorage, wsUrl: string): Promise<void> {
+  await storage.set(SERVER_URL_KEY, wsUrl);
 }
