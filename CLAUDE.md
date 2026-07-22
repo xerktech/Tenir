@@ -12,6 +12,22 @@ Working conventions for Claude Code in this repository.
   random words. Use a short `type/slug` form — e.g. `feat/rag-cues`,
   `fix/cue-dedup`, `docs/branch-naming` — so the branch is self-describing.
 
+## Product design & cross-platform parity
+
+- **Web and Android in parity**: The web UI and the Android app are two front
+  ends onto the same product. Keep them as similar as possible and at perfect
+  feature parity — any feature added, changed, or removed on one platform ships
+  the equivalent on the other in the same effort. Neither is allowed to drift
+  ahead. When platform constraints force a difference, make it a deliberate,
+  documented exception rather than an accidental gap.
+- **Follow Turma's design language**: Model Tenir's design and appearance
+  closely on the Turma app. Match its layout, component patterns, typography,
+  spacing, iconography, and overall visual style so the two clearly read as
+  products from the same company.
+- **Keep Tenir's own colors**: Follow Turma in everything visual *except* color
+  — Tenir keeps its separate color scheme. Apply Turma's structure and styling
+  with Tenir's palette; don't adopt Turma's colors.
+
 ## Tests & code coverage
 
 Tests are a required part of every change, not a follow-up. CI is per-component:
