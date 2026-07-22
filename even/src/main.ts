@@ -14,17 +14,28 @@ import {
   waitForEvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
 
-import { ApiClient } from "@tenir/client-core";
+import { ApiClient, type CueLevel } from "@tenir/client-core";
 
 import { AudioCapture, pcmBytes } from "./audio/capture";
 import { config } from "./config";
-import { CONTAINER, buildStartupContainer, setText } from "./lens/layout";
+import {
+  CONTAINER,
+  buildStartupContainer,
+  rebuildPlain,
+  rebuildWithCue,
+  setText,
+} from "./lens/layout";
+import { loadCueLevel } from "./state/settings";
 import { SessionStore, type PersistedSession } from "./state/persist";
 
 // Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
 const TRANSCRIPT_MAX_CHARS = 1200;
 // Cap how many finalized turns we keep on the lens.
 const MAX_SEGMENTS = 60;
+// A cue box stays on the lens this long, then is dismissed (XERK-81).
+const CUE_TTL_MS = 10000;
+// Bound the on-lens cue text so it fits the bordered box.
+const CUE_MAX_CHARS = 160;
 
 type Mutable = {
   sessionId?: string; // authoritative id, persisted so a resume survives backgrounding
@@ -33,6 +44,8 @@ type Mutable = {
   partial: string; // current live hypothesis
   connection: "connecting" | "open" | "closed";
   listening: boolean;
+  cueLevel: CueLevel; // how eagerly the api surfaces cues; sent on session.start
+  cue: { title: string; body: string } | null; // the cue currently on the lens
 };
 
 async function main(): Promise<void> {
@@ -48,7 +61,10 @@ async function main(): Promise<void> {
     partial: "",
     connection: "connecting",
     listening: true,
+    cueLevel: loadCueLevel(),
+    cue: null,
   };
+  let cueTimer: ReturnType<typeof setTimeout> | null = null;
 
   // 1) One-shot layout. Nothing else may run until this succeeds.
   const result = await bridge.createStartUpPageContainer(buildStartupContainer());
@@ -69,6 +85,35 @@ async function main(): Promise<void> {
     const mic = state.micSource === "g2-microphone" ? "g2" : "phone";
     const mode = state.listening ? "listening" : "paused";
     void setText(bridge, CONTAINER.status, `${mode} · ${mic} · ${conn}`);
+  };
+  const renderCue = () => {
+    if (!state.cue) return;
+    const text = `${state.cue.title}\n${state.cue.body}`;
+    void setText(bridge, CONTAINER.cue, text.slice(0, CUE_MAX_CHARS));
+  };
+
+  // A cue appears in the bordered box above the transcript, then auto-dismisses.
+  // Border can only be set at (re)build time, so showing/hiding rebuilds the page;
+  // rebuild clears content, so every container is repainted afterwards.
+  const showCue = async (title: string, body: string): Promise<void> => {
+    state.cue = { title, body };
+    if (cueTimer) clearTimeout(cueTimer);
+    await bridge.rebuildPageContainer(rebuildWithCue());
+    renderStatus();
+    renderCaption();
+    renderCue();
+    cueTimer = setTimeout(() => void hideCue(), CUE_TTL_MS);
+  };
+  const hideCue = async (): Promise<void> => {
+    if (cueTimer) {
+      clearTimeout(cueTimer);
+      cueTimer = null;
+    }
+    if (!state.cue) return;
+    state.cue = null;
+    await bridge.rebuildPageContainer(rebuildPlain());
+    renderStatus();
+    renderCaption();
   };
 
   const persist = () =>
@@ -102,6 +147,10 @@ async function main(): Promise<void> {
       renderCaption();
       persist();
     },
+    onCue: (m) => {
+      // Show the private context cue in the bordered box above the transcript.
+      void showCue(m.title, m.body);
+    },
     onError: (m) => {
       console.warn("api error", m.code, m.message);
       // The server URL + sign-in live on the companion page (the lens has no input).
@@ -128,6 +177,7 @@ async function main(): Promise<void> {
 
   const cleanup = async () => {
     off();
+    if (cueTimer) clearTimeout(cueTimer);
     await capture.stop();
     client.stop();
     await store.flush();
@@ -162,7 +212,7 @@ async function main(): Promise<void> {
   renderCaption();
   await capture.start();
   client.start(
-    { micSource: state.micSource, sourceLang: config.defaultSourceLang },
+    { micSource: state.micSource, sourceLang: config.defaultSourceLang, cueLevel: state.cueLevel },
     state.sessionId, // resume the prior session if we restored one
   );
 }

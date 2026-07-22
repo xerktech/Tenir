@@ -161,6 +161,31 @@ describe("HistoryPanel", () => {
     expect(screen.queryByRole("link", { name: "Download audio.wav" })).not.toBeInTheDocument();
   });
 
+  it("renders inline cue boxes and opens a popup with the detail", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [{ segmentId: "s1", text: "how far is the sun", startMs: 0, endMs: 1500, lang: "en" }],
+      cues: [{ cueId: "cue-1", title: "Sun", body: "About 150 million km away.", atMs: 1500 }],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    // The cue shows inline as a clickable box with its title.
+    const cueBox = await screen.findByRole("button", { name: /Sun/ });
+    // The body isn't shown until the popup opens.
+    expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument();
+
+    fireEvent.click(cueBox);
+    const dialog = await screen.findByRole("dialog", { name: "Sun" });
+    expect(within(dialog).getByText(/150 million km/)).toBeInTheDocument();
+
+    // Closing the popup returns to the transcript without navigating away.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText(/how far is the sun/)).toBeInTheDocument();
+  });
+
   it("deletes a conversation from its row", async () => {
     list.mockResolvedValue([summary()]);
     remove.mockResolvedValue(undefined);

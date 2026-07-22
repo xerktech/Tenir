@@ -13,8 +13,8 @@
  */
 
 import { ApiClient } from "@tenir/client-core";
-import type { MicSource } from "@tenir/contract";
-import { useEffect, useMemo, useState } from "react";
+import type { CueLevel, MicSource } from "@tenir/contract";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { deviceAudioSource } from "../audio/native";
 import { DEFAULT_MIC_SOURCE, DEFAULT_SOURCE_LANG } from "../config";
@@ -30,7 +30,12 @@ export interface CaptureController {
   switchMic(micSource: MicSource): void;
 }
 
-export function useCapture(wsUrl: string): CaptureController {
+export function useCapture(wsUrl: string, cueLevel?: CueLevel): CaptureController {
+  // A ref so changing the cue toggle updates what the next session.start sends
+  // without recreating the session mid-flight (XERK-81).
+  const cueLevelRef = useRef(cueLevel);
+  cueLevelRef.current = cueLevel;
+
   const session = useMemo(() => {
     const kv = deviceKeyValue();
     return new CaptureSession({
@@ -41,6 +46,9 @@ export function useCapture(wsUrl: string): CaptureController {
       clearSessionId: () => void clearSessionId(kv),
       defaultMicSource: DEFAULT_MIC_SOURCE,
       sourceLang: DEFAULT_SOURCE_LANG,
+      get cueLevel() {
+        return cueLevelRef.current;
+      },
     });
   }, [wsUrl]);
 

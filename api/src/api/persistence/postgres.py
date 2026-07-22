@@ -19,6 +19,7 @@ import logging
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    Cue,
     Segment,
     coerce_status,
     utcnow,
@@ -41,7 +42,9 @@ class SqlConversationStore:
         return self._pool
 
     @staticmethod
-    def _row_to_conversation(row, segments: list[Segment]) -> Conversation:  # pragma: no cover
+    def _row_to_conversation(  # pragma: no cover
+        row, segments: list[Segment], cues: list[Cue]
+    ) -> Conversation:
         return Conversation(
             id=row["id"],
             household=row["household"],
@@ -55,6 +58,7 @@ class SqlConversationStore:
             status=coerce_status(row["status"], ended=row["ended_at"] is not None),
             audio_key=row["audio_key"],
             segments=segments,
+            cues=cues,
         )
 
     def create(  # pragma: no cover - requires a live database
@@ -100,6 +104,21 @@ class SqlConversationStore:
                     segment.end_ms,
                     segment.lang,
                 ),
+            )
+
+    def add_cue(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, cue: Cue
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO cues
+                    (cue_id, conversation_id, title, body, at_ms)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (cue_id) DO UPDATE SET
+                    title = EXCLUDED.title, body = EXCLUDED.body, at_ms = EXCLUDED.at_ms
+                """,
+                (cue.cue_id, conversation_id, cue.title, cue.body, cue.at_ms),
             )
 
     def finish(  # pragma: no cover - requires a live database
@@ -155,7 +174,15 @@ class SqlConversationStore:
                 "SELECT * FROM segments WHERE conversation_id = %s ORDER BY start_ms",
                 (conversation_id,),
             ).fetchall()
-        return self._row_to_conversation(row, [self._row_to_segment(r) for r in seg_rows])
+            cue_rows = cur.execute(
+                "SELECT * FROM cues WHERE conversation_id = %s ORDER BY at_ms",
+                (conversation_id,),
+            ).fetchall()
+        return self._row_to_conversation(
+            row,
+            [self._row_to_segment(r) for r in seg_rows],
+            [self._row_to_cue(r) for r in cue_rows],
+        )
 
     @staticmethod
     def _row_to_segment(row) -> Segment:  # pragma: no cover - requires a live database
@@ -167,19 +194,32 @@ class SqlConversationStore:
             lang=row["lang"],
         )
 
+    @staticmethod
+    def _row_to_cue(row) -> Cue:  # pragma: no cover - requires a live database
+        return Cue(
+            cue_id=row["cue_id"],
+            title=row["title"],
+            body=row["body"],
+            at_ms=row["at_ms"],
+        )
+
     def list(  # pragma: no cover - requires a live database
         self, household: str, *, limit: int = 50, offset: int = 0
     ) -> list[Conversation]:
         from psycopg.rows import dict_row
 
         with self._ensure_pool().connection() as conn:
-            rows = conn.cursor(row_factory=dict_row).execute(
-                """
+            rows = (
+                conn.cursor(row_factory=dict_row)
+                .execute(
+                    """
                 SELECT * FROM conversations WHERE household = %s
                 ORDER BY started_at DESC LIMIT %s OFFSET %s
                 """,
-                (household, limit, offset),
-            ).fetchall()
+                    (household, limit, offset),
+                )
+                .fetchall()
+            )
         return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
 
     def search(  # pragma: no cover - requires a live database
@@ -193,8 +233,10 @@ class SqlConversationStore:
             # tsvector built over an aggregate (string_agg) can't use that index and
             # forces a full scan + per-query recompute. Rank by recency of the
             # matching conversation; relevance ranking can layer on later if needed.
-            rows = conn.cursor(row_factory=dict_row).execute(
-                """
+            rows = (
+                conn.cursor(row_factory=dict_row)
+                .execute(
+                    """
                 SELECT c.id FROM conversations c
                 WHERE c.household = %s
                   AND EXISTS (
@@ -205,8 +247,10 @@ class SqlConversationStore:
                   )
                 ORDER BY c.started_at DESC LIMIT %s OFFSET %s
                 """,
-                (household, query, limit, offset),
-            ).fetchall()
+                    (household, query, limit, offset),
+                )
+                .fetchall()
+            )
         return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
 
     def delete(  # pragma: no cover - requires a live database

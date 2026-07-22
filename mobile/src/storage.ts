@@ -13,7 +13,7 @@
  * than importing a native module) so it can be unit-tested with an in-memory store.
  */
 
-import type { TokenStore } from "@tenir/client-core";
+import type { CueLevel, TokenStore } from "@tenir/client-core";
 
 /** A minimal async key/value store — the shape of `@react-native-async-storage`. */
 export interface KeyValueStore {
@@ -114,4 +114,19 @@ export function saveSessionId(kv: KeyValueStore, sessionId: string): Promise<voi
 /** Forget the persisted capture session id when the session ends (best-effort). */
 export function clearSessionId(kv: KeyValueStore): Promise<void> {
   return kv.removeItem(SESSION_ID_KEY).catch(() => undefined);
+}
+
+const CUE_LEVEL_KEY = "tenir.cueLevel";
+export const CUE_LEVELS: CueLevel[] = ["conservative", "balanced", "aggressive"];
+const DEFAULT_CUE_LEVEL: CueLevel = "balanced";
+
+/** Load the user's chosen cue aggressiveness, defaulting to balanced (XERK-81). */
+export async function loadCueLevel(kv: KeyValueStore): Promise<CueLevel> {
+  const v = await kv.getItem(CUE_LEVEL_KEY).catch(() => null);
+  return (CUE_LEVELS as string[]).includes(v ?? "") ? (v as CueLevel) : DEFAULT_CUE_LEVEL;
+}
+
+/** Persist the chosen cue aggressiveness (best-effort). */
+export function saveCueLevel(kv: KeyValueStore, level: CueLevel): Promise<void> {
+  return kv.setItem(CUE_LEVEL_KEY, level).catch(() => undefined);
 }

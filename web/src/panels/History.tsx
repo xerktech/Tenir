@@ -1,11 +1,17 @@
 /** Conversation history & search over stored speech-to-text sessions. */
 
-import { history, type Conversation, type ConversationSummary, type SegmentView } from "@tenir/client-core";
+import {
+  history,
+  type Conversation,
+  type ConversationSummary,
+  type CueView,
+  type SegmentView,
+} from "@tenir/client-core";
 import { useMemo, useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Button, Card, EmptyState, Input, Spinner } from "../ui";
+import { Button, Card, EmptyState, Input, Modal, Spinner } from "../ui";
 
 type SortKey = "date" | "duration" | "turns" | "status";
 type SortDir = "asc" | "desc";
@@ -184,6 +190,25 @@ function segmentTiming(s: SegmentView): string {
   return `${formatDuration(s.startMs)}–${formatDuration(s.endMs)}`;
 }
 
+// A transcript row is either a spoken segment or a private cue, placed on the
+// same timeline (XERK-81). Cues carry `atMs`; segments carry `startMs`.
+type TranscriptItem =
+  | { kind: "segment"; at: number; seg: SegmentView }
+  | { kind: "cue"; at: number; cue: CueView };
+
+/** Merge segments and cues into one timeline, ordered by position (cues sit
+ *  after the segment they share a timestamp with). */
+function timeline(conv: Conversation): TranscriptItem[] {
+  const items: TranscriptItem[] = [
+    ...conv.segments.map((seg) => ({ kind: "segment" as const, at: seg.startMs, seg })),
+    // Tolerate an older/partial payload without cues rather than crashing the detail.
+    ...(conv.cues ?? []).map((cue) => ({ kind: "cue" as const, at: cue.atMs, cue })),
+  ];
+  // Stable-ish: order by position, breaking ties with segment before cue so a cue
+  // reads as landing just after the words that triggered it.
+  return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
+}
+
 function ConversationDetail({
   conv,
   onDelete,
@@ -193,6 +218,8 @@ function ConversationDetail({
   onDelete: () => void;
   onBack: () => void;
 }): JSX.Element {
+  const [openCue, setOpenCue] = useState<CueView | null>(null);
+  const items = timeline(conv);
   return (
     <Card className="detail">
       <div className="row">
@@ -210,16 +237,35 @@ function ConversationDetail({
       <div className="transcript-block">
         {/* A session can hold no turns at all (nothing was said, or the transcript
             was lost). Say so — an empty block reads as a detail that failed to open. */}
-        {conv.segments.length === 0 ? (
+        {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 ? (
           <p className="muted">No transcript was recorded for this session.</p>
         ) : (
-          conv.segments.map((s) => (
-            <div className="item" key={s.segmentId}>
-              <span className="muted">{segmentTiming(s)}</span> {s.text}
-            </div>
-          ))
+          items.map((item) =>
+            item.kind === "segment" ? (
+              <div className="item" key={item.seg.segmentId}>
+                <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
+              </div>
+            ) : (
+              <button
+                className="cue-inline"
+                key={item.cue.cueId}
+                onClick={() => setOpenCue(item.cue)}
+                title="Show cue detail"
+              >
+                <span className="cue-inline-mark" aria-hidden="true">
+                  ✦
+                </span>
+                <span className="cue-inline-title">{item.cue.title}</span>
+              </button>
+            ),
+          )
         )}
       </div>
+      {openCue && (
+        <Modal title={openCue.title} onClose={() => setOpenCue(null)}>
+          <p>{openCue.body}</p>
+        </Modal>
+      )}
       {conv.hasAudio && (
         <div className="audio-player">
           {/* Native playback with the browser's built-in transport + seek bar

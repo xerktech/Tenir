@@ -27,6 +27,13 @@ services:
       API_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
       API_STT_BACKEND: voxtral
       API_STT_MODEL: ${API_STT_MODEL:-voxtral}
+      # Cues (XERK-81): private context cards derived from the conversation. Off by
+      # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
+      # model-free demo cues (no extra container), or =openai to route to a real chat
+      # model through the SAME LiteLLM gateway — start it with `--profile cues`, which
+      # brings up vllm-cue + registers the qwen3-llm alias in litellm/config.yaml.
+      API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
+      API_LLM_MODEL: ${API_LLM_MODEL:-qwen3-llm}
       API_HOUSEHOLD_ID: ${API_HOUSEHOLD_ID:-default}
       # You MUST override API_AUTH_SECRET — the api refuses to boot with the default.
       API_AUTH_SECRET: ${API_AUTH_SECRET:-dev-insecure-change-me}
@@ -120,6 +127,36 @@ services:
       - "9400:8000"
     volumes:
       - "C:/docker/tenir/vllm-stt:/root/.cache/huggingface"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  vllm-cue:
+    # Cue/summary LLM (XERK-81): a chat model the api calls through the SAME LiteLLM
+    # gateway to turn the live conversation into private context cues. Opt-in — only
+    # started with `--profile cues` (it's a large model and needs its own GPU share
+    # alongside Voxtral). The gateway aliases it as "qwen3-llm" (litellm/config.yaml),
+    # matching API_LLM_MODEL. Serves under its real model id (no --served-model-name).
+    profiles: ["cues"]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    command:
+      - "--model"
+      - "${VLLM_CUE_MODEL:-Qwen/Qwen3.6-27B-FP8}"
+      - "--gpu-memory-utilization"
+      - "${VLLM_CUE_GPU_MEMORY_UTILIZATION:-0.4}"
+      - "--max-model-len"
+      - "${VLLM_CUE_MAX_MODEL_LEN:-16384}"
+    ports:
+      - "9300:8000"
+    volumes:
+      - "C:/docker/tenir/vllm-cue:/root/.cache/huggingface"
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
     ipc: host

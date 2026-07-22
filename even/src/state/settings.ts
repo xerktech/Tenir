@@ -13,7 +13,36 @@
  * or storage-only so it's unit-tested without the Even SDK.
  */
 
+import type { CueLevel } from "@tenir/contract";
+
 export const SERVER_URL_KEY = "tenir.serverUrl";
+export const CUE_LEVEL_KEY = "tenir.cueLevel";
+export const CUE_LEVELS: CueLevel[] = ["conservative", "balanced", "aggressive"];
+const DEFAULT_CUE_LEVEL: CueLevel = "balanced";
+
+/**
+ * Load the wearer's cue aggressiveness (XERK-81), sent on session.start and shared
+ * with the companion page via the same localStorage the server URL uses. Defaults
+ * to balanced; an unrecognized stored value falls back to the default.
+ */
+export function loadCueLevel(): CueLevel {
+  let v: string | null = null;
+  try {
+    v = localStorage.getItem(CUE_LEVEL_KEY);
+  } catch {
+    v = null;
+  }
+  return (CUE_LEVELS as string[]).includes(v ?? "") ? (v as CueLevel) : DEFAULT_CUE_LEVEL;
+}
+
+/** Persist the wearer's chosen cue level (best-effort). */
+export function saveCueLevel(level: CueLevel): void {
+  try {
+    localStorage.setItem(CUE_LEVEL_KEY, level);
+  } catch {
+    /* storage unavailable — the choice just won't persist */
+  }
+}
 
 /** Last-resort default when nothing valid is configured (local dev api). */
 export const FALLBACK_WS_URL = "ws://localhost:8080/ws";

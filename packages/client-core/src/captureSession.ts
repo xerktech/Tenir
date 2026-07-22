@@ -14,13 +14,18 @@
  */
 
 import type { ApiHandlers } from "./ws";
-import type { Lang, MicSource } from "@tenir/contract";
+import type { CueLevel, Lang, MicSource } from "@tenir/contract";
 
 import type { PcmAudioSource } from "./pcmSource";
 import { decodeBase64 } from "./pcm";
 
 // Cap how many finalized turns we keep on screen; this just bounds memory.
 const MAX_SEGMENTS = 60;
+// A live cue is shown above the transcript for this long, then auto-dismissed
+// (XERK-81). The history view keeps cues permanently; this is the live band only.
+export const CUE_TTL_MS = 10000;
+// Bound how many cues can be visible at once (rapid-fire cues shouldn't stack up).
+const MAX_LIVE_CUES = 4;
 
 export type Connection = "connecting" | "open" | "closed";
 
@@ -28,6 +33,13 @@ export type Connection = "connecting" | "open" | "closed";
 export interface CaptureSegment {
   id: string;
   text: string;
+}
+
+/** A private context cue currently shown above the live transcript (XERK-81). */
+export interface LiveCue {
+  id: string;
+  title: string;
+  body: string;
 }
 
 export interface CaptureState {
@@ -40,6 +52,8 @@ export interface CaptureState {
   sessionId?: string;
   segments: CaptureSegment[];
   partial: string;
+  /** Cues currently visible above the transcript; auto-expired after CUE_TTL_MS. */
+  cues: LiveCue[];
   error?: string;
 }
 
@@ -49,6 +63,8 @@ export type CaptureAction =
   | { type: "ready"; sessionId: string }
   | { type: "partial"; text: string }
   | { type: "final"; segmentId: string; text: string }
+  | { type: "cue"; cue: LiveCue }
+  | { type: "cueExpire"; id: string }
   | { type: "error"; message: string }
   | { type: "togglePause" }
   | { type: "micSwitch"; micSource: MicSource }
@@ -62,6 +78,7 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     micSource,
     segments: [],
     partial: "",
+    cues: [],
   };
 }
 
@@ -87,6 +104,18 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       if (segments.length > MAX_SEGMENTS) segments.shift();
       return { ...state, segments, partial: "" };
     }
+    case "cue": {
+      // Newest cue last; drop the oldest if we're over the visible cap. A repeat
+      // id replaces in place (a re-delivered cue on resume shouldn't duplicate).
+      const withoutDupe = state.cues.filter((c) => c.id !== action.cue.id);
+      const cues = [...withoutDupe, action.cue];
+      if (cues.length > MAX_LIVE_CUES) cues.shift();
+      return { ...state, cues };
+    }
+    case "cueExpire": {
+      const cues = state.cues.filter((c) => c.id !== action.id);
+      return cues.length === state.cues.length ? state : { ...state, cues };
+    }
     case "error":
       return { ...state, error: action.message };
     case "togglePause":
@@ -96,13 +125,24 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       return { ...state, micSource: action.micSource };
     case "stop":
       // Session over: drop to idle but keep the transcript on screen to read back.
-      return { ...state, running: false, listening: true, connection: "closed", partial: "" };
+      // Live cues are ephemeral, so clear them.
+      return {
+        ...state,
+        running: false,
+        listening: true,
+        connection: "closed",
+        partial: "",
+        cues: [],
+      };
   }
 }
 
 /** Minimal slice of `ApiClient` the session drives (so tests can inject a fake). */
 export interface ApiLike {
-  start(params: { micSource: MicSource; sourceLang?: Lang }, resumeSessionId?: string): void;
+  start(
+    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel },
+    resumeSessionId?: string,
+  ): void;
   stop(): void;
   sendAudio(pcm: Uint8Array): boolean;
   switchMic(micSource: MicSource): void;
@@ -118,6 +158,8 @@ export interface CaptureSessionDeps {
   clearSessionId(): void;
   defaultMicSource: MicSource;
   sourceLang?: Lang;
+  /** The user's chosen cue aggressiveness, sent on session.start (XERK-81). */
+  cueLevel?: CueLevel;
 }
 
 /**
@@ -130,6 +172,9 @@ export class CaptureSession {
   private client: ApiLike | null = null;
   private state: CaptureState;
   private listeners = new Set<(s: CaptureState) => void>();
+  // Pending auto-dismiss timers for live cues, cleared on stop so a cue can't
+  // fire its expiry after the session ends.
+  private cueTimers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(deps: CaptureSessionDeps) {
     this.deps = deps;
@@ -181,6 +226,7 @@ export class CaptureSession {
       },
       onPartial: (m) => this.dispatch({ type: "partial", text: m.text }),
       onFinal: (m) => this.dispatch({ type: "final", segmentId: m.segmentId, text: m.text }),
+      onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body }),
       onError: (m) => this.dispatch({ type: "error", message: m.message }),
     });
     this.client = client;
@@ -197,8 +243,26 @@ export class CaptureSession {
       return false;
     }
 
-    client.start({ micSource, sourceLang: this.deps.sourceLang }, resumeId);
+    client.start(
+      { micSource, sourceLang: this.deps.sourceLang, cueLevel: this.deps.cueLevel },
+      resumeId,
+    );
     return true;
+  }
+
+  /** Show a live cue and schedule its auto-dismiss after CUE_TTL_MS (XERK-81). */
+  private showCue(cue: LiveCue): void {
+    this.dispatch({ type: "cue", cue });
+    const timer = setTimeout(() => {
+      this.cueTimers.delete(timer);
+      this.dispatch({ type: "cueExpire", id: cue.id });
+    }, CUE_TTL_MS);
+    this.cueTimers.add(timer);
+  }
+
+  private clearCueTimers(): void {
+    for (const t of this.cueTimers) clearTimeout(t);
+    this.cueTimers.clear();
   }
 
   /** Pause/resume audio upload without closing the socket. */
@@ -217,6 +281,7 @@ export class CaptureSession {
     await this.deps.audio.stop();
     this.client?.stop();
     this.client = null;
+    this.clearCueTimers();
     this.deps.clearSessionId();
     this.dispatch({ type: "stop" });
   }

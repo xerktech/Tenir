@@ -16,6 +16,7 @@ from api.auth.deps import principal_from_request
 from api.persistence import (
     Conversation,
     ConversationStatus,
+    Cue,
     Segment,
     coerce_status,
     get_audio_store,
@@ -41,6 +42,19 @@ class SegmentOut(BaseModel):
             endMs=seg.end_ms,
             lang=seg.lang,
         )
+
+
+class CueOut(BaseModel):
+    """A private context cue, rendered inline in history at atMs (XERK-81)."""
+
+    cueId: str
+    title: str
+    body: str
+    atMs: int
+
+    @classmethod
+    def of(cls, cue: Cue) -> "CueOut":
+        return cls(cueId=cue.cue_id, title=cue.title, body=cue.body, atMs=cue.at_ms)
 
 
 class ConversationSummaryOut(BaseModel):
@@ -75,14 +89,19 @@ class ConversationSummaryOut(BaseModel):
 
 
 class ConversationOut(ConversationSummaryOut):
-    """Detail view: the summary projection plus the transcript."""
+    """Detail view: the summary projection plus the transcript and its cues."""
 
     segments: list[SegmentOut] = Field(default_factory=list)
+    cues: list[CueOut] = Field(default_factory=list)
 
     @classmethod
     def of(cls, conv: Conversation) -> "ConversationOut":
         base = ConversationSummaryOut.of(conv).model_dump()
-        return cls(**base, segments=[SegmentOut.of(s) for s in conv.segments])
+        return cls(
+            **base,
+            segments=[SegmentOut.of(s) for s in conv.segments],
+            cues=[CueOut.of(c) for c in conv.cues],
+        )
 
 
 def _store():

@@ -63,3 +63,16 @@ CREATE INDEX IF NOT EXISTS segments_conversation_idx ON segments (conversation_i
 -- full-text index per segment, matched per-row with websearch_to_tsquery.
 CREATE INDEX IF NOT EXISTS segments_fts_idx
     ON segments USING GIN (to_tsvector('simple', text));
+
+-- One private context cue (mirrors the cue contract, XERK-81). Derived from the
+-- conversation but not part of it; at_ms is its transcript-timeline position so
+-- history renders it inline where it appeared. Deliberately NOT indexed for FTS:
+-- cues are private context, kept out of the transcript search corpus.
+CREATE TABLE IF NOT EXISTS cues (
+    cue_id          TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    at_ms           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cues_conversation_idx ON cues (conversation_id, at_ms);

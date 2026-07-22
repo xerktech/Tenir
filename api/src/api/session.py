@@ -10,20 +10,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 
 from api.config import settings
 from api.contract import (
     CaptionFinal,
     CaptionPartial,
+    Cue,
+    CueLevel,
     Lang,
     MicSource,
     ServerMessage,
     SessionReady,
 )
+from api.cue import CueGenerator, make_cue_generator, min_interval_ms
 from api.metrics import metrics
 from api.persistence import (
+    Cue as CueRecord,
     Segment,
     audio_key,
     get_audio_store,
@@ -59,6 +65,18 @@ class Session:
         self.source_lang: Lang | None = None
         self._transcriber: Transcriber | None = None
         self._pump: asyncio.Task[None] | None = None
+        # Cues (XERK-81): a private context card the api derives from the running
+        # transcript. Generation is off unless a backend is configured; when on, each
+        # finalized turn feeds a rolling window to the cue model. Kept off the caption
+        # path — a cue is a best-effort aside, produced in a background task so a slow
+        # or failing model never stalls captions.
+        self._cue_generator: CueGenerator | None = None
+        self._cue_level: CueLevel = CueLevel(settings.cue_default_level)
+        self._recent_finals: deque[str] = deque(maxlen=max(1, settings.cue_context_segments))
+        self._recent_cue_titles: deque[str] = deque(maxlen=10)
+        self._last_cue_monotonic: float | None = None
+        self._cue_inflight = False
+        self._cue_tasks: set[asyncio.Task[None]] = set()
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -96,11 +114,17 @@ class Session:
         *,
         mic_source: MicSource,
         source_lang: Lang | None,
+        cue_level: CueLevel | None = None,
     ) -> None:
         self.mic_source = mic_source
         self.source_lang = source_lang
+        if cue_level is not None:
+            self._cue_level = cue_level
         # Build the transcriber now that we know the source language.
         self._transcriber = make_transcriber(source_lang=source_lang)
+        # Build the cue generator (None when API_CUE_BACKEND=off — the default —
+        # so the stripped core does no cue work at all).
+        self._cue_generator = make_cue_generator()
         if self._conversations is not None:
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
@@ -211,9 +235,7 @@ class Session:
                 # end-of-session flush is still producing finals. Delivery is
                 # best-effort, the transcript is not — swallow the send failure and
                 # keep draining so those turns are still persisted below (XERK-58).
-                log.warning(
-                    "session %s could not deliver a caption (client gone)", self.session_id
-                )
+                log.warning("session %s could not deliver a caption (client gone)", self.session_id)
                 metrics.incr("caption.send_errors")
             metrics.incr(
                 "caption.partial" if isinstance(result, CaptionPartial) else "caption.final"
@@ -235,6 +257,76 @@ class Session:
                         lang=result.lang.value if result.lang is not None else None,
                     ),
                 )
+            if isinstance(result, CaptionFinal):
+                # A finalized turn may be cue-worthy; consider it out of band.
+                self._consider_cue(result)
+
+    def _consider_cue(self, result: CaptionFinal) -> None:
+        """On each finalized turn, maybe kick off cue generation in the background.
+
+        Cheap gating happens here on the event loop (no model call): skip when cues
+        are off, while one is already in flight, or inside the level's rate-limit
+        window. Only past those does it spawn a task that calls the model off-loop.
+        """
+        if self._cue_generator is None:
+            return
+        if result.text:
+            self._recent_finals.append(result.text)
+        if self._cue_inflight:
+            return
+        if self._last_cue_monotonic is not None:
+            elapsed_ms = (time.monotonic() - self._last_cue_monotonic) * 1000
+            if elapsed_ms < min_interval_ms(self._cue_level):
+                return
+        self._cue_inflight = True
+        task = asyncio.create_task(self._generate_cue(result.endMs))
+        self._cue_tasks.add(task)
+        task.add_done_callback(self._cue_tasks.discard)
+
+    async def _generate_cue(self, at_ms: int) -> None:
+        """Run the cue model over the recent transcript and, on a hit, deliver +
+        persist the cue. Best-effort throughout: any failure is logged/counted and
+        swallowed so the caption stream is never disturbed."""
+        try:
+            transcript = "\n".join(t for t in self._recent_finals if t)
+            if not transcript.strip():
+                return
+            assert self._cue_generator is not None
+            generated = await asyncio.to_thread(
+                self._cue_generator.generate, transcript, level=self._cue_level
+            )
+            if generated is None:
+                return
+            title = generated.title.strip()
+            body = generated.body.strip()
+            if not title or not body:
+                return
+            # Dedupe: don't surface the same cue title twice in a row.
+            if title.lower() in self._recent_cue_titles:
+                return
+            self._recent_cue_titles.append(title.lower())
+            self._last_cue_monotonic = time.monotonic()
+            cue_id = uuid.uuid4().hex
+            try:
+                await self._send(Cue(type="cue", cueId=cue_id, title=title, body=body, atMs=at_ms))
+            except Exception:
+                # Like captions, delivery is best-effort but the record is not:
+                # persist below even if the socket is gone.
+                log.warning("session %s could not deliver a cue (client gone)", self.session_id)
+                metrics.incr("cue.send_errors")
+            metrics.incr("cue.emitted")
+            if self._conversations is not None:
+                await asyncio.to_thread(
+                    self._conversations.add_cue,
+                    self._household,
+                    self.session_id,
+                    CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms),
+                )
+        except Exception:
+            log.warning("session %s cue generation failed", self.session_id, exc_info=True)
+            metrics.incr("cue.errors")
+        finally:
+            self._cue_inflight = False
 
     async def close(self) -> None:
         if self._closed:

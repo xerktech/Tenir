@@ -103,8 +103,17 @@ export interface SegmentView {
   lang: string | null;
 }
 
+/** A private context cue, rendered inline in history at atMs (XERK-81). */
+export interface CueView {
+  cueId: string;
+  title: string;
+  body: string;
+  atMs: number;
+}
+
 export interface Conversation extends ConversationSummary {
   segments: SegmentView[];
+  cues: CueView[];
 }
 
 export type ComponentState = "ready" | "connecting" | "down";

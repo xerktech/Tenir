@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  CUE_LEVEL_KEY,
   FALLBACK_WS_URL,
+  loadCueLevel,
   localStorageServerUrlStore,
   normalizeWsUrl,
   resolveWsUrl,
+  saveCueLevel,
   SERVER_URL_KEY,
 } from "../src/state/settings";
 
@@ -54,5 +57,21 @@ describe("localStorageServerUrlStore", () => {
 
     store.clear();
     expect(store.load()).toBeNull();
+  });
+});
+
+describe("cue level", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("defaults to balanced and round-trips a saved level", () => {
+    expect(loadCueLevel()).toBe("balanced");
+    saveCueLevel("aggressive");
+    expect(loadCueLevel()).toBe("aggressive");
+    expect(localStorage.getItem(CUE_LEVEL_KEY)).toBe("aggressive");
+  });
+
+  it("falls back to the default for an unrecognized stored value", () => {
+    localStorage.setItem(CUE_LEVEL_KEY, "bogus");
+    expect(loadCueLevel()).toBe("balanced");
   });
 });

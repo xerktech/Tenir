@@ -13,8 +13,16 @@
  */
 
 import { ApiError, describeLoginError, login, logout, me, type Principal } from "@tenir/client-core";
+import type { CueLevel } from "@tenir/contract";
 
 import { applyServerUrl, config, isServerConfigured } from "../config";
+import { CUE_LEVELS, loadCueLevel, saveCueLevel } from "../state/settings";
+
+const CUE_LEVEL_LABEL: Record<CueLevel, string> = {
+  conservative: "Conservative",
+  balanced: "Balanced",
+  aggressive: "Aggressive",
+};
 
 const app = document.getElementById("app")!;
 const toast = document.getElementById("toast")!;
@@ -127,6 +135,30 @@ function renderAccount(principal: Principal): HTMLElement {
   );
 }
 
+/**
+ * The global cue-aggressiveness toggle (XERK-81). Persisted in the same
+ * localStorage the lens reads at boot, so the wearer's choice rides the next
+ * session.start. Re-renders itself in place on change.
+ */
+function renderCues(): HTMLElement {
+  const current = loadCueLevel();
+  const buttons = CUE_LEVELS.map((l) =>
+    h("button", {
+      textContent: (l === current ? "● " : "") + CUE_LEVEL_LABEL[l],
+      onclick: () => {
+        saveCueLevel(l);
+        sec.replaceWith(renderCues());
+      },
+    }),
+  );
+  const sec = section(
+    "Cues",
+    muted("How eagerly private context cues appear on the lens during live capture."),
+    h("div", { className: "row" }, ...buttons),
+  );
+  return sec;
+}
+
 // --- mount ------------------------------------------------------------------
 
 async function refresh(): Promise<void> {
@@ -153,8 +185,9 @@ async function refresh(): Promise<void> {
     return;
   }
 
-  // Step 3: signed in — everything else happens in the server's web UI.
-  app.replaceChildren(server, renderAccount(principal));
+  // Step 3: signed in — the cue toggle lives here (it shapes live capture); the
+  // rest happens in the server's web UI.
+  app.replaceChildren(server, renderCues(), renderAccount(principal));
 }
 
 void refresh().catch((err) => notify(String(err), "err"));

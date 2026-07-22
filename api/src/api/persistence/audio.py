@@ -3,6 +3,7 @@ can be listened to and re-downloaded later. The bytes live behind the
 ``AudioStore`` seam, addressed by an opaque object key: an in-memory backend for
 the simulator/CI and a local-disk backend for the single-host deployment.
 """
+
 from __future__ import annotations
 
 import os
