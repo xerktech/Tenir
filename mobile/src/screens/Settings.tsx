@@ -1,9 +1,12 @@
 /**
- * Settings: the server this app talks to, and the signed-in account.
+ * Settings: the server this app talks to, the app's appearance, and the
+ * signed-in account.
  *
  * The server URL points the app at the user's self-hosted api (persisted and
  * re-applied on launch); "Connect" re-points an already-signed-in user at another
- * instance. The account card shows who is signed in and offers log-out.
+ * instance. Appearance offers the same System/Light/Dark choice as the web SPA's
+ * header toggle (persisted under the same `tenir.theme` key). The account card
+ * shows who is signed in and offers log-out.
  */
 
 import { type Principal } from "@tenir/client-core";
@@ -12,8 +15,15 @@ import { Text } from "react-native";
 
 import { useNotify } from "../lib/notify";
 import { isValidServerUrl } from "../lib/serverUrl";
-import { Button, Card, Field, Heading, Muted, Row, Screen } from "../ui/components";
-import { colors } from "../ui/theme";
+import { Button, Card, Field, Heading, Label, Row, Screen } from "../ui/components";
+import { useTheme } from "../ui/ThemeContext";
+import type { ThemeMode } from "../ui/theme";
+
+const THEME_MODES: { mode: ThemeMode; label: string }[] = [
+  { mode: "system", label: "System" },
+  { mode: "light", label: "Light" },
+  { mode: "dark", label: "Dark" },
+];
 
 export function SettingsScreen({
   wsUrl,
@@ -29,6 +39,7 @@ export function SettingsScreen({
   onSignOut: () => void;
 }): JSX.Element {
   const notify = useNotify();
+  const { colors, mode, setMode } = useTheme();
   const [draft, setDraft] = useState(wsUrl);
 
   const connect = () => {
@@ -45,7 +56,7 @@ export function SettingsScreen({
       <Heading>Settings</Heading>
 
       <Card>
-        <Muted>Server</Muted>
+        <Label>Server</Label>
         <Row>
           <Field placeholder="tenir.example.com" value={draft} onChangeText={setDraft} />
           <Button title="Connect" onPress={connect} />
@@ -53,7 +64,21 @@ export function SettingsScreen({
       </Card>
 
       <Card>
-        <Muted>Account</Muted>
+        <Label>Appearance</Label>
+        <Row>
+          {THEME_MODES.map((t) => (
+            <Button
+              key={t.mode}
+              title={t.label}
+              kind={mode === t.mode ? "primary" : "default"}
+              onPress={() => setMode(t.mode)}
+            />
+          ))}
+        </Row>
+      </Card>
+
+      <Card>
+        <Label>Account</Label>
         <Row>
           <Text style={{ color: colors.text, flexGrow: 1 }}>
             {principal.username} · {principal.household} · {principal.role}

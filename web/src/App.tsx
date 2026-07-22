@@ -127,7 +127,7 @@ function Dashboard({ principal }: { principal: Principal }): JSX.Element {
   const [tab, setTab] = useHashTab<Tab>(tabs, "Live");
   return (
     <div className="shell">
-      <nav className="sidebar" aria-label="Sections">
+      <nav className="nav-tabs" aria-label="Sections">
         {tabs.map((t) => (
           <button
             key={t}

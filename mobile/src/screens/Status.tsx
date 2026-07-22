@@ -12,9 +12,10 @@ import { Text } from "react-native";
 import { useStatus } from "../lib/controllers";
 import { overallStatusText, statusStateLabel } from "../lib/format";
 import { Card, Heading, ListItem, Muted, Row, Screen, Spinner, StatusDot } from "../ui/components";
-import { colors } from "../ui/theme";
+import { useTheme } from "../ui/ThemeContext";
 
 export function StatusScreen(): JSX.Element {
+  const { colors } = useTheme();
   const { status, unreachable, loaded } = useStatus();
 
   if (!loaded) {

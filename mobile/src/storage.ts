@@ -94,6 +94,25 @@ export function saveServerUrl(kv: KeyValueStore, wsUrl: string): Promise<void> {
   return kv.setItem(SERVER_URL_KEY, wsUrl).catch(() => undefined);
 }
 
+// Same key name as the web SPA's theme store (web/src/theme.ts) — one mental
+// model for "where did my theme choice go" across clients.
+const THEME_KEY = "tenir.theme";
+
+type ThemeMode = "system" | "light" | "dark";
+
+/** Load the persisted theme mode, or null when unset/invalid/unreadable. */
+export function loadThemeMode(kv: KeyValueStore): Promise<ThemeMode | null> {
+  return kv
+    .getItem(THEME_KEY)
+    .then((v) => (v === "system" || v === "light" || v === "dark" ? v : null))
+    .catch(() => null);
+}
+
+/** Persist the chosen theme mode (best-effort; ignores storage failures). */
+export function saveThemeMode(kv: KeyValueStore, mode: ThemeMode): Promise<void> {
+  return kv.setItem(THEME_KEY, mode).catch(() => undefined);
+}
+
 const LAST_TAB_KEY = "tenir.lastTab";
 
 /**

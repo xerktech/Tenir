@@ -1,13 +1,15 @@
 /**
  * Toast notifications for the mobile app — the RN counterpart to the web SPA's toast.
  * A single transient banner pinned to the bottom of the screen; `useNotify()` returns
- * the `notify(message, kind?)` function used across the screens.
+ * the `notify(message, kind?)` function used across the screens. Solid semantic
+ * fills (accent for ok, danger for errors) matching the web `.toast` styling.
  */
 
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
-import { colors, space } from "../ui/theme";
+import { useTheme, useThemedStyles } from "../ui/ThemeContext";
+import { radius, space, type Palette } from "../ui/theme";
 
 type Kind = "ok" | "err";
 type NotifyFn = (message: string, kind?: Kind) => void;
@@ -19,6 +21,8 @@ export function useNotify(): NotifyFn {
 }
 
 export function NotifyProvider({ children }: { children: ReactNode }): JSX.Element {
+  const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
   const [toast, setToast] = useState<{ message: string; kind: Kind } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -37,7 +41,9 @@ export function NotifyProvider({ children }: { children: ReactNode }): JSX.Eleme
             accessibilityRole="alert"
             style={[styles.toast, toast.kind === "err" ? styles.err : styles.ok]}
           >
-            <Text style={styles.toastText}>{toast.message}</Text>
+            <Text style={{ color: toast.kind === "err" ? colors.onDanger : colors.onAccent }}>
+              {toast.message}
+            </Text>
           </View>
         )}
       </View>
@@ -45,18 +51,17 @@ export function NotifyProvider({ children }: { children: ReactNode }): JSX.Eleme
   );
 }
 
-const styles = StyleSheet.create({
-  fill: { flex: 1 },
-  toast: {
-    position: "absolute",
-    left: space.lg,
-    right: space.lg,
-    bottom: space.xl,
-    padding: space.md,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  ok: { backgroundColor: colors.card, borderColor: colors.accent },
-  err: { backgroundColor: colors.card, borderColor: colors.danger },
-  toastText: { color: colors.text },
-});
+const makeStyles = (colors: Palette) =>
+  StyleSheet.create({
+    fill: { flex: 1 },
+    toast: {
+      position: "absolute",
+      left: space.lg,
+      right: space.lg,
+      bottom: space.xl,
+      padding: space.md,
+      borderRadius: radius.md,
+    },
+    ok: { backgroundColor: colors.accent },
+    err: { backgroundColor: colors.danger },
+  });

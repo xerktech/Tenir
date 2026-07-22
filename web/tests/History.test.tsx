@@ -161,12 +161,16 @@ describe("HistoryPanel", () => {
     expect(screen.queryByRole("link", { name: "Download audio.wav" })).not.toBeInTheDocument();
   });
 
-  it("deletes a conversation from its row", async () => {
+  it("deletes a conversation from its row via arm-then-confirm", async () => {
     list.mockResolvedValue([summary()]);
     remove.mockResolvedValue(undefined);
     renderPanel();
     const row = await screen.findByRole("row", { name: /stored/ });
+    // First click only arms the destructive control…
     fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    expect(remove).not.toHaveBeenCalled();
+    // …the second click commits the delete.
+    fireEvent.click(within(row).getByRole("button", { name: "Confirm delete" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("c1"));
   });
 

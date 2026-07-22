@@ -56,9 +56,10 @@ export function SetupScreen({
       <Heading>Set up Tenir</Heading>
       <Card>
         <Muted>Enter your Tenir server address, then sign in.</Muted>
-        <Field placeholder="tenir.example.com" value={serverUrl} onChangeText={setServerUrl} />
-        <Field placeholder="username" value={username} onChangeText={setUsername} />
+        <Field label="Server" placeholder="tenir.example.com" value={serverUrl} onChangeText={setServerUrl} />
+        <Field label="Username" placeholder="username" value={username} onChangeText={setUsername} />
         <Field
+          label="Password"
           placeholder="password"
           value={password}
           onChangeText={setPassword}

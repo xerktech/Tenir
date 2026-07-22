@@ -27,6 +27,14 @@ describe("mobile bottom tab bar", () => {
     expect(app).toContain("<TabIcon name={t} color={color} />");
   });
 
+  it("marks the active tab with the 28×3 top accent indicator (web parity)", () => {
+    // The web bottom nav marks the active item with a 28×3 accent bar; the
+    // native bar carries the same indicator.
+    expect(app).toContain("{active && <View style={styles.tabActiveBar} />}");
+    expect(app).toContain("width: 28");
+    expect(app).toContain("height: 3");
+  });
+
   it("lists exactly the five dashboard tabs", () => {
     const decl = app.match(/const TABS = \[([^\]]*)\]/)?.[1] ?? "";
     for (const t of TABS) expect(decl).toContain(`"${t}"`);

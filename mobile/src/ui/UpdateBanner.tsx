@@ -11,9 +11,11 @@ import { StyleSheet, Text, View } from "react-native";
 
 import { useUpdater } from "../lib/useUpdater";
 import { Button } from "./components";
-import { colors, space } from "./theme";
+import { useThemedStyles } from "./ThemeContext";
+import { space, type Palette } from "./theme";
 
 export function UpdateBanner(): JSX.Element | null {
+  const styles = useThemedStyles(makeStyles);
   const { state, act, dismiss } = useUpdater();
 
   if (state.kind === "hidden") return null;
@@ -53,18 +55,19 @@ export function UpdateBanner(): JSX.Element | null {
   );
 }
 
-const styles = StyleSheet.create({
-  banner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: space.sm,
-    padding: space.sm,
-    backgroundColor: colors.card,
-    borderBottomColor: colors.accent,
-    borderBottomWidth: 2,
-  },
-  text: { color: colors.text, fontSize: 13, flexShrink: 1 },
-  actions: { flexDirection: "row", gap: space.xs },
-});
+const makeStyles = (colors: Palette) =>
+  StyleSheet.create({
+    banner: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: space.sm,
+      padding: space.sm,
+      backgroundColor: colors.surface,
+      borderBottomColor: colors.accent,
+      borderBottomWidth: 2,
+    },
+    text: { color: colors.text, fontSize: 13, flexShrink: 1 },
+    actions: { flexDirection: "row", gap: space.xs },
+  });
