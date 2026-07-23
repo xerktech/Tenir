@@ -12,12 +12,10 @@ import {
   CONTAINER,
   dots,
   fitCaption,
-  fitMenuCaption,
   LensTextWriter,
   LINE_H,
   MEASURE_SAFETY_PX,
   MENU_BORDER,
-  MENU_CAPTION_LINES,
   MENU_PAD,
   MENU_W,
   menuText,
@@ -311,14 +309,12 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
     expect(exitPage[exitPage.length - 1]!.content).toBe("  Continue\n› Exit session");
   });
 
-  it("centers the box horizontally, above the caption rows kept for live text", () => {
+  it("centers the box horizontally within the caption band", () => {
     const containers = buildMenuPage(CONTENTS, "continue").textObject!;
     const menu = containers[containers.length - 1]!;
     expect(menu.xPosition! * 2 + menu.width!).toBe(SCREEN_W); // centered
     expect(menu.yPosition!).toBeGreaterThanOrEqual(LINE_H); // below the status line
-    // The box ends above the rows fitMenuCaption keeps for the conversation.
-    const firstKeptRowY = LINE_H + (CAPTION_LINES - MENU_CAPTION_LINES) * LINE_H;
-    expect(menu.yPosition! + menu.height!).toBeLessThanOrEqual(firstKeptRowY);
+    expect(menu.yPosition! + menu.height!).toBeLessThanOrEqual(LINE_H + CAPTION_H); // inside the band
   });
 
   it("both labels fit the box interior without wrapping", () => {
@@ -327,11 +323,4 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
     expect(getTextWidth("› Continue")).toBeLessThanOrEqual(interior);
   });
 
-  it("fitMenuCaption pushes the conversation into the rows below the box", () => {
-    const text = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
-    const fitted = fitMenuCaption(text);
-    expect(fitted.startsWith("\n".repeat(CAPTION_LINES - MENU_CAPTION_LINES))).toBe(true);
-    expect(measureTextWrap(fitted, FIT_W).lineCount).toBe(CAPTION_LINES); // ends at the band bottom
-    expect(fitted.endsWith("line 29")).toBe(true); // newest text still visible
-  });
 });
