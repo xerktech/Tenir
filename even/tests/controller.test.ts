@@ -159,14 +159,24 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
 const C = () => layout.CONTAINER;
 
 describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", () => {
-  it("idles at 'tap to start' once signed in, with no clock and no session", async () => {
+  it("idles at 'tap to start' once signed in, clock in the corner, no session", async () => {
     const t = await boot();
     t.controls.enable();
     await settle();
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
-    expect(t.text(C().clock)).toBe("");
+    expect(t.text(C().clock)).toBe("2:05 PM"); // the ready page shows the time too
     expect(t.api.calls).toHaveLength(0);
+  });
+
+  it("keeps the idle clock on the current minute", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await settle();
+    expect(t.text(C().clock)).toBe("2:05 PM");
+    vi.setSystemTime(new Date(2026, 6, 22, 14, 6));
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().clock)).toBe("2:06 PM"); // ticks while idle, not just recording
   });
 
   it("a tap starts a new session; taps while recording do nothing", async () => {
@@ -207,7 +217,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3); // popup page torn back down
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
-    expect(t.text(C().clock)).toBe("");
+    expect(t.text(C().clock)).toBe("2:05 PM"); // the clock stays up on the ready page
   });
 
   it("a listEvent tap on the selected item confirms it directly (on-device path)", async () => {

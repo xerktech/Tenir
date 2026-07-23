@@ -154,13 +154,13 @@ export async function wireLens(
   const pageContents = (): PageContents => ({
     status: enabled ? statusLine(state, tick) : "not signed in",
     caption: !enabled ? SIGN_IN_PROMPT : state.recording ? liveCaption() : IDLE_PROMPT,
-    clock: state.recording ? clockText(new Date()) : "",
+    clock: enabled ? clockText(new Date()) : "",
   });
   const renderCaption = () => writer.set(CONTAINER.caption, pageContents().caption);
   const renderStatus = () => writer.set(CONTAINER.status, statusLine(state, tick));
-  // The clock shows only while a session is recording (XERK-85).
-  const renderClock = () =>
-    writer.set(CONTAINER.clock, state.recording ? clockText(new Date()) : "");
+  // The clock shows whenever signed in — on the idle "ready" page and while
+  // recording alike (XERK-85 feedback).
+  const renderClock = () => writer.set(CONTAINER.clock, enabled ? clockText(new Date()) : "");
   const syncPhone = () =>
     phoneTranscript?.update({
       recording: state.recording,
@@ -187,7 +187,7 @@ export async function wireLens(
 
   const showIdle = () => {
     writer.set(CONTAINER.status, statusLine(state));
-    writer.set(CONTAINER.clock, "");
+    renderClock();
     writer.set(CONTAINER.caption, IDLE_PROMPT);
   };
 
@@ -321,14 +321,15 @@ export async function wireLens(
     syncPhone();
   };
 
-  // The activity ticker (XERK-85): while recording in the foreground, move the
-  // "listening" dots and keep the top-right clock on the current minute. The
-  // writer drops unchanged frames, so this costs BLE only when text changes.
+  // The activity ticker (XERK-85): while signed in and foregrounded, keep the
+  // top-right clock on the current minute (idle "ready" page included), and
+  // while recording move the "listening" dots. The writer drops unchanged
+  // frames, so this costs BLE only when text changes.
   const ticker = setInterval(() => {
-    if (!state.recording || !foreground) return;
+    if (!enabled || !foreground) return;
     tick += 1;
     renderClock();
-    if (state.connection === "open") renderStatus();
+    if (state.recording && state.connection === "open") renderStatus();
   }, TICK_MS);
 
   // The single event subscription (audio + gestures + system events). Touch

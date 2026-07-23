@@ -63,7 +63,7 @@ describe("lens layout", () => {
     expect(clock.yPosition).toBe(0);
     expect(clock.width).toBe(CLOCK_W);
     expect(clock.height).toBe(LINE_H);
-    expect(clock.content).toBe(""); // empty until a session records
+    expect(clock.content).toBe(""); // empty until signed in
   });
 
   it("captures input on the clock — never on the session text (XERK-85)", () => {

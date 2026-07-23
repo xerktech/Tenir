@@ -120,9 +120,10 @@ the popup page on the popup list. Gestures arrive on the `sysEvent`,
 `textEvent`, and `listEvent` channels; all feed one handler, deduped per
 gesture type.
 
-While a session records, the status line (top left) reads `listening` with
-moving dots, the top-right corner shows the current time (12-hour), and the
-caption band keeps only the tail of the transcript that fits on screen — old
+Once signed in, the top-right corner shows the current time (12-hour) — on
+the idle "ready" page and while recording alike. While a session records, the
+status line (top left) reads `listening` with moving dots, and the caption
+band keeps only the tail of the transcript that fits on screen — old
 text falls off the top, and with nothing overflowing there is nothing to
 scroll. The phone page mirrors the running session's transcript in real time
 in a strip above the embedded web UI.

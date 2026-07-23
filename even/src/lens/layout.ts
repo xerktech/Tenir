@@ -2,7 +2,7 @@
  * Lens layout for the 576x288 G2 HUD.
  *
  *   ┌──────────────────────┬────────┐  y=0
- *   │ status line (tiny)   │12:59 PM│  h=27  (1 line; clock only in a session)
+ *   │ status line (tiny)   │12:59 PM│  h=27  (1 line; clock whenever signed in)
  *   ├──────────────────────┴────────┤  y=27
  *   │ caption band  (live           │  h=243 (exactly CAPTION_LINES lines —
  *   │ transcript)                   │  no half-line slot)
