@@ -27,6 +27,7 @@ from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
 from api.stt.engine import BYTES_PER_SEC, WhisperEngine, pcm16_to_float32, rms
+from api.stt.hallucination import is_non_speech_hallucination
 
 log = logging.getLogger("api.stt.streaming")
 
@@ -136,8 +137,8 @@ class StreamingTranscriber:
                 window_bytes=self._partial_window_bytes, stage="partial"
             )
             text = result.text.strip()
-            if not text:
-                return
+            if not text or is_non_speech_hallucination(text):
+                return  # nothing said, or the model answered silence with a canned line
             lang = _lang(result.language or self._language)
             await self._queue.put(CaptionPartial(type="caption.partial", text=text, lang=lang))
             return
@@ -149,6 +150,10 @@ class StreamingTranscriber:
         # finalizes the turn). The running commit then keeps already-shown words fixed
         # and only the trailing word or two can still change.
         result = await self._run_engine(window_bytes=0, stage="partial")
+        if is_non_speech_hallucination(result.text):
+            # A canned "sorry, I couldn't hear that" on a non-speech window: don't feed
+            # it to LocalAgreement (it would poison the committed prefix), just skip.
+            return
         lang = _lang(result.language or self._language)
         self._agreement.commit(result.text.split())
         caption = self._agreement.caption_text()
@@ -173,8 +178,10 @@ class StreamingTranscriber:
             self._agreement = LocalAgreement()
 
         text = result.text.strip()
-        if not text:
-            return  # silence / no speech in this window — nothing to surface
+        if not text or is_non_speech_hallucination(text):
+            # Silence / no speech, or the model answered a non-speech window with a
+            # canned "sorry, I couldn't hear that" line — nothing to surface.
+            return
 
         words = [
             Word(

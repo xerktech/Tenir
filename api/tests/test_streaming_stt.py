@@ -449,6 +449,105 @@ def test_local_agreement_off_emits_raw_window() -> None:
     asyncio.run(run())
 
 
+# ----- non-speech hallucination suppression (XERK-92) -----------------------
+
+
+class CannedEngine:
+    """Every window decodes to the same canned non-speech apology — the Voxtral
+    failure mode where silence/noise is 'answered' instead of transcribed."""
+
+    def __init__(self, text: str = "Sorry, I couldn't hear that.") -> None:
+        self.text = text
+
+    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+        return EngineResult(text=self.text, words=[], language="en")
+
+
+def test_final_suppresses_non_speech_hallucination() -> None:
+    """A finalized window whose whole text is a canned apology surfaces nothing,
+    but the clock still advances so timing stays monotonic."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            eng := CannedEngine(),
+            language="en",
+            partial_interval_ms=10000,  # never via cadence
+            silence_ms=10000,
+            max_segment_ms=300,
+        )
+        for _ in range(3):  # 300ms of "speech-energy" noise -> max-segment finalize
+            await t.push(_pcm(100, amplitude=4000))
+        assert eng  # decoded, but...
+        assert not _drain(t)  # the canned apology is dropped, not surfaced
+        assert t._segment_start_ms == 300  # clock advanced regardless
+
+    asyncio.run(run())
+
+
+def test_partial_suppresses_non_speech_hallucination_local_agreement() -> None:
+    """The canned line must never be committed by LocalAgreement or shown as a
+    partial — it would otherwise poison the committed prefix of the caption."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            CannedEngine("Could you please repeat or clarify your request?"),
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        assert not _drain(t)  # no partial emitted
+        assert t._agreement is not None
+        assert t._agreement.committed == []  # nothing committed
+        assert t._agreement.tentative == []
+
+    asyncio.run(run())
+
+
+def test_partial_suppresses_non_speech_hallucination_legacy() -> None:
+    """With LocalAgreement off, the raw-window partial path drops the canned line too."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            CannedEngine("I didn't quite catch that."),
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+            local_agreement=False,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        assert not _drain(t)  # nothing surfaced
+
+    asyncio.run(run())
+
+
+def test_real_speech_after_a_hallucination_still_surfaces() -> None:
+    """Suppressing the canned line must not swallow the real caption that follows —
+    the filter only drops the window that is entirely a canned response."""
+
+    async def run() -> None:
+        eng = ScriptedEngine(["Sorry, I couldn't hear that.", "hello", "hello world"])
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        texts: list[str] = []
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+            texts.extend(m.text for m in _drain(t) if isinstance(m, CaptionPartial))
+        # The first (canned) hypothesis is dropped; real speech commits normally.
+        assert texts == ["hello", "hello world"]
+
+    asyncio.run(run())
+
+
 # ----- factory --------------------------------------------------------------
 
 
