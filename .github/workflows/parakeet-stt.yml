@@ -1,0 +1,70 @@
+name: Parakeet STT
+
+# Parakeet is an EVALUATION STT image (run side by side with Voxtral to A/B the
+# model swap, XERK-92 follow-up), so it deliberately sits OUTSIDE the unified
+# release train: no version stamp, no release manifest entry, nothing shipped as a
+# first-class component. On a PR touching it, the gate is a cheap Dockerfile lint
+# (same as vllm-stt). Publishing is a MANUAL workflow_dispatch — build + push the
+# eval image to GHCR when you want to stand it up — not an auto-on-merge job.
+#
+# When Parakeet is adopted as the live STT model, fold it into release.yml as a
+# carried component (matching build-vllm-stt) and retire the publish job here.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'parakeet-stt/**'
+      - '.github/workflows/parakeet-stt.yml'
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Build and push tenir-parakeet-stt to GHCR (uncheck to build-only)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write # ghcr push (workflow_dispatch publish only)
+
+jobs:
+  lint:
+    name: Dockerfile lint (hadolint)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      # Only hard errors fail the gate; style/pin warnings on this thin patch
+      # Dockerfile are expected and non-blocking (matches vllm-stt.yml).
+      - name: Lint parakeet-stt/Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:latest \
+            hadolint --failure-threshold error - < parakeet-stt/Dockerfile
+
+  publish:
+    name: Build + push tenir-parakeet-stt
+    if: github.event_name == 'workflow_dispatch'
+    # Self-hosted: the NeMo base is multi-GB — a hosted runner can't hold it (same
+    # reason build-vllm-stt is self-hosted).
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lowercase owner for GHCR
+        id: owner
+        run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Build + push tenir-parakeet-stt
+        uses: ./.github/actions/build-push-image
+        with:
+          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-parakeet-stt
+          tags: |
+            latest
+            sha-${{ github.sha }}
+          context: .
+          dockerfile: parakeet-stt/Dockerfile
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push: ${{ inputs.push }}
