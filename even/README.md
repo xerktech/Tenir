@@ -104,17 +104,21 @@ glasses (and passes review) before relying on it for production.
 
 - **Single tap** — start a new session when idle. While one records, single
   taps do NOTHING (a brushed temple must not end a recording).
-- **Double tap (recording)** — a bordered popup box (its own container, added
-  via `rebuildPageContainer`) with **Continue** (default, top) / **Exit
+- **Double tap (recording)** — a bordered native OS list (its own container,
+  added via `rebuildPageContainer`) with **Continue** (default, top) / **Exit
   session**, drawn on top of the live captions, which keep flowing untouched
-  underneath: swipe to move the highlight, single tap to confirm, another
+  underneath. The OS owns the popup's gestures: swiping moves its selection,
+  a single tap confirms it (reported on the `listEvent` channel), another
   double tap dismisses (same as Continue). Exit session stops the session —
   the api finalizes and stores it — and the lens idles at "tap to start".
 - **Double tap (idle / signed out)** — exit the app (confirm dialog).
 
-Touch gestures arrive on two channels — `sysEvent`, and `textEvent` aimed at
-the event-capture caption container (on-device swipes come as the latter) —
-both feed one handler, deduped per gesture type.
+The caption band NEVER captures input (a scroll gesture aimed at the captured
+container triggers the OS scroll animation on it — the session text must
+never be its target): the plain pages capture on the tiny clock container,
+the popup page on the popup list. Gestures arrive on the `sysEvent`,
+`textEvent`, and `listEvent` channels; all feed one handler, deduped per
+gesture type.
 
 While a session records, the status line (top left) reads `listening` with
 moving dots, the top-right corner shows the current time (12-hour), and the

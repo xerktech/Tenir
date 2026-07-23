@@ -5,11 +5,16 @@
  *   │ status line (tiny)   │12:59 PM│  h=27  (1 line; clock only in a session)
  *   ├──────────────────────┴────────┤  y=27
  *   │ caption band  (live           │  h=243 (exactly CAPTION_LINES lines —
- *   │ transcript)                   │  ← isEventCapture: 1   no half-line slot)
+ *   │ transcript)                   │  no half-line slot)
  *   └───────────────────────────────┘  y=270 (the last 18px stay unused)
  *
- * Exactly ONE container captures input (the caption band). Live text updates go
- * through `textContainerUpgrade` (flicker-free), never a rebuild.
+ * Exactly ONE container captures input per page — and it is NEVER the caption
+ * band (XERK-85 feedback: a scroll gesture aimed at the captured container
+ * triggers the OS scroll animation on it, which must not happen on the session
+ * text). The plain pages give capture to the tiny clock container; the popup
+ * page gives it to the popup list, where the OS turns scrolling into moving
+ * the selection. Live text updates go through `textContainerUpgrade`
+ * (flicker-free), never a rebuild.
  *
  * XERK-85: while a session is recording the status line reads "listening" with
  * animated dots and the clock container shows the current time top-right. The
@@ -23,6 +28,8 @@
 import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
+  ListContainerProperty,
+  ListItemContainerProperty,
   RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
@@ -59,20 +66,25 @@ export const CONTAINER = {
   menu: { id: 4, name: "menu" }, // the double-tap popup box (only on the menu page)
 } as const;
 
-// ---- the double-tap popup box (XERK-85) -------------------------------------
-// A real bordered container overlaid on the page via `rebuildPageContainer`
+// ---- the double-tap popup (XERK-85) -----------------------------------------
+// A native OS LIST container overlaid on the page via `rebuildPageContainer`
 // (the SDK's sanctioned runtime page change), horizontally centered in the
-// upper part of the caption band. Created LAST on its page, so it draws ON TOP
-// of the live captions — which keep flowing untouched underneath it.
+// upper part of the caption band. The OS renders the menu — its background,
+// the selection border (isItemSelectBorderEn) — so the session text does not
+// show through, and it owns the gestures while open: scrolling moves the
+// SELECTION (never scrolls the session text) and a tap reports the selected
+// item back through the listEvent channel.
+export const MENU_ITEMS = ["Continue", "Exit session"] as const; // Continue = default, on top
+export const MENU_EXIT_INDEX = 1;
 export const MENU_PAD = 10;
 export const MENU_BORDER = 2;
-const MENU_LABEL_MAX_W = Math.max(
-  ...["› Continue", "  Continue", "› Exit session", "  Exit session"].map(getTextWidth),
-);
-// Widest label + padding/border each side + a little slack (kept even so the
-// centered x position is a whole pixel).
-export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 8) / 2);
-export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
+const MENU_LABEL_MAX_W = Math.max(...MENU_ITEMS.map(getTextWidth));
+// Widest label + padding/border each side + slack for the OS list cell chrome
+// (kept even so the centered x position is a whole pixel).
+export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 24) / 2);
+// Two list cells; each gets headroom over the bare line height for the OS
+// cell padding + selection border.
+export const MENU_H = 2 * (LINE_H + 10) + 2 * (MENU_PAD + MENU_BORDER);
 export const MENU_X = (SCREEN_W - MENU_W) / 2;
 export const MENU_Y = 2 * LINE_H; // one caption row below the status line
 
@@ -88,8 +100,13 @@ export interface PageContents {
  * paddingLength/borderWidth are pinned to 0 on each so the width the host
  * wraps at IS the width fitCaption measures at — an unnoticed host default
  * padding would wrap earlier than measured and overflow the band.
+ *
+ * The caption band NEVER captures input (XERK-85: a scroll gesture on the
+ * captured container triggers the OS scroll animation there — the session text
+ * must never be its target). The plain pages capture on the tiny clock
+ * container instead; the popup page captures on the popup list.
  */
-function baseContainers(contents: PageContents): TextContainerProperty[] {
+function baseContainers(contents: PageContents, captureOnClock: boolean): TextContainerProperty[] {
   const status = new TextContainerProperty({
     containerID: CONTAINER.status.id,
     containerName: CONTAINER.status.name,
@@ -112,7 +129,7 @@ function baseContainers(contents: PageContents): TextContainerProperty[] {
     height: CAPTION_H, // whole lines only — no half-line slot to scroll into
     paddingLength: 0,
     borderWidth: 0,
-    isEventCapture: 1, // the single event-capture container
+    isEventCapture: 0, // never — see above
     content: contents.caption,
   });
 
@@ -125,7 +142,7 @@ function baseContainers(contents: PageContents): TextContainerProperty[] {
     height: LINE_H,
     paddingLength: 0,
     borderWidth: 0,
-    isEventCapture: 0,
+    isEventCapture: captureOnClock ? 1 : 0,
     content: contents.clock,
   });
 
@@ -136,7 +153,7 @@ function baseContainers(contents: PageContents): TextContainerProperty[] {
 export function buildStartupContainer(): CreateStartUpPageContainer {
   return new CreateStartUpPageContainer({
     containerTotalNum: 3,
-    textObject: baseContainers({ status: "starting…", caption: "", clock: "" }),
+    textObject: baseContainers({ status: "starting…", caption: "", clock: "" }, true),
   });
 }
 
@@ -144,16 +161,19 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
 export function buildMainPage(contents: PageContents): RebuildPageContainer {
   return new RebuildPageContainer({
     containerTotalNum: 3,
-    textObject: baseContainers(contents),
+    textObject: baseContainers(contents, true),
   });
 }
 
 /**
  * The page with the double-tap popup up: the three base containers plus the
- * bordered menu box, created LAST so it draws on top of the caption band.
+ * native OS list rendering Continue / Exit session. The list is the page's
+ * event-capture container, so the OS owns the gestures while the popup is
+ * open — scrolling moves the selection (with its own selection border), and a
+ * tap reports the chosen item via the listEvent channel.
  */
-export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
-  const menu = new TextContainerProperty({
+export function buildMenuPage(contents: PageContents): RebuildPageContainer {
+  const menu = new ListContainerProperty({
     containerID: CONTAINER.menu.id,
     containerName: CONTAINER.menu.name,
     xPosition: MENU_X,
@@ -165,12 +185,22 @@ export function buildMenuPage(contents: PageContents, selected: MenuChoice): Reb
     // Any non-black color renders as the HUD's single lit color.
     borderColor: 0xffffff,
     borderRadius: 10,
-    isEventCapture: 0,
-    content: menuText(selected),
+    isEventCapture: 1, // the popup owns the gestures while it is up
+    itemContainer: new ListItemContainerProperty({
+      itemCount: MENU_ITEMS.length,
+      itemName: [...MENU_ITEMS],
+      itemWidth: MENU_W - 2 * (MENU_PAD + MENU_BORDER),
+      isItemSelectBorderEn: 1, // the OS draws the selection highlight
+    }),
   });
+  // Best-effort black backdrop (XERK-85: the session text must not show
+  // through the popup): the SDK's toJson passes unknown keys through to the
+  // host, so declare an opaque black background for hosts that honor it.
+  (menu as unknown as Record<string, unknown>).backgroundColor = 0x000000;
   return new RebuildPageContainer({
     containerTotalNum: 4,
-    textObject: [...baseContainers(contents), menu],
+    textObject: baseContainers(contents, false),
+    listObject: [menu],
   });
 }
 
@@ -276,21 +306,6 @@ export class LensTextWriter {
       this.pumping = false;
     }
   }
-}
-
-/** The in-session popup's two choices (XERK-85): Continue is the default, on top. */
-export type MenuChoice = "continue" | "exit";
-
-/**
- * The in-session popup's rows, rendered inside the bordered menu box:
- * Continue on top (the default) with Exit session below, the highlighted row
- * marked with "›". Swiping moves the highlight; a single tap confirms it
- * (controller.ts).
- */
-export function menuText(selected: MenuChoice): string {
-  const row = (choice: MenuChoice, label: string) =>
-    `${selected === choice ? "›" : " "} ${label}`;
-  return `${row("continue", "Continue")}\n${row("exit", "Exit session")}`;
 }
 
 /** The animated activity dots (XERK-85): 1 → 2 → 3 dots, cycling with the ticker. */
