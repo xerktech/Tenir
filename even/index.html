@@ -151,6 +151,36 @@
       .bar .btn { min-height: 34px; padding: var(--space-1) var(--space-3); font-size: var(--text-xs); border-color: var(--border-strong); }
       .bar-spacer { flex: 1; }
       #dashboard { flex: 1; width: 100%; border: 0; background: var(--bg); }
+
+      /* ---- live transcript strip (XERK-85): mirrors the running glasses
+             session in real time, above the embedded web UI. Shown only while
+             a session is recording. ---- */
+      #live-transcript {
+        flex: none; display: flex; flex-direction: column;
+        max-height: 32vh;
+        margin: 0; padding: var(--space-2) var(--space-3);
+        background: var(--surface);
+        border: 0; border-bottom: 1px solid var(--border);
+        border-radius: 0; box-shadow: none;
+      }
+      #live-transcript[hidden] { display: none; }
+      .live-head { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+      .live-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--accent);
+        animation: live-pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes live-pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
+        50% { opacity: .35; box-shadow: none; }
+      }
+      .live-title { font-family: var(--font-display); font-weight: 600; font-size: var(--text-sm); }
+      .live-status { margin-left: auto; color: var(--text-muted); font-size: var(--text-xs); }
+      /* The running transcript, styled like the web UI's Live panel (styles.css .transcript). */
+      .transcript { list-style: none; margin: var(--space-2) 0 0; padding: 0; overflow-y: auto; }
+      .transcript li { padding: var(--space-1) 0; line-height: 1.5; font-size: var(--text-sm); }
+      .transcript li + li { border-top: 1px solid var(--border); }
+      .transcript li.partial { color: var(--text-muted); }
     </style>
   </head>
   <body>
@@ -202,6 +232,16 @@
         <span class="who">Signed in as <b id="app-user"></b></span>
         <button class="btn btn-ghost" id="sign-out" type="button">Log out</button>
       </div>
+      <!-- Live transcript of the running glasses session (XERK-85): the WS
+           client runs in this WebView, so captions mirror here in real time. -->
+      <section id="live-transcript" hidden>
+        <div class="live-head">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span class="live-title">Live transcript</span>
+          <span class="live-status" id="live-status"></span>
+        </div>
+        <ul class="transcript" id="live-text" aria-live="polite"></ul>
+      </section>
       <iframe id="dashboard" title="Tenir web app"></iframe>
     </div>
 

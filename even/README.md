@@ -25,13 +25,15 @@ run — a saved choice always wins.
 
 ```
 src/
-  main.ts              bridge/dev boot, lens render loop gated on auth, input + lifecycle
+  main.ts              bridge/dev boot + wiring: lens surface, login page, transcript strip
+  lens/controller.ts   session state machine: click start/stop, listening/clock ticker (XERK-85)
   config.ts            initConfig(storage): effective api URL (saved → seed → localhost) + device token store
   phone/login.ts       phone-side login page + embedded web UI (token handed over via #token= fragment)
+  phone/transcript.ts  phone-side live transcript strip mirroring the running session (XERK-85)
   state/storage.ts     KeyValueStorage: BridgeStorage (device, survives restarts) / BrowserStorage (dev)
   state/settings.ts    required, user-editable server URL: validate + persist (shared with the lens)
   state/credentials.ts cached username/password + silent re-login when the token expires
-  lens/layout.ts       576x288 HUD: status line / caption band
+  lens/layout.ts       576x288 HUD: status line / clock / caption band, fit-to-band trimming
   audio/capture.ts     audioControl + PCM extraction (16kHz s16le mono)
   state/persist.ts     session persistence across background/foreground (Even SDK)
 app.json               Even Hub manifest (permissions, languages)
@@ -100,8 +102,17 @@ glasses (and passes review) before relying on it for production.
 
 ## Lens controls
 
-- **Single click** — pause / resume the caption stream.
+- **Single click** — start a new session / stop the running one (XERK-85). The
+  api finalizes and stores the stopped session; the lens idles at "tap to
+  start" between sessions.
 - **Double click** — exit (confirm dialog).
+
+While a session records, the status line (top left) reads `listening` with
+moving dots, the top-right corner shows the current time, and the caption band
+keeps only the tail of the transcript that fits on screen — old text falls off
+the top, and with nothing overflowing there is nothing to scroll. The phone
+page mirrors the running session's transcript in real time in a strip above
+the embedded web UI.
 
 ## Notes
 
