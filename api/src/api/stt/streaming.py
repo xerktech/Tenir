@@ -128,22 +128,29 @@ class StreamingTranscriber:
 
     async def _emit_partial(self) -> None:
         self._since_partial = 0
-        result = await self._run_engine(window_bytes=self._partial_window_bytes, stage="partial")
-        text = result.text.strip()
-        lang = _lang(result.language or self._language)
 
         if self._agreement is None:
-            # Legacy path: emit the raw window hypothesis, which rewrites the whole
-            # caption line each cadence.
+            # Legacy path: decode the trailing window and emit it verbatim, which
+            # rewrites the whole caption line each cadence.
+            result = await self._run_engine(
+                window_bytes=self._partial_window_bytes, stage="partial"
+            )
+            text = result.text.strip()
             if not text:
                 return
+            lang = _lang(result.language or self._language)
             await self._queue.put(CaptionPartial(type="caption.partial", text=text, lang=lang))
             return
 
-        # LocalAgreement-2: fold this window's hypothesis into the running commit so
-        # already-shown words stay put and only the trailing word or two can still
-        # change. `caption_text` is the stable prefix plus that tentative tail.
-        self._agreement.commit(text.split())
+        # LocalAgreement-2 needs every hypothesis anchored at the same audio start so
+        # successive decodes share a stable prefix — a sliding trailing window never
+        # lines up and nothing commits. So partials decode the whole in-flight segment
+        # here (still bounded by max_segment_ms and, in practice, short because a pause
+        # finalizes the turn). The running commit then keeps already-shown words fixed
+        # and only the trailing word or two can still change.
+        result = await self._run_engine(window_bytes=0, stage="partial")
+        lang = _lang(result.language or self._language)
+        self._agreement.commit(result.text.split())
         caption = self._agreement.caption_text()
         if not caption:
             return

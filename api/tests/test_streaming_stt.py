@@ -223,17 +223,21 @@ def test_results_stream_and_close_sentinel() -> None:
     asyncio.run(run())
 
 
-def test_partial_decodes_only_trailing_window() -> None:
-    """A partial re-decodes at most partial_window_ms; a final decodes the whole
-    segment — so partial latency stays bounded as a turn grows (master plan §10)."""
+class RecordingEngine:
+    """Records the sample count of every decode so we can assert what was decoded."""
 
-    class RecordingEngine:
-        def __init__(self) -> None:
-            self.sizes: list[int] = []
+    def __init__(self) -> None:
+        self.sizes: list[int] = []
 
-        def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
-            self.sizes.append(int(samples.size))
-            return EngineResult(text="hello", words=[], language="en")
+    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+        self.sizes.append(int(samples.size))
+        return EngineResult(text="hello", words=[], language="en")
+
+
+def test_legacy_partial_decodes_only_trailing_window() -> None:
+    """With LocalAgreement off, a partial re-decodes at most partial_window_ms; a
+    final decodes the whole segment — so partial latency stays bounded as a turn
+    grows (master plan §10)."""
 
     async def run() -> None:
         eng = RecordingEngine()
@@ -244,6 +248,7 @@ def test_partial_decodes_only_trailing_window() -> None:
             partial_window_ms=1000,  # 16000 samples
             silence_ms=100000,
             max_segment_ms=100000,
+            local_agreement=False,
         )
         for _ in range(20):  # 2000ms of speech -> partials at 500/1000/1500/2000ms
             await t.push(_pcm(100, amplitude=4000))
@@ -254,6 +259,29 @@ def test_partial_decodes_only_trailing_window() -> None:
 
         await t.flush()  # the final decodes the whole 2000ms segment
         assert eng.sizes[-1] == 32000
+
+    asyncio.run(run())
+
+
+def test_local_agreement_partials_are_anchored_at_segment_start() -> None:
+    """LocalAgreement needs a stable prefix, so its partials decode the WHOLE in-flight
+    segment (ignoring partial_window_ms), growing with the turn — not a sliding window
+    that would never line up between passes."""
+
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=500,
+            partial_window_ms=1000,  # would cap at 16000 — but LA ignores it
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        for _ in range(20):  # 2000ms of speech -> partials at 500/1000/1500/2000ms
+            await t.push(_pcm(100, amplitude=4000))
+        # Each partial decodes the whole segment so far: 8000, 16000, 24000, 32000.
+        assert eng.sizes == [8000, 16000, 24000, 32000]
 
     asyncio.run(run())
 

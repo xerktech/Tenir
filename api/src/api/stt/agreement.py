@@ -1,18 +1,33 @@
 """LocalAgreement-2 incremental commit for live captions (XERK-90).
 
-The realtime windowing in :mod:`api.stt.streaming` re-transcribes an overlapping
-*trailing* audio window on a fixed cadence. Emitting each fresh hypothesis
-verbatim makes the on-screen caption rewrite words that were already shown — the
-"constantly changing and adjusting until it drops a final guess" behaviour we want
-to kill. It doesn't read as live captioning.
+The realtime windowing in :mod:`api.stt.streaming` re-transcribes the in-flight
+segment on a fixed cadence. Emitting each fresh hypothesis verbatim makes the
+on-screen caption rewrite words that were already shown — the "constantly changing
+and adjusting until it drops a final guess" behaviour we want to kill. It doesn't
+read as live captioning.
 
 ``LocalAgreement`` applies the **LocalAgreement-2** policy (Macháček, Dabre &
 Bojar, *"Turning Whisper into Real-Time Transcription System"*, 2023): a word is
 *committed* — shown as stable and never rewritten — only once two consecutive
 hypotheses agree on it. Everything after the agreed prefix stays *tentative* (a
 word or two behind real time) until a later hypothesis confirms it. The caption
-then grows word by word instead of flickering, which is exactly the "accurate
-word by word, only a couple words behind" feel the ticket asks for.
+then grows word by word instead of flickering, which is the "accurate word by
+word, only a couple words behind" feel the ticket asks for.
+
+Two properties make this robust against real engine output (learned the hard way —
+the first cut wasn't):
+
+- **Anchored hypotheses.** Each hypothesis must be a decode of the *whole* in-flight
+  segment (same audio start every cadence), so successive hypotheses share a stable
+  prefix and the agreement is a plain longest-common-prefix. A *sliding* decode
+  window starts at a different point each pass, so its hypotheses never line up and
+  nothing ever commits — the streaming layer decodes the whole segment for partials
+  when LocalAgreement is on for exactly this reason.
+- **Normalized comparison.** Voxtral re-punctuates and re-capitalizes the window
+  every pass (``So`` → ``So,``, ``the`` → ``The``). Comparing raw tokens would break
+  the prefix on the first cosmetic change and commit almost nothing, so agreement is
+  checked on a lowercased, punctuation-stripped form while the original surface form
+  is what gets displayed.
 
 The policy is text-only (no timestamps), so it works with any engine — including
 Voxtral, whose vLLM ``/audio/transcriptions`` endpoint returns no per-word timing.
@@ -20,9 +35,19 @@ Voxtral, whose vLLM ``/audio/transcriptions`` endpoint returns no per-word timin
 
 from __future__ import annotations
 
+# Punctuation stripped from a token's edges before comparing two hypotheses, so a
+# word that only gained/lost a comma or a capital between passes still counts as
+# agreement. Interior marks (the apostrophe in "don't") are left alone.
+_EDGE_PUNCT = "\"'“”‘’.,!?;:…()[]{}«»—–-·"
+
+
+def _norm(token: str) -> str:
+    """Fold a token to the form used for agreement: edge punctuation off, lowercased."""
+    return token.strip(_EDGE_PUNCT).lower()
+
 
 def _common_prefix_len(a: list[str], b: list[str]) -> int:
-    """Length of the longest shared prefix of two word lists."""
+    """Length of the longest shared prefix of two (normalized) word lists."""
     n = 0
     for x, y in zip(a, b):
         if x != y:
@@ -32,57 +57,37 @@ def _common_prefix_len(a: list[str], b: list[str]) -> int:
 
 
 class LocalAgreement:
-    """Commits words that two consecutive window hypotheses agree on.
+    """Commits words that two consecutive whole-segment hypotheses agree on.
 
-    Feed each new *full-window* hypothesis (already tokenised into words) to
-    :meth:`commit`. :attr:`committed` holds the stable prefix that has been shown
-    and won't change; :attr:`tentative` holds the not-yet-confirmed tail. Because
-    successive decode windows overlap, a fresh hypothesis re-states words that are
-    already committed; :meth:`commit` strips that overlap first, so committed words
-    are never re-emitted or reconsidered.
+    Feed each new *whole-segment* hypothesis (already tokenised into words) to
+    :meth:`commit`. :attr:`committed` holds the stable prefix that has been shown and
+    won't change; :attr:`tentative` holds the not-yet-confirmed tail. Committed words
+    keep the surface form they were frozen with, so later cosmetic re-spellings of the
+    same word never rewrite what's on screen.
     """
 
-    # How many trailing committed words to search when re-anchoring an overlapping
-    # window. The trailing decode window is only a few seconds, so its leading words
-    # overlap just the most-recently committed handful — bounding the search keeps a
-    # long transcript from being re-scanned every cadence and avoids matching a much
-    # older, coincidental repetition of the same word further back.
-    _MAX_OVERLAP = 16
-
     def __init__(self) -> None:
-        self._committed: list[str] = []
-        self._pending: list[str] = []  # previous round's post-overlap tail
+        self._committed: list[str] = []  # frozen display tokens — never rewritten
+        self._pending: list[str] = []  # tentative display tail
+        self._prev_norm: list[str] = []  # previous whole hypothesis, normalized
 
     def commit(self, hypothesis: list[str]) -> None:
-        """Ingest a new window hypothesis and extend the committed prefix.
+        """Ingest a new whole-segment hypothesis and extend the committed prefix.
 
-        Any leading words that merely re-state what's already committed are dropped;
-        of the genuinely new words, those that match last round's tail (the
-        LocalAgreement-2 agreement) are committed and the rest are held as the new
-        tentative tail.
+        Commits up to the longest prefix this hypothesis shares with the previous one
+        (LocalAgreement-2), holding everything past it as the tentative tail. The
+        committed prefix only ever grows: if a later hypothesis disagrees about a word
+        that was already committed, the commit stands and the screen doesn't flicker.
         """
-        fresh = self._strip_committed(hypothesis)
-        agreed = _common_prefix_len(self._pending, fresh)
-        if agreed:
-            self._committed.extend(fresh[:agreed])
-        self._pending = fresh[agreed:]
-
-    def _strip_committed(self, hyp: list[str]) -> list[str]:
-        """Return only the part of ``hyp`` beyond what's already committed.
-
-        The trailing decode window overlaps the end of the committed transcript, so
-        a fresh hypothesis begins by repeating some committed words. Find the longest
-        overlap (a committed suffix equal to a ``hyp`` prefix) and drop it; if the
-        window has slid far enough that no overlap remains, ``hyp`` is all new.
-        """
-        if not self._committed or not hyp:
-            return list(hyp)
-        tail = self._committed[-self._MAX_OVERLAP :]
-        max_k = min(len(tail), len(hyp))
-        for k in range(max_k, 0, -1):
-            if tail[-k:] == hyp[:k]:
-                return list(hyp[k:])
-        return list(hyp)
+        norm = [_norm(t) for t in hypothesis]
+        agreed = _common_prefix_len(self._prev_norm, norm)
+        n = len(self._committed)
+        # Never un-commit (>= n) and never run past this hypothesis (<= len).
+        new_n = max(n, min(agreed, len(hypothesis)))
+        if new_n > n:
+            self._committed.extend(hypothesis[n:new_n])
+        self._pending = hypothesis[new_n:]
+        self._prev_norm = norm
 
     @property
     def committed(self) -> list[str]:

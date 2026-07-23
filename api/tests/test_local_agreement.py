@@ -1,19 +1,23 @@
 """LocalAgreement-2 incremental commit policy (XERK-90).
 
 These pin the word-by-word behaviour the ticket asks for: a word is only shown as
-stable ("committed") once two consecutive window hypotheses agree on it, and once
-committed it is never rewritten — even as the trailing decode window slides forward
-and re-guesses the audio.
+stable ("committed") once two consecutive *whole-segment* hypotheses agree on it,
+and once committed it is never rewritten — even when the engine re-punctuates or
+re-capitalizes the same words on the next pass.
 """
 
 from __future__ import annotations
 
-from api.stt.agreement import LocalAgreement, _common_prefix_len
+from api.stt.agreement import LocalAgreement, _common_prefix_len, _norm
 
 
-def _feed(la: LocalAgreement, *hyps: str) -> None:
-    for h in hyps:
-        la.commit(h.split())
+def test_norm_folds_edge_punctuation_and_case() -> None:
+    assert _norm("So,") == "so"
+    assert _norm("The") == "the"
+    assert _norm("world.") == "world"
+    assert _norm("“hello”") == "hello"
+    # Interior punctuation (a contraction) is preserved.
+    assert _norm("don't") == "don't"
 
 
 def test_common_prefix_len() -> None:
@@ -36,7 +40,7 @@ def test_agreement_commits_the_shared_prefix() -> None:
     la = LocalAgreement()
     la.commit(["the", "quick", "brown"])
     la.commit(["the", "quick", "brown", "fox"])
-    # "the quick brown" agreed across both hypotheses -> committed; "fox" is new/tentative.
+    # "the quick brown" agreed across both hypotheses -> committed; "fox" is tentative.
     assert la.committed == ["the", "quick", "brown"]
     assert la.tentative == ["fox"]
     assert la.committed_text() == "the quick brown"
@@ -64,59 +68,41 @@ def test_caption_grows_monotonically_and_never_rewrites_committed() -> None:
     assert la.tentative == ["go"]
 
 
+def test_cosmetic_repunctuation_does_not_block_commits() -> None:
+    """The real-world failure mode: Voxtral adds a comma / capitalizes on the next
+    pass. Normalized comparison must still commit those words, keeping the displayed
+    (punctuated) surface form."""
+    la = LocalAgreement()
+    la.commit(["so", "i", "went"])
+    # Same words, now re-punctuated and re-capitalized, plus one more word.
+    la.commit(["So,", "I", "went", "to"])
+    assert la.committed == ["So,", "I", "went"]  # committed with its punctuated form
+    assert la.tentative == ["to"]
+    assert la.caption_text() == "So, I went to"
+
+
 def test_disagreement_holds_a_word_back_until_it_settles() -> None:
     la = LocalAgreement()
-    la.commit(["going", "to", "the"])
-    la.commit(["going", "to", "the", "beach"])  # commits "going to the", tentative "beach"
-    assert la.committed == ["going", "to", "the"]
-    # The model changes its mind about the last word: it must NOT have been committed.
-    la.commit(["going", "to", "the", "bench"])
+    la.commit(["going", "to", "the", "beach"])  # first pass: all tentative
+    la.commit(["going", "to", "the", "bench"])  # commits "going to the"; tail flips
     assert la.committed == ["going", "to", "the"]
     assert la.tentative == ["bench"]
-    # Now it agrees twice -> "bench" settles and commits.
+    # Now "bench" agrees twice -> it settles and commits.
     la.commit(["going", "to", "the", "bench", "now"])
     assert la.committed == ["going", "to", "the", "bench"]
     assert la.tentative == ["now"]
 
 
-def test_sliding_window_that_drops_leading_words_still_commits_correctly() -> None:
-    """As the trailing window slides past old audio, the leading words disappear from
-    the hypothesis. Already-committed words must survive and new tail words still commit."""
+def test_committed_word_is_not_rewritten_when_a_later_pass_disagrees() -> None:
+    """Once committed, a word stays put even if the engine later changes its mind."""
     la = LocalAgreement()
-    la.commit(["one", "two", "three", "four"])
-    la.commit(["one", "two", "three", "four", "five"])
-    assert la.committed == ["one", "two", "three", "four"]
-    # Window slides: "one" scrolls out; hypothesis now starts at "two".
-    la.commit(["two", "three", "four", "five", "six"])
-    assert la.committed == ["one", "two", "three", "four", "five"]
-    la.commit(["three", "four", "five", "six", "seven"])
-    assert la.committed == ["one", "two", "three", "four", "five", "six"]
-    assert la.tentative == ["seven"]
-    # No word was dropped or duplicated across the slide.
-    assert la.caption_text() == "one two three four five six seven"
-
-
-def test_repeated_words_are_not_over_stripped() -> None:
-    """A genuine repetition ("that that") must not be collapsed by overlap stripping."""
-    la = LocalAgreement()
-    la.commit(["I", "know", "that"])
-    la.commit(["I", "know", "that", "that"])  # second "that" is real, tentative
-    assert la.committed == ["I", "know", "that"]
-    la.commit(["I", "know", "that", "that", "works"])
-    assert la.committed == ["I", "know", "that", "that"]
-    assert la.tentative == ["works"]
-
-
-def test_hypothesis_with_no_overlap_keeps_committed_and_holds_the_rest() -> None:
-    """If a window shares nothing with the committed tail, its words are all new —
-    committed stays put and the fresh words wait for agreement."""
-    la = LocalAgreement()
-    la.commit(["a", "b"])
-    la.commit(["a", "b", "c"])  # commits a, b
-    assert la.committed == ["a", "b"]
-    la.commit(["x", "y", "z"])  # nothing overlaps -> all tentative, none committed
-    assert la.committed == ["a", "b"]
-    assert la.tentative == ["x", "y", "z"]
+    la.commit(["red", "green", "blue"])
+    la.commit(["red", "green", "blue"])  # commits all three
+    assert la.committed == ["red", "green", "blue"]
+    # A later pass revises an already-committed word — the commit must stand.
+    la.commit(["red", "grey", "blue", "now"])
+    assert la.committed == ["red", "green", "blue"]  # unchanged, no on-screen edit
+    assert la.tentative == ["now"]
 
 
 def test_empty_hypothesis_is_a_noop() -> None:
