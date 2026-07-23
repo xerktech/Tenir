@@ -4,21 +4,23 @@
  * Sessions are explicit (XERK-85): once signed in the lens idles ("tap to
  * start"); a single tap starts a new session. While one records, a single tap
  * does NOTHING (a brushed temple must not end a recording) — a double tap
- * pops up a native OS LIST (its own container, added via
- * `rebuildPageContainer`) with Continue (default, top) / Exit session, drawn
- * ON TOP of the live captions, which keep flowing untouched underneath. The
- * OS owns the popup's gestures: swiping moves its selection, a tap reports
- * the chosen item back on the listEvent channel, another double tap dismisses
- * (same as Continue). Exit session stops the session (the api finalizes +
- * stores it). While recording the status line reads "listening" with moving
- * dots, the clock container shows the current time, and the caption band
- * holds only the tail that fits the band — nothing overflows, and the band
- * NEVER captures input, so the OS never scroll-targets the session text.
+ * pops up a bordered box (its own container, added via `rebuildPageContainer`)
+ * with Continue (default, top) / Exit session, drawn over the caption band
+ * whose covered rows are masked (occludedCaption) while the rows around it
+ * keep flowing: swiping moves the highlight, a single tap confirms it,
+ * another double tap dismisses (same as Continue). Exit session stops the
+ * session (the api finalizes + stores it). Should the popup-page rebuild fail
+ * on the host, the menu falls back into the caption band itself, so the
+ * wearer is NEVER stranded inside a session. While recording the status line
+ * reads "listening" with moving dots, the clock container shows the current
+ * time, and the caption band holds only the rows that fit — nothing
+ * overflows, and neither the band nor the clock ever captures input, so the
+ * OS scroll animation only ever targets the invisible touch overlay.
  *
- * Touch gestures reach the app on several channels: `sysEvent`, `textEvent`
- * aimed at the captured text container, and `listEvent` from the popup list —
- * all are routed through one gesture handler (with a short same-gesture
- * dedupe in case a host mirrors a gesture on more than one channel).
+ * Touch gestures reach the app on two channels: `sysEvent`, and `textEvent`
+ * aimed at the captured touch overlay — both are routed through one gesture
+ * handler (with a short same-gesture dedupe in case a host mirrors a gesture
+ * on both channels).
  *
  * Lives apart from main.ts (the boot wiring) so the whole machine — clicks,
  * captions, ticker, persistence — runs under test with a stub bridge and a
@@ -38,12 +40,14 @@ import { withBleTimeout, type KeyValueStorage } from "../state/storage";
 import {
   CONTAINER,
   LensTextWriter,
-  MENU_EXIT_INDEX,
   buildMainPage,
   buildMenuPage,
   clockText,
   fitCaption,
+  menuText,
+  occludedCaption,
   statusLine,
+  type MenuChoice,
   type PageContents,
 } from "./layout";
 
@@ -81,8 +85,7 @@ type Mutable = {
   partial: string; // current live hypothesis
   connection: "connecting" | "open" | "closed";
   recording: boolean; // a session is running (XERK-85: tap starts, popup exits)
-  menu: boolean; // the in-session popup is up
-  menuIndex: number; // its OS-reported selection (0 = Continue, the default)
+  menu: MenuChoice | null; // the in-session popup's highlight; null = closed
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -131,24 +134,30 @@ export async function wireLens(
     partial: "",
     connection: "closed",
     recording: false,
-    menu: false,
-    menuIndex: 0,
+    menu: null,
   };
   let enabled = false; // signed in — clicks act only while enabled
   let foreground = true; // lens visible — the ticker idles while backgrounded
   let tick = 0;
+  // The popup-page rebuild failed on the host: the menu renders inside the
+  // caption band instead, so the wearer always has a way out of a session.
+  let menuFallback = false;
 
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.join("\n");
-  /** The caption band's live text — always the full band, popup or not. */
+  /** The caption band's live text: full band, or masked under the popup box. */
   const liveCaption = () => {
+    // The popup-page rebuild failed: the band itself carries the menu, so the
+    // wearer can still exit the session.
+    if (state.menu && menuFallback) return menuText(state.menu);
     const body = transcriptText();
     const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
-    // Only the tail that FITS (XERK-85): nothing overflows, so the host has
-    // nothing to scroll; old text simply falls off the top. The popup box is
-    // created LAST on its page, so it simply draws on top of these lines —
-    // the captions underneath keep rendering untouched.
-    return fitCaption(full.slice(-TRANSCRIPT_MAX_CHARS));
+    // Only the rows that FIT (XERK-85): nothing overflows, so the host has
+    // nothing to scroll; old text simply falls off the top. While the popup is
+    // up, the rows its box covers are masked — an opaque popup would hide
+    // exactly those — and the rows around it keep flowing.
+    const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
+    return state.menu ? occludedCaption(bounded) : fitCaption(bounded);
   };
   /** What every container should currently read — the one source of page truth. */
   const pageContents = (): PageContents => ({
@@ -157,6 +166,9 @@ export async function wireLens(
     clock: enabled ? clockText(new Date()) : "",
   });
   const renderCaption = () => writer.set(CONTAINER.caption, pageContents().caption);
+  const renderMenu = () => {
+    if (state.menu && !menuFallback) writer.set(CONTAINER.menu, menuText(state.menu));
+  };
   const renderStatus = () => writer.set(CONTAINER.status, statusLine(state, tick));
   // The clock shows whenever signed in — on the idle "ready" page and while
   // recording alike (XERK-85 feedback).
@@ -177,12 +189,23 @@ export async function wireLens(
    */
   const rebuildPage = () => {
     const contents = pageContents();
-    const page = state.menu ? buildMenuPage(contents) : buildMainPage(contents);
-    writer.run(() => withBleTimeout(bridge.rebuildPageContainer(page), false));
+    const page = state.menu ? buildMenuPage(contents, state.menu) : buildMainPage(contents);
+    const openingMenu = state.menu !== null;
+    writer.run(async () => {
+      const ok = await withBleTimeout(bridge.rebuildPageContainer(page), false);
+      if (!ok && openingMenu && state.menu && !menuFallback) {
+        // The popup page never appeared (XERK-85: this once stranded the
+        // wearer inside a session). Fall back: render the menu inside the
+        // caption band, which needs no rebuild at all.
+        menuFallback = true;
+        writer.set(CONTAINER.caption, menuText(state.menu));
+      }
+    });
     writer.invalidate();
     writer.set(CONTAINER.status, contents.status);
     writer.set(CONTAINER.caption, contents.caption);
     writer.set(CONTAINER.clock, contents.clock);
+    renderMenu();
   };
 
   const showIdle = () => {
@@ -285,9 +308,10 @@ export async function wireLens(
 
   /** Stop the current session: the api finalizes + stores it; the lens idles. */
   const stopSession = () => {
-    const menuWasOpen = state.menu;
+    const menuWasOpen = state.menu !== null;
     state.recording = false;
-    state.menu = false;
+    state.menu = null;
+    menuFallback = false;
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
     void capture.stop();
@@ -333,24 +357,17 @@ export async function wireLens(
   }, TICK_MS);
 
   // The single event subscription (audio + gestures + system events). Touch
-  // gestures arrive on the sysEvent channel, as textEvent aimed at the
-  // captured text container, or — while the popup is up — as listEvent from
-  // the popup list (which also reports the OS-side selection). All feed one
-  // handler, deduped per gesture type in case a host mirrors a gesture on
-  // more than one channel.
+  // gestures arrive on the sysEvent channel or as textEvent aimed at the
+  // captured touch overlay — on-device swipes come as the latter (XERK-85
+  // feedback) — so both feed one handler, deduped per gesture type in case a
+  // host mirrors a gesture on both channels.
   let lastGesture = { type: -1 as OsEventTypeList | -1, at: 0 };
   const off = bridge.onEvenHubEvent((event: EvenHubEvent) => {
     if (event.audioEvent) {
       if (state.recording) client?.sendAudio(pcmBytes(event.audioEvent));
       return;
     }
-    // The popup list's events carry the authoritative selection: remember it
-    // before routing the gesture, so a confirm (from ANY channel) acts on it.
-    if (event.listEvent && state.menu) {
-      const idx = event.listEvent.currentSelectItemIndex;
-      if (typeof idx === "number") state.menuIndex = idx;
-    }
-    const payload = event.sysEvent ?? event.textEvent ?? event.listEvent;
+    const payload = event.sysEvent ?? event.textEvent;
     if (!payload) return;
     const type = payload.eventType ?? OsEventTypeList.CLICK_EVENT; // zero-omission
     if (TOUCH_GESTURES.has(type)) {
@@ -369,17 +386,25 @@ export async function wireLens(
     await store.flush();
   };
 
-  /** Open the popup page: the OS list on top, captions flowing underneath. */
+  /** Open the popup page: the bordered box on top, captions flowing around it. */
   const openMenu = () => {
-    state.menu = true;
-    state.menuIndex = 0; // Continue is the default
+    state.menu = "continue"; // Continue is the default
     rebuildPage();
   };
 
-  /** Dismiss the popup: back to the plain page. */
+  /** Dismiss the popup: back to the plain page, captions full-band again. */
   const closeMenu = () => {
-    state.menu = false;
+    state.menu = null;
+    menuFallback = false;
     rebuildPage();
+  };
+
+  /** Move the popup highlight (swipe): repaint the box — or the band, in fallback. */
+  const moveMenuHighlight = (choice: MenuChoice) => {
+    if (!state.menu || state.menu === choice) return;
+    state.menu = choice;
+    renderMenu();
+    if (menuFallback) renderCaption();
   };
 
   function handleGesture(type: OsEventTypeList): void {
@@ -387,8 +412,8 @@ export async function wireLens(
       case OsEventTypeList.CLICK_EVENT:
         if (!enabled) break;
         if (state.menu) {
-          // In the popup a tap confirms the OS-selected item.
-          if (state.menuIndex === MENU_EXIT_INDEX) stopSession();
+          // In the popup a tap confirms the highlighted choice.
+          if (state.menu === "exit") stopSession();
           else closeMenu();
         } else if (!state.recording) {
           // Idle: a single tap starts a new session.
@@ -410,21 +435,25 @@ export async function wireLens(
         void bridge.shutDownPageContainer(1);
         break;
       case OsEventTypeList.SCROLL_TOP_EVENT:
+        // Swipe up in the popup: highlight the top row (Continue). Anywhere
+        // else the gesture lands on the invisible overlay and does nothing.
+        moveMenuHighlight("continue");
+        break;
       case OsEventTypeList.SCROLL_BOTTOM_EVENT:
-        // Scrolling is entirely the OS's: in the popup it moves the list
-        // selection (already recorded from the listEvent above); anywhere
-        // else it targets the tiny capture container, never the session text.
+        // Swipe down in the popup: highlight the bottom row (Exit session).
+        moveMenuHighlight("exit");
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
         foreground = true;
-        // The host may have redrawn while we were away: repaint the text
-        // containers (the popup list, if up, is the OS's to redraw).
+        // The host may have redrawn while we were away: repaint everything
+        // (the popup box included, if it is up).
         writer.invalidate();
         if (!enabled) showSignInPrompt();
         else if (state.recording) {
           renderStatus();
           renderClock();
           renderCaption();
+          renderMenu();
         } else {
           showIdle();
         }
