@@ -68,16 +68,21 @@ export const CONTAINER = {
 
 // ---- the double-tap popup box (XERK-85) -------------------------------------
 // A bordered text container overlaid on the page via `rebuildPageContainer`
-// (the SDK's sanctioned runtime page change): a FULL-WIDTH strip covering
-// exactly the top two lines of the screen — the status/clock line and the
-// first transcript row. Everything it covers is blanked while it is up (the
-// status + clock containers write "", occludedCaption masks caption row 0),
-// so nothing shows through it while the rest of the transcript keeps flowing
-// below — visually an opaque popup on top of the live conversation.
-export const MENU_PAD = 0; // two 27px rows fill the strip exactly — no room for padding
+// (the SDK's sanctioned runtime page change): a FULL-WIDTH strip from the top
+// of the screen. Its two 27px option rows get symmetric top/bottom padding,
+// which makes the strip 80px tall — covering the status/clock line and the
+// first two transcript rows, but ending INSIDE the third row's 81px boundary
+// so it never costs another line. Everything it covers is blanked while it is
+// up (the status + clock containers write "", occludedCaption masks the
+// covered caption rows), so nothing shows through it while the rest of the
+// transcript keeps flowing below — visually an opaque popup on top of the
+// live conversation.
 export const MENU_BORDER = 2;
+// The biggest symmetric padding that keeps the strip within three lines:
+// 2*LINE_H content + 2*(pad+border) <= 3*LINE_H  =>  pad <= 13.5 - border.
+export const MENU_PAD = 11;
 export const MENU_W = SCREEN_W;
-export const MENU_H = 2 * LINE_H;
+export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
 export const MENU_X = 0;
 export const MENU_Y = 0;
 // The caption-band rows the box touches (0-based within the band): masked to

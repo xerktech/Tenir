@@ -389,12 +389,17 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
     expect(captures.map((c) => c.containerName)).toEqual([CONTAINER.touch.name]);
   });
 
-  it("spans the full width over exactly the top two lines of the screen", () => {
+  it("spans the full width from the top, padded but never past the third line", () => {
     const menu = menuOf(buildMenuPage(CONTENTS, "continue"));
     expect(menu.xPosition).toBe(0);
     expect(menu.width).toBe(SCREEN_W); // full width
-    expect(menu.yPosition).toBe(0); // from the very top…
-    expect(menu.height).toBe(2 * LINE_H); // …over the status line + first transcript row
+    expect(menu.yPosition).toBe(0); // from the very top
+    expect(menu.paddingLength).toBeGreaterThan(0); // breathing room around the rows
+    // Two option rows + symmetric padding + border…
+    expect(menu.height).toBe(2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER));
+    // …but the strip must end inside the third transcript row's boundary, so
+    // opening the popup never costs an extra transcript line.
+    expect(menu.height!).toBeLessThanOrEqual(3 * LINE_H);
   });
 
   it("both labels fit the box interior without wrapping", () => {

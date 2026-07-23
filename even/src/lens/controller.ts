@@ -4,13 +4,13 @@
  * Sessions are explicit (XERK-85): once signed in the lens idles ("tap to
  * start"); a single tap starts a new session. While one records, a single tap
  * does NOTHING (a brushed temple must not end a recording) — a double tap
- * pops up a bordered full-width strip over the top two lines of the screen
- * (its own container, added via `rebuildPageContainer`) with Continue
- * (default, top) / Exit session; everything the strip covers — status line,
- * clock, the first caption row — is blanked while it is up, and the rest of
- * the transcript keeps flowing below it: swiping moves the highlight, a
- * single tap confirms it, another double tap dismisses (same as Continue).
- * Exit session stops the
+ * pops up a bordered full-width strip from the top of the screen (its own
+ * container, added via `rebuildPageContainer`) with Continue (default, top) /
+ * Exit session, padded above and below; everything the strip covers — status
+ * line, clock, the first two caption rows — is blanked while it is up, and
+ * the rest of the transcript keeps flowing below it: swiping moves the
+ * highlight, a single tap confirms it, another double tap dismisses (same as
+ * Continue). Exit session stops the
  * session (the api finalizes + stores it). Should the popup-page rebuild fail
  * on the host, the menu falls back into the caption band itself, so the
  * wearer is NEVER stranded inside a session. While recording the status line
