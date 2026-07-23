@@ -10,9 +10,8 @@
  * `@tenir/client-core` client (which stores the bearer token in the device
  * store), and caches the credentials so the app can re-login silently when the
  * token expires — URL and creds are entered once, ever. The signed-in view then
- * embeds the server-hosted Tenir web UI full-bleed: the phone companion IS the
- * web UI. The token rides the iframe URL as a `#token=` fragment, which the web
- * app adopts at boot, so the embedded UI is already signed in.
+ * shows the app's own phone pages — Session and History (XERK-93) — which talk
+ * to the api through the same signed-in client.
  *
  * Everything is driven through injected elements/callbacks so it unit-tests
  * under jsdom without the Even SDK.
@@ -36,8 +35,7 @@ import type { KeyValueStorage } from "../state/storage";
 
 export interface PhoneLoginElements {
   login: HTMLElement; // the login card wrapper
-  app: HTMLElement; // the signed-in view
-  dashboard: HTMLIFrameElement; // the embedded Tenir web UI
+  app: HTMLElement; // the signed-in view (Session/History pages + bottom nav)
   form: HTMLFormElement;
   server: HTMLInputElement;
   user: HTMLInputElement;
@@ -57,7 +55,6 @@ export function queryPhoneLoginElements(doc: Document = document): PhoneLoginEle
   return {
     login: byId("login"),
     app: byId("app"),
-    dashboard: byId<HTMLIFrameElement>("dashboard"),
     form: byId<HTMLFormElement>("login-form"),
     server: byId<HTMLInputElement>("server-url"),
     user: byId<HTMLInputElement>("username"),
@@ -80,32 +77,18 @@ export interface PhoneLoginCallbacks {
   onSignedOut?: () => void;
 }
 
-/**
- * The URL the embedded web UI loads: the server's own origin, with the current
- * bearer token in the fragment so the web app boots signed in (it adopts the
- * token and strips the fragment; a fragment never reaches the server or logs).
- */
-export function dashboardUrl(httpBaseUrl: string, token: string | null): string {
-  const base = `${httpBaseUrl.replace(/\/$/, "")}/`;
-  return token ? `${base}#token=${encodeURIComponent(token)}` : base;
-}
-
 function showError(els: PhoneLoginElements, msg: string): void {
   els.error.textContent = msg;
   els.error.classList.add("show");
 }
 
-function showDashboard(els: PhoneLoginElements, username: string): void {
+function showApp(els: PhoneLoginElements, username: string): void {
   els.appUser.textContent = username;
-  els.dashboard.src = dashboardUrl(config.apiHttpUrl, getToken());
   els.login.hidden = true;
   els.app.hidden = false;
 }
 
 function showLogin(els: PhoneLoginElements): void {
-  // Leaving the dashboard: blank the iframe so a signed-out view isn't left
-  // holding an authenticated web UI.
-  els.dashboard.src = "about:blank";
   els.login.hidden = false;
   els.app.hidden = true;
 }
@@ -114,7 +97,7 @@ function showLogin(els: PhoneLoginElements): void {
  * Resolve the boot state: with a configured server, try the cached token
  * (`me()`), then a silent re-login with the cached credentials. Returns the
  * principal when signed in, "offline" when the server can't be reached but a
- * cached sign-in exists (show the dashboard best-effort — the lens reconnects on
+ * cached sign-in exists (show the app best-effort — the lens reconnects on
  * its own), or null when the user must sign in.
  */
 async function resolveBootAuth(storage: KeyValueStorage): Promise<Principal | "offline" | null> {
@@ -146,13 +129,13 @@ export async function initPhoneLogin(
 
   const authed = await resolveBootAuth(storage);
   if (authed === "offline") {
-    // Server unreachable right now, but we have a cached sign-in: show the
-    // embedded web UI anyway (it surfaces its own connection state) rather than
+    // Server unreachable right now, but we have a cached sign-in: show the app
+    // anyway (the pages surface their own connection state) rather than
     // demanding a password nobody can check.
-    showDashboard(els, cached?.username ?? "");
+    showApp(els, cached?.username ?? "");
     callbacks.onAuthed?.();
   } else if (authed) {
-    showDashboard(els, authed.username);
+    showApp(els, authed.username);
     callbacks.onAuthed?.();
   } else {
     // Straight to the login form — and tell the lens, so it says "not signed
@@ -184,7 +167,7 @@ export async function initPhoneLogin(
           password: els.password.value,
         });
         els.password.value = "";
-        showDashboard(els, principal.username);
+        showApp(els, principal.username);
         callbacks.onAuthed?.();
       } catch (err) {
         showError(els, describeLoginError(err));
