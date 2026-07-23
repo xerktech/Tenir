@@ -40,6 +40,7 @@ const settle = () => vi.advanceTimersByTimeAsync(0);
 /** A stub Even bridge: device storage + the single event subscription. */
 function fakeBridge(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial));
+  const shutdowns: number[] = [];
   let handler: ((e: EvenHubEvent) => void) | null = null;
   const bridge = {
     onEvenHubEvent: (h: (e: EvenHubEvent) => void) => {
@@ -54,9 +55,12 @@ function fakeBridge(initial: Record<string, string> = {}) {
       store.set(k, v);
       return true;
     },
-    shutDownPageContainer: async () => true,
+    shutDownPageContainer: async () => {
+      shutdowns.push(1);
+      return true;
+    },
   } as unknown as EvenAppBridge;
-  return { bridge, store, emit: (e: EvenHubEvent) => handler?.(e) };
+  return { bridge, store, shutdowns, emit: (e: EvenHubEvent) => handler?.(e) };
 }
 
 /** A fake api client: records calls, exposes the handlers so tests push captions. */
@@ -86,7 +90,7 @@ function fakeClientFactory() {
 }
 
 async function boot(opts: { store?: Record<string, string>; withPhone?: boolean } = {}) {
-  const { bridge, store, emit } = fakeBridge(opts.store);
+  const { bridge, store, shutdowns, emit } = fakeBridge(opts.store);
   const latest = new Map<number, string>();
   const writer = new layout.LensTextWriter(async (c, content) => {
     latest.set(c.id, content);
@@ -108,11 +112,21 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
   });
   await settle();
   const text = (c: { id: number }) => latest.get(c.id);
-  const click = async () => {
-    emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+  const sys = async (eventType: OsEventTypeList) => {
+    emit({ sysEvent: { eventType } } as EvenHubEvent);
     await settle();
   };
-  return { controls, api, emit, store, text, click };
+  const click = () => sys(OsEventTypeList.CLICK_EVENT);
+  const doubleTap = () => sys(OsEventTypeList.DOUBLE_CLICK_EVENT);
+  const swipeUp = () => sys(OsEventTypeList.SCROLL_TOP_EVENT);
+  const swipeDown = () => sys(OsEventTypeList.SCROLL_BOTTOM_EVENT);
+  /** End the running session through the popup: double tap → Exit session → tap. */
+  const exitViaMenu = async () => {
+    await doubleTap();
+    await swipeDown();
+    await click();
+  };
+  return { controls, api, emit, store, shutdowns, text, click, doubleTap, swipeUp, swipeDown, exitViaMenu };
 }
 
 const C = () => layout.CONTAINER;
@@ -128,7 +142,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.api.calls).toHaveLength(0);
   });
 
-  it("a click starts a new session; a second click stops it and idles again", async () => {
+  it("a tap starts a new session; taps while recording do nothing", async () => {
     const t = await boot();
     t.controls.enable();
     await t.click();
@@ -136,11 +150,79 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.api.calls[0].resume).toBeUndefined(); // fresh session
     expect(t.text(C().status)).toBe("connecting to server…");
 
+    // A brushed temple must not end a recording: single taps are inert now.
     await t.click();
+    await t.click();
+    expect(t.api.stops).toHaveLength(0);
+    expect(t.api.calls).toHaveLength(1);
+    expect(t.text(C().status)).toBe("connecting to server…");
+  });
+
+  it("ends a session only through the popup: double tap → Exit session → tap", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+
+    await t.doubleTap();
+    expect(t.text(C().caption)).toBe("› Continue\n  Exit session"); // Continue is the default, on top
+    await t.swipeDown();
+    expect(t.text(C().caption)).toBe("  Continue\n› Exit session");
+    await t.click();
+
     expect(t.api.stops).toHaveLength(1); // session.end sent, socket closed
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
     expect(t.text(C().clock)).toBe("");
+  });
+
+  it("Continue (the default) dismisses the popup and keeps recording", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    t.api.handlers().onFinal?.({
+      type: "caption.final",
+      segmentId: "s1",
+      text: "before the popup",
+      startMs: 0,
+      endMs: 900,
+    });
+    await settle();
+
+    await t.doubleTap();
+    // Captions keep flowing underneath but must not clobber the popup…
+    t.api.handlers().onPartial?.({ type: "caption.partial", text: "under the popup" });
+    await settle();
+    expect(t.text(C().caption)).toBe("› Continue\n  Exit session");
+
+    // …swiping down and back up re-highlights Continue; a tap confirms it.
+    await t.swipeDown();
+    await t.swipeUp();
+    expect(t.text(C().caption)).toBe("› Continue\n  Exit session");
+    await t.click();
+    expect(t.api.stops).toHaveLength(0); // still recording
+    const caption = t.text(C().caption)!;
+    expect(caption).toContain("before the popup"); // the live view is back
+    expect(caption).toContain("under the popup");
+  });
+
+  it("a second double tap dismisses the popup, same as Continue", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    await t.doubleTap();
+    await t.doubleTap();
+    expect(t.api.stops).toHaveLength(0);
+    expect(t.text(C().caption)).not.toContain("Exit session");
+  });
+
+  it("double tap outside a session asks the host to exit the app, not a popup", async () => {
+    const t = await boot();
+    await t.doubleTap(); // before sign-in
+    t.controls.enable();
+    await t.doubleTap(); // idle
+    expect(t.shutdowns).toHaveLength(2);
+    expect(t.api.calls).toHaveLength(0); // no session was started
+    expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
   });
 
   it("ignores clicks before sign-in", async () => {
@@ -153,7 +235,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     const t = await boot();
     t.controls.enable();
     await t.click();
-    expect(t.text(C().clock)).toBe("14:05"); // current time, top right
+    expect(t.text(C().clock)).toBe("2:05 PM"); // current time, top right
 
     t.api.handlers().onConnectionChange?.("open");
     await settle();
@@ -167,7 +249,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     // The clock follows the minute.
     vi.setSystemTime(new Date(2026, 6, 22, 14, 6));
     await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
-    expect(t.text(C().clock)).toBe("14:06");
+    expect(t.text(C().clock)).toBe("2:06 PM");
   });
 
   it("renders captions fitted to the band — bottom-anchored, old text dropped", async () => {
@@ -206,7 +288,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     t.emit(frame);
     expect(t.api.sent).toHaveLength(1);
 
-    await t.click(); // stop
+    await t.exitViaMenu(); // stop
     t.emit(frame);
     expect(t.api.sent).toHaveLength(1);
   });
@@ -219,7 +301,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await vi.advanceTimersByTimeAsync(2000); // past the persist debounce
     expect(JSON.parse(t.store.get("tenir.session")!)).toMatchObject({ sessionId: "sess-1" });
 
-    await t.click(); // stop — the session is over, nothing to resume
+    await t.exitViaMenu(); // stop — the session is over, nothing to resume
     expect(t.store.get("tenir.session")).toBe("");
   });
 
@@ -263,7 +345,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     const rows = [...document.querySelectorAll("#live-text li")].map((li) => li.textContent);
     expect(rows).toEqual(["hello phone", "and mo"]);
 
-    await t.click(); // stop
+    await t.exitViaMenu(); // stop
     expect(panel().hidden).toBe(true);
   });
 

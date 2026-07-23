@@ -1,12 +1,12 @@
 /**
  * Lens layout for the 576x288 G2 HUD.
  *
- *   ┌────────────────────────┬──────┐  y=0
- *   │ status line (tiny)     │ HH:MM│  h=27  (1 line; clock only in a session)
- *   ├────────────────────────┴──────┤  y=27
- *   │ caption band  (live           │  h=261
- *   │ transcript)                   │  ← isEventCapture: 1
- *   └───────────────────────────────┘  y=288
+ *   ┌──────────────────────┬────────┐  y=0
+ *   │ status line (tiny)   │12:59 PM│  h=27  (1 line; clock only in a session)
+ *   ├──────────────────────┴────────┤  y=27
+ *   │ caption band  (live           │  h=243 (exactly CAPTION_LINES lines —
+ *   │ transcript)                   │  ← isEventCapture: 1   no half-line slot)
+ *   └───────────────────────────────┘  y=270 (the last 18px stay unused)
  *
  * Exactly ONE container captures input (the caption band). Live text updates go
  * through `textContainerUpgrade` (flicker-free), never a rebuild.
@@ -14,7 +14,10 @@
  * XERK-85: while a session is recording the status line reads "listening" with
  * animated dots and the clock container shows the current time top-right. The
  * caption band is trimmed to the tail that FITS the band (`fitCaption`) so the
- * host never has overflow to scroll — old text simply falls off the top.
+ * host never has overflow to scroll — old text simply falls off the top. The
+ * band's height is an exact multiple of the line height and padding is pinned
+ * to 0, so a fitted transcript can never end on a half-visible line (which
+ * would make the host grow a scroll bar for the clipped remainder).
  */
 
 import {
@@ -29,14 +32,24 @@ export const SCREEN_W = 576;
 export const SCREEN_H = 288;
 export const LINE_H = 27; // baked-in LVGL line height
 
-// The clock band, top-right. HH:MM renders 52px in the EvenHub font (digits are
-// tabular), so 64px keeps a small breathing margin off the right edge.
-export const CLOCK_W = 64;
+// The clock band, top-right. The widest 12-hour time ("12:59 PM") renders 82px
+// in the EvenHub font (digits are tabular), so 96px keeps a small breathing
+// margin off the right edge.
+export const CLOCK_W = 96;
 
 // How many whole lines fit the caption band. Content is always trimmed to this,
 // so the band never overflows — and an overflow-free container has nothing for
 // the host to scroll (XERK-85: no scrolling while recording).
 export const CAPTION_LINES = Math.floor((SCREEN_H - LINE_H) / LINE_H);
+// The caption band is EXACTLY that many lines tall. A taller band (the raw
+// 261px remainder) leaves a half-line slot at the bottom: one mis-wrapped line
+// ends half-visible in it and the host grows a scroll bar to reach the rest.
+export const CAPTION_H = CAPTION_LINES * LINE_H;
+// Measure wrapping a touch narrower than the real band. pretext mirrors the
+// LVGL wrapper, but any residual drift between measured and rendered wrap
+// must err toward trimming one line too early (invisible) — never toward one
+// line too many (a clipped line + scroll bar).
+export const MEASURE_SAFETY_PX = 8;
 
 export const CONTAINER = {
   status: { id: 1, name: "status" },
@@ -46,6 +59,9 @@ export const CONTAINER = {
 
 /** The one-shot startup layout. Call `createStartUpPageContainer` with this exactly once. */
 export function buildStartupContainer(): CreateStartUpPageContainer {
+  // paddingLength/borderWidth are pinned to 0 on every container so the width
+  // the host wraps at IS the width fitCaption measures at — an unnoticed host
+  // default padding would wrap earlier than measured and overflow the band.
   const status = new TextContainerProperty({
     containerID: CONTAINER.status.id,
     containerName: CONTAINER.status.name,
@@ -53,6 +69,8 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     yPosition: 0,
     width: SCREEN_W - CLOCK_W,
     height: LINE_H,
+    paddingLength: 0,
+    borderWidth: 0,
     isEventCapture: 0,
     content: "starting…",
   });
@@ -63,7 +81,9 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     xPosition: 0,
     yPosition: LINE_H,
     width: SCREEN_W,
-    height: SCREEN_H - LINE_H,
+    height: CAPTION_H, // whole lines only — no half-line slot to scroll into
+    paddingLength: 0,
+    borderWidth: 0,
     isEventCapture: 1, // the single event-capture container
     content: "",
   });
@@ -75,6 +95,8 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     yPosition: 0,
     width: CLOCK_W,
     height: LINE_H,
+    paddingLength: 0,
+    borderWidth: 0,
     isEventCapture: 0,
     content: "",
   });
@@ -170,16 +192,31 @@ export class LensTextWriter {
   }
 }
 
+/** The in-session popup's two choices (XERK-85): Continue is the default, on top. */
+export type MenuChoice = "continue" | "exit";
+
+/**
+ * The in-session popup, rendered in the caption band: Continue on top (the
+ * default) with Exit session below, the highlighted row marked with "›".
+ * Swiping moves the highlight; a single tap confirms it (controller.ts).
+ */
+export function menuText(selected: MenuChoice): string {
+  const row = (choice: MenuChoice, label: string) =>
+    `${selected === choice ? "›" : " "} ${label}`;
+  return `${row("continue", "Continue")}\n${row("exit", "Exit session")}`;
+}
+
 /** The animated activity dots (XERK-85): 1 → 2 → 3 dots, cycling with the ticker. */
 export function dots(tick: number): string {
   return ".".repeat((tick % 3) + 1);
 }
 
-/** The top-right clock text: 24h HH:MM (fixed 52px in the EvenHub font). */
+/** The top-right clock text: 12-hour h:MM AM/PM (at most 82px in the EvenHub font). */
 export function clockText(date: Date): string {
-  const hh = String(date.getHours()).padStart(2, "0");
+  const h24 = date.getHours();
+  const h = h24 % 12 || 12; // 0 and 12 both show as 12
   const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return `${h}:${mm} ${h24 < 12 ? "AM" : "PM"}`;
 }
 
 /**
@@ -208,8 +245,16 @@ export function statusLine(
  * text that no longer fits simply isn't there anymore. The kept tail is
  * top-padded with newlines so new text keeps arriving at the BOTTOM of the
  * band, exactly as it does mid-session when the band is full.
+ *
+ * Measured at `SCREEN_W - MEASURE_SAFETY_PX` by default: any drift between the
+ * measured and the rendered wrap then trims a line too early (invisible)
+ * instead of leaving one line too many (clipped half-way + a scroll bar).
  */
-export function fitCaption(text: string, maxLines = CAPTION_LINES, maxWidth = SCREEN_W): string {
+export function fitCaption(
+  text: string,
+  maxLines = CAPTION_LINES,
+  maxWidth = SCREEN_W - MEASURE_SAFETY_PX,
+): string {
   if (!text) return "";
   const lines = (t: string) => measureTextWrap(t, maxWidth).lineCount;
   let kept = text;
