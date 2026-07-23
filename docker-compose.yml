@@ -1,7 +1,7 @@
 # tenir — single-host stack: `docker compose up --build`.
 #
 # Bare minimum: one app container (api + web UI), Postgres for transcripts,
-# the LiteLLM gateway, and the Voxtral STT server (the only GPU container —
+# the LiteLLM gateway, and the Parakeet STT server (the only GPU container —
 # needs the NVIDIA Container Toolkit). Real prod values come from .env (the
 # ${VAR:-default} fallbacks are this host's defaults).
 
@@ -25,8 +25,11 @@ services:
       # .env override would only desync the api. Endpoints/secrets/models come from .env.
       API_LITELLM_ENDPOINT: ${API_LITELLM_ENDPOINT:-http://litellm:4000/v1}
       API_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
+      # "voxtral" is the generic HTTP /audio/transcriptions engine (not Voxtral-
+      # specific); it POSTs each window to the LiteLLM gateway, which routes the
+      # model alias below to the Parakeet server.
       API_STT_BACKEND: voxtral
-      API_STT_MODEL: ${API_STT_MODEL:-voxtral}
+      API_STT_MODEL: ${API_STT_MODEL:-parakeet}
       API_HOUSEHOLD_ID: ${API_HOUSEHOLD_ID:-default}
       # You MUST override API_AUTH_SECRET — the api refuses to boot with the default.
       API_AUTH_SECRET: ${API_AUTH_SECRET:-dev-insecure-change-me}
@@ -40,7 +43,7 @@ services:
       # Status page: on this single-host stack the api shares a network with the
       # STT server, so it probes it directly for a per-model light. Leave unset in
       # a split-host deploy — the light then follows the LiteLLM gateway probe.
-      API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://vllm-stt:8000}
+      API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://parakeet:8000}
     volumes:
       # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
       # container recreation.
@@ -74,9 +77,10 @@ services:
       retries: 5
 
   litellm:
-    # OpenAI-compatible gateway fronting vllm-stt, so the api uses one base URL +
-    # key. Routing lives in litellm/config.yaml. CPU-only — it proxies, it doesn't
-    # run the model. The non-database image: master-key auth, no Postgres needed.
+    # OpenAI-compatible gateway fronting the parakeet STT server, so the api uses
+    # one base URL + key. Routing lives in litellm/config.yaml. CPU-only — it
+    # proxies, it doesn't run the model. The non-database image: master-key auth,
+    # no Postgres needed.
     image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
@@ -94,35 +98,32 @@ services:
 
   # ----- GPU model server (needs the NVIDIA Container Toolkit) -----------------
 
-  vllm-stt:
-    # Live STT: Voxtral. Serves under its real model id (mistralai/Voxtral-Mini-3B-2507,
-    # no --served-model-name); the LiteLLM gateway aliases it as "voxtral" for the api.
-    # Built from vllm-stt/Dockerfile (vllm-openai + soundfile) — Voxtral's audio path
-    # needs mistral_common[soundfile].
+  parakeet:
+    # Live STT: NVIDIA Parakeet (parakeet-tdt-0.6b-v3, multilingual + auto language
+    # detection) behind an OpenAI /v1/audio/transcriptions surface; the LiteLLM
+    # gateway aliases it as "parakeet" for the api. Built from parakeet-stt/Dockerfile
+    # (NGC NeMo base) — the same image the release pipeline publishes.
     build:
-      context: ./vllm-stt
-      dockerfile: Dockerfile
-    image: tenir-vllm-stt:soundfile
-    command:
-      - "--model"
-      - "${VOXTRAL_MODEL:-mistralai/Voxtral-Mini-3B-2507}"
-      # Card share for live STT: Voxtral's weights are ~8.7 GiB; the remainder of
-      # this fraction becomes KV cache. With the co-tenant models gone the card is
-      # Voxtral's alone — 0.5 leaves ample KV headroom while keeping half the card
-      # free for anything else the host runs.
-      - "--gpu-memory-utilization"
-      - "${VLLM_STT_GPU_MEMORY_UTILIZATION:-0.5}"
-      # Live STT turns are short (the api caps segments at 12s), so a small context
-      # is ample and keeps CUDA graphs (speed) without grabbing more GPU.
-      - "--max-model-len"
-      - "${VLLM_STT_MAX_MODEL_LEN:-2048}"
+      context: .
+      dockerfile: parakeet-stt/Dockerfile
+    image: tenir-parakeet-stt:latest
     ports:
-      - "9400:8000"
+      - "9401:8000"
     volumes:
-      - "C:/docker/tenir/vllm-stt:/root/.cache/huggingface"
+      # Whole /root/.cache so the HF hub cache AND NeMo's torch cache persist — the
+      # ~2.4 GB weights download once.
+      - "C:/docker/tenir/parakeet:/root/.cache"
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      PARAKEET_MODEL: ${PARAKEET_MODEL:-nvidia/parakeet-tdt-0.6b-v3}
     ipc: host
+    healthcheck:
+      # 503 until the model is resident (first boot downloads the weights), 200 after.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
     deploy:
       resources:
         reservations:

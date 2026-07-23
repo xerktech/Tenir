@@ -52,7 +52,7 @@ function main() {
     changed: JSON.stringify(changed),
     force_all: forceAll,
     build_api: changed.api,
-    build_vllm_stt: changed["vllm-stt"],
+    build_parakeet_stt: changed["parakeet-stt"],
     build_even: changed.even,
     build_mobile: changed.mobile,
   });
