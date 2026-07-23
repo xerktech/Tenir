@@ -2,11 +2,15 @@
  * The lens controller: the session state machine behind the glasses UI.
  *
  * Sessions are explicit (XERK-85): once signed in the lens idles ("tap to
- * start"); a single click starts a new session, another click stops it (the
- * api finalizes + stores it). While recording the status line reads
- * "listening" with moving dots, the clock container shows the current time,
- * and the caption band holds only the tail that fits the band — nothing
- * overflows, so the host has nothing to scroll.
+ * start"); a single tap starts a new session. While one records, a single tap
+ * does NOTHING (a brushed temple must not end a recording) — a double tap
+ * pops up Continue (default, top) / Exit session instead: swiping moves the
+ * highlight, a single tap confirms it, another double tap dismisses (same as
+ * Continue). Exit session stops the session (the api finalizes + stores it).
+ * While recording the status line reads "listening" with moving dots, the
+ * clock container shows the current time, and the caption band holds only the
+ * tail that fits the band — nothing overflows, so the host has nothing to
+ * scroll.
  *
  * Lives apart from main.ts (the boot wiring) so the whole machine — clicks,
  * captions, ticker, persistence — runs under test with a stub bridge and a
@@ -23,7 +27,15 @@ import { PhoneTranscript } from "../phone/transcript";
 import { silentLogin } from "../state/credentials";
 import { SessionStore, type PersistedSession } from "../state/persist";
 import type { KeyValueStorage } from "../state/storage";
-import { CONTAINER, LensTextWriter, clockText, fitCaption, statusLine } from "./layout";
+import {
+  CONTAINER,
+  LensTextWriter,
+  clockText,
+  fitCaption,
+  menuText,
+  statusLine,
+  type MenuChoice,
+} from "./layout";
 
 // Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
 // fitCaption trims further to what the band can show — this only bounds the
@@ -45,7 +57,8 @@ type Mutable = {
   segments: string[]; // finalized turns
   partial: string; // current live hypothesis
   connection: "connecting" | "open" | "closed";
-  recording: boolean; // a session is running (XERK-85: started/stopped by click)
+  recording: boolean; // a session is running (XERK-85: tap starts, popup exits)
+  menu: MenuChoice | null; // the in-session popup's highlight; null = closed
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -94,6 +107,7 @@ export async function wireLens(
     partial: "",
     connection: "closed",
     recording: false,
+    menu: null,
   };
   let enabled = false; // signed in — clicks act only while enabled
   let foreground = true; // lens visible — the ticker idles while backgrounded
@@ -102,11 +116,15 @@ export async function wireLens(
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.join("\n");
   const renderCaption = () => {
+    if (state.menu) return; // the popup owns the band; repainted on dismiss
     const body = transcriptText();
     const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
     // Only the tail that FITS the band (XERK-85): nothing overflows, so the
     // host has nothing to scroll; old text simply falls off the top.
     writer.set(CONTAINER.caption, fitCaption(full.slice(-TRANSCRIPT_MAX_CHARS)));
+  };
+  const renderMenu = () => {
+    if (state.menu) writer.set(CONTAINER.caption, menuText(state.menu));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusLine(state, tick));
   // The clock shows only while a session is recording (XERK-85).
@@ -221,6 +239,7 @@ export async function wireLens(
   /** Stop the current session: the api finalizes + stores it; the lens idles. */
   const stopSession = () => {
     state.recording = false;
+    state.menu = null;
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
     void capture.stop();
@@ -280,18 +299,56 @@ export async function wireLens(
     await store.flush();
   };
 
+  /** Dismiss the popup and hand the band back to the live captions. */
+  const closeMenu = () => {
+    state.menu = null;
+    renderCaption();
+  };
+
   function handleSysEvent(event: EvenHubEvent): void {
     const type = event.sysEvent?.eventType ?? OsEventTypeList.CLICK_EVENT; // zero-omission
     switch (type) {
       case OsEventTypeList.CLICK_EVENT:
-        // Single click starts a new session / stops the running one (XERK-85).
         if (!enabled) break;
-        if (state.recording) stopSession();
-        else startSession();
+        if (state.menu) {
+          // In the popup a tap confirms the highlighted choice.
+          if (state.menu === "exit") stopSession();
+          else closeMenu();
+        } else if (!state.recording) {
+          // Idle: a single tap starts a new session.
+          startSession();
+        }
+        // Recording without the popup: single taps do NOTHING (XERK-85 —
+        // a brushed temple must not end a recording).
         break;
       case OsEventTypeList.DOUBLE_CLICK_EVENT:
-        // Canonical exit: confirm dialog; real teardown happens on SYSTEM_EXIT.
+        if (enabled && state.recording) {
+          // Pop up Continue (default) / Exit session; a second double tap
+          // dismisses, same as Continue.
+          if (state.menu) closeMenu();
+          else {
+            state.menu = "continue";
+            renderMenu();
+          }
+          break;
+        }
+        // Outside a session: canonical app exit — confirm dialog; real
+        // teardown happens on SYSTEM_EXIT.
         void bridge.shutDownPageContainer(1);
+        break;
+      case OsEventTypeList.SCROLL_TOP_EVENT:
+        // Swipe up in the popup: highlight the top row (Continue).
+        if (state.menu) {
+          state.menu = "continue";
+          renderMenu();
+        }
+        break;
+      case OsEventTypeList.SCROLL_BOTTOM_EVENT:
+        // Swipe down in the popup: highlight the bottom row (Exit session).
+        if (state.menu) {
+          state.menu = "exit";
+          renderMenu();
+        }
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
         foreground = true;
@@ -301,7 +358,8 @@ export async function wireLens(
         else if (state.recording) {
           renderStatus();
           renderClock();
-          renderCaption();
+          renderCaption(); // no-op while the popup is up…
+          renderMenu(); // …which repaints itself instead
         } else {
           showIdle();
         }

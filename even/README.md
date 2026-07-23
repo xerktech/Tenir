@@ -102,17 +102,20 @@ glasses (and passes review) before relying on it for production.
 
 ## Lens controls
 
-- **Single click** — start a new session / stop the running one (XERK-85). The
-  api finalizes and stores the stopped session; the lens idles at "tap to
-  start" between sessions.
-- **Double click** — exit (confirm dialog).
+- **Single tap** — start a new session when idle. While one records, single
+  taps do NOTHING (a brushed temple must not end a recording).
+- **Double tap (recording)** — pop up **Continue** (default, top) / **Exit
+  session**: swipe to move the highlight, single tap to confirm, another
+  double tap dismisses (same as Continue). Exit session stops the session —
+  the api finalizes and stores it — and the lens idles at "tap to start".
+- **Double tap (idle / signed out)** — exit the app (confirm dialog).
 
 While a session records, the status line (top left) reads `listening` with
-moving dots, the top-right corner shows the current time, and the caption band
-keeps only the tail of the transcript that fits on screen — old text falls off
-the top, and with nothing overflowing there is nothing to scroll. The phone
-page mirrors the running session's transcript in real time in a strip above
-the embedded web UI.
+moving dots, the top-right corner shows the current time (12-hour), and the
+caption band keeps only the tail of the transcript that fits on screen — old
+text falls off the top, and with nothing overflowing there is nothing to
+scroll. The phone page mirrors the running session's transcript in real time
+in a strip above the embedded web UI.
 
 ## Notes
 

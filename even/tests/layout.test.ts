@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildStartupContainer,
+  CAPTION_H,
   CAPTION_LINES,
   CLOCK_W,
   clockText,
@@ -11,10 +12,14 @@ import {
   fitCaption,
   LensTextWriter,
   LINE_H,
-  SCREEN_H,
+  MEASURE_SAFETY_PX,
+  menuText,
   SCREEN_W,
   statusLine,
 } from "../src/lens/layout";
+
+// The width fitCaption measures wrapping at (see MEASURE_SAFETY_PX).
+const FIT_W = SCREEN_W - MEASURE_SAFETY_PX;
 
 describe("lens layout", () => {
   it("declares exactly three containers: status line + caption band + clock", () => {
@@ -27,14 +32,25 @@ describe("lens layout", () => {
     ]);
   });
 
-  it("stacks the status line above a caption band filling the rest of the HUD", () => {
+  it("stacks the status line above a whole-lines-only caption band", () => {
     const [status, caption] = buildStartupContainer().textObject!;
     expect(status.yPosition).toBe(0);
     expect(status.height).toBe(LINE_H);
     expect(caption.yPosition).toBe(LINE_H);
-    expect(caption.height).toBe(SCREEN_H - LINE_H);
+    expect(caption.height).toBe(CAPTION_H);
+    // An exact multiple of the line height: a half-line slot at the bottom
+    // would show a clipped line and grow a scroll bar to reach the rest.
+    expect(CAPTION_H % LINE_H).toBe(0);
+    expect(CAPTION_H).toBe(CAPTION_LINES * LINE_H);
     expect(status.width).toBe(SCREEN_W - CLOCK_W);
     expect(caption.width).toBe(SCREEN_W);
+  });
+
+  it("pins padding and border to 0 so the host wraps at the measured width", () => {
+    for (const c of buildStartupContainer().textObject!) {
+      expect(c.paddingLength).toBe(0);
+      expect(c.borderWidth).toBe(0);
+    }
   });
 
   it("puts the clock in the top-right corner beside the status line (XERK-85)", () => {
@@ -180,10 +196,11 @@ describe("dots (XERK-85: the three dots move to signify activity)", () => {
 });
 
 describe("clockText", () => {
-  it("formats 24h HH:MM, zero-padded", () => {
-    expect(clockText(new Date(2026, 6, 22, 9, 5))).toBe("09:05");
-    expect(clockText(new Date(2026, 6, 22, 23, 59))).toBe("23:59");
-    expect(clockText(new Date(2026, 6, 22, 0, 0))).toBe("00:00");
+  it("formats 12-hour h:MM AM/PM", () => {
+    expect(clockText(new Date(2026, 6, 22, 9, 5))).toBe("9:05 AM");
+    expect(clockText(new Date(2026, 6, 22, 23, 59))).toBe("11:59 PM");
+    expect(clockText(new Date(2026, 6, 22, 12, 30))).toBe("12:30 PM");
+    expect(clockText(new Date(2026, 6, 22, 0, 0))).toBe("12:00 AM");
   });
 });
 
@@ -195,13 +212,13 @@ describe("fitCaption (XERK-85: no scrolling — old text falls off the top)", ()
   it("bottom-anchors short text so new text starts at the bottom of the band", () => {
     const fitted = fitCaption("hello");
     expect(fitted).toBe("\n".repeat(CAPTION_LINES - 1) + "hello");
-    expect(measureTextWrap(fitted, SCREEN_W).lineCount).toBe(CAPTION_LINES);
+    expect(measureTextWrap(fitted, FIT_W).lineCount).toBe(CAPTION_LINES);
   });
 
   it("trims overflowing text to exactly the lines that fit, keeping the newest", () => {
     const text = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
     const fitted = fitCaption(text);
-    expect(measureTextWrap(fitted, SCREEN_W).lineCount).toBe(CAPTION_LINES);
+    expect(measureTextWrap(fitted, FIT_W).lineCount).toBe(CAPTION_LINES);
     expect(fitted.endsWith("line 29")).toBe(true); // newest text survives
     expect(fitted).not.toContain("line 0"); // oldest is gone
   });
@@ -211,13 +228,32 @@ describe("fitCaption (XERK-85: no scrolling — old text falls off the top)", ()
     // still fit the band exactly and end with the newest words.
     const words = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
     const fitted = fitCaption(words);
-    expect(measureTextWrap(fitted, SCREEN_W).lineCount).toBeLessThanOrEqual(CAPTION_LINES);
+    expect(measureTextWrap(fitted, FIT_W).lineCount).toBe(CAPTION_LINES);
     expect(fitted.endsWith("word199")).toBe(true);
+  });
+
+  it("measures a touch narrow so wrap drift can only trim early, never overflow", () => {
+    // Even measured at the FULL band width, the fitted text must not exceed
+    // the band: the safety margin absorbs measure-vs-render drift.
+    const words = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
+    const { height, lineCount } = measureTextWrap(fitCaption(words), SCREEN_W);
+    expect(lineCount).toBeLessThanOrEqual(CAPTION_LINES);
+    expect(height).toBeLessThanOrEqual(CAPTION_H);
   });
 
   it("caps the band height so the host never has overflow to scroll", () => {
     const text = Array.from({ length: 100 }, (_, i) => `segment ${i}`).join("\n");
-    const { height } = measureTextWrap(fitCaption(text), SCREEN_W);
-    expect(height).toBeLessThanOrEqual(SCREEN_H - LINE_H);
+    const { height } = measureTextWrap(fitCaption(text), FIT_W);
+    expect(height).toBeLessThanOrEqual(CAPTION_H);
+  });
+});
+
+describe("menuText (XERK-85: the double-tap popup)", () => {
+  it("puts Continue on top as the default, Exit session below", () => {
+    expect(menuText("continue")).toBe("› Continue\n  Exit session");
+  });
+
+  it("moves the highlight to Exit session", () => {
+    expect(menuText("exit")).toBe("  Continue\n› Exit session");
   });
 });
