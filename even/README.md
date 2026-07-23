@@ -104,21 +104,24 @@ glasses (and passes review) before relying on it for production.
 
 - **Single tap** — start a new session when idle. While one records, single
   taps do NOTHING (a brushed temple must not end a recording).
-- **Double tap (recording)** — a bordered native OS list (its own container,
-  added via `rebuildPageContainer`) with **Continue** (default, top) / **Exit
-  session**, drawn on top of the live captions, which keep flowing untouched
-  underneath. The OS owns the popup's gestures: swiping moves its selection,
-  a single tap confirms it (reported on the `listEvent` channel), another
-  double tap dismisses (same as Continue). Exit session stops the session —
-  the api finalizes and stores it — and the lens idles at "tap to start".
+- **Double tap (recording)** — a bordered popup box (its own container, added
+  via `rebuildPageContainer`) with **Continue** (default, top) / **Exit
+  session**, drawn over the caption band: the rows the box covers are masked
+  (exactly what an opaque popup would hide) while the rows around it keep
+  flowing. Swipe to move the highlight, single tap to confirm, another double
+  tap dismisses (same as Continue). Exit session stops the session — the api
+  finalizes and stores it — and the lens idles at "tap to start". Should the
+  popup-page rebuild ever fail on the host, the menu falls back into the
+  caption band itself, so the wearer is never stranded inside a session.
 - **Double tap (idle / signed out)** — exit the app (confirm dialog).
 
-The caption band NEVER captures input (a scroll gesture aimed at the captured
-container triggers the OS scroll animation on it — the session text must
-never be its target): the plain pages capture on the tiny clock container,
-the popup page on the popup list. Gestures arrive on the `sysEvent`,
-`textEvent`, and `listEvent` channels; all feed one handler, deduped per
-gesture type.
+No VISIBLE container ever captures input (the OS plays its scroll animation
+on whatever container captures a scroll gesture — it hit the session text
+first, then the clock): every page carries an invisible full-band "touch"
+overlay (content: one space) at the caption band's geometry, which captures
+all gestures — the bounce animation moves content nobody can see. Gestures
+arrive on the `sysEvent` and `textEvent` channels; both feed one handler,
+deduped per gesture type.
 
 Once signed in, the top-right corner shows the current time (12-hour) — on
 the idle "ready" page and while recording alike. While a session records, the

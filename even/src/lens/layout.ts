@@ -8,13 +8,14 @@
  *   │ transcript)                   │  no half-line slot)
  *   └───────────────────────────────┘  y=270 (the last 18px stay unused)
  *
- * Exactly ONE container captures input per page — and it is NEVER the caption
- * band (XERK-85 feedback: a scroll gesture aimed at the captured container
- * triggers the OS scroll animation on it, which must not happen on the session
- * text). The plain pages give capture to the tiny clock container; the popup
- * page gives it to the popup list, where the OS turns scrolling into moving
- * the selection. Live text updates go through `textContainerUpgrade`
- * (flicker-free), never a rebuild.
+ * Exactly ONE container captures input per page — and it is NEVER a visible
+ * one (XERK-85 feedback: the OS plays its scroll animation on whatever
+ * container captures a scroll gesture — it hit the session text first, then
+ * the clock when capture moved there). Every page therefore carries an
+ * INVISIBLE full-band "touch" overlay (content: a single space) at the same
+ * geometry as the caption band: it captures every gesture, and the OS bounce
+ * animation moves content nobody can see. Live text updates go through
+ * `textContainerUpgrade` (flicker-free), never a rebuild.
  *
  * XERK-85: while a session is recording the status line reads "listening" with
  * animated dots and the clock container shows the current time top-right. The
@@ -28,13 +29,11 @@
 import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
-  ListContainerProperty,
-  ListItemContainerProperty,
   RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
 } from "@evenrealities/even_hub_sdk";
-import { getTextWidth, measureTextWrap } from "@evenrealities/pretext";
+import { getTextWidth } from "@evenrealities/pretext";
 
 export const SCREEN_W = 576;
 export const SCREEN_H = 288;
@@ -64,29 +63,31 @@ export const CONTAINER = {
   caption: { id: 2, name: "caption" },
   clock: { id: 3, name: "clock" },
   menu: { id: 4, name: "menu" }, // the double-tap popup box (only on the menu page)
+  touch: { id: 5, name: "touch" }, // invisible full-band gesture-capture overlay
 } as const;
 
-// ---- the double-tap popup (XERK-85) -----------------------------------------
-// A native OS LIST container overlaid on the page via `rebuildPageContainer`
-// (the SDK's sanctioned runtime page change), horizontally centered in the
-// upper part of the caption band. The OS renders the menu — its background,
-// the selection border (isItemSelectBorderEn) — so the session text does not
-// show through, and it owns the gestures while open: scrolling moves the
-// SELECTION (never scrolls the session text) and a tap reports the selected
-// item back through the listEvent channel.
-export const MENU_ITEMS = ["Continue", "Exit session"] as const; // Continue = default, on top
-export const MENU_EXIT_INDEX = 1;
+// ---- the double-tap popup box (XERK-85) -------------------------------------
+// A bordered text container overlaid on the page via `rebuildPageContainer`
+// (the SDK's sanctioned runtime page change — this exact 4-text-container
+// rebuild is device-validated), horizontally centered in the upper part of the
+// caption band. The caption rows it covers are masked (`occludedCaption`), so
+// the session text never shows through it while the rows above and below keep
+// flowing — visually an opaque popup on top of the live conversation.
 export const MENU_PAD = 10;
 export const MENU_BORDER = 2;
-const MENU_LABEL_MAX_W = Math.max(...MENU_ITEMS.map(getTextWidth));
-// Widest label + padding/border each side + slack for the OS list cell chrome
-// (kept even so the centered x position is a whole pixel).
-export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 24) / 2);
-// Two list cells; each gets headroom over the bare line height for the OS
-// cell padding + selection border.
-export const MENU_H = 2 * (LINE_H + 10) + 2 * (MENU_PAD + MENU_BORDER);
+const MENU_LABEL_MAX_W = Math.max(
+  ...["› Continue", "  Continue", "› Exit session", "  Exit session"].map(getTextWidth),
+);
+// Widest label + padding/border each side + a little slack (kept even so the
+// centered x position is a whole pixel).
+export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 8) / 2);
+export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
 export const MENU_X = (SCREEN_W - MENU_W) / 2;
 export const MENU_Y = 2 * LINE_H; // one caption row below the status line
+// The caption rows the box touches (0-based within the band): masked to ""
+// while the popup is up so nothing renders underneath the box.
+export const MENU_ROW_FIRST = Math.floor((MENU_Y - LINE_H) / LINE_H);
+export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
 /** The text every base container carries when a page is (re)built. */
 export interface PageContents {
@@ -96,17 +97,20 @@ export interface PageContents {
 }
 
 /**
- * The three always-present containers: status line, caption band, clock.
- * paddingLength/borderWidth are pinned to 0 on each so the width the host
- * wraps at IS the width fitCaption measures at — an unnoticed host default
- * padding would wrap earlier than measured and overflow the band.
+ * The four always-present containers: status line, caption band, clock, and
+ * the invisible full-band "touch" overlay. paddingLength/borderWidth are
+ * pinned to 0 on each so the width the host wraps at IS the width fitCaption
+ * measures at — an unnoticed host default padding would wrap earlier than
+ * measured and overflow the band.
  *
- * The caption band NEVER captures input (XERK-85: a scroll gesture on the
- * captured container triggers the OS scroll animation there — the session text
- * must never be its target). The plain pages capture on the tiny clock
- * container instead; the popup page captures on the popup list.
+ * The touch overlay is the ONLY event-capture container on every page
+ * (XERK-85): the OS plays its scroll animation on whatever container captures
+ * a scroll gesture, so the captured one must render nothing anybody can see.
+ * The overlay shares the caption band's exact geometry (the capture target
+ * every device-validated build used) but its content is a single space —
+ * gestures land on it, and the bounce animation moves invisible content.
  */
-function baseContainers(contents: PageContents, captureOnClock: boolean): TextContainerProperty[] {
+function baseContainers(contents: PageContents): TextContainerProperty[] {
   const status = new TextContainerProperty({
     containerID: CONTAINER.status.id,
     containerName: CONTAINER.status.name,
@@ -129,7 +133,7 @@ function baseContainers(contents: PageContents, captureOnClock: boolean): TextCo
     height: CAPTION_H, // whole lines only — no half-line slot to scroll into
     paddingLength: 0,
     borderWidth: 0,
-    isEventCapture: 0, // never — see above
+    isEventCapture: 0, // never the session text — see above
     content: contents.caption,
   });
 
@@ -142,38 +146,49 @@ function baseContainers(contents: PageContents, captureOnClock: boolean): TextCo
     height: LINE_H,
     paddingLength: 0,
     borderWidth: 0,
-    isEventCapture: captureOnClock ? 1 : 0,
+    isEventCapture: 0, // never the clock either — it visibly bounced
     content: contents.clock,
   });
 
-  return [status, caption, clock];
+  const touch = new TextContainerProperty({
+    containerID: CONTAINER.touch.id,
+    containerName: CONTAINER.touch.name,
+    xPosition: 0,
+    yPosition: LINE_H,
+    width: SCREEN_W,
+    height: CAPTION_H, // same geometry as the caption band
+    paddingLength: 0,
+    borderWidth: 0,
+    isEventCapture: 1, // the single event-capture container, on every page
+    content: " ", // renders nothing — the OS bounce moves invisible content
+  });
+
+  return [status, caption, clock, touch];
 }
 
 /** The one-shot startup layout. Call `createStartUpPageContainer` with this exactly once. */
 export function buildStartupContainer(): CreateStartUpPageContainer {
   return new CreateStartUpPageContainer({
-    containerTotalNum: 3,
-    textObject: baseContainers({ status: "starting…", caption: "", clock: "" }, true),
+    containerTotalNum: 4,
+    textObject: baseContainers({ status: "starting…", caption: "", clock: "" }),
   });
 }
 
 /** The regular page (no popup), for `rebuildPageContainer` when the popup closes. */
 export function buildMainPage(contents: PageContents): RebuildPageContainer {
   return new RebuildPageContainer({
-    containerTotalNum: 3,
-    textObject: baseContainers(contents, true),
+    containerTotalNum: 4,
+    textObject: baseContainers(contents),
   });
 }
 
 /**
- * The page with the double-tap popup up: the three base containers plus the
- * native OS list rendering Continue / Exit session. The list is the page's
- * event-capture container, so the OS owns the gestures while the popup is
- * open — scrolling moves the selection (with its own selection border), and a
- * tap reports the chosen item via the listEvent channel.
+ * The page with the double-tap popup up: the base containers plus the
+ * bordered menu box, drawn over the caption band (whose covered rows the
+ * controller masks via `occludedCaption`, so nothing shows through the box).
  */
-export function buildMenuPage(contents: PageContents): RebuildPageContainer {
-  const menu = new ListContainerProperty({
+export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
+  const menu = new TextContainerProperty({
     containerID: CONTAINER.menu.id,
     containerName: CONTAINER.menu.name,
     xPosition: MENU_X,
@@ -185,22 +200,12 @@ export function buildMenuPage(contents: PageContents): RebuildPageContainer {
     // Any non-black color renders as the HUD's single lit color.
     borderColor: 0xffffff,
     borderRadius: 10,
-    isEventCapture: 1, // the popup owns the gestures while it is up
-    itemContainer: new ListItemContainerProperty({
-      itemCount: MENU_ITEMS.length,
-      itemName: [...MENU_ITEMS],
-      itemWidth: MENU_W - 2 * (MENU_PAD + MENU_BORDER),
-      isItemSelectBorderEn: 1, // the OS draws the selection highlight
-    }),
+    isEventCapture: 0,
+    content: menuText(selected),
   });
-  // Best-effort black backdrop (XERK-85: the session text must not show
-  // through the popup): the SDK's toJson passes unknown keys through to the
-  // host, so declare an opaque black background for hosts that honor it.
-  (menu as unknown as Record<string, unknown>).backgroundColor = 0x000000;
   return new RebuildPageContainer({
-    containerTotalNum: 4,
-    textObject: baseContainers(contents, false),
-    listObject: [menu],
+    containerTotalNum: 5,
+    textObject: [...baseContainers(contents), menu],
   });
 }
 
@@ -308,6 +313,21 @@ export class LensTextWriter {
   }
 }
 
+/** The in-session popup's two choices (XERK-85): Continue is the default, on top. */
+export type MenuChoice = "continue" | "exit";
+
+/**
+ * The in-session popup's rows, rendered inside the bordered menu box:
+ * Continue on top (the default) with Exit session below, the highlighted row
+ * marked with "›". Swiping moves the highlight; a single tap confirms it
+ * (controller.ts).
+ */
+export function menuText(selected: MenuChoice): string {
+  const row = (choice: MenuChoice, label: string) =>
+    `${selected === choice ? "›" : " "} ${label}`;
+  return `${row("continue", "Continue")}\n${row("exit", "Exit session")}`;
+}
+
 /** The animated activity dots (XERK-85): 1 → 2 → 3 dots, cycling with the ticker. */
 export function dots(tick: number): string {
   return ".".repeat((tick % 3) + 1);
@@ -339,38 +359,86 @@ export function statusLine(
 }
 
 /**
- * Fit the live transcript to the caption band (XERK-85).
- *
- * Trims to the LAST `maxLines` wrapped lines (pixel-accurate via
- * `@evenrealities/pretext`, which mirrors the LVGL renderer) so the band never
- * overflows — with nothing overflowing, the host has nothing to scroll. Old
- * text that no longer fits simply isn't there anymore. The kept tail is
- * top-padded with newlines so new text keeps arriving at the BOTTOM of the
- * band, exactly as it does mid-session when the band is full.
- *
- * Measured at `SCREEN_W - MEASURE_SAFETY_PX` by default: any drift between the
- * measured and the rendered wrap then trims a line too early (invisible)
- * instead of leaving one line too many (clipped half-way + a scroll bar).
+ * Split text into the physical rows the band renders: explicit newlines are
+ * respected, and longer paragraphs are greedy-wrapped at word boundaries
+ * (pixel-measured via `@evenrealities/pretext`, hard-breaking words that
+ * exceed a full row). The result carries OUR breaks: the rendered rows are
+ * exactly these strings, each of which fits `maxWidth`.
  */
+export function wrapLines(text: string, maxWidth = SCREEN_W - MEASURE_SAFETY_PX): string[] {
+  const rows: string[] = [];
+  for (const para of text.split("\n")) {
+    let rest = para;
+    if (rest === "") {
+      rows.push("");
+      continue;
+    }
+    while (rest !== "") {
+      if (getTextWidth(rest) <= maxWidth) {
+        rows.push(rest);
+        break;
+      }
+      // Binary search the longest prefix that fits the row.
+      let lo = 1;
+      let hi = rest.length - 1;
+      let fit = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (getTextWidth(rest.slice(0, mid)) <= maxWidth) {
+          fit = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      // Prefer breaking at the last space inside the fit; hard-break one
+      // over-long unbroken word.
+      const space = rest.lastIndexOf(" ", fit);
+      const brk = space > 0 ? space : fit;
+      rows.push(rest.slice(0, brk));
+      rest = rest.slice(brk).replace(/^ +/, "");
+    }
+  }
+  return rows;
+}
+
+/**
+ * The caption band as exactly `maxLines` physical rows (XERK-85): the LAST
+ * rows of the wrapped transcript, top-padded with empty rows so new text
+ * keeps arriving at the BOTTOM of the band. With every row measured to fit
+ * and exactly CAPTION_LINES of them, the band never overflows — the host has
+ * nothing to scroll, and old text simply falls off the top.
+ */
+export function fitCaptionRows(
+  text: string,
+  maxLines = CAPTION_LINES,
+  maxWidth = SCREEN_W - MEASURE_SAFETY_PX,
+): string[] {
+  const wrapped = wrapLines(text, maxWidth);
+  const kept = wrapped.length > maxLines ? wrapped.slice(-maxLines) : wrapped;
+  return [...Array<string>(maxLines - kept.length).fill(""), ...kept];
+}
+
+/** `fitCaptionRows` joined for the caption container (empty text stays empty). */
 export function fitCaption(
   text: string,
   maxLines = CAPTION_LINES,
   maxWidth = SCREEN_W - MEASURE_SAFETY_PX,
 ): string {
   if (!text) return "";
-  const lines = (t: string) => measureTextWrap(t, maxWidth).lineCount;
-  let kept = text;
-  if (lines(text) > maxLines) {
-    // Binary search the smallest suffix that still fits: O(log n) measures.
-    let lo = 1; // dropping 0 chars is known not to fit
-    let hi = text.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (lines(text.slice(mid)) <= maxLines) hi = mid;
-      else lo = mid + 1;
-    }
-    kept = text.slice(lo);
-  }
-  return "\n".repeat(maxLines - lines(kept)) + kept;
+  return fitCaptionRows(text, maxLines, maxWidth).join("\n");
+}
+
+/**
+ * The caption band while the popup is up (XERK-85): the same fitted rows, but
+ * the rows the popup box touches are masked to "" — exactly what an opaque
+ * popup would hide. Rows above and below keep flowing, so the conversation
+ * visibly continues around the box and nothing renders underneath it.
+ */
+export function occludedCaption(text: string): string {
+  if (!text) return "";
+  const rows = fitCaptionRows(text);
+  for (let r = MENU_ROW_FIRST; r <= MENU_ROW_LAST; r++) rows[r] = "";
+  return rows.join("\n");
 }
 
