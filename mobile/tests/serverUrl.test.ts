@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isValidServerUrl, normalizeServerUrl } from "../src/lib/serverUrl";
+import { displayServerUrl, isValidServerUrl, normalizeServerUrl } from "../src/lib/serverUrl";
 
 describe("normalizeServerUrl", () => {
   it("keeps a fully-qualified ws URL with a path", () => {
@@ -54,5 +54,15 @@ describe("isValidServerUrl", () => {
     expect(isValidServerUrl("")).toBe(false);
     expect(isValidServerUrl("   ")).toBe(false);
     expect(isValidServerUrl("wss://")).toBe(false);
+  });
+});
+
+describe("displayServerUrl", () => {
+  it("seeds the setup field with the plain host, no wss:// or /ws (XERK-84)", () => {
+    // The setup/settings server field pre-fills from the stored canonical URL; it
+    // must show `tenir.example.com`, not `wss://tenir.example.com/ws`. Exercises the
+    // React Native URL polyfill.
+    expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("localhost:8080");
   });
 });

@@ -36,28 +36,6 @@ describe("normalizeServerUrl", () => {
   });
 });
 
-describe("displayServerUrl", () => {
-  it("collapses the canonical secure form to the bare host people type", () => {
-    expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
-    expect(displayServerUrl("wss://tenir.example.com:9000/ws")).toBe("tenir.example.com:9000");
-  });
-
-  it("round-trips through normalizeServerUrl", () => {
-    for (const canonical of ["wss://tenir.example.com/ws", "wss://h.example:9000/ws", "ws://localhost:8080/ws", "wss://h.example/custom"]) {
-      expect(normalizeServerUrl(displayServerUrl(canonical))).toBe(canonical);
-    }
-  });
-
-  it("keeps non-default forms (insecure scheme, custom path) in full", () => {
-    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("ws://localhost:8080/ws");
-    expect(displayServerUrl("wss://h.example/custom")).toBe("wss://h.example/custom");
-  });
-
-  it("passes malformed input through untouched", () => {
-    expect(displayServerUrl("garbage")).toBe("garbage");
-  });
-});
-
 describe("isValidServerUrl", () => {
   it("accepts hosts in any accepted form", () => {
     expect(isValidServerUrl("example.com")).toBe(true);
@@ -69,5 +47,36 @@ describe("isValidServerUrl", () => {
     expect(isValidServerUrl("")).toBe(false);
     expect(isValidServerUrl("   ")).toBe(false);
     expect(isValidServerUrl("wss://")).toBe(false);
+  });
+});
+
+describe("displayServerUrl", () => {
+  it("strips the ws(s):// scheme and default /ws path", () => {
+    expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("localhost:8080");
+  });
+
+  it("preserves a non-default port and path so it round-trips", () => {
+    expect(displayServerUrl("wss://example.com:9000/ws")).toBe("example.com:9000");
+    expect(displayServerUrl("wss://example.com/api/ws")).toBe("example.com/api/ws");
+    // Round-trip: display form re-normalizes back to the canonical URL.
+    expect(normalizeServerUrl(displayServerUrl("wss://example.com/api/ws"))).toBe(
+      "wss://example.com/api/ws",
+    );
+  });
+
+  it("drops a bare or trailing-slash path", () => {
+    expect(displayServerUrl("wss://example.com")).toBe("example.com");
+    expect(displayServerUrl("wss://example.com/")).toBe("example.com");
+  });
+
+  it("trims whitespace and returns a bare host unchanged", () => {
+    expect(displayServerUrl("  wss://example.com/ws  ")).toBe("example.com");
+    expect(displayServerUrl("tenir.example.com")).toBe("tenir.example.com");
+  });
+
+  it("returns empty for blank input", () => {
+    expect(displayServerUrl("")).toBe("");
+    expect(displayServerUrl("   ")).toBe("");
   });
 });

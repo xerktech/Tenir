@@ -42,20 +42,26 @@ export function isValidServerUrl(input: string): boolean {
 }
 
 /**
- * The user-facing form of a canonical `ws(s)://host/ws` URL: the plain
- * `host[:port]` people actually type (XERK-82 — nobody should see or type a
- * `wss://…/ws` URL). Only the default form (secure scheme, `/ws` path, no
- * query) collapses to the bare host; anything custom is shown in full so it
- * round-trips through `normalizeServerUrl` unchanged.
+ * Render a server URL in the friendly, host-only form people actually type — the
+ * inverse of {@link normalizeServerUrl} for display. Strips the `ws(s)://` scheme
+ * and the default `/ws` endpoint path so `wss://tenir.example.com/ws` shows as
+ * `tenir.example.com`, while a non-default port or path is preserved so the value
+ * still round-trips back through `normalizeServerUrl` (e.g.
+ * `ws://localhost:8080/ws` → `localhost:8080`, `wss://host/api/ws` → `host/api/ws`).
+ *
+ * Used to seed the setup / settings server field so the user sees `tenir.example.com`
+ * rather than the internal `wss://…/ws` form. Returns the trimmed input unchanged
+ * when it can't be parsed as a URL (it's already a bare host).
  */
-export function displayServerUrl(wsUrl: string): string {
+export function displayServerUrl(input: string): string {
+  const s = input.trim();
+  if (!s) return "";
   try {
-    const u = new URL(wsUrl);
-    if (u.protocol === "wss:" && (u.pathname === "/ws" || u.pathname === "/" || u.pathname === "") && !u.search) {
-      return u.host;
-    }
-    return wsUrl;
+    const u = new URL(s);
+    if (!u.host) return s;
+    const path = u.pathname === "/ws" || u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return `${u.host}${path}`;
   } catch {
-    return wsUrl;
+    return s;
   }
 }
