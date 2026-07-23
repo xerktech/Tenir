@@ -29,14 +29,14 @@ Root `VERSION` holds `MAJOR.MINOR` only. The **patch is derived from the
 `v<M>.<m>.<p>` git tags** (max on that line + 1), never committed — so the
 auto-patch path is read-only against the repo and can't re-trigger itself. One
 tag namespace, `v<M>.<m>.<p>`, one release, all four components (the api image
-— which bakes in the web SPA —, the vLLM STT image, the Even `.ehpk`, and the
+— which bakes in the web SPA —, the Parakeet STT image, the Even `.ehpk`, and the
 Android `.apk`).
 
 ## CLI I/O contract (for release.yml)
 
 - **`plan.js`** — in: `RELEASE_TYPE` (patch|minor|major), `FORCE_ALL`. out
   (`$GITHUB_OUTPUT`): `version`, `tag`, `prev_tag`, `changed` (json),
-  `android_version_code`, `build_api`/`build_vllm_stt`/`build_even`/
+  `android_version_code`, `build_api`/`build_parakeet_stt`/`build_even`/
   `build_mobile`, `base_major`, `base_minor`.
 - **`publish.js`** — in: `VERSION_FULL`, `TAG`, `PREV_TAG`, `CHANGED` (json),
   `ANDROID_VERSION_CODE`, `COMMIT`, `RELEASED_AT`, `OUT_DIR`. out: writes

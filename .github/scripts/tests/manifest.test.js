@@ -6,7 +6,7 @@ const M = require("../manifest.js");
 
 const ALL_CHANGED = {
   api: true,
-  "vllm-stt": true,
+  "parakeet-stt": true,
   even: true,
   mobile: true,
 };
@@ -28,7 +28,7 @@ test("first release: every component fresh and built", () => {
   const m = firstRelease();
   assert.equal(m.schema, 1);
   assert.equal(m.components.api.ref, "ghcr.io/xerktech/tenir:0.1.0");
-  assert.equal(m.components["vllm-stt"].ref, "ghcr.io/xerktech/tenir-vllm-stt:0.1.0");
+  assert.equal(m.components["parakeet-stt"].ref, "ghcr.io/xerktech/tenir-parakeet-stt:0.1.0");
   assert.equal(m.components.even.asset, "tenir-even-v0.1.0.ehpk");
   assert.equal(m.components.mobile.asset, "tenir-android-v0.1.0.apk");
   assert.equal(m.components.mobile.version_code, 10000);
@@ -50,12 +50,12 @@ test("carried image keeps its OLDER version and ref; never retagged to the new v
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: false, "vllm-stt": true, even: false, mobile: false },
+    changed: { api: false, "parakeet-stt": true, even: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
-  assert.equal(m.components["vllm-stt"].version, "0.1.1"); // rebuilt
-  assert.equal(m.components["vllm-stt"].built, true);
+  assert.equal(m.components["parakeet-stt"].version, "0.1.1"); // rebuilt
+  assert.equal(m.components["parakeet-stt"].built, true);
   assert.equal(m.components.api.version, "0.1.0"); // carried, older
   assert.equal(m.components.api.ref, "ghcr.io/xerktech/tenir:0.1.0");
   assert.equal(m.components.api.built, false);
@@ -68,7 +68,7 @@ test("carried asset keeps its name/version but re-points release_tag to the new 
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "vllm-stt": true, even: false, mobile: false },
+    changed: { api: true, "parakeet-stt": true, even: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
@@ -88,7 +88,7 @@ test("unchanged component absent from prev manifest throws (never emit a hole)",
       tag: "v0.1.1",
       commit: "bbb",
       releasedAt: "2026-07-20T00:00:00Z",
-      changed: { api: true, "vllm-stt": true, even: false, mobile: true },
+      changed: { api: true, "parakeet-stt": true, even: false, mobile: true },
       prevManifest: prev,
       androidVersionCode: 10001,
     }),
@@ -102,13 +102,13 @@ test("carryPlan emits copy-asset only for carried assets, not images or built on
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "vllm-stt": false, even: false, mobile: false },
+    changed: { api: true, "parakeet-stt": false, even: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
   const plan = M.carryPlan(m, prev);
   const components = plan.map((a) => a.component).sort();
-  // vllm-stt carried but it's an image -> no copy action. even/mobile are carried assets.
+  // parakeet-stt carried but it's an image -> no copy action. even/mobile are carried assets.
   assert.deepEqual(components, ["even", "mobile"]);
   const evenAction = plan.find((a) => a.component === "even");
   assert.deepEqual(evenAction, {
