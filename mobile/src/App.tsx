@@ -132,9 +132,6 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
           <View style={styles.wordmarkDot} />
           <Text style={styles.title}>Tenir</Text>
         </View>
-        <Text style={styles.identity}>
-          {principal.username} · {principal.household} · {principal.role}
-        </Text>
       </View>
       <Dashboard
         wsUrl={wsUrl}
@@ -240,7 +237,6 @@ const makeStyles = (colors: Palette) =>
     wordmark: { flexDirection: "row", alignItems: "center", gap: space.sm },
     wordmarkDot: { width: 9, height: 9, borderRadius: 4.5, backgroundColor: colors.accent },
     title: { color: colors.text, fontSize: 18, fontWeight: "600", letterSpacing: -0.2 },
-    identity: { color: colors.muted, fontSize: 12 },
     tabBar: {
       flexDirection: "row",
       borderTopColor: colors.border,

@@ -112,13 +112,13 @@ describe("App auth gating", () => {
     expect(screen.queryByRole("button", { name: "Users" })).not.toBeInTheDocument();
   });
 
-  it("shows the household identity and a logout control when authenticated", async () => {
+  it("shows a logout control but no user identity in the header when authenticated", async () => {
     me.mockResolvedValue({ userId: "u-7f3a", username: "ada", household: "lab", role: "owner" });
     renderApp();
-    await waitFor(() => expect(screen.getByText(/ada · lab · owner/)).toBeInTheDocument());
-    // The raw user_id is not shown.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument());
+    // The header no longer surfaces user info (username/household/role or raw user_id).
+    expect(screen.queryByText(/ada · lab · owner/)).not.toBeInTheDocument();
     expect(screen.queryByText(/u-7f3a/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
   it("shows the Live tab as the first dashboard section", async () => {

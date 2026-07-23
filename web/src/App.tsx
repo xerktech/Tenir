@@ -60,20 +60,15 @@ function Header({
       <span className="header-spacer" />
       <ThemeToggle />
       {principal && (
-        <>
-          <span className="muted">
-            {principal.username} · {principal.household} · {principal.role}
-          </span>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              logout();
-              onAuthChange();
-            }}
-          >
-            Log out
-          </Button>
-        </>
+        <Button
+          variant="ghost"
+          onClick={() => {
+            logout();
+            onAuthChange();
+          }}
+        >
+          Log out
+        </Button>
       )}
     </header>
   );
