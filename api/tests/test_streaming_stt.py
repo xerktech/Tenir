@@ -303,6 +303,124 @@ def test_stt_inference_latency_is_recorded() -> None:
     asyncio.run(run())
 
 
+# ----- LocalAgreement-2 word-by-word partials (XERK-90) ---------------------
+
+
+class ScriptedEngine:
+    """Emits a fixed sequence of hypotheses, one per call — a growing utterance."""
+
+    def __init__(self, script: list[str]) -> None:
+        self.script = script
+        self.calls = 0
+
+    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+        idx = min(self.calls, len(self.script) - 1)
+        self.calls += 1
+        return EngineResult(text=self.script[idx], words=[], language="en")
+
+
+def test_local_agreement_partials_grow_stably() -> None:
+    """With LocalAgreement on (the default), the caption grows word by word and an
+    already-shown word is never rewritten — the fix the ticket asks for."""
+
+    async def run() -> None:
+        eng = ScriptedEngine(["one", "one two", "one two three", "one two three four"])
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,  # one partial per 100ms push
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        texts: list[str] = []
+        for _ in range(4):
+            await t.push(_pcm(100, amplitude=4000))
+            texts.extend(m.text for m in _drain(t) if isinstance(m, CaptionPartial))
+
+        assert texts == ["one", "one two", "one two three", "one two three four"]
+        # Each emitted caption extends the previous one — pure growth, no rewriting.
+        for earlier, later in zip(texts, texts[1:]):
+            assert later.startswith(earlier)
+        # Only the last word trails as tentative; everything before it is committed.
+        assert t._agreement is not None
+        assert t._agreement.committed == ["one", "two", "three"]
+        assert t._agreement.tentative == ["four"]
+
+    asyncio.run(run())
+
+
+def test_local_agreement_does_not_commit_a_revised_tail() -> None:
+    """A word the model changes its mind about must not be shown as stable."""
+
+    async def run() -> None:
+        # The tail flips "beach" -> "bench" before settling — classic partial churn.
+        eng = ScriptedEngine(["go to the beach", "go to the bench", "go to the bench now"])
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+            _drain(t)
+
+        assert t._agreement is not None
+        # "go to the" agreed every time; "bench" only settled once it repeated.
+        assert t._agreement.committed == ["go", "to", "the", "bench"]
+        assert t._agreement.tentative == ["now"]
+
+    asyncio.run(run())
+
+
+def test_local_agreement_resets_between_segments() -> None:
+    async def run() -> None:
+        eng = ScriptedEngine(["hello world"])
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=100000,
+        )
+        for _ in range(2):  # speech -> partials build up a committed prefix
+            await t.push(_pcm(100, amplitude=4000))
+        assert t._agreement is not None and t._agreement.committed == ["hello", "world"]
+        for _ in range(3):  # trailing silence -> finalize, which resets the commit
+            await t.push(_pcm(100, amplitude=0))
+        assert t._agreement.committed == []
+        assert t._agreement.tentative == []
+
+    asyncio.run(run())
+
+
+def test_local_agreement_off_emits_raw_window() -> None:
+    """The toggle restores the legacy behaviour: each raw window hypothesis verbatim."""
+
+    async def run() -> None:
+        eng = ScriptedEngine(["alpha", "alpha beta", "totally different"])
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+            local_agreement=False,
+        )
+        texts: list[str] = []
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+            texts.extend(m.text for m in _drain(t) if isinstance(m, CaptionPartial))
+
+        assert t._agreement is None
+        # Raw path emits exactly what the engine returned — including the full rewrite.
+        assert texts == ["alpha", "alpha beta", "totally different"]
+
+    asyncio.run(run())
+
+
 # ----- factory --------------------------------------------------------------
 
 

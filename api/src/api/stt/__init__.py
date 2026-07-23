@@ -39,5 +39,6 @@ def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
             min_segment_ms=settings.stt_min_segment_ms,
             silence_ms=settings.stt_silence_ms,
             silence_rms=settings.stt_silence_rms,
+            local_agreement=settings.stt_local_agreement,
         )
     raise ValueError(f"unknown STT backend: {backend!r} (expected 'stub' or 'voxtral')")
