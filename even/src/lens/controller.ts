@@ -4,11 +4,13 @@
  * Sessions are explicit (XERK-85): once signed in the lens idles ("tap to
  * start"); a single tap starts a new session. While one records, a single tap
  * does NOTHING (a brushed temple must not end a recording) — a double tap
- * pops up a bordered box (its own container, added via `rebuildPageContainer`)
- * with Continue (default, top) / Exit session, drawn over the caption band
- * whose covered rows are masked (occludedCaption) while the rows around it
- * keep flowing: swiping moves the highlight, a single tap confirms it,
- * another double tap dismisses (same as Continue). Exit session stops the
+ * pops up a bordered full-width strip over the top two lines of the screen
+ * (its own container, added via `rebuildPageContainer`) with Continue
+ * (default, top) / Exit session; everything the strip covers — status line,
+ * clock, the first caption row — is blanked while it is up, and the rest of
+ * the transcript keeps flowing below it: swiping moves the highlight, a
+ * single tap confirms it, another double tap dismisses (same as Continue).
+ * Exit session stops the
  * session (the api finalizes + stores it). Should the popup-page rebuild fail
  * on the host, the menu falls back into the caption band itself, so the
  * wearer is NEVER stranded inside a session. While recording the status line
@@ -159,20 +161,26 @@ export async function wireLens(
     const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
     return state.menu ? occludedCaption(bounded) : fitCaption(bounded);
   };
+  // The popup strip covers the status/clock line and the first caption row:
+  // whatever it covers is blanked while it is up (fallback mode has no strip).
+  const popupCovering = () => state.menu !== null && !menuFallback;
+  const statusContent = () =>
+    !enabled ? "not signed in" : popupCovering() ? "" : statusLine(state, tick);
+  const clockContent = () => (enabled && !popupCovering() ? clockText(new Date()) : "");
   /** What every container should currently read — the one source of page truth. */
   const pageContents = (): PageContents => ({
-    status: enabled ? statusLine(state, tick) : "not signed in",
+    status: statusContent(),
     caption: !enabled ? SIGN_IN_PROMPT : state.recording ? liveCaption() : IDLE_PROMPT,
-    clock: enabled ? clockText(new Date()) : "",
+    clock: clockContent(),
   });
   const renderCaption = () => writer.set(CONTAINER.caption, pageContents().caption);
   const renderMenu = () => {
     if (state.menu && !menuFallback) writer.set(CONTAINER.menu, menuText(state.menu));
   };
-  const renderStatus = () => writer.set(CONTAINER.status, statusLine(state, tick));
+  const renderStatus = () => writer.set(CONTAINER.status, statusContent());
   // The clock shows whenever signed in — on the idle "ready" page and while
-  // recording alike (XERK-85 feedback).
-  const renderClock = () => writer.set(CONTAINER.clock, enabled ? clockText(new Date()) : "");
+  // recording alike (XERK-85 feedback) — except under the popup strip.
+  const renderClock = () => writer.set(CONTAINER.clock, clockContent());
   const syncPhone = () =>
     phoneTranscript?.update({
       recording: state.recording,
@@ -209,14 +217,14 @@ export async function wireLens(
   };
 
   const showIdle = () => {
-    writer.set(CONTAINER.status, statusLine(state));
+    renderStatus();
     renderClock();
     writer.set(CONTAINER.caption, IDLE_PROMPT);
   };
 
   const showSignInPrompt = () => {
-    writer.set(CONTAINER.status, "not signed in");
-    writer.set(CONTAINER.clock, "");
+    renderStatus();
+    renderClock();
     writer.set(CONTAINER.caption, SIGN_IN_PROMPT);
   };
 

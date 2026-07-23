@@ -68,25 +68,22 @@ export const CONTAINER = {
 
 // ---- the double-tap popup box (XERK-85) -------------------------------------
 // A bordered text container overlaid on the page via `rebuildPageContainer`
-// (the SDK's sanctioned runtime page change — this exact 4-text-container
-// rebuild is device-validated), horizontally centered in the upper part of the
-// caption band. The caption rows it covers are masked (`occludedCaption`), so
-// the session text never shows through it while the rows above and below keep
-// flowing — visually an opaque popup on top of the live conversation.
-export const MENU_PAD = 10;
+// (the SDK's sanctioned runtime page change): a FULL-WIDTH strip covering
+// exactly the top two lines of the screen — the status/clock line and the
+// first transcript row. Everything it covers is blanked while it is up (the
+// status + clock containers write "", occludedCaption masks caption row 0),
+// so nothing shows through it while the rest of the transcript keeps flowing
+// below — visually an opaque popup on top of the live conversation.
+export const MENU_PAD = 0; // two 27px rows fill the strip exactly — no room for padding
 export const MENU_BORDER = 2;
-const MENU_LABEL_MAX_W = Math.max(
-  ...["› Continue", "  Continue", "› Exit session", "  Exit session"].map(getTextWidth),
-);
-// Widest label + padding/border each side + a little slack (kept even so the
-// centered x position is a whole pixel).
-export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 8) / 2);
-export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
-export const MENU_X = (SCREEN_W - MENU_W) / 2;
-export const MENU_Y = 2 * LINE_H; // one caption row below the status line
-// The caption rows the box touches (0-based within the band): masked to ""
-// while the popup is up so nothing renders underneath the box.
-export const MENU_ROW_FIRST = Math.floor((MENU_Y - LINE_H) / LINE_H);
+export const MENU_W = SCREEN_W;
+export const MENU_H = 2 * LINE_H;
+export const MENU_X = 0;
+export const MENU_Y = 0;
+// The caption-band rows the box touches (0-based within the band): masked to
+// "" while the popup is up so nothing renders underneath the box. (The box
+// also covers the status line above the band — blanked separately.)
+export const MENU_ROW_FIRST = Math.max(0, Math.floor((MENU_Y - LINE_H) / LINE_H));
 export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
 /** The text every base container carries when a page is (re)built. */
@@ -184,8 +181,9 @@ export function buildMainPage(contents: PageContents): RebuildPageContainer {
 
 /**
  * The page with the double-tap popup up: the base containers plus the
- * bordered menu box, drawn over the caption band (whose covered rows the
- * controller masks via `occludedCaption`, so nothing shows through the box).
+ * bordered menu strip across the top two lines of the screen. The controller
+ * blanks everything the strip covers (status, clock, caption row 0 via
+ * `occludedCaption`), so nothing shows through the box.
  */
 export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
   const menu = new TextContainerProperty({

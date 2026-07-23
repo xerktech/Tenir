@@ -196,9 +196,12 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await t.click();
 
     await t.doubleTap();
-    // The popup is its own bordered box on a rebuilt 5-container page.
+    // The popup is its own bordered strip on a rebuilt 5-container page.
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session"); // Continue is the default, on top
+    // The strip covers the status line and clock: both blank while it is up.
+    expect(t.text(C().status)).toBe("");
+    expect(t.text(C().clock)).toBe("");
     await t.swipeDown();
     expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
     await t.click();
