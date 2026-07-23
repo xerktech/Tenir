@@ -3,7 +3,7 @@
  * end to end with a stub bridge, a fake api client, and fake timers — click
  * starts/stops a session, the status line reads "listening" with moving dots,
  * the clock shows the current time, captions stay fitted to the band, and the
- * phone-side transcript strip mirrors it all in real time.
+ * phone-side Session page mirrors it all in real time (XERK-93).
  */
 
 import { OsEventTypeList, type EvenAppBridge, type EvenHubEvent } from "@evenrealities/even_hub_sdk";
@@ -14,7 +14,7 @@ import { MemStorage } from "./memStorage";
 
 let controllerMod: typeof import("../src/lens/controller");
 let layout: typeof import("../src/lens/layout");
-let transcriptMod: typeof import("../src/phone/transcript");
+let sessionMod: typeof import("../src/phone/session");
 let cfg: typeof import("../src/config");
 
 beforeEach(async () => {
@@ -24,7 +24,7 @@ beforeEach(async () => {
   vi.resetModules();
   controllerMod = await import("../src/lens/controller");
   layout = await import("../src/lens/layout");
-  transcriptMod = await import("../src/phone/transcript");
+  sessionMod = await import("../src/phone/session");
   cfg = await import("../src/config");
   await cfg.initConfig(new MemStorage());
 });
@@ -103,15 +103,20 @@ async function boot(
     latest.set(c.id, content);
     return true;
   });
-  let phone: InstanceType<typeof transcriptMod.PhoneTranscript> | null = null;
+  let phone: InstanceType<typeof sessionMod.SessionPage> | null = null;
   if (opts.withPhone) {
     document.body.innerHTML = `
-      <section id="live-transcript" hidden>
-        <span id="live-status"></span>
-        <ul id="live-text"></ul>
+      <section id="page-session">
+        <span id="session-dot" hidden></span>
+        <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="empty" id="session-empty">
+          <p id="session-empty-title"></p>
+          <p id="session-empty-hint"></p>
+        </div>
+        <ul id="session-text" hidden></ul>
       </section>
     `;
-    phone = new transcriptMod.PhoneTranscript(transcriptMod.queryPhoneTranscriptElements()!);
+    phone = new sessionMod.SessionPage(sessionMod.querySessionPageElements()!);
   }
   const api = fakeClientFactory();
   const controls = await controllerMod.wireLens(bridge, new MemStorage(), writer, phone, {
@@ -426,12 +431,14 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.text(C().caption)!.endsWith("earlier words")).toBe(true);
   });
 
-  it("mirrors the session to the phone transcript strip in real time", async () => {
+  it("mirrors the session to the phone Session page in real time", async () => {
     const t = await boot({ withPhone: true });
-    const panel = () => document.getElementById("live-transcript")!;
+    const badge = () => document.getElementById("session-badge")!;
+    const emptyTitle = () => document.getElementById("session-empty-title")!;
     t.controls.enable();
     await settle();
-    expect(panel().hidden).toBe(true); // idle: no strip
+    expect(badge().textContent).toBe("idle"); // idle: the page explains itself
+    expect(emptyTitle().textContent).toBe("No session running");
 
     await t.click();
     t.api.handlers().onConnectionChange?.("open");
@@ -444,13 +451,13 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     });
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "and mo" });
     await settle();
-    expect(panel().hidden).toBe(false);
-    expect(document.getElementById("live-status")!.textContent).toBe("listening");
-    const rows = [...document.querySelectorAll("#live-text li")].map((li) => li.textContent);
+    expect(badge().textContent).toBe("listening");
+    const rows = [...document.querySelectorAll("#session-text li")].map((li) => li.textContent);
     expect(rows).toEqual(["hello phone", "and mo"]);
 
     await t.exitViaMenu(); // stop
-    expect(panel().hidden).toBe(true);
+    expect(badge().textContent).toBe("idle");
+    expect(document.getElementById("session-text")!.hidden).toBe(true);
   });
 
   it("stops the session and shows the sign-in prompt on sign-out", async () => {

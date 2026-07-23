@@ -2,11 +2,13 @@
  * tenir — Even Hub app entry.
  *
  * One page, two surfaces (XERK-82): the phone side shows the login page and,
- * once signed in, the embedded Tenir web UI (src/phone/login.ts) plus a live
- * transcript strip mirroring the running session (src/phone/transcript.ts,
- * XERK-85); the lens side renders live captions through the SDK bridge. Both
- * run from this single WebView — navigating away would kill the lens app, so
- * nothing here ever navigates.
+ * once signed in, the app's own phone pages (XERK-93) — Session, a full-page
+ * live transcript mirroring the running glasses session (src/phone/session.ts),
+ * and History, the stored sessions from the api (src/phone/history.ts) — with
+ * the web UI's bottom navigation between them (src/phone/nav.ts). The lens
+ * side renders live captions through the SDK bridge. Both run from this single
+ * WebView — navigating away would kill the lens app, so nothing here ever
+ * navigates.
  *
  * Boot order is strict, and tuned for BLE reality (the Even docs: one flaky hop
  * can hang ~30s, and concurrent bridge calls can crash the connection — which
@@ -42,8 +44,10 @@ import {
 import { wireLens, type LensControls } from "./lens/controller";
 import { LensTextWriter, buildStartupContainer, setText } from "./lens/layout";
 import { initConfig } from "./config";
+import { PhoneHistory, queryPhoneHistoryElements } from "./phone/history";
 import { initPhoneLogin, queryPhoneLoginElements } from "./phone/login";
-import { PhoneTranscript, queryPhoneTranscriptElements } from "./phone/transcript";
+import { initPhoneNav, queryPhoneNavElements, type PhoneNav } from "./phone/nav";
+import { SessionPage, querySessionPageElements } from "./phone/session";
 import { BridgeStorage, BrowserStorage, withBleTimeout, type KeyValueStorage } from "./state/storage";
 
 // How long to wait for the Even bridge before assuming a plain browser (dev).
@@ -51,6 +55,21 @@ const BRIDGE_TIMEOUT_MS = 2000;
 // The one-shot startup container gets a longer leash than a routine BLE call —
 // without it there is no lens at all.
 const STARTUP_CONTAINER_TIMEOUT_MS = 8000;
+// App errors (history load/delete failures) toast like the web UI, then fade.
+const TOAST_MS = 4000;
+
+/** Show an auto-hiding error toast (the web UI's notify(…, "err")). */
+function makeToast(): (message: string) => void {
+  const el = document.getElementById("app-toast");
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (message) => {
+    if (!el) return;
+    el.textContent = message;
+    el.classList.add("show");
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => el.classList.remove("show"), TOAST_MS);
+  };
+}
 
 async function main(): Promise<void> {
   // Race the bridge against a short timeout: packaged app inside the Even
@@ -66,11 +85,26 @@ async function main(): Promise<void> {
 
   let lens: LensControls | null = null;
   let authed = false;
+  const toast = makeToast();
 
-  // The phone-side live transcript strip (XERK-85) — same WebView, so the
+  // The phone pages (XERK-93): History reloads whenever its tab opens; the
+  // Session page mirrors the running glasses session — same WebView, so the
   // captions the lens gets are mirrored here with no extra connection.
-  const transcriptEls = queryPhoneTranscriptElements();
-  const phoneTranscript = transcriptEls ? new PhoneTranscript(transcriptEls) : null;
+  const historyEls = queryPhoneHistoryElements();
+  const phoneHistory = historyEls ? new PhoneHistory(historyEls, { onError: toast }) : null;
+  const navEls = queryPhoneNavElements();
+  const nav: PhoneNav | null = navEls
+    ? initPhoneNav(navEls, (page) => {
+        if (page === "history") phoneHistory?.open();
+      })
+    : null;
+  const sessionEls = querySessionPageElements();
+  const sessionPage = sessionEls
+    ? new SessionPage(sessionEls, {
+        // A session just started on the glasses: surface its live transcript.
+        onRecordingStart: () => nav?.show("session"),
+      })
+    : null;
 
   // Device path: draw the lens BEFORE any storage round-trip (see file header).
   let writer: LensTextWriter | null = null;
@@ -81,7 +115,7 @@ async function main(): Promise<void> {
   const storage: KeyValueStorage = bridge ? new BridgeStorage(bridge) : new BrowserStorage();
   await initConfig(storage);
 
-  if (bridge && writer) lens = await wireLens(bridge, storage, writer, phoneTranscript);
+  if (bridge && writer) lens = await wireLens(bridge, storage, writer, sessionPage);
 
   if (!bridge) {
     // The race timed out but the host may just have been slow: if the bridge
@@ -91,7 +125,7 @@ async function main(): Promise<void> {
       if (!late) return;
       const lateWriter = await createLensSurface(late);
       if (!lateWriter) return;
-      lens = await wireLens(late, new BridgeStorage(late), lateWriter, phoneTranscript);
+      lens = await wireLens(late, new BridgeStorage(late), lateWriter, sessionPage);
       if (authed) lens.enable();
     });
   }
@@ -99,11 +133,16 @@ async function main(): Promise<void> {
   await initPhoneLogin(storage, queryPhoneLoginElements(), {
     onAuthed: () => {
       authed = true;
+      // Each sign-in opens on the Session page (the app's front page).
+      nav?.show("session");
       lens?.enable();
     },
     onSignedOut: () => {
       authed = false;
       lens?.disable();
+      // Drop the loaded history — the next sign-in must not see it.
+      phoneHistory?.reset();
+      nav?.show("session");
     },
   });
 }

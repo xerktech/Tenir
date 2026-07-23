@@ -1,7 +1,7 @@
 /**
  * Phone login page flow (XERK-82): cached URL/creds skip the form entirely, a
  * fresh sign-in persists everything to the device store, and the signed-in view
- * embeds the server's own web UI with the token handed over in the fragment.
+ * shows the app's own phone pages (Session/History, XERK-93).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +45,6 @@ function mountDom(): void {
     <section id="app" hidden>
       <b id="app-user"></b>
       <button id="sign-out" type="button">Log out</button>
-      <iframe id="dashboard"></iframe>
     </section>`;
 }
 
@@ -98,7 +97,7 @@ describe("first run (nothing cached)", () => {
 });
 
 describe("signing in", () => {
-  it("persists the URL + credentials + token and embeds the web UI signed in", async () => {
+  it("persists the URL + credentials + token and shows the signed-in app", async () => {
     stubApi({ token: "tok-fresh" });
     const storage = new MemStorage();
     await cfg.initConfig(storage);
@@ -114,8 +113,6 @@ describe("signing in", () => {
     await vi.waitFor(() => expect(els().app.hidden).toBe(false));
     expect(els().login.hidden).toBe(true);
     expect(els().appUser.textContent).toBe("ada");
-    // The companion IS the web UI: the server's own origin, token in the fragment.
-    expect(els().dashboard.src).toBe("https://tenir.example.com/#token=tok-fresh");
     expect(onAuthed).toHaveBeenCalledTimes(1);
 
     // Everything needed for the next launch is in the device store (XERK-82).
@@ -169,7 +166,7 @@ describe("returning user (cached device store)", () => {
     return storage;
   }
 
-  it("boots straight into the signed-in web UI — nothing to re-enter", async () => {
+  it("boots straight into the signed-in app — nothing to re-enter", async () => {
     stubApi();
     const storage = await cachedStorage();
     await cfg.initConfig(storage);
@@ -178,7 +175,6 @@ describe("returning user (cached device store)", () => {
 
     expect(els().app.hidden).toBe(false);
     expect(els().appUser.textContent).toBe("ada");
-    expect(els().dashboard.src).toBe("https://tenir.example.com/#token=tok-cached");
     expect(onAuthed).toHaveBeenCalledTimes(1);
   });
 
@@ -203,7 +199,6 @@ describe("returning user (cached device store)", () => {
     await loginMod.initPhoneLogin(storage, els(), { onAuthed });
 
     expect(els().app.hidden).toBe(false);
-    expect(els().dashboard.src).toBe("https://tenir.example.com/#token=tok-renewed");
     expect(onAuthed).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(storage.map.get(cfg.TOKEN_KEY)).toBe("tok-renewed"));
   });
@@ -222,7 +217,7 @@ describe("returning user (cached device store)", () => {
     expect(onAuthed).not.toHaveBeenCalled();
   });
 
-  it("shows the web UI best-effort when the server is unreachable", async () => {
+  it("shows the app best-effort when the server is unreachable", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -239,6 +234,7 @@ describe("returning user (cached device store)", () => {
     expect(onAuthed).toHaveBeenCalledTimes(1);
   });
 });
+
 
 describe("signing out", () => {
   it("clears the token + credentials and returns to the form", async () => {
@@ -260,16 +256,5 @@ describe("signing out", () => {
     expect(core.getToken()).toBeNull();
     await vi.waitFor(() => expect(storage.map.has(cfg.TOKEN_KEY)).toBe(false));
     expect(await credsMod.loadCredentials(storage)).toBeNull();
-    // The signed-out page must not keep an authenticated web UI loaded.
-    expect(els().dashboard.src).toBe("about:blank");
-  });
-});
-
-describe("dashboardUrl", () => {
-  it("appends the token as a fragment (never a query/path the server would see)", () => {
-    expect(loginMod.dashboardUrl("https://tenir.example.com", "a/b c")).toBe(
-      "https://tenir.example.com/#token=a%2Fb%20c",
-    );
-    expect(loginMod.dashboardUrl("https://tenir.example.com/", null)).toBe("https://tenir.example.com/");
   });
 });

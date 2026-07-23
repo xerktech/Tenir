@@ -7,9 +7,14 @@ is the WS client, replacing the template's HTTP STT stub.
 
 It is a **single page** on purpose (XERK-82): the lens renders through the SDK
 bridge while the phone side of the same WebView shows the login page and, once
-signed in, the server-hosted **Tenir web UI embedded full-bleed** — the phone
-companion *is* the web UI. (Navigating the WebView to a separate page would
-unload the lens app, so nothing here ever navigates.)
+signed in, the app's **own phone pages** (XERK-93) — **Session**, a full-page
+live transcript mirroring the running glasses session, and **History**, the
+stored sessions from the api (search, transcript detail, audio playback,
+delete) — with the web UI's bottom navigation between them, all styled on the
+web UI's "Lumen" design system. (Navigating the WebView to a separate page
+would unload the lens app, so pages are DOM toggles and nothing here ever
+navigates. Embedding the web UI itself was tried first and dropped: the live
+transcript strip squished the embedded page.)
 
 Like the web client, the api is a **required, user-editable setting**: the
 login page collects your self-hosted server address plus the household
@@ -25,11 +30,13 @@ run — a saved choice always wins.
 
 ```
 src/
-  main.ts              bridge/dev boot + wiring: lens surface, login page, transcript strip
+  main.ts              bridge/dev boot + wiring: lens surface, login page, phone pages + nav
   lens/controller.ts   session state machine: click start/stop, listening/clock ticker (XERK-85)
   config.ts            initConfig(storage): effective api URL (saved → seed → localhost) + device token store
-  phone/login.ts       phone-side login page + embedded web UI (token handed over via #token= fragment)
-  phone/transcript.ts  phone-side live transcript strip mirroring the running session (XERK-85)
+  phone/login.ts       phone-side login page; signed in it reveals the Session/History shell
+  phone/session.ts     phone-side Session page: full-page live transcript of the running session (XERK-93)
+  phone/history.ts     phone-side History page: stored sessions — search, detail, audio, delete (XERK-93)
+  phone/nav.ts         phone-side bottom navigation between the Session and History pages (XERK-93)
   state/storage.ts     KeyValueStorage: BridgeStorage (device, survives restarts) / BrowserStorage (dev)
   state/settings.ts    required, user-editable server URL: validate + persist (shared with the lens)
   state/credentials.ts cached username/password + silent re-login when the token expires

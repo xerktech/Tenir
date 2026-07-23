@@ -5,22 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tenir</title>
     <style>
-      /* A faithful copy of the web UI's login styling (web/src/styles.css,
-         "Lumen" design system): same tokens, wordmark header, section card,
-         field/button primitives and toast — so the phone side of the glasses
-         app IS the web UI's login, visually. Dark is the signature default;
-         light follows the system preference (this WebView has no theme toggle).
-         color-mix() values are precomputed to rgba for older WebViews. */
+      /* A faithful copy of the web UI's styling (web/src/styles.css, "Lumen"
+         design system): same tokens, wordmark header, section card, field/button
+         primitives, badges, empty states and toast — so the phone side of the
+         glasses app reads exactly like the web UI. Dark is the signature
+         default; light follows the system preference (this WebView has no theme
+         toggle). color-mix() values are precomputed to rgba for older WebViews. */
       :root {
         color-scheme: dark;
 
         /* spacing (4px base) */
         --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
-        --space-5: 24px; --space-6: 32px;
+        --space-5: 24px; --space-6: 32px; --space-8: 48px;
 
         /* type scale (~1.2) */
         --text-xs: .75rem; --text-sm: .875rem; --text-base: 1rem;
-        --text-xl: 1.375rem; --text-2xl: 1.75rem;
+        --text-lg: 1.125rem; --text-xl: 1.375rem; --text-2xl: 1.75rem;
         --font-sans: "Inter", system-ui, -apple-system, sans-serif;
         --font-display: "Space Grotesk", var(--font-sans);
 
@@ -40,9 +40,14 @@
         --accent: #3FD9C9;
         --accent-strong: #5FE3D5;
         --accent-ink: #0E1116;
-        --focus-ring: rgba(63,217,201,.30); /* accent 30% */
+        --focus-ring: rgba(63,217,201,.30);  /* accent 30% */
+        --badge-fill: rgba(63,217,201,.10);  /* accent 10% */
+        --badge-border: rgba(63,217,201,.45);/* accent 45% */
         --danger: #FF6B6B;
         --danger-ink: #0E1116;
+        --danger-border: rgba(255,107,107,.40); /* danger 40% */
+        --danger-wash: rgba(255,107,107,.12);   /* danger 12% */
+        --nav-veil: rgba(22,27,34,.82);         /* surface 82% */
       }
       @media (prefers-color-scheme: light) {
         :root {
@@ -51,8 +56,13 @@
           --border: #E2E8EF; --border-strong: #CBD5DF;
           --text: #0E1116; --text-muted: #5A6675;
           --accent: #0E8C7E; --accent-strong: #0B7468; --accent-ink: #FFFFFF;
-          --focus-ring: rgba(14,140,126,.35); /* accent 35% */
+          --focus-ring: rgba(14,140,126,.35);  /* accent 35% */
+          --badge-fill: rgba(14,140,126,.10);  /* accent 10% */
+          --badge-border: rgba(14,140,126,.45);/* accent 45% */
           --danger: #C0392B; --danger-ink: #FFFFFF;
+          --danger-border: rgba(192,57,43,.40); /* danger 40% */
+          --danger-wash: rgba(192,57,43,.12);   /* danger 12% */
+          --nav-veil: rgba(255,255,255,.82);    /* surface 82% */
           --shadow-sm: 0 1px 2px rgba(16,22,30,.08);
           --shadow-md: 0 8px 24px rgba(16,22,30,.12);
         }
@@ -83,7 +93,7 @@
       }
       .wordmark-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
 
-      section {
+      section, .detail {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
@@ -91,12 +101,22 @@
         margin: var(--space-4) 0;
         box-shadow: var(--shadow-sm);
       }
+      .detail { background: var(--surface-raised); }
       h2 { font-family: var(--font-display); color: var(--text); font-size: var(--text-xl); margin: 0 0 var(--space-3); }
+      h3 { font-family: var(--font-display); color: var(--text); font-size: var(--text-lg); margin: 0; }
       p { line-height: 1.55; }
       .muted { color: var(--text-muted); font-size: var(--text-sm); }
+      .row { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1; }
+      .link {
+        background: none; border: none; text-align: left;
+        color: var(--accent); padding: 0; cursor: pointer; text-decoration: none;
+      }
+      .link:hover { text-decoration: underline; }
 
-      /* ---- web UI primitives: field / input / button / toast ---- */
-      form { display: flex; flex-direction: column; gap: var(--space-3); max-width: 20rem; }
+      /* ---- web UI primitives: field / input / button / badge / toast ---- */
+      form { display: flex; flex-direction: column; gap: var(--space-3); }
+      #login-form { max-width: 20rem; }
       .field { display: flex; flex-direction: column; gap: var(--space-1); }
       .field-label { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
       .field-hint { font-size: var(--text-xs); color: var(--text-muted); }
@@ -108,23 +128,58 @@
         padding: var(--space-2) var(--space-3); min-height: 44px;
       }
       .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+      .row .input { flex: 1 1 100%; }
 
       .btn {
         display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
         font: inherit; font-weight: 600; font-size: var(--text-sm);
         padding: var(--space-2) var(--space-4); min-height: 44px;
         border-radius: var(--radius-sm); border: 1px solid transparent; cursor: pointer;
-        transition: background .12s, border-color .12s, opacity .12s;
+        transition: background .12s, border-color .12s, color .12s, opacity .12s;
       }
       .btn:disabled { opacity: .5; cursor: not-allowed; }
       .btn-primary { background: var(--accent); color: var(--accent-ink); }
       .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
+      .btn-secondary { background: transparent; color: var(--text); border-color: var(--border-strong); }
+      .btn-secondary:hover:not(:disabled) { border-color: var(--text-muted); }
       .btn-ghost { background: transparent; color: var(--text-muted); }
       .btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--surface-raised); }
+      /* Destructive actions arm (outline) then fill (Turma's two-step pattern). */
+      .btn-danger { background: transparent; color: var(--danger); border-color: var(--danger-border); }
+      .btn-danger:hover:not(:disabled) { background: var(--danger-wash); }
+      .btn-danger.armed { background: var(--danger); color: var(--danger-ink); border-color: var(--danger); }
 
-      /* Errors surface exactly like the web UI's toast (styles.css .toast.err),
-         minus the auto-hide — a login failure should stay readable. */
-      #login-error {
+      /* Badges: fully-round tinted pills (web UI's chip formula). */
+      .badge-accent, .badge-neutral {
+        font-size: var(--text-xs); font-weight: 600;
+        border-radius: 999px; padding: 1px var(--space-2);
+        border: 1px solid transparent; white-space: nowrap;
+      }
+      .badge-accent { color: var(--accent); background: var(--badge-fill); border-color: var(--badge-border); }
+      .badge-neutral { color: var(--text-muted); background: var(--surface-raised); border-color: var(--border-strong); }
+
+      /* Empty states: dashed-border blocks (the web UI's "nothing here yet" idiom). */
+      .empty {
+        text-align: center; padding: var(--space-8) var(--space-4);
+        color: var(--text-muted);
+        border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
+      }
+      .empty[hidden] { display: none; }
+      .empty-title { font-family: var(--font-display); color: var(--text); margin: 0 0 var(--space-1); }
+      .empty-hint { font-size: var(--text-sm); margin: 0; }
+
+      .spinner-row { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: var(--text-sm); }
+      .spinner {
+        width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid var(--border-strong); border-top-color: var(--accent);
+        animation: spin .7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+      /* Errors surface exactly like the web UI's toast (styles.css .toast). The
+         login error stays until addressed; app errors auto-hide from main.ts. */
+      .toast {
         display: none;
         position: fixed; bottom: var(--space-4); left: var(--space-4); right: var(--space-4);
         max-width: 760px; margin: 0 auto;
@@ -132,12 +187,14 @@
         border-radius: var(--radius-md);
         box-shadow: var(--shadow-md);
         font-size: var(--text-sm);
-        background: var(--danger); color: var(--danger-ink);
         z-index: 10;
       }
-      #login-error.show { display: block; }
+      .toast.err { background: var(--danger); color: var(--danger-ink); }
+      .toast.show { display: block; }
+      /* The app toast floats above the bottom navigation bar. */
+      #app-toast.show { bottom: calc(var(--space-8) + var(--space-4) + env(safe-area-inset-bottom)); }
 
-      /* ---- signed-in view: slim header bar + the web UI, full-bleed ---- */
+      /* ---- signed-in shell: slim header bar / scrolling page / bottom nav ---- */
       #app[hidden] { display: none; }
       #app { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
       .bar {
@@ -150,46 +207,86 @@
       .bar .who b { color: var(--text); font-weight: 600; }
       .bar .btn { min-height: 34px; padding: var(--space-1) var(--space-3); font-size: var(--text-xs); border-color: var(--border-strong); }
       .bar-spacer { flex: 1; }
-      #dashboard { flex: 1; width: 100%; border: 0; background: var(--bg); }
 
-      /* ---- live transcript strip (XERK-85): mirrors the running glasses
-             session in real time, above the embedded web UI. Shown only while
-             a session is recording. ---- */
-      #live-transcript {
-        flex: none; display: flex; flex-direction: column;
-        max-height: 32vh;
-        margin: 0; padding: var(--space-2) var(--space-3);
-        background: var(--surface);
-        border: 0; border-bottom: 1px solid var(--border);
-        border-radius: 0; box-shadow: none;
+      .content { flex: 1; overflow-y: auto; padding: 0 var(--space-3) var(--space-4); }
+      .page { max-width: 760px; margin: 0 auto; }
+      .page[hidden] { display: none; }
+
+      /* Bottom navigation: the web UI's fixed frosted phone nav (styles.css
+         mobile layout), here a flex child of the full-height shell. */
+      .nav-tabs {
+        flex: none; display: flex; gap: 0;
+        background: var(--nav-veil);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        border-top: 1px solid var(--border);
+        box-shadow: var(--shadow-md);
+        padding: var(--space-1) var(--space-1) calc(var(--space-1) + env(safe-area-inset-bottom));
       }
-      #live-transcript[hidden] { display: none; }
-      .live-head { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+      .nav-item {
+        flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+        min-height: 48px; padding: var(--space-2) var(--space-1);
+        background: transparent; border: none; cursor: pointer;
+        color: var(--text-muted); font: inherit; font-weight: 500; font-size: var(--text-xs);
+        border-radius: var(--radius-sm);
+        position: relative;
+        transition: color .12s;
+      }
+      .nav-item svg { flex: none; }
+      /* Active tab: top accent indicator (the web UI's phone-nav selection). */
+      .nav-item.active { color: var(--accent); }
+      .nav-item.active::before {
+        content: ""; position: absolute;
+        left: 50%; transform: translateX(-50%);
+        top: 0; width: 28px; height: 3px;
+        border-radius: 3px; background: var(--accent);
+      }
+
+      /* ---- Session page: the running transcript (web UI's Live panel) ---- */
       .live-dot {
-        width: 8px; height: 8px; border-radius: 50%;
+        width: 8px; height: 8px; border-radius: 50%; flex: none;
         background: var(--accent);
         animation: live-pulse 1.2s ease-in-out infinite;
       }
+      .live-dot[hidden] { display: none; }
       @keyframes live-pulse {
         0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
         50% { opacity: .35; box-shadow: none; }
       }
-      .live-title { font-family: var(--font-display); font-weight: 600; font-size: var(--text-sm); }
-      .live-status { margin-left: auto; color: var(--text-muted); font-size: var(--text-xs); }
-      /* The running transcript, styled like the web UI's Live panel (styles.css .transcript). */
-      .transcript { list-style: none; margin: var(--space-2) 0 0; padding: 0; overflow-y: auto; }
-      .transcript li { padding: var(--space-1) 0; line-height: 1.5; font-size: var(--text-sm); }
+      @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+      .transcript { list-style: none; margin: 0; padding: 0; }
+      .transcript[hidden] { display: none; }
+      .transcript li { padding: var(--space-2) 0; line-height: 1.55; }
       .transcript li + li { border-top: 1px solid var(--border); }
       .transcript li.partial { color: var(--text-muted); }
+
+      /* ---- History page: session list + conversation detail ---- */
+      #history-list[hidden], #history-detail[hidden] { display: none; }
+      .history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+      .history-item + .history-item { border-top: 1px solid var(--border); }
+      .history-open {
+        display: flex; flex-direction: column; gap: 2px; width: 100%;
+        background: none; border: none; text-align: left; cursor: pointer;
+        padding: var(--space-3) 0; font: inherit; color: var(--text);
+      }
+      .history-open:hover .history-when { text-decoration: underline; }
+      .history-when { color: var(--accent); }
+      .history-meta { color: var(--text-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+      .transcript-block { margin-top: var(--space-3); }
+      .item { border-top: 1px solid var(--border); padding: var(--space-3) 0; line-height: 1.55; }
+      .audio-player { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); }
+      .audio-player[hidden] { display: none; }
+      .audio-player-el { width: 100%; }
     </style>
   </head>
   <body>
     <!--
       The lens UI is driven entirely through the SDK bridge (no DOM rendering on
       the glasses); this page is what the wearer sees on their phone, opening
-      directly on the login (XERK-82). It is a single page on purpose:
-      navigating the WebView away would unload the lens app, so sign-in and the
-      embedded web UI live here, beside it.
+      directly on the login (XERK-82). It is a single page on purpose: navigating
+      the WebView away would unload the lens app, so sign-in and the signed-in
+      pages live here, beside it. Signed in, the phone shows two dedicated pages
+      (XERK-93) — Session (the running live transcript) and History (stored
+      sessions) — instead of embedding the web UI.
     -->
     <main class="container" id="login">
       <header class="app-header">
@@ -221,10 +318,11 @@
       </section>
     </main>
 
-    <div id="login-error" role="alert"></div>
+    <div class="toast err" id="login-error" role="alert"></div>
 
-    <!-- Signed-in view: the phone companion IS the Tenir web UI, served by the
-         user's own server and embedded full-bleed; live captions run on the lens. -->
+    <!-- Signed-in view (XERK-93): dedicated Session + History pages in the web
+         UI's style, with the web UI's phone bottom navigation between them.
+         Live captions still run on the lens; the Session page mirrors them. -->
     <div id="app" hidden>
       <div class="bar">
         <span class="wordmark"><span class="wordmark-dot" aria-hidden="true"></span>Tenir</span>
@@ -232,18 +330,77 @@
         <span class="who">Signed in as <b id="app-user"></b></span>
         <button class="btn btn-ghost" id="sign-out" type="button">Log out</button>
       </div>
-      <!-- Live transcript of the running glasses session (XERK-85): the WS
-           client runs in this WebView, so captions mirror here in real time. -->
-      <section id="live-transcript" hidden>
-        <div class="live-head">
-          <span class="live-dot" aria-hidden="true"></span>
-          <span class="live-title">Live transcript</span>
-          <span class="live-status" id="live-status"></span>
+
+      <div class="content">
+        <!-- Session: the running glasses session, mirrored full-page in real
+             time (the WS client runs in this WebView, so captions are already
+             here). Idle it explains how to start one. -->
+        <section class="page" id="page-session">
+          <div class="row">
+            <h2 class="grow">Session</h2>
+            <span class="live-dot" id="session-dot" aria-hidden="true" hidden></span>
+            <span class="badge-neutral" id="session-badge">idle</span>
+          </div>
+          <div class="empty" id="session-empty">
+            <p class="empty-title" id="session-empty-title">No session running</p>
+            <p class="empty-hint" id="session-empty-hint">Tap your glasses to start a session.</p>
+          </div>
+          <ul class="transcript" id="session-text" aria-live="polite" hidden></ul>
+        </section>
+
+        <!-- History: stored sessions from the api, list -> detail (transcript,
+             audio, delete), mirroring the web UI's History panel. -->
+        <div class="page" id="page-history" hidden>
+          <section id="history-list">
+            <h2>History &amp; search</h2>
+            <form class="row" id="history-search">
+              <input class="input grow" id="history-query" name="q" type="text" placeholder="Search what you've heard…"
+                     autocapitalize="none" autocorrect="off" spellcheck="false" />
+              <button class="btn btn-primary" type="submit">Search</button>
+            </form>
+            <div id="history-status"></div>
+            <ul class="history-list" id="history-rows"></ul>
+          </section>
+          <div class="detail" id="history-detail" hidden>
+            <div class="row">
+              <button class="btn btn-ghost" id="history-back" type="button">← History</button>
+              <h3 class="grow">Conversation detail</h3>
+              <button class="btn btn-danger" id="history-delete" type="button">Delete</button>
+            </div>
+            <p class="muted" id="history-meta"></p>
+            <div class="transcript-block" id="history-transcript"></div>
+            <div class="audio-player" id="history-audio" hidden>
+              <!-- Native playback with the browser's built-in transport + seek
+                   bar (XERK-67); the nested link keeps the clip downloadable. -->
+              <audio class="audio-player-el" id="history-audio-el" controls preload="metadata"></audio>
+              <a class="link" id="history-audio-link" download>Download audio.wav</a>
+            </div>
+          </div>
         </div>
-        <ul class="transcript" id="live-text" aria-live="polite"></ul>
-      </section>
-      <iframe id="dashboard" title="Tenir web app"></iframe>
+      </div>
+
+      <nav class="nav-tabs" aria-label="Sections">
+        <button class="nav-item active" id="nav-session" type="button" aria-current="page">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <rect x="9" y="2" width="6" height="11" rx="3" />
+            <path d="M5 10a7 7 0 0 0 14 0" />
+            <line x1="12" y1="19" x2="12" y2="22" />
+          </svg>
+          <span>Session</span>
+        </button>
+        <button class="nav-item" id="nav-history" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+          <span>History</span>
+        </button>
+      </nav>
     </div>
+
+    <div class="toast err" id="app-toast" role="alert"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

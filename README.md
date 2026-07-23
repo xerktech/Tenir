@@ -23,9 +23,9 @@ chat, …) was stripped back to; features return one at a time, slowly.
   REST surface, *and* the built web UI on a single origin (`:8080`)
 - **Multi-user auth** — login issues a bearer token; every session and
   conversation is scoped to the user's household
-- **Clients** — the web UI (also the phone surface for the Even app), an Even G2
-  glasses app (live captions on the lens), and an Android app (phone-mic capture
-  + history)
+- **Clients** — the web UI, an Even G2 glasses app (live captions on the lens,
+  with dedicated Session + History pages on the phone), and an Android app
+  (phone-mic capture + history)
 
 ## Quick start
 

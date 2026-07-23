@@ -35,7 +35,7 @@ import { ApiClient, type ApiHandlers, type SessionParams } from "@tenir/client-c
 
 import { AudioCapture, pcmBytes } from "../audio/capture";
 import { config } from "../config";
-import { PhoneTranscript } from "../phone/transcript";
+import { SessionPage } from "../phone/session";
 import { silentLogin } from "../state/credentials";
 import { SessionStore, type PersistedSession } from "../state/persist";
 import { withBleTimeout, type KeyValueStorage } from "../state/storage";
@@ -120,7 +120,7 @@ export async function wireLens(
   bridge: EvenAppBridge,
   storage: KeyValueStorage,
   writer: LensTextWriter,
-  phoneTranscript: PhoneTranscript | null,
+  sessionPage: SessionPage | null,
   deps: LensDeps = {},
 ): Promise<LensControls> {
   const createClient = deps.createClient ?? ((url, handlers) => new ApiClient(url, handlers));
@@ -182,7 +182,7 @@ export async function wireLens(
   // recording alike (XERK-85 feedback) — except under the popup strip.
   const renderClock = () => writer.set(CONTAINER.clock, clockContent());
   const syncPhone = () =>
-    phoneTranscript?.update({
+    sessionPage?.update({
       recording: state.recording,
       connection: state.connection,
       segments: state.segments,
@@ -343,6 +343,7 @@ export async function wireLens(
       startSession(resume);
     } else if (!state.recording) {
       showIdle();
+      syncPhone(); // the phone Session page shows its idle state (XERK-93)
     }
   };
 
