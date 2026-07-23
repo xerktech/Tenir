@@ -78,17 +78,21 @@ function stubApi({ loginStatus = 200, meStatus = 200, token = "tok-1" } = {}) {
 }
 
 describe("first run (nothing cached)", () => {
-  it("shows the login form and never touches the network", async () => {
+  it("opens directly on the login form, tells the lens, and never touches the network", async () => {
     const fetchMock = stubApi();
     const storage = new MemStorage();
     await cfg.initConfig(storage);
 
     const onAuthed = vi.fn();
-    await loginMod.initPhoneLogin(storage, els(), { onAuthed });
+    const onSignedOut = vi.fn();
+    await loginMod.initPhoneLogin(storage, els(), { onAuthed, onSignedOut });
 
     expect(els().login.hidden).toBe(false);
     expect(els().app.hidden).toBe(true);
     expect(onAuthed).not.toHaveBeenCalled();
+    // The lens is told it's signed out, so it shows its sign-in prompt instead
+    // of implying captions are running (XERK-82).
+    expect(onSignedOut).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -212,7 +216,8 @@ describe("returning user (cached device store)", () => {
     await loginMod.initPhoneLogin(storage, els(), { onAuthed });
 
     expect(els().login.hidden).toBe(false);
-    expect(els().server.value).toBe("wss://tenir.example.com/ws");
+    // Prefilled as the plain host people type, never the wss:// form (XERK-82).
+    expect(els().server.value).toBe("tenir.example.com");
     expect(els().user.value).toBe("ada");
     expect(onAuthed).not.toHaveBeenCalled();
   });

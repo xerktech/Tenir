@@ -12,6 +12,8 @@ import type { EvenAppBridge } from "@evenrealities/even_hub_sdk";
 
 import type { MicSource } from "@tenir/contract";
 
+import { withBleTimeout } from "./storage";
+
 const KEY = "tenir.session";
 const DEBOUNCE_MS = 1500;
 
@@ -32,7 +34,8 @@ export class SessionStore {
 
   async load(): Promise<PersistedSession | null> {
     try {
-      const raw = await this.bridge.getLocalStorage(KEY);
+      // Bounded: a flaky BLE hop must not stall the boot path (XERK-82).
+      const raw = await withBleTimeout(this.bridge.getLocalStorage(KEY), "");
       if (!raw) return null;
       return JSON.parse(raw) as PersistedSession;
     } catch {
@@ -57,7 +60,7 @@ export class SessionStore {
     const state = this.pending;
     this.pending = null;
     try {
-      await this.bridge.setLocalStorage(KEY, JSON.stringify(state));
+      await withBleTimeout(this.bridge.setLocalStorage(KEY, JSON.stringify(state)), false);
     } catch {
       // best-effort; a dropped write just means we resume from an older snapshot
     }
@@ -70,7 +73,7 @@ export class SessionStore {
       this.timer = null;
     }
     try {
-      await this.bridge.setLocalStorage(KEY, "");
+      await withBleTimeout(this.bridge.setLocalStorage(KEY, ""), false);
     } catch {
       /* ignore */
     }

@@ -74,3 +74,76 @@ export async function setText(
     }),
   );
 }
+
+/**
+ * The slice of the bridge the writer needs — structural, so tests pass a stub.
+ * `setText` above satisfies it via a real `EvenAppBridge`.
+ */
+export type TextWriteFn = (container: { id: number; name: string }, content: string) => Promise<boolean>;
+
+/**
+ * Serialized, coalescing writer for lens text (XERK-82).
+ *
+ * The Even docs are explicit: bridge calls share one BLE link and MUST be
+ * serialized — concurrent render calls "can crash the connection" (which
+ * presents as the app closing on itself). Fire-and-forget `void setText(...)`
+ * from every render therefore has to go through this: one write in flight at a
+ * time, and per container only the LATEST text is kept while waiting (captions
+ * update far faster than BLE drains, so intermediate frames are dropped, not
+ * queued).
+ */
+export class LensTextWriter {
+  private pending = new Map<number, { container: { id: number; name: string }; content: string }>();
+  private pumping = false;
+
+  constructor(private readonly write: TextWriteFn) {}
+
+  /** Queue the latest text for a container; starts the drain if idle. */
+  set(container: { id: number; name: string }, content: string): void {
+    this.pending.set(container.id, { container, content });
+    if (!this.pumping) void this.pump();
+  }
+
+  /** Resolves once everything queued so far has been written. */
+  async flush(): Promise<void> {
+    while (this.pumping || this.pending.size > 0) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  private async pump(): Promise<void> {
+    this.pumping = true;
+    try {
+      while (this.pending.size > 0) {
+        const [id, entry] = this.pending.entries().next().value as [
+          number,
+          { container: { id: number; name: string }; content: string },
+        ];
+        this.pending.delete(id);
+        try {
+          await this.write(entry.container, entry.content);
+        } catch (err) {
+          console.warn("tenir: lens text write failed:", err);
+        }
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+}
+
+/**
+ * The status line, honest about connectivity (XERK-82): before sign-in the lens
+ * says so instead of pretending to listen, and a dropped/unreachable server is
+ * named rather than hidden behind a "×".
+ */
+export function statusLine(state: {
+  connection: "connecting" | "open" | "closed";
+  listening: boolean;
+  micSource: string;
+}): string {
+  if (state.connection === "connecting") return "connecting to server…";
+  if (state.connection === "closed") return "server unreachable — retrying";
+  const mic = state.micSource === "g2-microphone" ? "g2 mic" : "phone mic";
+  return `${state.listening ? "listening" : "paused"} · ${mic}`;
+}
