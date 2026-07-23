@@ -349,10 +349,12 @@ describe("occludedCaption (XERK-85: nothing shows through the popup box)", () =>
     expect(occludedCaption("")).toBe("");
   });
 
-  it("the masked rows cover the box's whole vertical extent", () => {
+  it("the masked rows cover the box's whole overlap with the caption band", () => {
+    // The strip extends above the band too (status + clock — blanked by the
+    // controller, not the caption mask); the mask must cover the band part.
     const maskTop = LINE_H + MENU_ROW_FIRST * LINE_H;
     const maskBottom = LINE_H + (MENU_ROW_LAST + 1) * LINE_H;
-    expect(maskTop).toBeLessThanOrEqual(MENU_Y);
+    expect(maskTop).toBeLessThanOrEqual(Math.max(MENU_Y, LINE_H));
     expect(maskBottom).toBeGreaterThanOrEqual(MENU_Y + MENU_H);
   });
 });
@@ -387,11 +389,12 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
     expect(captures.map((c) => c.containerName)).toEqual([CONTAINER.touch.name]);
   });
 
-  it("centers the box horizontally within the caption band", () => {
+  it("spans the full width over exactly the top two lines of the screen", () => {
     const menu = menuOf(buildMenuPage(CONTENTS, "continue"));
-    expect(menu.xPosition! * 2 + menu.width!).toBe(SCREEN_W); // centered
-    expect(menu.yPosition!).toBeGreaterThanOrEqual(LINE_H); // below the status line
-    expect(menu.yPosition! + menu.height!).toBeLessThanOrEqual(LINE_H + CAPTION_H); // inside the band
+    expect(menu.xPosition).toBe(0);
+    expect(menu.width).toBe(SCREEN_W); // full width
+    expect(menu.yPosition).toBe(0); // from the very top…
+    expect(menu.height).toBe(2 * LINE_H); // …over the status line + first transcript row
   });
 
   it("both labels fit the box interior without wrapping", () => {

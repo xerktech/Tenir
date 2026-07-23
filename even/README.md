@@ -104,15 +104,17 @@ glasses (and passes review) before relying on it for production.
 
 - **Single tap** — start a new session when idle. While one records, single
   taps do NOTHING (a brushed temple must not end a recording).
-- **Double tap (recording)** — a bordered popup box (its own container, added
-  via `rebuildPageContainer`) with **Continue** (default, top) / **Exit
-  session**, drawn over the caption band: the rows the box covers are masked
-  (exactly what an opaque popup would hide) while the rows around it keep
-  flowing. Swipe to move the highlight, single tap to confirm, another double
-  tap dismisses (same as Continue). Exit session stops the session — the api
-  finalizes and stores it — and the lens idles at "tap to start". Should the
-  popup-page rebuild ever fail on the host, the menu falls back into the
-  caption band itself, so the wearer is never stranded inside a session.
+- **Double tap (recording)** — a bordered full-width strip over the top two
+  lines of the screen (its own container, added via `rebuildPageContainer`)
+  with **Continue** (default, top) / **Exit session**. Everything the strip
+  covers — the status line, the clock, the first transcript row — is blanked
+  while it is up (exactly what an opaque popup would hide), and the rest of
+  the transcript keeps flowing below it. Swipe to move the highlight, single
+  tap to confirm, another double tap dismisses (same as Continue). Exit
+  session stops the session — the api finalizes and stores it — and the lens
+  idles at "tap to start". Should the popup-page rebuild ever fail on the
+  host, the menu falls back into the caption band itself, so the wearer is
+  never stranded inside a session.
 - **Double tap (idle / signed out)** — exit the app (confirm dialog).
 
 No VISIBLE container ever captures input (the OS plays its scroll animation
