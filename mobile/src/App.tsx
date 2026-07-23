@@ -125,7 +125,6 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
 
   return (
     <View style={styles.fill}>
-      <UpdateBanner />
       <View style={styles.header}>
         {/* Wordmark row: the glow-dot + name, mirroring the web header. */}
         <View style={styles.wordmark}>
@@ -133,6 +132,8 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
           <Text style={styles.title}>Tenir</Text>
         </View>
       </View>
+      {/* Turma-style update card, sliding in under the header (XERK-91). */}
+      <UpdateBanner />
       <Dashboard
         wsUrl={wsUrl}
         initialTab={initialTab}
