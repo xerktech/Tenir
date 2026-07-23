@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from api import registry
 from api.contract import Pong, ServerMessage
 from api.main import app
-from api.persistence import get_audio_store, get_conversation_store
+from api.persistence import audio_key, get_audio_store, get_conversation_store, wav_to_pcm16
 from api.session import Session
 
 
@@ -195,3 +195,59 @@ def test_ws_reconnect_resumes_live_session() -> None:
             # The very same Session object was rebound (not a fresh one with the
             # same id), so transcriber continuity is genuinely preserved.
             assert registry.get(sid) is live
+
+
+def test_ws_resume_after_finalize_extends_retained_audio() -> None:
+    """The glasses persist their session id and reconnect with it long after the
+    grace window has lapsed — by then the first leg has been finalized and
+    unregistered, so the reconnect starts a *brand-new* Session on the same
+    conversation id. Its audio must extend the stored clip, not replace it, so the
+    web UI can replay the whole glasses session rather than just its last leg
+    (XERK-86)."""
+
+    def audio_samples(sid: str) -> int:
+        wav = get_audio_store().get(audio_key("default", sid))
+        return len(wav_to_pcm16(wav)) // 2 if wav else 0
+
+    def drain_to_pong(ws) -> None:
+        # Voiced audio yields caption frames; skip past them to the pong that
+        # confirms the preceding session.end has been fully handled.
+        while ws.receive_json()["type"] != "pong":
+            pass
+
+    with TestClient(app) as client:
+        # Leg 1: capture audio, then end explicitly. session.end finalizes and
+        # unregisters the session (persisting its audio) — the same terminal state a
+        # dropped session reaches once its grace window expires.
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            for _ in range(20):
+                ws.send_bytes(_voice_chunk(freq=200))
+            ws.send_text(json.dumps({"type": "session.end"}))
+            # A ping after the end round-trips through the handler, so session.end
+            # (and its synchronous persist) is guaranteed done before we read back.
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            drain_to_pong(ws)
+
+        assert registry.get(sid) is None, "leg 1 must be finalized before the resume"
+        first = audio_samples(sid)
+        assert first > 0
+
+        # Leg 2: reconnect carrying the finalized id -> a fresh Session bound to the
+        # same conversation, capturing more audio.
+        with client.websocket_connect("/ws") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["sessionId"] == sid
+            for _ in range(20):
+                ws2.send_bytes(_voice_chunk(freq=400))
+            ws2.send_text(json.dumps({"type": "session.end"}))
+            ws2.send_text(json.dumps({"type": "ping", "t": 2}))
+            drain_to_pong(ws2)
+
+        # The retained clip spans both legs, not just the most recent one.
+        assert audio_samples(sid) > first

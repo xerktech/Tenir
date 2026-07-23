@@ -58,6 +58,60 @@ def test_session_persists_transcript_and_audio() -> None:
     asyncio.run(run())
 
 
+def test_resumed_session_extends_retained_audio_across_the_grace_window() -> None:
+    """A session that resumes *after* the resume grace window has expired reaches
+    the api as a brand-new ``Session`` object bound to the *same* conversation id
+    (the glasses persist their session id across drops and relaunches, so this is
+    their normal lifecycle — not an edge case). Its full-audio buffer starts empty
+    and only holds the post-resume portion. Retaining that alone would overwrite
+    the earlier audio, leaving the stored conversation with a fragment that no
+    longer matches its transcript. The retained audio must span the whole
+    conversation, so the web UI can replay every glasses session end to end
+    (XERK-86)."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        # First leg: audio at 200 Hz, persisted when the socket drops and the grace
+        # window lapses (a new Session, close()d by the grace-close path).
+        leg1 = Session(send, session_id="conv-resumed")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(30):
+            await leg1.on_audio(_voice_chunk(freq=200))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await leg1.close()
+
+        first = get_audio_store().get(audio_key("default", "conv-resumed"))
+        assert first is not None
+        first_samples = len(wav_to_pcm16(first)) // 2
+
+        # Second leg: the client reconnects with the same id after grace expiry, so
+        # the api starts a fresh Session on the existing conversation. Distinct tone
+        # (400 Hz) so we can tell the legs apart in the retained audio.
+        leg2 = Session(send, session_id="conv-resumed")
+        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(30):
+            await leg2.on_audio(_voice_chunk(freq=400))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await leg2.close()
+
+        # The retained audio must now cover both legs, not just the last one.
+        combined = get_audio_store().get(audio_key("default", "conv-resumed"))
+        assert combined is not None
+        combined_samples = len(wav_to_pcm16(combined)) // 2
+        assert combined_samples > first_samples, (
+            "resumed session overwrote earlier audio instead of extending it — "
+            f"stored {combined_samples} samples, first leg alone had {first_samples}"
+        )
+        # Both legs are the same length, so the extended clip is exactly their sum.
+        assert combined_samples == first_samples * 2
+
+    asyncio.run(run())
+
+
 def test_session_without_persistence_does_not_retain() -> None:
     # Disable persistence on an already-constructed session by clearing its seams.
     async def run() -> None:
