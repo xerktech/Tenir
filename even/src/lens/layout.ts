@@ -62,9 +62,8 @@ export const CONTAINER = {
 // ---- the double-tap popup box (XERK-85) -------------------------------------
 // A real bordered container overlaid on the page via `rebuildPageContainer`
 // (the SDK's sanctioned runtime page change), horizontally centered in the
-// upper part of the caption band. While it is up, live captions keep flowing
-// in the rows BELOW it (fitMenuCaption) — the conversation visibly continues
-// behind the popup, and nothing renders underneath the box itself.
+// upper part of the caption band. Created LAST on its page, so it draws ON TOP
+// of the live captions — which keep flowing untouched underneath it.
 export const MENU_PAD = 10;
 export const MENU_BORDER = 2;
 const MENU_LABEL_MAX_W = Math.max(
@@ -76,10 +75,6 @@ export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BOR
 export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
 export const MENU_X = (SCREEN_W - MENU_W) / 2;
 export const MENU_Y = 2 * LINE_H; // one caption row below the status line
-// Caption rows that stay fully clear below the popup: captions are trimmed to
-// these and pushed to the bottom of the band while the popup is up.
-export const MENU_CAPTION_LINES =
-  CAPTION_LINES - Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H);
 
 /** The text every base container carries when a page is (re)built. */
 export interface PageContents {
@@ -364,12 +359,3 @@ export function fitCaption(
   return "\n".repeat(maxLines - lines(kept)) + kept;
 }
 
-/**
- * Fit the live transcript for the popup page (XERK-85): trimmed to the rows
- * that stay fully clear BELOW the popup box and pushed to the bottom of the
- * band, so the conversation visibly keeps running behind the popup and no
- * caption text renders underneath the box itself.
- */
-export function fitMenuCaption(text: string): string {
-  return "\n".repeat(CAPTION_LINES - MENU_CAPTION_LINES) + fitCaption(text, MENU_CAPTION_LINES);
-}

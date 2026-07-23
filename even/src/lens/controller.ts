@@ -5,9 +5,10 @@
  * start"); a single tap starts a new session. While one records, a single tap
  * does NOTHING (a brushed temple must not end a recording) — a double tap
  * pops up a bordered box (its own container, added via `rebuildPageContainer`)
- * with Continue (default, top) / Exit session, while the live captions keep
- * flowing in the band rows below it: swiping moves the highlight, a single
- * tap confirms it, another double tap dismisses (same as Continue). Exit
+ * with Continue (default, top) / Exit session, drawn ON TOP of the live
+ * captions, which keep flowing untouched underneath: swiping moves the
+ * highlight, a single tap confirms it, another double tap dismisses (same as
+ * Continue). Exit
  * session stops the session (the api finalizes + stores it). While recording
  * the status line reads "listening" with moving dots, the clock container
  * shows the current time, and the caption band holds only the tail that fits
@@ -40,7 +41,6 @@ import {
   buildMenuPage,
   clockText,
   fitCaption,
-  fitMenuCaption,
   menuText,
   statusLine,
   type MenuChoice,
@@ -138,15 +138,15 @@ export async function wireLens(
 
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.join("\n");
-  /** The caption band's live text: full-band, or trimmed below the popup box. */
+  /** The caption band's live text — always the full band, popup or not. */
   const liveCaption = () => {
     const body = transcriptText();
     const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
     // Only the tail that FITS (XERK-85): nothing overflows, so the host has
-    // nothing to scroll; old text simply falls off the top. With the popup up
-    // the captions keep flowing in the rows BELOW the box.
-    const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
-    return state.menu ? fitMenuCaption(bounded) : fitCaption(bounded);
+    // nothing to scroll; old text simply falls off the top. The popup box is
+    // created LAST on its page, so it simply draws on top of these lines —
+    // the captions underneath keep rendering untouched.
+    return fitCaption(full.slice(-TRANSCRIPT_MAX_CHARS));
   };
   /** What every container should currently read — the one source of page truth. */
   const pageContents = (): PageContents => ({

@@ -242,16 +242,12 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await settle();
 
     await t.doubleTap();
-    // The conversation keeps running VISIBLY while the popup is up: captions
-    // flow in the band rows below the box…
+    // The conversation keeps running untouched while the popup is up: the
+    // full-band captions keep rendering and the box simply draws on top.
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "under the popup" });
     await settle();
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
-    expect(t.text(C().caption)).toContain("under the popup");
-    // …trimmed + pushed down so nothing renders underneath the box itself.
-    expect(t.text(C().caption)).toBe(
-      layout.fitMenuCaption("before the popup\n› under the popup"),
-    );
+    expect(t.text(C().caption)).toBe(layout.fitCaption("before the popup\n› under the popup"));
 
     // Swiping down and back up re-highlights Continue; a tap confirms it.
     await t.swipeDown();
