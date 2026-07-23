@@ -31,7 +31,7 @@ export function SettingsScreen({
   principal,
   onSignOut,
 }: {
-  /** The currently configured api WebSocket URL. */
+  /** The configured server address in friendly display form (host, no `wss://`/`/ws`). */
   wsUrl: string;
   /** Persist + re-point the app at a new server URL, then re-check the session. */
   onApplyServer: (url: string) => void;

@@ -37,7 +37,7 @@ import { LiveScreen } from "./screens/Live";
 import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
-import { normalizeServerUrl } from "./lib/serverUrl";
+import { displayServerUrl, normalizeServerUrl } from "./lib/serverUrl";
 import { saveLastTab, saveServerUrl } from "./storage";
 import { UpdateBanner } from "./ui/UpdateBanner";
 import { TabIcon } from "./ui/icons";
@@ -118,7 +118,7 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
   if (auth.loading) return <FullScreenSpinner />;
 
   if (!auth.data) {
-    return <SetupScreen initialServerUrl={wsUrl} onConnect={connectAndSignIn} />;
+    return <SetupScreen initialServerUrl={displayServerUrl(wsUrl)} onConnect={connectAndSignIn} />;
   }
 
   const principal = auth.data;
@@ -141,7 +141,7 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
         initialTab={initialTab}
         settings={
           <SettingsScreen
-            wsUrl={wsUrl}
+            wsUrl={displayServerUrl(wsUrl)}
             onApplyServer={reconnect}
             principal={principal}
             onSignOut={auth.signOut}

@@ -40,3 +40,28 @@ export function normalizeServerUrl(input: string): string {
 export function isValidServerUrl(input: string): boolean {
   return normalizeServerUrl(input) !== "";
 }
+
+/**
+ * Render a server URL in the friendly, host-only form people actually type — the
+ * inverse of {@link normalizeServerUrl} for display. Strips the `ws(s)://` scheme
+ * and the default `/ws` endpoint path so `wss://tenir.example.com/ws` shows as
+ * `tenir.example.com`, while a non-default port or path is preserved so the value
+ * still round-trips back through `normalizeServerUrl` (e.g.
+ * `ws://localhost:8080/ws` → `localhost:8080`, `wss://host/api/ws` → `host/api/ws`).
+ *
+ * Used to seed the setup / settings server field so the user sees `tenir.example.com`
+ * rather than the internal `wss://…/ws` form. Returns the trimmed input unchanged
+ * when it can't be parsed as a URL (it's already a bare host).
+ */
+export function displayServerUrl(input: string): string {
+  const s = input.trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    if (!u.host) return s;
+    const path = u.pathname === "/ws" || u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return `${u.host}${path}`;
+  } catch {
+    return s;
+  }
+}

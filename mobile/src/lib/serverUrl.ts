@@ -7,4 +7,4 @@
  * exercise the React Native URL polyfill) unchanged.
  */
 
-export { isValidServerUrl, normalizeServerUrl } from "@tenir/client-core";
+export { displayServerUrl, isValidServerUrl, normalizeServerUrl } from "@tenir/client-core";
