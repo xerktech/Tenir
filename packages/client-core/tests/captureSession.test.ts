@@ -1,10 +1,11 @@
-import type { Lang, MicSource } from "@tenir/contract";
-import { describe, expect, it } from "vitest";
+import type { CueLevel, Lang, MicSource } from "@tenir/contract";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiHandlers } from "../src/ws";
 import type { PcmAudioSource } from "../src/pcmSource";
 import {
   CaptureSession,
+  CUE_TTL_MS,
   initialCaptureState,
   reduce,
   type CaptureSessionDeps,
@@ -43,24 +44,53 @@ describe("reduce", () => {
   });
 
 
-  it("drops to idle on stop but keeps the transcript", () => {
+  it("drops to idle on stop but keeps the transcript and clears live cues", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
     s = reduce(s, { type: "stop" });
     expect(s.running).toBe(false);
     expect(s.connection).toBe("closed");
     expect(s.segments.length).toBe(1); // transcript stays on screen to read back
+    expect(s.cues).toEqual([]); // ephemeral cues cleared
+  });
+
+  it("appends live cues, de-duplicates by id, and caps the visible set", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
+    expect(s.cues).toEqual([{ id: "c1", title: "Sun", body: "150M" }]);
+    // Same id replaces in place rather than duplicating.
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" } });
+    expect(s.cues).toEqual([{ id: "c1", title: "Sun", body: "updated" }]);
+    // Overflow drops the oldest (visible cap is 4).
+    for (let i = 2; i <= 6; i++) s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" } });
+    expect(s.cues.length).toBe(4);
+    expect(s.cues[s.cues.length - 1].id).toBe("c6");
+  });
+
+  it("expires a cue by id", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    s = reduce(s, { type: "cueExpire", id: "c1" });
+    expect(s.cues).toEqual([]);
+    // Expiring an unknown id is a no-op (same reference back).
+    const same = reduce(s, { type: "cueExpire", id: "ghost" });
+    expect(same).toBe(s);
   });
 });
 
 // ---- session controller -----------------------------------------------------
 
 class FakeApi implements ApiLike {
-  started: { params: { micSource: MicSource; sourceLang?: Lang }; resume?: string }[] = [];
+  started: {
+    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel };
+    resume?: string;
+  }[] = [];
   audio: Uint8Array[] = [];
   micSwitches: MicSource[] = [];
   stopped = false;
   constructor(readonly handlers: ApiHandlers) {}
-  start(params: { micSource: MicSource; sourceLang?: Lang }, resumeSessionId?: string): void {
+  start(
+    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel },
+    resumeSessionId?: string,
+  ): void {
     this.started.push({ params, resume: resumeSessionId });
   }
   stop(): void {
@@ -93,7 +123,7 @@ class FakeAudio implements PcmAudioSource {
   }
 }
 
-function harness(resume: string | null = null) {
+function harness(resume: string | null = null, cueLevel?: CueLevel) {
   const audio = new FakeAudio();
   const refs: { client: FakeApi | null; saved: string | null; cleared: boolean } = {
     client: null,
@@ -111,9 +141,13 @@ function harness(resume: string | null = null) {
       refs.cleared = true;
     },
     defaultMicSource: "phone-microphone",
+    cueLevel,
   };
   return { session: new CaptureSession(deps), audio, refs };
 }
+
+const cue = (id: string, title = "Sun", body = "150M km") =>
+  ({ type: "cue" as const, cueId: id, title, body, atMs: 1000 });
 
 const ready = (sessionId: string) => ({ type: "session.ready" as const, sessionId });
 
@@ -198,5 +232,39 @@ describe("CaptureSession", () => {
     await session.start();
     refs.client!.handlers.onReady?.(ready("x"));
     expect(seen[seen.length - 1]).toBe(true);
+  });
+
+  it("forwards the chosen cue level to the api on start", async () => {
+    const { session, refs } = harness(null, "aggressive");
+    await session.start();
+    expect(refs.client?.started[0].params.cueLevel).toBe("aggressive");
+  });
+
+  describe("live cues", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("shows an incoming cue then auto-dismisses it after the TTL", async () => {
+      const { session, refs } = harness();
+      await session.start();
+      refs.client!.handlers.onCue?.(cue("c1", "Sun", "About 150M km"));
+      expect(session.getState().cues).toEqual([{ id: "c1", title: "Sun", body: "About 150M km" }]);
+
+      vi.advanceTimersByTime(CUE_TTL_MS - 1);
+      expect(session.getState().cues).toHaveLength(1); // still visible just before TTL
+      vi.advanceTimersByTime(1);
+      expect(session.getState().cues).toEqual([]); // dismissed at TTL
+    });
+
+    it("cancels pending cue-dismiss timers on stop", async () => {
+      const { session, refs } = harness();
+      await session.start();
+      refs.client!.handlers.onCue?.(cue("c1"));
+      await session.stop();
+      expect(session.getState().cues).toEqual([]); // cleared by stop
+      // The pending timer must not resurrect or error after teardown.
+      vi.advanceTimersByTime(CUE_TTL_MS * 2);
+      expect(session.getState().cues).toEqual([]);
+    });
   });
 });

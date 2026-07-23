@@ -42,6 +42,29 @@ class Settings(BaseSettings):
     # The model alias sent to the gateway (must match litellm/config.yaml).
     stt_model: str = "voxtral"
 
+    # ---- Cues (XERK-81) ----------------------------------------------------------
+    # Cues are private contextual info cards the api derives from the live
+    # conversation: someone asks how far the sun is and the answer appears above the
+    # transcript. Generation runs on each finalized segment against a chat LLM served
+    # through the SAME LiteLLM gateway (no new URL/key var — it reuses litellm_endpoint
+    # + litellm_api_key, POSTing /chat/completions instead of /audio/transcriptions).
+    #   "off"    — no cues (default; the stripped core stays STT-only unless enabled).
+    #   "stub"   — model-free, deterministic generator for CI/dev (no GPU).
+    #   "openai" — real chat model via the gateway (prod: qwen3-llm on tenir-vllm).
+    cue_backend: str = "off"  # off | stub | openai
+    # The chat-model alias sent to the gateway for cue generation (matches the
+    # LiteLLM route + the deployed API_LLM_MODEL). The gateway owns the real model id.
+    llm_model: str = "qwen3-llm"
+    # How much recent transcript (finalized turns) to feed the cue model as context.
+    cue_context_segments: int = 8
+    # Fallback aggressiveness when session.start omits cueLevel. The client normally
+    # sends the user's choice (conservative | balanced | aggressive); each level maps
+    # to a prompt strictness + a rate-limit interval (see api.cue.levels).
+    cue_default_level: str = "balanced"
+    # Cap the model's cue body length (characters) so a cue fits the glasses box and
+    # the live band; the generator prompt also asks for brevity.
+    cue_max_body_chars: int = 240
+
     # Realtime windowing / VAD. Tune for the latency budget.
     stt_partial_interval_ms: int = 700  # re-run the partial hypothesis this often
     # Partials decode only this trailing window of the in-flight segment so partial

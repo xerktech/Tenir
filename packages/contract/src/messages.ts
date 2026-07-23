@@ -18,7 +18,11 @@ export type MicSource = "g2-microphone" | "phone-microphone";
  * Languages the STT engine may detect/report on captions.
  */
 export type Lang = "en" | "es" | "fr" | "de" | "pt" | "it";
-export type ServerMessage = SessionReady | CaptionPartial | CaptionFinal | Pong | ErrorMessage;
+/**
+ * How eagerly the api surfaces private context cues, chosen by the user in the client UI: 'conservative' (only unambiguous factual references), 'balanced' (clear questions/references), 'aggressive' (anything lookup-worthy). Sent on session.start; governs cue generation for that session.
+ */
+export type CueLevel = "conservative" | "balanced" | "aggressive";
+export type ServerMessage = SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage;
 
 /**
  * Client -> server. Opens a live session before any audio frames are sent.
@@ -31,6 +35,7 @@ export interface SessionStart {
   sessionId?: string;
   micSource: MicSource;
   sourceLang?: Lang;
+  cueLevel?: CueLevel;
 }
 /**
  * Client -> server. Runtime microphone source change.
@@ -88,6 +93,28 @@ export interface Word {
   startMs: number;
   endMs: number;
   confidence?: number;
+}
+/**
+ * Server -> client. A private contextual info card the api derived from the live conversation (e.g. someone asks how far the sun is; the answer appears). Cues are private to the listener, not part of the conversation. Clients show it in a bordered box above the live transcript for ~10s, and persist it inline in the transcript history at atMs.
+ */
+export interface Cue {
+  type: "cue";
+  /**
+   * Stable id for this cue (dedupe / popup keying).
+   */
+  cueId: string;
+  /**
+   * 1-3 word label for the cue box.
+   */
+  title: string;
+  /**
+   * The contextual detail shown in the box / history popup.
+   */
+  body: string;
+  /**
+   * Position on the conversation timeline (ms) the cue relates to, so history can render it inline where it appeared.
+   */
+  atMs: number;
 }
 /**
  * Server -> client. Reply to Ping.

@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   clearSessionId,
   createMirroredTokenStore,
+  loadCueLevel,
   loadLastTab,
   loadServerUrl,
   loadSessionId,
   loadThemeMode,
   memoryKeyValue,
+  saveCueLevel,
   saveLastTab,
   saveServerUrl,
   saveSessionId,
@@ -119,5 +121,19 @@ describe("capture session id persistence", () => {
     expect(await loadSessionId(kv)).toBe("sess-123");
     await clearSessionId(kv);
     expect(await loadSessionId(kv)).toBeNull();
+  });
+});
+
+describe("cue level persistence", () => {
+  it("defaults to balanced and round-trips a saved level", async () => {
+    const kv = memoryKeyValue();
+    expect(await loadCueLevel(kv)).toBe("balanced"); // default when unset
+    await saveCueLevel(kv, "aggressive");
+    expect(await loadCueLevel(kv)).toBe("aggressive");
+  });
+
+  it("ignores an unrecognized stored value and falls back to the default", async () => {
+    const kv = memoryKeyValue({ "tenir.cueLevel": "bogus" });
+    expect(await loadCueLevel(kv)).toBe("balanced");
   });
 });

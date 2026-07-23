@@ -21,6 +21,7 @@ from api.persistence.conversations import ConversationStore, InMemoryConversatio
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    Cue,
     Segment,
     coerce_status,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "Conversation",
     "ConversationStatus",
     "ConversationStore",
+    "Cue",
     "LocalDiskAudioStore",
     "Segment",
     "audio_key",
@@ -65,9 +67,7 @@ def _build_audio_store() -> AudioStore | None:
         return InMemoryAudioStore()
     if backend == "disk":
         return LocalDiskAudioStore(settings.audio_dir)
-    raise ValueError(
-        f"unknown audio backend: {backend!r} (expected 'off', 'memory' or 'disk')"
-    )
+    raise ValueError(f"unknown audio backend: {backend!r} (expected 'off', 'memory' or 'disk')")
 
 
 _conversation_store = _build_conversation_store()

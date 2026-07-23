@@ -185,13 +185,14 @@ export function buildMainPage(contents: PageContents): RebuildPageContainer {
 }
 
 /**
- * The page with the double-tap popup up: the base containers plus the
- * bordered menu strip across the top two lines of the screen. The controller
- * blanks everything the strip covers (status, clock, caption row 0 via
- * `occludedCaption`), so nothing shows through the box.
+ * The bordered popup strip across the top two lines — shared by the double-tap
+ * menu and the private-context cue box (XERK-81). The controller blanks
+ * everything the strip covers (status, clock, caption rows via
+ * `occludedCaption`), so nothing shows through the box. `text` is the two-row
+ * body it carries (menu options, or a cue's title + detail).
  */
-export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
-  const menu = new TextContainerProperty({
+function popupPage(contents: PageContents, text: string): RebuildPageContainer {
+  const popup = new TextContainerProperty({
     containerID: CONTAINER.menu.id,
     containerName: CONTAINER.menu.name,
     xPosition: MENU_X,
@@ -204,12 +205,43 @@ export function buildMenuPage(contents: PageContents, selected: MenuChoice): Reb
     borderColor: 0xffffff,
     borderRadius: 10,
     isEventCapture: 0,
-    content: menuText(selected),
+    content: text,
   });
   return new RebuildPageContainer({
     containerTotalNum: 5,
-    textObject: [...baseContainers(contents), menu],
+    textObject: [...baseContainers(contents), popup],
   });
+}
+
+/** The page with the double-tap menu popup up (Continue / Exit session). */
+export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
+  return popupPage(contents, menuText(selected));
+}
+
+/**
+ * The page with a cue popup up (XERK-81): the same bordered strip, showing a
+ * private context card's title over its detail — a bordered box above the live
+ * transcript, private to the wearer, auto-dismissed by the controller after ~10s.
+ */
+export function buildCuePage(contents: PageContents, cue: CueCard): RebuildPageContainer {
+  return popupPage(contents, cueText(cue));
+}
+
+/** A private context cue shown on the lens (XERK-81). */
+export interface CueCard {
+  title: string;
+  body: string;
+}
+
+/**
+ * Fit a cue into the two rows of the popup box: the title (upper-cased) over
+ * the first line of the detail that fits the strip width. The box clips the
+ * rest; the full cue lives on the phone Session/History pages.
+ */
+export function cueText(cue: CueCard): string {
+  const titleLine = wrapLines(cue.title.toUpperCase())[0] ?? cue.title.toUpperCase();
+  const bodyLine = wrapLines(cue.body)[0] ?? cue.body;
+  return `${titleLine}\n${bodyLine}`;
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */

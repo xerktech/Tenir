@@ -1,6 +1,6 @@
 /** Recorded session history & search, with transcripts and retained audio. */
 
-import { history, type Conversation } from "@tenir/client-core";
+import { history, type Conversation, type CueView, type SegmentView } from "@tenir/client-core";
 import { useState } from "react";
 import { Linking, Text, View } from "react-native";
 
@@ -9,6 +9,7 @@ import { conversationLabel, errText, msToClock } from "../lib/format";
 import { useNotify } from "../lib/notify";
 import { audioPlayerAvailable } from "../native/audioPlayer";
 import { AudioPlayer } from "../ui/AudioPlayer";
+import { CueModal, InlineCue } from "../ui/cue";
 import {
   Button,
   ConfirmButton,
@@ -22,6 +23,19 @@ import {
   Spinner,
 } from "../ui/components";
 import { useTheme } from "../ui/ThemeContext";
+
+// A transcript row is either a spoken segment or a private cue, on one timeline.
+type TranscriptItem =
+  | { kind: "segment"; at: number; seg: SegmentView }
+  | { kind: "cue"; at: number; cue: CueView };
+
+function timeline(conv: Conversation): TranscriptItem[] {
+  const items: TranscriptItem[] = [
+    ...conv.segments.map((seg) => ({ kind: "segment" as const, at: seg.startMs, seg })),
+    ...(conv.cues ?? []).map((cue) => ({ kind: "cue" as const, at: cue.atMs, cue })),
+  ];
+  return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
+}
 
 export function HistoryScreen(): JSX.Element {
   const notify = useNotify();
@@ -106,6 +120,8 @@ function Detail({
   onBack: () => void;
 }): JSX.Element {
   const { colors } = useTheme();
+  const [openCue, setOpenCue] = useState<CueView | null>(null);
+  const items = timeline(conv);
   return (
     <Screen>
       <Row>
@@ -115,14 +131,23 @@ function Detail({
       <Muted>{conversationLabel(conv)}</Muted>
       <View>
         {/* An empty transcript block reads as a detail that failed to open — name it. */}
-        {conv.segments.length === 0 && <Muted>No transcript was recorded for this session.</Muted>}
-        {conv.segments.map((s) => (
-          <Text key={s.segmentId} style={{ color: colors.text }}>
-            <Text style={{ color: colors.muted }}>[{msToClock(s.startMs)}] </Text>
-            {s.text}
-          </Text>
-        ))}
+        {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 && (
+          <Muted>No transcript was recorded for this session.</Muted>
+        )}
+        {items.map((item) =>
+          item.kind === "segment" ? (
+            <Text key={item.seg.segmentId} style={{ color: colors.text }}>
+              <Text style={{ color: colors.muted }}>[{msToClock(item.seg.startMs)}] </Text>
+              {item.seg.text}
+            </Text>
+          ) : (
+            <InlineCue key={item.cue.cueId} title={item.cue.title} onPress={() => setOpenCue(item.cue)} />
+          ),
+        )}
       </View>
+      {openCue && (
+        <CueModal title={openCue.title} body={openCue.body} onClose={() => setOpenCue(null)} />
+      )}
       {/* Retained audio plays in-app with a seek bar (XERK-67). Where the native
           player isn't available (iOS), fall back to opening it in the browser. */}
       {conv.hasAudio &&

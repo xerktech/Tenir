@@ -245,7 +245,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         send, session_id=requested_id, household=principal.household
                     )
                     await new_session.start(
-                        mic_source=msg.micSource, source_lang=msg.sourceLang
+                        mic_source=msg.micSource,
+                        source_lang=msg.sourceLang,
+                        cue_level=msg.cueLevel,
                     )
                 except Exception:
                     log.exception("session.start failed for household %s", principal.household)

@@ -48,6 +48,21 @@ class Segment:
 
 
 @dataclass
+class Cue:
+    """One private contextual info card (mirrors the ``cue`` contract, XERK-81).
+
+    A cue is derived from the conversation but is *not* part of it — private
+    context for the listener. ``at_ms`` is the transcript-timeline position it
+    relates to, so history renders it inline where it appeared.
+    """
+
+    cue_id: str
+    title: str
+    body: str
+    at_ms: int
+
+
+@dataclass
 class Conversation:
     """A persisted conversation and its transcript."""
 
@@ -60,6 +75,7 @@ class Conversation:
     status: ConversationStatus = "live"
     audio_key: str | None = None
     segments: list[Segment] = field(default_factory=list)
+    cues: list[Cue] = field(default_factory=list)
 
     @property
     def transcript(self) -> str:

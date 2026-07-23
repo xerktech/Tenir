@@ -8,12 +8,15 @@
  * framework-agnostic `CaptureSession`.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 
-import { DISCLOSURES } from "@tenir/client-core";
+import { DISCLOSURES, type CueLevel } from "@tenir/client-core";
 import { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
+import { deviceKeyValue } from "../secureStorage";
+import { loadCueLevel, saveCueLevel } from "../storage";
+import { CueLevelToggle, LiveCueBand } from "../ui/cue";
 import {
   Badge,
   Button,
@@ -37,11 +40,26 @@ function connectionLabel(state: ReturnType<typeof useCapture>["state"]): string 
 }
 
 export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
-  const cap = useCapture(wsUrl);
+  const [cueLevel, setCueLevel] = useState<CueLevel>("balanced");
+  const cap = useCapture(wsUrl, cueLevel);
   const notify = useNotify();
   const { colors } = useTheme();
   const [busy, setBusy] = useState(false);
   const { state } = cap;
+
+  // Hydrate the persisted cue-level preference once on mount.
+  useEffect(() => {
+    let live = true;
+    void loadCueLevel(deviceKeyValue()).then((l) => live && setCueLevel(l));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const changeCueLevel = (l: CueLevel) => {
+    setCueLevel(l);
+    void saveCueLevel(deviceKeyValue(), l);
+  };
 
   const start = async () => {
     setBusy(true);
@@ -93,7 +111,10 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
           )}
         </Row>
         {!state.running && <Muted>{RECORDING_NOTICE}</Muted>}
+        <CueLevelToggle level={cueLevel} onChange={changeCueLevel} />
       </Card>
+
+      <LiveCueBand cues={state.cues} />
 
       {state.segments.length === 0 && !state.partial && !state.running ? (
         <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />

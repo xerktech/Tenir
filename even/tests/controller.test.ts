@@ -109,6 +109,7 @@ async function boot(
       <section id="page-session">
         <span id="session-dot" hidden></span>
         <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
           <p id="session-empty-hint"></p>
@@ -471,5 +472,95 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.text(C().caption)).toBe(controllerMod.SIGN_IN_PROMPT);
     await t.click();
     expect(t.api.calls).toHaveLength(1); // disabled: the click is ignored
+  });
+});
+
+describe("wireLens cues (XERK-81)", () => {
+  const CUE = {
+    type: "cue" as const,
+    cueId: "c1",
+    title: "Sun",
+    body: "About 150 million km away.",
+    atMs: 1000,
+  };
+  /** Enable, start a session, and return the driver. */
+  const record = async () => {
+    const t = await boot();
+    t.controls.enable();
+    await settle();
+    await t.click(); // idle → a tap starts a session
+    await settle();
+    return t;
+  };
+
+  it("shows a cue in the bordered popup above the transcript, then dismisses it after the TTL", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    // The cue rides the shared popup strip, rebuilt on top of the base page.
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+
+    // Auto-dismissed after ~10s: the page rebuilds back to the plain layout.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("lets the double-tap menu take the popup over from a showing cue", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+
+    await t.doubleTap(); // open the menu — it owns the shared popup
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+  });
+
+  it("drops a cue that arrives while the menu is open", async () => {
+    const t = await record();
+    await t.doubleTap(); // menu up
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    // The interactive menu is untouched; the transient cue was dropped.
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+  });
+
+  it("mirrors the active cue to the phone Session page", async () => {
+    const { bridge, emit } = fakeBridge();
+    const latest = new Map<number, string>();
+    const writer = new layout.LensTextWriter(async (c, content) => {
+      latest.set(c.id, content);
+      return true;
+    });
+    document.body.innerHTML = `
+      <section id="page-session">
+        <span id="session-dot" hidden></span>
+        <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="session-cue" id="session-cue" hidden></div>
+        <div class="empty" id="session-empty">
+          <p id="session-empty-title"></p>
+          <p id="session-empty-hint"></p>
+        </div>
+        <ul id="session-text" hidden></ul>
+      </section>`;
+    const phone = new sessionMod.SessionPage(sessionMod.querySessionPageElements()!);
+    const api = fakeClientFactory();
+    const controls = await controllerMod.wireLens(bridge, new MemStorage(), writer, phone, {
+      createClient: api.createClient,
+    });
+    await settle();
+    controls.enable();
+    await settle();
+    emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent); // start
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+
+    const cueEl = document.getElementById("session-cue")!;
+    expect(cueEl.hidden).toBe(true);
+    api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(cueEl.hidden).toBe(false);
+    expect(cueEl.textContent).toContain("Sun");
+    expect(cueEl.textContent).toContain("150 million");
   });
 });

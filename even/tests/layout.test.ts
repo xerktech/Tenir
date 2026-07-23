@@ -2,9 +2,11 @@ import { getTextWidth, measureTextWrap } from "@evenrealities/pretext";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildCuePage,
   buildMainPage,
   buildMenuPage,
   buildStartupContainer,
+  cueText,
   CAPTION_H,
   CAPTION_LINES,
   CLOCK_W,
@@ -406,5 +408,30 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
     const interior = MENU_W - 2 * (MENU_PAD + MENU_BORDER);
     expect(getTextWidth("› Exit session")).toBeLessThanOrEqual(interior);
     expect(getTextWidth("› Continue")).toBeLessThanOrEqual(interior);
+  });
+});
+
+describe("cue popup (XERK-81)", () => {
+  const cue = { title: "Sun", body: "About 150 million km away." };
+
+  it("fits a cue into two rows: the upper-cased title over the first body line", () => {
+    const rows = cueText(cue).split("\n");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe("SUN");
+    expect(rows[1].length).toBeGreaterThan(0);
+    // Each row fits the popup's interior width (never wider than the box).
+    const interior = MENU_W - 2 * (MENU_PAD + MENU_BORDER);
+    for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(interior);
+  });
+
+  it("builds the same bordered strip as the menu, carrying the cue text", () => {
+    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, cue);
+    expect(page.containerTotalNum).toBe(5);
+    const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
+    expect(popup.yPosition).toBe(MENU_Y); // a strip from the top of the screen
+    expect(popup.height).toBe(MENU_H);
+    expect(popup.borderWidth).toBe(MENU_BORDER);
+    expect(popup.isEventCapture).toBe(0);
+    expect(popup.content).toBe(cueText(cue));
   });
 });

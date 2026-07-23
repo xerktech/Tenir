@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Conversation, ConversationSummary } from "@tenir/client-core";
+import type { Conversation, ConversationSummary, CueView } from "@tenir/client-core";
 
 import {
   PhoneHistory,
@@ -39,6 +39,15 @@ function mountDom(): void {
           <a id="history-audio-link">Download audio.wav</a>
         </div>
       </div>
+      <div class="cue-popup-backdrop" id="history-cue-popup" hidden>
+        <div class="cue-popup" id="history-cue-popup-card">
+          <div class="cue-popup-head">
+            <h3 id="history-cue-popup-title"></h3>
+            <button id="history-cue-popup-close" type="button">✕</button>
+          </div>
+          <div id="history-cue-popup-body"></div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -65,6 +74,17 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
       { segmentId: "s1", text: "first turn", startMs: 3000, endMs: 7000, lang: "en" },
       { segmentId: "s2", text: "second turn", startMs: 9000, endMs: 15000, lang: "en" },
     ],
+    cues: [],
+    ...overrides,
+  };
+}
+
+function cue(overrides: Partial<CueView> = {}): CueView {
+  return {
+    cueId: "cue1",
+    title: "Aptos",
+    body: "A coastal town in Santa Cruz County, California.",
+    atMs: 8000,
     ...overrides,
   };
 }
@@ -215,6 +235,86 @@ describe("conversation detail", () => {
     rowButtons()[0].click();
     await vi.waitFor(() => expect(detail().hidden).toBe(false));
     expect(document.querySelector("#history-transcript b")).toBeNull();
+  });
+
+  it("renders private cues inline on the timeline and opens/closes their popup (XERK-81)", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () => conversation({ cues: [cue()] })),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+
+    // The cue is merged into the timeline at atMs=8000 (between the two turns).
+    const chip = document.querySelector<HTMLButtonElement>("#history-transcript .cue-inline")!;
+    expect(chip).not.toBeNull();
+    expect(chip.querySelector(".cue-inline-title")!.textContent).toBe("Aptos");
+    const order = [...document.querySelectorAll("#history-transcript > *")].map((el) =>
+      el.classList.contains("cue-inline") ? "cue" : el.textContent,
+    );
+    expect(order).toEqual(["0:03–0:07 first turn", "cue", "0:09–0:15 second turn"]);
+
+    // The popup is hidden until the chip is clicked.
+    const popup = document.getElementById("history-cue-popup")!;
+    expect(popup.hidden).toBe(true);
+    chip.click();
+    expect(popup.hidden).toBe(false);
+    expect(document.getElementById("history-cue-popup-title")!.textContent).toBe("Aptos");
+    expect(document.getElementById("history-cue-popup-body")!.textContent).toBe(
+      "A coastal town in Santa Cruz County, California.",
+    );
+
+    // A click on the card itself does not dismiss; the close button does.
+    document.getElementById("history-cue-popup-card")!.click();
+    expect(popup.hidden).toBe(false);
+    document.getElementById("history-cue-popup-close")!.click();
+    expect(popup.hidden).toBe(true);
+  });
+
+  it("dismisses the cue popup by clicking the backdrop", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () => conversation({ cues: [cue()] })),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+
+    document.querySelector<HTMLButtonElement>("#history-transcript .cue-inline")!.click();
+    const popup = document.getElementById("history-cue-popup")!;
+    expect(popup.hidden).toBe(false);
+    popup.click(); // the backdrop
+    expect(popup.hidden).toBe(true);
+  });
+
+  it("renders a cue-only session (no segments) rather than the empty message", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () => conversation({ segments: [], cues: [cue()] })),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    expect(document.querySelector("#history-transcript .cue-inline")).not.toBeNull();
+    expect(document.getElementById("history-transcript")!.textContent).not.toContain(
+      "No transcript was recorded",
+    );
+  });
+
+  it("renders cue title/body as text, not markup", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () =>
+        conversation({ cues: [cue({ title: "<i>x</i>", body: "<b>y</b>" })] }),
+      ),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    document.querySelector<HTMLButtonElement>("#history-transcript .cue-inline")!.click();
+    expect(document.querySelector("#history-cue-popup-body b")).toBeNull();
+    expect(document.getElementById("history-cue-popup-body")!.textContent).toBe("<b>y</b>");
   });
 
   it("toasts when a detail fails to open", async () => {

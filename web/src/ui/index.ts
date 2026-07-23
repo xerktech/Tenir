@@ -6,6 +6,7 @@ export { EmptyState } from "./EmptyState";
 export { Field, type FieldProps } from "./Field";
 export { IconButton, type IconButtonProps } from "./IconButton";
 export { Input, Textarea } from "./Input";
+export { Modal, type ModalProps } from "./Modal";
 export { NavIcon, type NavPage } from "./NavIcon";
 export { Spinner } from "./Spinner";
 export { StatusLight } from "./StatusLight";

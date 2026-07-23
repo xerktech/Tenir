@@ -20,6 +20,7 @@ from typing import Protocol
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    Cue,
     Segment,
     utcnow,
 )
@@ -35,6 +36,7 @@ class ConversationStore(Protocol):
         source_lang: str | None = None,
     ) -> Conversation: ...
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None: ...
+    def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None: ...
     def finish(
         self,
         household: str,
@@ -101,6 +103,18 @@ class InMemoryConversationStore:
                     conv.segments[i] = segment
                     return
             conv.segments.append(segment)
+
+    def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is None:
+                return
+            # Upsert by cue id so a re-delivered cue replaces rather than dupes.
+            for i, existing in enumerate(conv.cues):
+                if existing.cue_id == cue.cue_id:
+                    conv.cues[i] = cue
+                    return
+            conv.cues.append(cue)
 
     def finish(
         self,

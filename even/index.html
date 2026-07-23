@@ -259,6 +259,24 @@
       .transcript li + li { border-top: 1px solid var(--border); }
       .transcript li.partial { color: var(--text-muted); }
 
+      /* The private context cue card (XERK-81): a bordered accent card above the
+         live transcript, the phone counterpart to the lens's popup box. */
+      .session-cue {
+        border: 1px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+        margin-bottom: var(--space-3);
+      }
+      .session-cue[hidden] { display: none; }
+      .session-cue-title {
+        font-family: var(--font-display, inherit);
+        font-weight: 700; font-size: var(--text-sm);
+        color: var(--accent-strong);
+        text-transform: uppercase; letter-spacing: .04em;
+      }
+      .session-cue-body { margin-top: 2px; line-height: 1.5; }
+
       /* ---- History page: session list + conversation detail ---- */
       #history-list[hidden], #history-detail[hidden] { display: none; }
       .history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
@@ -276,6 +294,49 @@
       .audio-player { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); }
       .audio-player[hidden] { display: none; }
       .audio-player-el { width: 100%; }
+
+      /* Inline clickable cue in the history transcript (XERK-81); opens the popup. */
+      .cue-inline {
+        display: inline-flex; align-items: center; gap: var(--space-1);
+        margin: var(--space-2) 0;
+        border: 1px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        color: var(--accent-strong);
+        border-radius: var(--radius-sm);
+        padding: 2px var(--space-2);
+        font: inherit; font-size: var(--text-sm); font-weight: 600;
+        cursor: pointer;
+      }
+      .cue-inline:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+      .cue-inline-mark { font-size: var(--text-xs); }
+
+      /* Cue-detail popup (XERK-81): a fixed backdrop with a centered surface card,
+         mirroring the web UI's Modal. */
+      .cue-popup-backdrop {
+        position: fixed; inset: 0; z-index: 50;
+        display: flex; align-items: center; justify-content: center;
+        padding: var(--space-4);
+        background: rgba(0, 0, 0, .5);
+      }
+      .cue-popup-backdrop[hidden] { display: none; }
+      .cue-popup {
+        width: 100%; max-width: 420px;
+        background: var(--surface-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-md);
+      }
+      .cue-popup-head {
+        display: flex; align-items: center; gap: var(--space-2);
+        padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border);
+      }
+      .cue-popup-title { margin: 0; flex: 1; font-size: var(--text-lg); }
+      .cue-popup-close {
+        border: none; background: transparent; color: var(--text-muted);
+        cursor: pointer; font-size: var(--text-base); line-height: 1;
+      }
+      .cue-popup-close:hover { color: var(--text); }
+      .cue-popup-body { padding: var(--space-4); line-height: 1.55; }
     </style>
   </head>
   <body>
@@ -341,6 +402,9 @@
             <span class="live-dot" id="session-dot" aria-hidden="true" hidden></span>
             <span class="badge-neutral" id="session-badge">idle</span>
           </div>
+          <!-- The private context cue (XERK-81): a bordered accent card above
+               the transcript, shown while a cue is live during a session. -->
+          <div class="session-cue" id="session-cue" aria-live="polite" hidden></div>
           <div class="empty" id="session-empty">
             <p class="empty-title" id="session-empty-title">No session running</p>
             <p class="empty-hint" id="session-empty-hint">Tap your glasses to start a session.</p>
@@ -374,6 +438,19 @@
                    bar (XERK-67); the nested link keeps the clip downloadable. -->
               <audio class="audio-player-el" id="history-audio-el" controls preload="metadata"></audio>
               <a class="link" id="history-audio-link" download>Download audio.wav</a>
+            </div>
+          </div>
+
+          <!-- Cue-detail popup (XERK-81): a fixed backdrop over the page with a
+               centered card, opened by an inline cue chip in the transcript.
+               Dismissed by the backdrop or the ✕; a click on the card stays. -->
+          <div class="cue-popup-backdrop" id="history-cue-popup" role="dialog" aria-modal="true" hidden>
+            <div class="cue-popup" id="history-cue-popup-card">
+              <div class="cue-popup-head">
+                <h3 class="cue-popup-title" id="history-cue-popup-title"></h3>
+                <button class="cue-popup-close" id="history-cue-popup-close" type="button" aria-label="Close">✕</button>
+              </div>
+              <div class="cue-popup-body" id="history-cue-popup-body"></div>
             </div>
           </div>
         </div>

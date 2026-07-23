@@ -31,6 +31,16 @@ class Lang(StrEnum):
     it = 'it'
 
 
+class CueLevel(StrEnum):
+    """
+    How eagerly the api surfaces private context cues, chosen by the user in the client UI: 'conservative' (only unambiguous factual references), 'balanced' (clear questions/references), 'aggressive' (anything lookup-worthy). Sent on session.start; governs cue generation for that session.
+    """
+
+    conservative = 'conservative'
+    balanced = 'balanced'
+    aggressive = 'aggressive'
+
+
 class Word(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -56,6 +66,7 @@ class SessionStart(BaseModel):
     )
     micSource: MicSource
     sourceLang: Lang | None = None
+    cueLevel: CueLevel | None = None
 
 
 class MicSwitch(BaseModel):
@@ -144,6 +155,28 @@ class CaptionFinal(BaseModel):
     words: list[Word] | None = None
 
 
+class Cue(BaseModel):
+    """
+    Server -> client. A private contextual info card the api derived from the live conversation (e.g. someone asks how far the sun is; the answer appears). Cues are private to the listener, not part of the conversation. Clients show it in a bordered box above the live transcript for ~10s, and persist it inline in the transcript history at atMs.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['cue']
+    cueId: str = Field(
+        ..., description='Stable id for this cue (dedupe / popup keying).'
+    )
+    title: str = Field(..., description='1-3 word label for the cue box.')
+    body: str = Field(
+        ..., description='The contextual detail shown in the box / history popup.'
+    )
+    atMs: conint(ge=0) = Field(
+        ...,
+        description='Position on the conversation timeline (ms) the cue relates to, so history can render it inline where it appeared.',
+    )
+
+
 class Pong(BaseModel):
     """
     Server -> client. Reply to Ping.
@@ -179,10 +212,10 @@ class ErrorMessage(BaseModel):
 
 
 class ServerMessage(
-    RootModel[SessionReady | CaptionPartial | CaptionFinal | Pong | ErrorMessage]
+    RootModel[SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage]
 ):
-    root: SessionReady | CaptionPartial | CaptionFinal | Pong | ErrorMessage = Field(
-        ..., title='ServerMessage'
+    root: SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage = (
+        Field(..., title='ServerMessage')
     )
 
 

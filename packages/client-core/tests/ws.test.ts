@@ -110,7 +110,30 @@ describe("ApiClient", () => {
       endMs: 1,
     });
     expect(onFinal).toHaveBeenCalledOnce();
+  });
 
+  it("routes a cue frame to onCue", () => {
+    const onCue = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onCue });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].emit({
+      type: "cue",
+      cueId: "cue-1",
+      title: "Sun",
+      body: "About 150 million km away.",
+      atMs: 1500,
+    });
+    expect(onCue).toHaveBeenCalledWith(
+      expect.objectContaining({ cueId: "cue-1", title: "Sun", atMs: 1500 }),
+    );
+  });
+
+  it("sends the chosen cue level in session.start", () => {
+    const client = new ApiClient("ws://h/ws");
+    client.start({ micSource: "g2-microphone", cueLevel: "conservative" });
+    instances[0].open();
+    expect(instances[0].jsonSent()[0]).toMatchObject({ cueLevel: "conservative" });
   });
 
   it("honours backpressure and socket state in sendAudio", () => {

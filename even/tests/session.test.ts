@@ -18,6 +18,7 @@ function mountDom(): void {
     <section id="page-session">
       <span id="session-dot" hidden></span>
       <span class="badge-neutral" id="session-badge">idle</span>
+      <div class="session-cue" id="session-cue" hidden></div>
       <div class="empty" id="session-empty">
         <p id="session-empty-title"></p>
         <p id="session-empty-hint"></p>
@@ -33,6 +34,7 @@ function view(overrides: Partial<LiveSessionView> = {}): LiveSessionView {
     connection: "open",
     segments: [],
     partial: "",
+    cue: null,
     ...overrides,
   };
 }
@@ -68,6 +70,7 @@ describe("SessionPage", () => {
   const title = () => document.getElementById("session-empty-title")!;
   const hint = () => document.getElementById("session-empty-hint")!;
   const text = () => document.getElementById("session-text")!;
+  const cue = () => document.getElementById("session-cue")!;
   const rows = () => [...document.querySelectorAll("#session-text li")].map((li) => li.textContent);
 
   it("idles with an explanation of how sessions start (and clears stale rows)", () => {
@@ -116,6 +119,38 @@ describe("SessionPage", () => {
     mount().update(view({ segments: ["<b>bold?</b>"] }));
     expect(document.querySelector("#session-text b")).toBeNull();
     expect(rows()).toEqual(["<b>bold?</b>"]);
+  });
+
+  it("shows the private context cue as a titled card while recording (XERK-81)", () => {
+    mount().update(view({ cue: { title: "Aptos, CA", body: "Coastal town in Santa Cruz County." } }));
+    expect(cue().hidden).toBe(false);
+    expect(cue().querySelector(".session-cue-title")!.textContent).toBe("Aptos, CA");
+    expect(cue().querySelector(".session-cue-body")!.textContent).toBe(
+      "Coastal town in Santa Cruz County.",
+    );
+  });
+
+  it("renders the cue title/body as text, not markup", () => {
+    mount().update(view({ cue: { title: "<i>x</i>", body: "<b>y</b>" } }));
+    expect(cue().querySelector("i")).toBeNull();
+    expect(cue().querySelector("b")).toBeNull();
+    expect(cue().querySelector(".session-cue-title")!.textContent).toBe("<i>x</i>");
+  });
+
+  it("hides the cue when there is none, and when not recording (and clears it)", () => {
+    const page = mount();
+    page.update(view({ cue: { title: "T", body: "B" } }));
+    expect(cue().hidden).toBe(false);
+
+    // A cleared cue hides and empties the card.
+    page.update(view({ cue: null }));
+    expect(cue().hidden).toBe(true);
+    expect(cue().textContent).toBe("");
+
+    // A cue outside a session never shows (the card is session-private).
+    page.update(view({ recording: false, cue: { title: "T", body: "B" } }));
+    expect(cue().hidden).toBe(true);
+    expect(cue().textContent).toBe("");
   });
 
   it("fires onRecordingStart only on the idle → recording edge", () => {

@@ -17,6 +17,7 @@ import {
   history as historyApi,
   type Conversation,
   type ConversationSummary,
+  type CueView,
   type SegmentView,
 } from "@tenir/client-core";
 
@@ -42,6 +43,11 @@ export interface PhoneHistoryElements {
   audio: HTMLElement; // audio player wrapper (hidden when no audio retained)
   audioEl: HTMLAudioElement;
   audioLink: HTMLAnchorElement;
+  cuePopup: HTMLElement; // the cue-detail popup backdrop (hidden by default)
+  cuePopupCard: HTMLElement; // the centered card (clicks inside don't dismiss)
+  cuePopupTitle: HTMLElement;
+  cuePopupBody: HTMLElement;
+  cuePopupClose: HTMLButtonElement;
 }
 
 /**
@@ -64,9 +70,15 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
   const audio = byId("history-audio");
   const audioEl = byId("history-audio-el");
   const audioLink = byId("history-audio-link");
+  const cuePopup = byId("history-cue-popup");
+  const cuePopupCard = byId("history-cue-popup-card");
+  const cuePopupTitle = byId("history-cue-popup-title");
+  const cuePopupBody = byId("history-cue-popup-body");
+  const cuePopupClose = byId("history-cue-popup-close");
   if (
     !list || !form || !query || !status || !rows || !detail ||
-    !back || !del || !meta || !transcript || !audio || !audioEl || !audioLink
+    !back || !del || !meta || !transcript || !audio || !audioEl || !audioLink ||
+    !cuePopup || !cuePopupCard || !cuePopupTitle || !cuePopupBody || !cuePopupClose
   ) {
     return null;
   }
@@ -84,6 +96,11 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
     audio,
     audioEl: audioEl as HTMLAudioElement,
     audioLink: audioLink as HTMLAnchorElement,
+    cuePopup,
+    cuePopupCard,
+    cuePopupTitle,
+    cuePopupBody,
+    cuePopupClose: cuePopupClose as HTMLButtonElement,
   };
 }
 
@@ -98,6 +115,27 @@ export function formatDuration(ms: number): string {
 /** Segment timing rendered as "m:ss–m:ss" offsets from the session start. */
 export function segmentTiming(s: SegmentView): string {
   return `${formatDuration(s.startMs)}–${formatDuration(s.endMs)}`;
+}
+
+// A transcript row is either a spoken segment or a private cue, placed on the
+// same timeline (XERK-81). Cues carry `atMs`; segments carry `startMs`.
+export type TranscriptItem =
+  | { kind: "segment"; at: number; seg: SegmentView }
+  | { kind: "cue"; at: number; cue: CueView };
+
+/**
+ * Merge segments and cues into one timeline, ordered by position (cues sit
+ * after the segment they share a timestamp with) — mirroring the web UI. An
+ * older/partial payload without cues is tolerated rather than crashing.
+ */
+export function timeline(conv: Conversation): TranscriptItem[] {
+  const items: TranscriptItem[] = [
+    ...conv.segments.map((seg) => ({ kind: "segment" as const, at: seg.startMs, seg })),
+    ...(conv.cues ?? []).map((cue) => ({ kind: "cue" as const, at: cue.atMs, cue })),
+  ];
+  // Order by position, breaking ties with segment before cue so a cue reads as
+  // landing just after the words that triggered it.
+  return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
 }
 
 /** User-facing error text (the web UI's errText). */
@@ -137,6 +175,12 @@ export class PhoneHistory {
     });
     this.els.back.addEventListener("click", () => this.showList());
     this.els.del.addEventListener("click", () => this.deleteClick());
+
+    // Cue-detail popup (XERK-81), mirroring the web Modal: a click on the
+    // backdrop or the close button dismisses it; a click inside the card does not.
+    this.els.cuePopup.addEventListener("click", () => this.closeCue());
+    this.els.cuePopupClose.addEventListener("click", () => this.closeCue());
+    this.els.cuePopupCard.addEventListener("click", (e) => e.stopPropagation());
   }
 
   /** Tab activation: refresh the list so a just-ended session shows up. */
@@ -243,17 +287,33 @@ export class PhoneHistory {
 
     // A session can hold no turns at all (nothing was said, or the transcript
     // was lost). Say so — an empty block reads as a detail that failed to open.
-    if (conv.segments.length === 0) {
+    const cues = conv.cues ?? [];
+    if (conv.segments.length === 0 && cues.length === 0) {
       this.els.transcript.replaceChildren(
         this.make("p", "muted", "No transcript was recorded for this session."),
       );
     } else {
-      const frag = this.els.transcript.ownerDocument.createDocumentFragment();
-      for (const s of conv.segments) {
-        const item = this.make("div", "item");
-        item.appendChild(this.make("span", "muted", segmentTiming(s)));
-        item.append(` ${s.text}`);
-        frag.appendChild(item);
+      const doc = this.els.transcript.ownerDocument;
+      const frag = doc.createDocumentFragment();
+      for (const item of timeline(conv)) {
+        if (item.kind === "segment") {
+          const row = this.make("div", "item");
+          row.appendChild(this.make("span", "muted", segmentTiming(item.seg)));
+          row.append(` ${item.seg.text}`);
+          frag.appendChild(row);
+        } else {
+          // An inline clickable chip (XERK-81): "✦ <title>" opens the cue popup.
+          const button = this.make("button", "cue-inline") as HTMLButtonElement;
+          button.type = "button";
+          button.title = "Show cue detail";
+          const mark = this.make("span", "cue-inline-mark", "✦");
+          mark.setAttribute("aria-hidden", "true");
+          button.appendChild(mark);
+          button.appendChild(this.make("span", "cue-inline-title", item.cue.title));
+          const cue = item.cue;
+          button.addEventListener("click", () => this.openCue(cue));
+          frag.appendChild(button);
+        }
       }
       this.els.transcript.replaceChildren(frag);
     }
@@ -275,9 +335,24 @@ export class PhoneHistory {
   private showList(): void {
     this.current = null;
     this.disarm();
+    this.closeCue();
     this.stopAudio();
     this.els.detail.hidden = true;
     this.els.list.hidden = false;
+  }
+
+  // ---- cue detail popup (XERK-81) --------------------------------------------
+
+  private openCue(cue: CueView): void {
+    this.els.cuePopupTitle.textContent = cue.title;
+    this.els.cuePopupBody.textContent = cue.body;
+    this.els.cuePopup.hidden = false;
+  }
+
+  private closeCue(): void {
+    this.els.cuePopup.hidden = true;
+    this.els.cuePopupTitle.replaceChildren();
+    this.els.cuePopupBody.replaceChildren();
   }
 
   // ---- delete (Turma's arm-then-confirm pattern, as on the web) ---------------

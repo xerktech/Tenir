@@ -42,16 +42,22 @@ import { withBleTimeout, type KeyValueStorage } from "../state/storage";
 import {
   CONTAINER,
   LensTextWriter,
+  buildCuePage,
   buildMainPage,
   buildMenuPage,
   clockText,
+  cueText,
   fitCaption,
   menuText,
   occludedCaption,
   statusLine,
+  type CueCard,
   type MenuChoice,
   type PageContents,
 } from "./layout";
+
+// A cue box stays on the lens this long, then is auto-dismissed (XERK-81).
+export const CUE_TTL_MS = 10000;
 
 // Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
 // fitCaption trims further to what the band can show — this only bounds the
@@ -88,6 +94,7 @@ type Mutable = {
   connection: "connecting" | "open" | "closed";
   recording: boolean; // a session is running (XERK-85: tap starts, popup exits)
   menu: MenuChoice | null; // the in-session popup's highlight; null = closed
+  cue: CueCard | null; // a private context cue currently on the lens (XERK-81)
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -137,7 +144,9 @@ export async function wireLens(
     connection: "closed",
     recording: false,
     menu: null,
+    cue: null,
   };
+  let cueTimer: ReturnType<typeof setTimeout> | null = null;
   let enabled = false; // signed in — clicks act only while enabled
   let foreground = true; // lens visible — the ticker idles while backgrounded
   let tick = 0;
@@ -156,14 +165,17 @@ export async function wireLens(
     const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
     // Only the rows that FIT (XERK-85): nothing overflows, so the host has
     // nothing to scroll; old text simply falls off the top. While the popup is
-    // up, the rows its box covers are masked — an opaque popup would hide
-    // exactly those — and the rows around it keep flowing.
+    // up (menu or cue), the rows its box covers are masked — an opaque popup
+    // hides exactly those — and the rows around it keep flowing.
     const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
-    return state.menu ? occludedCaption(bounded) : fitCaption(bounded);
+    return popupUp() ? occludedCaption(bounded) : fitCaption(bounded);
   };
+  // A popup strip is up: the interactive menu, or a private-context cue box
+  // (XERK-81). Both live in the same bordered container across the top.
+  const popupUp = () => state.menu !== null || state.cue !== null;
   // The popup strip covers the status/clock line and the first caption row:
   // whatever it covers is blanked while it is up (fallback mode has no strip).
-  const popupCovering = () => state.menu !== null && !menuFallback;
+  const popupCovering = () => popupUp() && !menuFallback;
   const statusContent = () =>
     !enabled ? "not signed in" : popupCovering() ? "" : statusLine(state, tick);
   const clockContent = () => (enabled && !popupCovering() ? clockText(new Date()) : "");
@@ -174,8 +186,11 @@ export async function wireLens(
     clock: clockContent(),
   });
   const renderCaption = () => writer.set(CONTAINER.caption, pageContents().caption);
+  // Repaint the shared popup box: the menu highlight, or the cue's text.
   const renderMenu = () => {
-    if (state.menu && !menuFallback) writer.set(CONTAINER.menu, menuText(state.menu));
+    if (menuFallback) return;
+    if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
+    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
   // The clock shows whenever signed in — on the idle "ready" page and while
@@ -187,6 +202,7 @@ export async function wireLens(
       connection: state.connection,
       segments: state.segments,
       partial: state.partial,
+      cue: state.cue,
     });
 
   /**
@@ -197,8 +213,13 @@ export async function wireLens(
    */
   const rebuildPage = () => {
     const contents = pageContents();
-    const page = state.menu ? buildMenuPage(contents, state.menu) : buildMainPage(contents);
+    const page = state.menu
+      ? buildMenuPage(contents, state.menu)
+      : state.cue
+        ? buildCuePage(contents, state.cue)
+        : buildMainPage(contents);
     const openingMenu = state.menu !== null;
+    const openingCue = state.menu === null && state.cue !== null;
     writer.run(async () => {
       const ok = await withBleTimeout(bridge.rebuildPageContainer(page), false);
       if (!ok && openingMenu && state.menu && !menuFallback) {
@@ -207,6 +228,13 @@ export async function wireLens(
         // caption band, which needs no rebuild at all.
         menuFallback = true;
         writer.set(CONTAINER.caption, menuText(state.menu));
+      } else if (!ok && openingCue && state.cue) {
+        // A cue is a best-effort aside — if its popup page never appeared,
+        // drop it rather than leave the caption band masked with no box.
+        state.cue = null;
+        if (cueTimer) clearTimeout(cueTimer);
+        cueTimer = null;
+        writer.set(CONTAINER.caption, pageContents().caption);
       }
     });
     writer.invalidate();
@@ -275,6 +303,7 @@ export async function wireLens(
         syncPhone();
         persist();
       },
+      onCue: (m) => showCue({ title: m.title, body: m.body }),
       onError: (m) => {
         console.warn("api error", m.code, m.message);
         if (m.code === "unauthorized") {
@@ -319,6 +348,9 @@ export async function wireLens(
     const menuWasOpen = state.menu !== null;
     state.recording = false;
     state.menu = null;
+    state.cue = null;
+    if (cueTimer) clearTimeout(cueTimer);
+    cueTimer = null;
     menuFallback = false;
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
@@ -389,14 +421,46 @@ export async function wireLens(
 
   const cleanup = async () => {
     clearInterval(ticker);
+    if (cueTimer) clearTimeout(cueTimer);
     off();
     await capture.stop();
     client?.stop();
     await store.flush();
   };
 
+  /**
+   * Show a private context cue (XERK-81): a bordered box above the transcript,
+   * auto-dismissed after CUE_TTL_MS. The interactive menu owns the shared popup,
+   * so a cue arriving while it is open is dropped rather than clobbering it.
+   */
+  const showCue = (cue: CueCard) => {
+    if (state.menu) return;
+    state.cue = cue;
+    if (cueTimer) clearTimeout(cueTimer);
+    cueTimer = setTimeout(() => dismissCue(), CUE_TTL_MS);
+    rebuildPage();
+    syncPhone();
+  };
+
+  const dismissCue = () => {
+    if (cueTimer) {
+      clearTimeout(cueTimer);
+      cueTimer = null;
+    }
+    if (!state.cue) return;
+    state.cue = null;
+    rebuildPage();
+    syncPhone();
+  };
+
   /** Open the popup page: the bordered box on top, captions flowing around it. */
   const openMenu = () => {
+    // The menu takes over the shared popup box — clear any cue showing there.
+    if (state.cue) {
+      state.cue = null;
+      if (cueTimer) clearTimeout(cueTimer);
+      cueTimer = null;
+    }
     state.menu = "continue"; // Continue is the default
     rebuildPage();
   };

@@ -11,6 +11,8 @@ import type {
   CaptionFinal,
   CaptionPartial,
   ClientMessage,
+  Cue,
+  CueLevel,
   ErrorMessage,
   Lang,
   MicSource,
@@ -24,12 +26,16 @@ import { withToken } from "./auth";
 export interface SessionParams {
   micSource: MicSource;
   sourceLang?: Lang;
+  // How eagerly the api should surface private context cues (XERK-81). Chosen by
+  // the user in the client UI and sent on session.start; omitted → server default.
+  cueLevel?: CueLevel;
 }
 
 export interface ApiHandlers {
   onReady?: (m: SessionReady) => void;
   onPartial?: (m: CaptionPartial) => void;
   onFinal?: (m: CaptionFinal) => void;
+  onCue?: (m: Cue) => void;
   onPong?: (m: Pong) => void;
   onError?: (m: ErrorMessage) => void;
   onConnectionChange?: (state: "connecting" | "open" | "closed") => void;
@@ -91,6 +97,7 @@ export class ApiClient {
         type: "session.start",
         micSource: this.params!.micSource,
         sourceLang: this.params!.sourceLang,
+        cueLevel: this.params!.cueLevel,
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       });
     };
@@ -146,6 +153,9 @@ export class ApiClient {
         break;
       case "caption.final":
         this.handlers.onFinal?.(msg);
+        break;
+      case "cue":
+        this.handlers.onCue?.(msg);
         break;
       case "pong":
         this.handlers.onPong?.(msg);

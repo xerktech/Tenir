@@ -11,6 +11,7 @@ const baseState = () => ({
   micSource: "phone-microphone" as const,
   segments: [] as { id: string; text: string }[],
   partial: "",
+  cues: [] as { id: string; title: string; body: string }[],
 });
 
 function fakeController(overrides: Partial<CaptureController["state"]> = {}): CaptureController {
@@ -22,17 +23,24 @@ function fakeController(overrides: Partial<CaptureController["state"]> = {}): Ca
   };
 }
 
+function renderLive(controller: CaptureController, onCueLevelChange = vi.fn()) {
+  return {
+    onCueLevelChange,
+    ...render(
+      <LiveView controller={controller} cueLevel="balanced" onCueLevelChange={onCueLevelChange} />,
+    ),
+  };
+}
+
 describe("LiveView", () => {
   it("renders final turns and the live partial", () => {
-    render(
-      <LiveView
-        controller={fakeController({
-          running: true,
-          connection: "open",
-          segments: [{ id: "a", text: "hello world" }],
-          partial: "and th",
-        })}
-      />,
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        segments: [{ id: "a", text: "hello world" }],
+        partial: "and th",
+      }),
     );
     expect(screen.getByText(/hello world/)).toBeInTheDocument();
     expect(screen.getByText(/and th/)).toBeInTheDocument();
@@ -41,19 +49,38 @@ describe("LiveView", () => {
 
   it("shows Record when idle and calls start", () => {
     const c = fakeController();
-    render(<LiveView controller={c} />);
+    renderLive(c);
     fireEvent.click(screen.getByRole("button", { name: "Record" }));
     expect(c.start).toHaveBeenCalled();
   });
 
   it("shows Pause/Stop while running and toggles pause", () => {
     const c = fakeController({ running: true, connection: "open" });
-    render(<LiveView controller={c} />);
+    renderLive(c);
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(c.togglePause).toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
+  it("renders live cue cards above the transcript", () => {
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        cues: [{ id: "c1", title: "Sun", body: "About 150 million km away." }],
+      }),
+    );
+    expect(screen.getByText("Sun")).toBeInTheDocument();
+    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+  });
+
+  it("reflects the active cue level and reports changes", () => {
+    const { onCueLevelChange } = renderLive(fakeController());
+    const aggressive = screen.getByRole("button", { name: "Aggressive" });
+    expect(screen.getByRole("button", { name: "Balanced" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(aggressive);
+    expect(onCueLevelChange).toHaveBeenCalledWith("aggressive");
+  });
 });
 
 describe("LivePanel consent gate", () => {

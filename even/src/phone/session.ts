@@ -13,16 +13,20 @@
  * jsdom without the Even SDK.
  */
 
+import type { CueCard } from "../lens/layout";
+
 export interface LiveSessionView {
   recording: boolean;
   connection: "connecting" | "open" | "closed";
   segments: string[]; // finalized turns
   partial: string; // current live hypothesis
+  cue: CueCard | null; // the current private context cue (XERK-81), or none
 }
 
 export interface SessionPageElements {
   badge: HTMLElement; // connection/idle state pill in the page header
   dot: HTMLElement; // pulsing "live" dot, shown only while recording
+  cue: HTMLElement; // the private context cue card (XERK-81), above the transcript
   empty: HTMLElement; // the empty-state block (idle / waiting for speech)
   emptyTitle: HTMLElement;
   emptyHint: HTMLElement;
@@ -37,12 +41,13 @@ export interface SessionPageElements {
 export function querySessionPageElements(doc: Document = document): SessionPageElements | null {
   const badge = doc.getElementById("session-badge");
   const dot = doc.getElementById("session-dot");
+  const cue = doc.getElementById("session-cue");
   const empty = doc.getElementById("session-empty");
   const emptyTitle = doc.getElementById("session-empty-title");
   const emptyHint = doc.getElementById("session-empty-hint");
   const text = doc.getElementById("session-text");
-  if (!badge || !dot || !empty || !emptyTitle || !emptyHint || !text) return null;
-  return { badge, dot, empty, emptyTitle, emptyHint, text };
+  if (!badge || !dot || !cue || !empty || !emptyTitle || !emptyHint || !text) return null;
+  return { badge, dot, cue, empty, emptyTitle, emptyHint, text };
 }
 
 /** The in-session one-word state, honest about connectivity like the lens (XERK-82). */
@@ -80,6 +85,10 @@ export class SessionPage {
     this.els.badge.className =
       view.recording && view.connection === "open" ? "badge-accent" : "badge-neutral";
 
+    // The private context cue (XERK-81): a bordered accent card above the
+    // transcript, shown only while a cue is live and a session is recording.
+    this.renderCue(view.recording ? view.cue : null);
+
     const hasText = view.recording && (view.segments.length > 0 || view.partial !== "");
     this.els.text.hidden = !hasText;
     this.els.empty.hidden = hasText;
@@ -114,5 +123,23 @@ export class SessionPage {
 
     // After the render, so the page is current the moment it is brought forward.
     if (started) this.callbacks.onRecordingStart?.();
+  }
+
+  /** Render (or hide) the live cue card: the title (uppercased, accent) over its body. */
+  private renderCue(cue: CueCard | null): void {
+    if (!cue) {
+      this.els.cue.hidden = true;
+      this.els.cue.replaceChildren();
+      return;
+    }
+    const doc = this.els.cue.ownerDocument;
+    const title = doc.createElement("div");
+    title.className = "session-cue-title";
+    title.textContent = cue.title;
+    const body = doc.createElement("div");
+    body.className = "session-cue-body";
+    body.textContent = cue.body;
+    this.els.cue.replaceChildren(title, body);
+    this.els.cue.hidden = false;
   }
 }

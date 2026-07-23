@@ -26,6 +26,17 @@ model_list:
     model_info:
       mode: audio_transcription
 
+  # Cue/summary LLM (XERK-81) — the alias the api sends when API_CUE_BACKEND=openai
+  # (API_LLM_MODEL=qwen3-llm). A plain chat model (no mode → /chat/completions), so
+  # cues route through this SAME gateway, no new URL/key var. The backend (vllm-cue)
+  # is only up under `docker compose --profile cues up`; without it this route just
+  # 503s and cues stay silent — captions are unaffected.
+  - model_name: qwen3-llm
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen3.6-27B-FP8
+      api_base: http://vllm-cue:8000/v1
+      api_key: tenir-local
+
 litellm_settings:
   # Drop OpenAI params the backend doesn't implement instead of erroring.
   drop_params: true
