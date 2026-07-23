@@ -1,7 +1,9 @@
-import { measureTextWrap } from "@evenrealities/pretext";
+import { getTextWidth, measureTextWrap } from "@evenrealities/pretext";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildMainPage,
+  buildMenuPage,
   buildStartupContainer,
   CAPTION_H,
   CAPTION_LINES,
@@ -10,9 +12,14 @@ import {
   CONTAINER,
   dots,
   fitCaption,
+  fitMenuCaption,
   LensTextWriter,
   LINE_H,
   MEASURE_SAFETY_PX,
+  MENU_BORDER,
+  MENU_CAPTION_LINES,
+  MENU_PAD,
+  MENU_W,
   menuText,
   SCREEN_W,
   statusLine,
@@ -149,6 +156,31 @@ describe("LensTextWriter (XERK-82: bridge calls must be serialized)", () => {
     expect(writes).toEqual(["same", "same"]);
   });
 
+  it("run() ops ride the serialized lane; stale pending writes never land after them", async () => {
+    const events: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const writer = new LensTextWriter(async (_c, content) => {
+      events.push(`set:${content}`);
+      if (events.length === 1) await gate; // hold the first write in flight
+      return true;
+    });
+
+    writer.set(CONTAINER.status, "first"); // in flight
+    writer.set(CONTAINER.caption, "stale"); // queued before the rebuild
+    writer.run(async () => {
+      events.push("rebuild");
+    });
+    writer.invalidate();
+    writer.set(CONTAINER.caption, "fresh"); // re-asserted content coalesces over "stale"
+    release();
+    await writer.flush();
+
+    // The rebuild runs before the texts, and the pre-rebuild caption content
+    // never lands on the rebuilt page.
+    expect(events).toEqual(["set:first", "rebuild", "set:fresh"]);
+  });
+
   it("keeps draining after a failed write", async () => {
     const writes: string[] = [];
     const writer = new LensTextWriter(async (_c, content) => {
@@ -255,5 +287,51 @@ describe("menuText (XERK-85: the double-tap popup)", () => {
 
   it("moves the highlight to Exit session", () => {
     expect(menuText("exit")).toBe("  Continue\n› Exit session");
+  });
+});
+
+describe("popup pages (XERK-85: a bordered box over the live conversation)", () => {
+  const CONTENTS = { status: "s", caption: "c", clock: "t" };
+
+  it("main page: the three base containers carrying their contents", () => {
+    const page = buildMainPage(CONTENTS);
+    expect(page.containerTotalNum).toBe(3);
+    expect(page.textObject!.map((c) => c.content)).toEqual(["s", "c", "t"]);
+  });
+
+  it("menu page adds the bordered box LAST so it draws on top", () => {
+    const page = buildMenuPage(CONTENTS, "continue");
+    expect(page.containerTotalNum).toBe(4);
+    const menu = page.textObject![page.textObject!.length - 1]!;
+    expect(menu.containerName).toBe(CONTAINER.menu.name);
+    expect(menu.borderWidth).toBe(MENU_BORDER);
+    expect(MENU_BORDER).toBeGreaterThan(0); // an actual bordered box
+    expect(menu.content).toBe("› Continue\n  Exit session");
+    const exitPage = buildMenuPage(CONTENTS, "exit").textObject!;
+    expect(exitPage[exitPage.length - 1]!.content).toBe("  Continue\n› Exit session");
+  });
+
+  it("centers the box horizontally, above the caption rows kept for live text", () => {
+    const containers = buildMenuPage(CONTENTS, "continue").textObject!;
+    const menu = containers[containers.length - 1]!;
+    expect(menu.xPosition! * 2 + menu.width!).toBe(SCREEN_W); // centered
+    expect(menu.yPosition!).toBeGreaterThanOrEqual(LINE_H); // below the status line
+    // The box ends above the rows fitMenuCaption keeps for the conversation.
+    const firstKeptRowY = LINE_H + (CAPTION_LINES - MENU_CAPTION_LINES) * LINE_H;
+    expect(menu.yPosition! + menu.height!).toBeLessThanOrEqual(firstKeptRowY);
+  });
+
+  it("both labels fit the box interior without wrapping", () => {
+    const interior = MENU_W - 2 * (MENU_PAD + MENU_BORDER);
+    expect(getTextWidth("› Exit session")).toBeLessThanOrEqual(interior);
+    expect(getTextWidth("› Continue")).toBeLessThanOrEqual(interior);
+  });
+
+  it("fitMenuCaption pushes the conversation into the rows below the box", () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    const fitted = fitMenuCaption(text);
+    expect(fitted.startsWith("\n".repeat(CAPTION_LINES - MENU_CAPTION_LINES))).toBe(true);
+    expect(measureTextWrap(fitted, FIT_W).lineCount).toBe(CAPTION_LINES); // ends at the band bottom
+    expect(fitted.endsWith("line 29")).toBe(true); // newest text still visible
   });
 });

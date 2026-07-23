@@ -37,10 +37,11 @@ afterEach(() => {
 /** Let queued microtasks + due timers run (the writer pump is microtask-driven). */
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
-/** A stub Even bridge: device storage + the single event subscription. */
+/** A stub Even bridge: device storage, page rebuilds + the single event subscription. */
 function fakeBridge(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial));
   const shutdowns: number[] = [];
+  const rebuilds: Array<{ containerTotalNum?: number; textObject?: unknown[] }> = [];
   let handler: ((e: EvenHubEvent) => void) | null = null;
   const bridge = {
     onEvenHubEvent: (h: (e: EvenHubEvent) => void) => {
@@ -59,8 +60,12 @@ function fakeBridge(initial: Record<string, string> = {}) {
       shutdowns.push(1);
       return true;
     },
+    rebuildPageContainer: async (page: { containerTotalNum?: number; textObject?: unknown[] }) => {
+      rebuilds.push(page);
+      return true;
+    },
   } as unknown as EvenAppBridge;
-  return { bridge, store, shutdowns, emit: (e: EvenHubEvent) => handler?.(e) };
+  return { bridge, store, shutdowns, rebuilds, emit: (e: EvenHubEvent) => handler?.(e) };
 }
 
 /** A fake api client: records calls, exposes the handlers so tests push captions. */
@@ -90,7 +95,7 @@ function fakeClientFactory() {
 }
 
 async function boot(opts: { store?: Record<string, string>; withPhone?: boolean } = {}) {
-  const { bridge, store, shutdowns, emit } = fakeBridge(opts.store);
+  const { bridge, store, shutdowns, rebuilds, emit } = fakeBridge(opts.store);
   const latest = new Map<number, string>();
   const writer = new layout.LensTextWriter(async (c, content) => {
     latest.set(c.id, content);
@@ -112,9 +117,11 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
   });
   await settle();
   const text = (c: { id: number }) => latest.get(c.id);
+  // Distinct physical gestures are spaced past the same-type dedupe window
+  // (a host may mirror one gesture on both the sysEvent and textEvent channel).
   const sys = async (eventType: OsEventTypeList) => {
     emit({ sysEvent: { eventType } } as EvenHubEvent);
-    await settle();
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
   };
   const click = () => sys(OsEventTypeList.CLICK_EVENT);
   const doubleTap = () => sys(OsEventTypeList.DOUBLE_CLICK_EVENT);
@@ -126,7 +133,20 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
     await swipeDown();
     await click();
   };
-  return { controls, api, emit, store, shutdowns, text, click, doubleTap, swipeUp, swipeDown, exitViaMenu };
+  return {
+    controls,
+    api,
+    emit,
+    store,
+    shutdowns,
+    rebuilds,
+    text,
+    click,
+    doubleTap,
+    swipeUp,
+    swipeDown,
+    exitViaMenu,
+  };
 }
 
 const C = () => layout.CONTAINER;
@@ -164,15 +184,48 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await t.click();
 
     await t.doubleTap();
-    expect(t.text(C().caption)).toBe("› Continue\n  Exit session"); // Continue is the default, on top
+    // The popup is its own bordered container on a rebuilt 4-container page.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session"); // Continue is the default, on top
     await t.swipeDown();
-    expect(t.text(C().caption)).toBe("  Continue\n› Exit session");
+    expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
     await t.click();
 
     expect(t.api.stops).toHaveLength(1); // session.end sent, socket closed
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3); // popup page torn back down
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
     expect(t.text(C().clock)).toBe("");
+  });
+
+  it("the popup swipes also work through the textEvent channel (on-device path)", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    await t.doubleTap();
+
+    // On real glasses, gestures on the event-capture caption container arrive
+    // as textEvent, not sysEvent.
+    t.emit({
+      textEvent: { containerID: 2, eventType: OsEventTypeList.SCROLL_BOTTOM_EVENT },
+    } as EvenHubEvent);
+    await settle();
+    expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
+
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+    t.emit({ textEvent: { containerID: 2, eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+    await settle();
+    expect(t.api.stops).toHaveLength(1); // Exit session confirmed via textEvent tap
+  });
+
+  it("a gesture mirrored on both channels is handled once", async () => {
+    const t = await boot();
+    t.controls.enable();
+    // The same physical tap lands as sysEvent AND textEvent back to back.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+    t.emit({ textEvent: { containerID: 2, eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+    await settle();
+    expect(t.api.calls).toHaveLength(1); // one session, not two
   });
 
   it("Continue (the default) dismisses the popup and keeps recording", async () => {
@@ -189,20 +242,28 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await settle();
 
     await t.doubleTap();
-    // Captions keep flowing underneath but must not clobber the popup…
+    // The conversation keeps running VISIBLY while the popup is up: captions
+    // flow in the band rows below the box…
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "under the popup" });
     await settle();
-    expect(t.text(C().caption)).toBe("› Continue\n  Exit session");
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+    expect(t.text(C().caption)).toContain("under the popup");
+    // …trimmed + pushed down so nothing renders underneath the box itself.
+    expect(t.text(C().caption)).toBe(
+      layout.fitMenuCaption("before the popup\n› under the popup"),
+    );
 
-    // …swiping down and back up re-highlights Continue; a tap confirms it.
+    // Swiping down and back up re-highlights Continue; a tap confirms it.
     await t.swipeDown();
     await t.swipeUp();
-    expect(t.text(C().caption)).toBe("› Continue\n  Exit session");
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
     await t.click();
     expect(t.api.stops).toHaveLength(0); // still recording
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3); // plain page again
     const caption = t.text(C().caption)!;
-    expect(caption).toContain("before the popup"); // the live view is back
+    expect(caption).toContain("before the popup"); // the full-band live view is back
     expect(caption).toContain("under the popup");
+    expect(caption).toBe(layout.fitCaption("before the popup\n› under the popup"));
   });
 
   it("a second double tap dismisses the popup, same as Continue", async () => {
@@ -210,9 +271,10 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     t.controls.enable();
     await t.click();
     await t.doubleTap();
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
     await t.doubleTap();
     expect(t.api.stops).toHaveLength(0);
-    expect(t.text(C().caption)).not.toContain("Exit session");
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3);
   });
 
   it("double tap outside a session asks the host to exit the app, not a popup", async () => {

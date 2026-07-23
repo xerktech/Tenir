@@ -23,10 +23,11 @@
 import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
+  RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
 } from "@evenrealities/even_hub_sdk";
-import { measureTextWrap } from "@evenrealities/pretext";
+import { getTextWidth, measureTextWrap } from "@evenrealities/pretext";
 
 export const SCREEN_W = 576;
 export const SCREEN_H = 288;
@@ -55,13 +56,45 @@ export const CONTAINER = {
   status: { id: 1, name: "status" },
   caption: { id: 2, name: "caption" },
   clock: { id: 3, name: "clock" },
+  menu: { id: 4, name: "menu" }, // the double-tap popup box (only on the menu page)
 } as const;
 
-/** The one-shot startup layout. Call `createStartUpPageContainer` with this exactly once. */
-export function buildStartupContainer(): CreateStartUpPageContainer {
-  // paddingLength/borderWidth are pinned to 0 on every container so the width
-  // the host wraps at IS the width fitCaption measures at — an unnoticed host
-  // default padding would wrap earlier than measured and overflow the band.
+// ---- the double-tap popup box (XERK-85) -------------------------------------
+// A real bordered container overlaid on the page via `rebuildPageContainer`
+// (the SDK's sanctioned runtime page change), horizontally centered in the
+// upper part of the caption band. While it is up, live captions keep flowing
+// in the rows BELOW it (fitMenuCaption) — the conversation visibly continues
+// behind the popup, and nothing renders underneath the box itself.
+export const MENU_PAD = 10;
+export const MENU_BORDER = 2;
+const MENU_LABEL_MAX_W = Math.max(
+  ...["› Continue", "  Continue", "› Exit session", "  Exit session"].map(getTextWidth),
+);
+// Widest label + padding/border each side + a little slack (kept even so the
+// centered x position is a whole pixel).
+export const MENU_W = 2 * Math.ceil((MENU_LABEL_MAX_W + 2 * (MENU_PAD + MENU_BORDER) + 8) / 2);
+export const MENU_H = 2 * LINE_H + 2 * (MENU_PAD + MENU_BORDER);
+export const MENU_X = (SCREEN_W - MENU_W) / 2;
+export const MENU_Y = 2 * LINE_H; // one caption row below the status line
+// Caption rows that stay fully clear below the popup: captions are trimmed to
+// these and pushed to the bottom of the band while the popup is up.
+export const MENU_CAPTION_LINES =
+  CAPTION_LINES - Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H);
+
+/** The text every base container carries when a page is (re)built. */
+export interface PageContents {
+  status: string;
+  caption: string;
+  clock: string;
+}
+
+/**
+ * The three always-present containers: status line, caption band, clock.
+ * paddingLength/borderWidth are pinned to 0 on each so the width the host
+ * wraps at IS the width fitCaption measures at — an unnoticed host default
+ * padding would wrap earlier than measured and overflow the band.
+ */
+function baseContainers(contents: PageContents): TextContainerProperty[] {
   const status = new TextContainerProperty({
     containerID: CONTAINER.status.id,
     containerName: CONTAINER.status.name,
@@ -72,7 +105,7 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     paddingLength: 0,
     borderWidth: 0,
     isEventCapture: 0,
-    content: "starting…",
+    content: contents.status,
   });
 
   const caption = new TextContainerProperty({
@@ -85,7 +118,7 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     paddingLength: 0,
     borderWidth: 0,
     isEventCapture: 1, // the single event-capture container
-    content: "",
+    content: contents.caption,
   });
 
   const clock = new TextContainerProperty({
@@ -98,12 +131,51 @@ export function buildStartupContainer(): CreateStartUpPageContainer {
     paddingLength: 0,
     borderWidth: 0,
     isEventCapture: 0,
-    content: "",
+    content: contents.clock,
   });
 
+  return [status, caption, clock];
+}
+
+/** The one-shot startup layout. Call `createStartUpPageContainer` with this exactly once. */
+export function buildStartupContainer(): CreateStartUpPageContainer {
   return new CreateStartUpPageContainer({
     containerTotalNum: 3,
-    textObject: [status, caption, clock],
+    textObject: baseContainers({ status: "starting…", caption: "", clock: "" }),
+  });
+}
+
+/** The regular page (no popup), for `rebuildPageContainer` when the popup closes. */
+export function buildMainPage(contents: PageContents): RebuildPageContainer {
+  return new RebuildPageContainer({
+    containerTotalNum: 3,
+    textObject: baseContainers(contents),
+  });
+}
+
+/**
+ * The page with the double-tap popup up: the three base containers plus the
+ * bordered menu box, created LAST so it draws on top of the caption band.
+ */
+export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
+  const menu = new TextContainerProperty({
+    containerID: CONTAINER.menu.id,
+    containerName: CONTAINER.menu.name,
+    xPosition: MENU_X,
+    yPosition: MENU_Y,
+    width: MENU_W,
+    height: MENU_H,
+    paddingLength: MENU_PAD,
+    borderWidth: MENU_BORDER,
+    // Any non-black color renders as the HUD's single lit color.
+    borderColor: 0xffffff,
+    borderRadius: 10,
+    isEventCapture: 0,
+    content: menuText(selected),
+  });
+  return new RebuildPageContainer({
+    containerTotalNum: 4,
+    textObject: [...baseContainers(contents), menu],
   });
 }
 
@@ -143,6 +215,10 @@ export type TextWriteFn = (container: { id: number; name: string }, content: str
  */
 export class LensTextWriter {
   private pending = new Map<number, { container: { id: number; name: string }; content: string }>();
+  // Whole-page operations (rebuildPageContainer for the popup) that must ride
+  // the same serialized BLE lane as the text writes. Drained FIRST, so a
+  // rebuild always lands before the re-asserted per-container texts.
+  private ops: Array<() => Promise<unknown>> = [];
   private pumping = false;
   // Last content written (or queued) per container: repeat writes of identical
   // text are dropped before they cost a BLE round-trip — the XERK-85 ticker
@@ -159,6 +235,12 @@ export class LensTextWriter {
     if (!this.pumping) void this.pump();
   }
 
+  /** Queue an arbitrary bridge operation on the serialized lane (e.g. a page rebuild). */
+  run(op: () => Promise<unknown>): void {
+    this.ops.push(op);
+    if (!this.pumping) void this.pump();
+  }
+
   /** Drop the dedupe cache so the next set() always writes (e.g. after re-foregrounding). */
   invalidate(): void {
     this.last.clear();
@@ -166,7 +248,7 @@ export class LensTextWriter {
 
   /** Resolves once everything queued so far has been written. */
   async flush(): Promise<void> {
-    while (this.pumping || this.pending.size > 0) {
+    while (this.pumping || this.pending.size > 0 || this.ops.length > 0) {
       await new Promise((r) => setTimeout(r, 10));
     }
   }
@@ -174,7 +256,16 @@ export class LensTextWriter {
   private async pump(): Promise<void> {
     this.pumping = true;
     try {
-      while (this.pending.size > 0) {
+      while (this.pending.size > 0 || this.ops.length > 0) {
+        const op = this.ops.shift();
+        if (op) {
+          try {
+            await op();
+          } catch (err) {
+            console.warn("tenir: lens page op failed:", err);
+          }
+          continue;
+        }
         const [id, entry] = this.pending.entries().next().value as [
           number,
           { container: { id: number; name: string }; content: string },
@@ -196,9 +287,10 @@ export class LensTextWriter {
 export type MenuChoice = "continue" | "exit";
 
 /**
- * The in-session popup, rendered in the caption band: Continue on top (the
- * default) with Exit session below, the highlighted row marked with "›".
- * Swiping moves the highlight; a single tap confirms it (controller.ts).
+ * The in-session popup's rows, rendered inside the bordered menu box:
+ * Continue on top (the default) with Exit session below, the highlighted row
+ * marked with "›". Swiping moves the highlight; a single tap confirms it
+ * (controller.ts).
  */
 export function menuText(selected: MenuChoice): string {
   const row = (choice: MenuChoice, label: string) =>
@@ -270,4 +362,14 @@ export function fitCaption(
     kept = text.slice(lo);
   }
   return "\n".repeat(maxLines - lines(kept)) + kept;
+}
+
+/**
+ * Fit the live transcript for the popup page (XERK-85): trimmed to the rows
+ * that stay fully clear BELOW the popup box and pushed to the bottom of the
+ * band, so the conversation visibly keeps running behind the popup and no
+ * caption text renders underneath the box itself.
+ */
+export function fitMenuCaption(text: string): string {
+  return "\n".repeat(CAPTION_LINES - MENU_CAPTION_LINES) + fitCaption(text, MENU_CAPTION_LINES);
 }
