@@ -125,12 +125,20 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
   };
   const click = () => sys(OsEventTypeList.CLICK_EVENT);
   const doubleTap = () => sys(OsEventTypeList.DOUBLE_CLICK_EVENT);
-  const swipeUp = () => sys(OsEventTypeList.SCROLL_TOP_EVENT);
-  const swipeDown = () => sys(OsEventTypeList.SCROLL_BOTTOM_EVENT);
-  /** End the running session through the popup: double tap → Exit session → tap. */
+  /**
+   * The OS list reports scroll/click on the listEvent channel, carrying the
+   * current selection — this is how popup selection reaches the app on device.
+   */
+  const listEvent = async (currentSelectItemIndex: number, eventType: OsEventTypeList) => {
+    emit({
+      listEvent: { containerID: 4, currentSelectItemIndex, eventType },
+    } as EvenHubEvent);
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+  };
+  /** End the running session through the popup: double tap → select Exit session → tap. */
   const exitViaMenu = async () => {
     await doubleTap();
-    await swipeDown();
+    await listEvent(layout.MENU_EXIT_INDEX, OsEventTypeList.SCROLL_BOTTOM_EVENT);
     await click();
   };
   return {
@@ -143,8 +151,7 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
     text,
     click,
     doubleTap,
-    swipeUp,
-    swipeDown,
+    listEvent,
     exitViaMenu,
   };
 }
@@ -152,14 +159,24 @@ async function boot(opts: { store?: Record<string, string>; withPhone?: boolean 
 const C = () => layout.CONTAINER;
 
 describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", () => {
-  it("idles at 'tap to start' once signed in, with no clock and no session", async () => {
+  it("idles at 'tap to start' once signed in, clock in the corner, no session", async () => {
     const t = await boot();
     t.controls.enable();
     await settle();
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
-    expect(t.text(C().clock)).toBe("");
+    expect(t.text(C().clock)).toBe("2:05 PM"); // the ready page shows the time too
     expect(t.api.calls).toHaveLength(0);
+  });
+
+  it("keeps the idle clock on the current minute", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await settle();
+    expect(t.text(C().clock)).toBe("2:05 PM");
+    vi.setSystemTime(new Date(2026, 6, 22, 14, 6));
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().clock)).toBe("2:06 PM"); // ticks while idle, not just recording
   });
 
   it("a tap starts a new session; taps while recording do nothing", async () => {
@@ -184,38 +201,34 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await t.click();
 
     await t.doubleTap();
-    // The popup is its own bordered container on a rebuilt 4-container page.
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
-    expect(t.text(C().menu)).toBe("› Continue\n  Exit session"); // Continue is the default, on top
-    await t.swipeDown();
-    expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
+    // The popup is a native OS list on a rebuilt 4-container page.
+    const popupPage = t.rebuilds[t.rebuilds.length - 1]!;
+    expect(popupPage.containerTotalNum).toBe(4);
+    expect(
+      (popupPage as { listObject?: Array<{ itemContainer?: { itemName?: string[] } }> })
+        .listObject?.[0]?.itemContainer?.itemName,
+    ).toEqual(["Continue", "Exit session"]);
+
+    // The OS moves the selection on swipe and reports it via listEvent.
+    await t.listEvent(layout.MENU_EXIT_INDEX, OsEventTypeList.SCROLL_BOTTOM_EVENT);
     await t.click();
 
     expect(t.api.stops).toHaveLength(1); // session.end sent, socket closed
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3); // popup page torn back down
     expect(t.text(C().status)).toBe("ready");
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
-    expect(t.text(C().clock)).toBe("");
+    expect(t.text(C().clock)).toBe("2:05 PM"); // the clock stays up on the ready page
   });
 
-  it("the popup swipes also work through the textEvent channel (on-device path)", async () => {
+  it("a listEvent tap on the selected item confirms it directly (on-device path)", async () => {
     const t = await boot();
     t.controls.enable();
     await t.click();
     await t.doubleTap();
 
-    // On real glasses, gestures on the event-capture caption container arrive
-    // as textEvent, not sysEvent.
-    t.emit({
-      textEvent: { containerID: 2, eventType: OsEventTypeList.SCROLL_BOTTOM_EVENT },
-    } as EvenHubEvent);
-    await settle();
-    expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
-
-    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
-    t.emit({ textEvent: { containerID: 2, eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
-    await settle();
-    expect(t.api.stops).toHaveLength(1); // Exit session confirmed via textEvent tap
+    // The list's own click report carries the selection with it.
+    await t.listEvent(layout.MENU_EXIT_INDEX, OsEventTypeList.CLICK_EVENT);
+    expect(t.api.stops).toHaveLength(1); // Exit session confirmed via listEvent tap
   });
 
   it("a gesture mirrored on both channels is handled once", async () => {
@@ -223,9 +236,28 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     t.controls.enable();
     // The same physical tap lands as sysEvent AND textEvent back to back.
     t.emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
-    t.emit({ textEvent: { containerID: 2, eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+    t.emit({ textEvent: { containerID: 3, eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
     await settle();
     expect(t.api.calls).toHaveLength(1); // one session, not two
+  });
+
+  it("a mirrored confirm tap can't immediately start a new session", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    await t.doubleTap();
+    // One physical tap confirming Exit session lands on both channels back to back.
+    t.emit({
+      listEvent: {
+        containerID: 4,
+        currentSelectItemIndex: layout.MENU_EXIT_INDEX,
+        eventType: OsEventTypeList.CLICK_EVENT,
+      },
+    } as EvenHubEvent);
+    t.emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent);
+    await settle();
+    expect(t.api.stops).toHaveLength(1); // the session ended…
+    expect(t.api.calls).toHaveLength(1); // …and the mirror did not start a new one
   });
 
   it("Continue (the default) dismisses the popup and keeps recording", async () => {
@@ -243,16 +275,14 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
 
     await t.doubleTap();
     // The conversation keeps running untouched while the popup is up: the
-    // full-band captions keep rendering and the box simply draws on top.
+    // full-band captions keep rendering and the list simply draws on top.
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "under the popup" });
     await settle();
-    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
     expect(t.text(C().caption)).toBe(layout.fitCaption("before the popup\n› under the popup"));
 
-    // Swiping down and back up re-highlights Continue; a tap confirms it.
-    await t.swipeDown();
-    await t.swipeUp();
-    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+    // The OS selection wanders down and back up to Continue; a tap confirms it.
+    await t.listEvent(layout.MENU_EXIT_INDEX, OsEventTypeList.SCROLL_BOTTOM_EVENT);
+    await t.listEvent(0, OsEventTypeList.SCROLL_TOP_EVENT);
     await t.click();
     expect(t.api.stops).toHaveLength(0); // still recording
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(3); // plain page again

@@ -16,9 +16,8 @@ import {
   LINE_H,
   MEASURE_SAFETY_PX,
   MENU_BORDER,
-  MENU_PAD,
-  MENU_W,
-  menuText,
+  MENU_EXIT_INDEX,
+  MENU_ITEMS,
   SCREEN_W,
   statusLine,
 } from "../src/lens/layout";
@@ -64,14 +63,14 @@ describe("lens layout", () => {
     expect(clock.yPosition).toBe(0);
     expect(clock.width).toBe(CLOCK_W);
     expect(clock.height).toBe(LINE_H);
-    expect(clock.content).toBe(""); // empty until a session records
+    expect(clock.content).toBe(""); // empty until signed in
   });
 
-  it("marks the caption band as the single event-capture container", () => {
+  it("captures input on the clock — never on the session text (XERK-85)", () => {
     const [status, caption, clock] = buildStartupContainer().textObject!;
     expect(status.isEventCapture).toBe(0);
-    expect(caption.isEventCapture).toBe(1);
-    expect(clock.isEventCapture).toBe(0);
+    expect(caption.isEventCapture).toBe(0); // a scroll gesture must never target the captions
+    expect(clock.isEventCapture).toBe(1);
   });
 });
 
@@ -278,49 +277,60 @@ describe("fitCaption (XERK-85: no scrolling — old text falls off the top)", ()
   });
 });
 
-describe("menuText (XERK-85: the double-tap popup)", () => {
-  it("puts Continue on top as the default, Exit session below", () => {
-    expect(menuText("continue")).toBe("› Continue\n  Exit session");
-  });
-
-  it("moves the highlight to Exit session", () => {
-    expect(menuText("exit")).toBe("  Continue\n› Exit session");
-  });
-});
-
-describe("popup pages (XERK-85: a bordered box over the live conversation)", () => {
+describe("popup pages (XERK-85: a native OS list over the live conversation)", () => {
   const CONTENTS = { status: "s", caption: "c", clock: "t" };
+  const menuOf = (page: ReturnType<typeof buildMenuPage>) => page.listObject![0]!;
 
   it("main page: the three base containers carrying their contents", () => {
     const page = buildMainPage(CONTENTS);
     expect(page.containerTotalNum).toBe(3);
     expect(page.textObject!.map((c) => c.content)).toEqual(["s", "c", "t"]);
+    expect(page.listObject ?? []).toHaveLength(0);
   });
 
-  it("menu page adds the bordered box LAST so it draws on top", () => {
-    const page = buildMenuPage(CONTENTS, "continue");
+  it("menu page adds a bordered OS list with Continue on top, Exit session below", () => {
+    const page = buildMenuPage(CONTENTS);
     expect(page.containerTotalNum).toBe(4);
-    const menu = page.textObject![page.textObject!.length - 1]!;
+    const menu = menuOf(page);
     expect(menu.containerName).toBe(CONTAINER.menu.name);
     expect(menu.borderWidth).toBe(MENU_BORDER);
     expect(MENU_BORDER).toBeGreaterThan(0); // an actual bordered box
-    expect(menu.content).toBe("› Continue\n  Exit session");
-    const exitPage = buildMenuPage(CONTENTS, "exit").textObject!;
-    expect(exitPage[exitPage.length - 1]!.content).toBe("  Continue\n› Exit session");
+    expect(menu.itemContainer?.itemName).toEqual([...MENU_ITEMS]);
+    expect(MENU_ITEMS[0]).toBe("Continue"); // the default, on top
+    expect(MENU_ITEMS[MENU_EXIT_INDEX]).toBe("Exit session");
+    expect(menu.itemContainer?.isItemSelectBorderEn).toBe(1); // OS-drawn selection
   });
 
-  it("centers the box horizontally within the caption band", () => {
-    const containers = buildMenuPage(CONTENTS, "continue").textObject!;
-    const menu = containers[containers.length - 1]!;
+  it("declares a black backdrop so the session text can't show through", () => {
+    const menu = menuOf(buildMenuPage(CONTENTS)) as unknown as Record<string, unknown>;
+    expect(menu.backgroundColor).toBe(0x000000);
+  });
+
+  it("the caption band NEVER captures input; the popup list does while up", () => {
+    // Plain pages: capture lives on the tiny clock container.
+    for (const page of [buildMainPage(CONTENTS), buildStartupContainer()]) {
+      const [status, caption, clock] = page.textObject!;
+      expect(status.isEventCapture).toBe(0);
+      expect(caption.isEventCapture).toBe(0); // the session text is never a scroll target
+      expect(clock.isEventCapture).toBe(1);
+    }
+    // Popup page: the list owns the gestures; no text container captures.
+    const page = buildMenuPage(CONTENTS);
+    for (const c of page.textObject!) expect(c.isEventCapture).toBe(0);
+    expect(menuOf(page).isEventCapture).toBe(1);
+  });
+
+  it("centers the list horizontally within the caption band", () => {
+    const menu = menuOf(buildMenuPage(CONTENTS));
     expect(menu.xPosition! * 2 + menu.width!).toBe(SCREEN_W); // centered
     expect(menu.yPosition!).toBeGreaterThanOrEqual(LINE_H); // below the status line
     expect(menu.yPosition! + menu.height!).toBeLessThanOrEqual(LINE_H + CAPTION_H); // inside the band
   });
 
-  it("both labels fit the box interior without wrapping", () => {
-    const interior = MENU_W - 2 * (MENU_PAD + MENU_BORDER);
-    expect(getTextWidth("› Exit session")).toBeLessThanOrEqual(interior);
-    expect(getTextWidth("› Continue")).toBeLessThanOrEqual(interior);
+  it("both labels fit the list cells without wrapping", () => {
+    const menu = menuOf(buildMenuPage(CONTENTS));
+    for (const label of MENU_ITEMS) {
+      expect(getTextWidth(label)).toBeLessThanOrEqual(menu.itemContainer!.itemWidth!);
+    }
   });
-
 });
