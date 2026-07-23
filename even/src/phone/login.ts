@@ -21,6 +21,7 @@
 import {
   ApiError,
   describeLoginError,
+  displayServerUrl,
   getToken,
   login,
   logout,
@@ -71,7 +72,11 @@ export function queryPhoneLoginElements(doc: Document = document): PhoneLoginEle
 export interface PhoneLoginCallbacks {
   /** Signed in (at boot or via the form): the lens may start/resume captioning. */
   onAuthed?: () => void;
-  /** Signed out: the lens should stop captioning and show its sign-in prompt. */
+  /**
+   * Not signed in — fired both when boot resolves to the login form and on an
+   * explicit sign-out, so the lens shows its sign-in prompt instead of
+   * pretending to run (XERK-82).
+   */
   onSignedOut?: () => void;
 }
 
@@ -134,7 +139,8 @@ export async function initPhoneLogin(
   callbacks: PhoneLoginCallbacks = {},
 ): Promise<void> {
   // Prefill the cached choices so a re-login (e.g. after sign-out) is two taps.
-  if (isServerConfigured()) els.server.value = config.apiWsUrl;
+  // Shown as the plain host people type (tenir.example.com), never a wss:// URL.
+  if (isServerConfigured()) els.server.value = displayServerUrl(config.apiWsUrl);
   const cached = await loadCredentials(storage);
   if (cached) els.user.value = cached.username;
 
@@ -149,7 +155,10 @@ export async function initPhoneLogin(
     showDashboard(els, authed.username);
     callbacks.onAuthed?.();
   } else {
+    // Straight to the login form — and tell the lens, so it says "not signed
+    // in" rather than implying captions are running.
     showLogin(els);
+    callbacks.onSignedOut?.();
   }
 
   els.form.addEventListener("submit", (e) => {

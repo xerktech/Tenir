@@ -106,7 +106,12 @@ glasses (and passes review) before relying on it for production.
 ## Notes
 
 - Live text uses `textContainerUpgrade` only (flicker-free); never a rebuild.
-- `createStartUpPageContainer` runs exactly once at boot.
+- `createStartUpPageContainer` runs exactly once at boot — and FIRST, before
+  any storage round-trip, so a slow BLE hop can't leave the lens blank.
+- BLE is fragile (XERK-82): every bridge call is timeout-bounded
+  (`withBleTimeout`), and all lens text writes go through the serialized
+  `LensTextWriter` — concurrent bridge calls can crash the connection, which
+  presents as the app closing itself.
 - Set the prod api host via `TENIR_API_HOSTS` at pack time (it fills
   `app.json`'s `network` whitelist) — and ensure the api returns CORS headers
   for explicit origins (`API_CORS_ORIGINS`); whitelisting alone does not bypass

@@ -40,3 +40,22 @@ export function normalizeServerUrl(input: string): string {
 export function isValidServerUrl(input: string): boolean {
   return normalizeServerUrl(input) !== "";
 }
+
+/**
+ * The user-facing form of a canonical `ws(s)://host/ws` URL: the plain
+ * `host[:port]` people actually type (XERK-82 — nobody should see or type a
+ * `wss://…/ws` URL). Only the default form (secure scheme, `/ws` path, no
+ * query) collapses to the bare host; anything custom is shown in full so it
+ * round-trips through `normalizeServerUrl` unchanged.
+ */
+export function displayServerUrl(wsUrl: string): string {
+  try {
+    const u = new URL(wsUrl);
+    if (u.protocol === "wss:" && (u.pathname === "/ws" || u.pathname === "/" || u.pathname === "") && !u.search) {
+      return u.host;
+    }
+    return wsUrl;
+  } catch {
+    return wsUrl;
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isValidServerUrl, normalizeServerUrl } from "../src/serverUrl";
+import { displayServerUrl, isValidServerUrl, normalizeServerUrl } from "../src/serverUrl";
 
 describe("normalizeServerUrl", () => {
   it("keeps a fully-qualified ws URL with a path", () => {
@@ -33,6 +33,28 @@ describe("normalizeServerUrl", () => {
     expect(normalizeServerUrl("")).toBe("");
     expect(normalizeServerUrl("   ")).toBe("");
     expect(normalizeServerUrl("wss://")).toBe("");
+  });
+});
+
+describe("displayServerUrl", () => {
+  it("collapses the canonical secure form to the bare host people type", () => {
+    expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
+    expect(displayServerUrl("wss://tenir.example.com:9000/ws")).toBe("tenir.example.com:9000");
+  });
+
+  it("round-trips through normalizeServerUrl", () => {
+    for (const canonical of ["wss://tenir.example.com/ws", "wss://h.example:9000/ws", "ws://localhost:8080/ws", "wss://h.example/custom"]) {
+      expect(normalizeServerUrl(displayServerUrl(canonical))).toBe(canonical);
+    }
+  });
+
+  it("keeps non-default forms (insecure scheme, custom path) in full", () => {
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("ws://localhost:8080/ws");
+    expect(displayServerUrl("wss://h.example/custom")).toBe("wss://h.example/custom");
+  });
+
+  it("passes malformed input through untouched", () => {
+    expect(displayServerUrl("garbage")).toBe("garbage");
   });
 });
 
