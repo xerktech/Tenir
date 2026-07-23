@@ -14,8 +14,8 @@ packages/
 contract/        JSON Schema source of truth (TS + Pydantic generated from here)
 docs/            platform references
 scripts/         manual end-to-end smoke test against a running stack (not CI)
-docker-compose.yml  single-host stack (app + Postgres + LiteLLM + Voxtral STT)
-vllm-stt/        Dockerfile for the patched Voxtral STT image
+docker-compose.yml  single-host stack (app + Postgres + LiteLLM + Parakeet STT)
+parakeet-stt/    Dockerfile + server for the Parakeet STT image
 schema.sql       Postgres init schema, applied on first boot
 ```
 

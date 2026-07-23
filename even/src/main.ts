@@ -2,18 +2,30 @@
  * tenir — Even Hub app entry.
  *
  * One page, two surfaces (XERK-82): the phone side shows the login page and,
- * once signed in, the embedded Tenir web UI (src/phone/login.ts); the lens side
- * renders live captions through the SDK bridge. Both run from this single
+ * once signed in, the app's own phone pages (XERK-93) — Session, a full-page
+ * live transcript mirroring the running glasses session (src/phone/session.ts),
+ * and History, the stored sessions from the api (src/phone/history.ts) — with
+ * the web UI's bottom navigation between them (src/phone/nav.ts). The lens
+ * side renders live captions through the SDK bridge. Both run from this single
  * WebView — navigating away would kill the lens app, so nothing here ever
  * navigates.
  *
- * Boot order is strict: resolve the bridge, init config from the DEVICE store
- * (browser localStorage does not survive restarts in this host), create the
- * startup page container EXACTLY once, and only then start audio / register
- * events. The caption loop is gated on auth: it starts when the phone page
- * reports a sign-in (cached from a previous run, or fresh) and stops on
- * sign-out. The live loop is: host mic -> PCM -> ApiClient (WSS) -> api ->
- * caption messages -> textContainerUpgrade on the lens.
+ * Boot order is strict, and tuned for BLE reality (the Even docs: one flaky hop
+ * can hang ~30s, and concurrent bridge calls can crash the connection — which
+ * presents as the app closing itself):
+ *
+ *   1. resolve the bridge (short race; plain browser dev falls through)
+ *   2. create the startup page container EXACTLY once, FIRST — before any
+ *      storage round-trip — so the lens is never blank while BLE dawdles
+ *   3. init config from the DEVICE store (browser localStorage does not
+ *      survive restarts in this host); every storage call is timeout-bounded
+ *   4. wire events + the phone login page
+ *
+ * All lens text goes through one serialized LensTextWriter. The session state
+ * machine itself — explicit start/stop by click, the "listening" dots + clock
+ * ticker, fit-to-band captions (XERK-85) — lives in src/lens/controller.ts.
+ * The live loop is: host mic -> PCM -> ApiClient (WSS) -> api -> caption
+ * messages -> textContainerUpgrade on the lens.
  */
 
 // Fonts for the phone page, matching the web UI (web/src/main.tsx).
@@ -24,294 +36,133 @@ import "@fontsource/space-grotesk/500.css";
 import "@fontsource/space-grotesk/600.css";
 
 import {
-  OsEventTypeList,
   StartUpPageCreateResult,
   type EvenAppBridge,
-  type EvenHubEvent,
   waitForEvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
 
-import { ApiClient } from "@tenir/client-core";
-
-import { AudioCapture, pcmBytes } from "./audio/capture";
-import { config, initConfig } from "./config";
-import {
-  CONTAINER,
-  buildStartupContainer,
-  rebuildPlain,
-  rebuildWithCue,
-  setText,
-} from "./lens/layout";
+import { wireLens, type LensControls } from "./lens/controller";
+import { LensTextWriter, buildStartupContainer, setText } from "./lens/layout";
+import { initConfig } from "./config";
+import { PhoneHistory, queryPhoneHistoryElements } from "./phone/history";
 import { initPhoneLogin, queryPhoneLoginElements } from "./phone/login";
-import { silentLogin } from "./state/credentials";
-import { SessionStore, type PersistedSession } from "./state/persist";
-import { BridgeStorage, BrowserStorage, type KeyValueStorage } from "./state/storage";
+import { initPhoneNav, queryPhoneNavElements, type PhoneNav } from "./phone/nav";
+import { SessionPage, querySessionPageElements } from "./phone/session";
+import { BridgeStorage, BrowserStorage, withBleTimeout, type KeyValueStorage } from "./state/storage";
 
-// Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
-const TRANSCRIPT_MAX_CHARS = 1200;
-// Cap how many finalized turns we keep on the lens.
-const MAX_SEGMENTS = 60;
-// A cue box stays on the lens this long, then is dismissed (XERK-81).
-const CUE_TTL_MS = 10000;
-// Bound the on-lens cue text so it fits the bordered box.
-const CUE_MAX_CHARS = 160;
 // How long to wait for the Even bridge before assuming a plain browser (dev).
 const BRIDGE_TIMEOUT_MS = 2000;
+// The one-shot startup container gets a longer leash than a routine BLE call —
+// without it there is no lens at all.
+const STARTUP_CONTAINER_TIMEOUT_MS = 8000;
+// App errors (history load/delete failures) toast like the web UI, then fade.
+const TOAST_MS = 4000;
 
-const SIGN_IN_PROMPT = "Sign in on your phone to start live captions.";
-
-type Mutable = {
-  sessionId?: string; // authoritative id, persisted so a resume survives backgrounding
-  micSource: PersistedSession["micSource"];
-  segments: string[]; // finalized turns
-  partial: string; // current live hypothesis
-  connection: "connecting" | "open" | "closed";
-  listening: boolean;
-  cue: { title: string; body: string } | null; // the cue currently on the lens (XERK-81)
-};
-
-/** What the phone login page drives on the lens side. */
-interface LensControls {
-  connect(): void;
-  disconnect(): void;
-}
-
-/**
- * Race the Even bridge against a short timeout: packaged app inside the Even
- * Realities WebView -> bridge; plain browser (`npm run dev`) -> null, and only
- * the phone page runs.
- */
-async function resolveBridge(): Promise<EvenAppBridge | null> {
-  try {
-    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), BRIDGE_TIMEOUT_MS));
-    return await Promise.race([waitForEvenAppBridge(), timeout]);
-  } catch (err) {
-    console.warn("tenir: Even bridge unavailable, phone-page-only mode:", err);
-    return null;
-  }
+/** Show an auto-hiding error toast (the web UI's notify(…, "err")). */
+function makeToast(): (message: string) => void {
+  const el = document.getElementById("app-toast");
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (message) => {
+    if (!el) return;
+    el.textContent = message;
+    el.classList.add("show");
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => el.classList.remove("show"), TOAST_MS);
+  };
 }
 
 async function main(): Promise<void> {
-  const bridge = await resolveBridge();
+  // Race the bridge against a short timeout: packaged app inside the Even
+  // Realities WebView -> bridge; plain browser (`npm run dev`) -> null.
+  const bridgePromise: Promise<EvenAppBridge | null> = waitForEvenAppBridge().catch((err) => {
+    console.warn("tenir: Even bridge unavailable, phone-page-only mode:", err);
+    return null;
+  });
+  const bridge = await Promise.race([
+    bridgePromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), BRIDGE_TIMEOUT_MS)),
+  ]);
+
+  let lens: LensControls | null = null;
+  let authed = false;
+  const toast = makeToast();
+
+  // The phone pages (XERK-93): History reloads whenever its tab opens; the
+  // Session page mirrors the running glasses session — same WebView, so the
+  // captions the lens gets are mirrored here with no extra connection.
+  const historyEls = queryPhoneHistoryElements();
+  const phoneHistory = historyEls ? new PhoneHistory(historyEls, { onError: toast }) : null;
+  const navEls = queryPhoneNavElements();
+  const nav: PhoneNav | null = navEls
+    ? initPhoneNav(navEls, (page) => {
+        if (page === "history") phoneHistory?.open();
+      })
+    : null;
+  const sessionEls = querySessionPageElements();
+  const sessionPage = sessionEls
+    ? new SessionPage(sessionEls, {
+        // A session just started on the glasses: surface its live transcript.
+        onRecordingStart: () => nav?.show("session"),
+      })
+    : null;
+
+  // Device path: draw the lens BEFORE any storage round-trip (see file header).
+  let writer: LensTextWriter | null = null;
+  if (bridge) writer = await createLensSurface(bridge);
+
   // The device store is the only one that survives app restarts on real
   // glasses; it holds the server URL, bearer token, and cached credentials.
   const storage: KeyValueStorage = bridge ? new BridgeStorage(bridge) : new BrowserStorage();
   await initConfig(storage);
 
-  const lens = bridge ? await startLens(bridge, storage) : null;
+  if (bridge && writer) lens = await wireLens(bridge, storage, writer, sessionPage);
+
+  if (!bridge) {
+    // The race timed out but the host may just have been slow: if the bridge
+    // shows up late, still bring the lens surface up rather than leaving the
+    // glasses dark for the whole run.
+    void bridgePromise.then(async (late) => {
+      if (!late) return;
+      const lateWriter = await createLensSurface(late);
+      if (!lateWriter) return;
+      lens = await wireLens(late, new BridgeStorage(late), lateWriter, sessionPage);
+      if (authed) lens.enable();
+    });
+  }
 
   await initPhoneLogin(storage, queryPhoneLoginElements(), {
-    onAuthed: () => lens?.connect(),
-    onSignedOut: () => lens?.disconnect(),
+    onAuthed: () => {
+      authed = true;
+      // Each sign-in opens on the Session page (the app's front page).
+      nav?.show("session");
+      lens?.enable();
+    },
+    onSignedOut: () => {
+      authed = false;
+      lens?.disable();
+      // Drop the loaded history — the next sign-in must not see it.
+      phoneHistory?.reset();
+      nav?.show("session");
+    },
   });
 }
 
 /**
- * Bring up the lens surface: the one-shot layout, session restore, audio
- * capture and event wiring. Returns the connect/disconnect pair the phone
- * login drives; until connect() the lens shows the sign-in prompt.
+ * The one-shot lens layout, first thing after the bridge resolves. Returns the
+ * serialized text writer for it, or null when the host refused the container
+ * (the phone page still runs).
  */
-async function startLens(bridge: EvenAppBridge, storage: KeyValueStorage): Promise<LensControls | null> {
-  const store = new SessionStore(bridge);
-
-  const restored = await store.load();
-  const state: Mutable = {
-    sessionId: restored?.sessionId,
-    micSource: restored?.micSource ?? config.defaultMicSource,
-    // Resume the prior transcript as a single restored block.
-    segments: restored?.transcript ? [restored.transcript] : [],
-    partial: "",
-    connection: "closed",
-    listening: true,
-    cue: null,
-  };
-  let cueTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // 1) One-shot layout. Nothing else may run until this succeeds.
-  const result = await bridge.createStartUpPageContainer(buildStartupContainer());
+async function createLensSurface(bridge: EvenAppBridge): Promise<LensTextWriter | null> {
+  const result = await withBleTimeout<StartUpPageCreateResult | null>(
+    bridge.createStartUpPageContainer(buildStartupContainer()),
+    null,
+    STARTUP_CONTAINER_TIMEOUT_MS,
+  );
   if (result !== StartUpPageCreateResult.success) {
     console.error("createStartUpPageContainer failed:", result);
     return null;
   }
-
-  // ---- lens rendering helpers ------------------------------------------------
-  const transcriptText = () => state.segments.join("\n");
-  const renderCaption = () => {
-    const body = transcriptText();
-    const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
-    void setText(bridge, CONTAINER.caption, full.slice(-TRANSCRIPT_MAX_CHARS));
-  };
-  const renderStatus = () => {
-    const conn = state.connection === "open" ? "•" : state.connection === "connecting" ? "…" : "×";
-    const mic = state.micSource === "g2-microphone" ? "g2" : "phone";
-    const mode = state.listening ? "listening" : "paused";
-    void setText(bridge, CONTAINER.status, `${mode} · ${mic} · ${conn}`);
-  };
-  const renderCue = () => {
-    if (!state.cue) return;
-    const text = `${state.cue.title}\n${state.cue.body}`;
-    void setText(bridge, CONTAINER.cue, text.slice(0, CUE_MAX_CHARS));
-  };
-
-  // A cue appears in the bordered box above the transcript, then auto-dismisses.
-  // Border can only be set at (re)build time, so showing/hiding rebuilds the page;
-  // rebuild clears content, so every container is repainted afterwards.
-  const showCue = async (title: string, body: string): Promise<void> => {
-    state.cue = { title, body };
-    if (cueTimer) clearTimeout(cueTimer);
-    await bridge.rebuildPageContainer(rebuildWithCue());
-    renderStatus();
-    renderCaption();
-    renderCue();
-    cueTimer = setTimeout(() => void hideCue(), CUE_TTL_MS);
-  };
-  const hideCue = async (): Promise<void> => {
-    if (cueTimer) {
-      clearTimeout(cueTimer);
-      cueTimer = null;
-    }
-    if (!state.cue) return;
-    state.cue = null;
-    await bridge.rebuildPageContainer(rebuildPlain());
-    renderStatus();
-    renderCaption();
-  };
-
-  const persist = () =>
-    store.save({
-      sessionId: state.sessionId, // persisted so a resume survives the WebView migration
-      micSource: state.micSource,
-      transcript: transcriptText().slice(-TRANSCRIPT_MAX_CHARS),
-    });
-
-  // 2) Api client + capture, connected only while signed in.
-  let client: ApiClient | null = null;
-  const capture = new AudioCapture(bridge);
-  // One silent re-login per unauthorized rejection, so an expired token heals
-  // itself without looping against a server that keeps saying no.
-  let reauthAttempted = false;
-
-  const showSignInPrompt = () => {
-    void setText(bridge, CONTAINER.caption, SIGN_IN_PROMPT);
-    void setText(bridge, CONTAINER.status, "not signed in");
-  };
-
-  const disconnect = () => {
-    client?.stop();
-    client = null;
-    void capture.stop();
-    state.connection = "closed";
-    showSignInPrompt();
-  };
-
-  const connect = () => {
-    // Reconnects (e.g. after a re-login) replace the previous client; the
-    // session id is kept so the api resumes the same conversation.
-    client?.stop();
-    reauthAttempted = false;
-    state.connection = "connecting";
-    client = new ApiClient(config.apiWsUrl, {
-      onConnectionChange: (s) => {
-        state.connection = s;
-        renderStatus();
-      },
-      onReady: (m) => {
-        // Capture the authoritative id and persist it so a later restore can resume
-        // this same session.
-        state.sessionId = m.sessionId;
-        reauthAttempted = false;
-        persist();
-        renderStatus();
-      },
-      onPartial: (m) => {
-        state.partial = m.text;
-        renderCaption();
-      },
-      onFinal: (m) => {
-        state.segments.push(m.text);
-        if (state.segments.length > MAX_SEGMENTS) state.segments.shift();
-        state.partial = "";
-        renderCaption();
-        persist();
-      },
-      onCue: (m) => {
-        // Show the private context cue in the bordered box above the transcript (XERK-81).
-        void showCue(m.title, m.body);
-      },
-      onError: (m) => {
-        console.warn("api error", m.code, m.message);
-        if (m.code === "unauthorized") {
-          // Expired/revoked token: re-login silently with the cached credentials
-          // and reconnect. Only if that fails does the wearer get sent to the phone.
-          if (!reauthAttempted) {
-            reauthAttempted = true;
-            void silentLogin(storage).then((principal) => {
-              if (principal) connect();
-              else showSignInPrompt();
-            });
-          } else {
-            showSignInPrompt();
-          }
-        }
-      },
-    });
-    renderStatus();
-    renderCaption();
-    void capture.start();
-    client.start(
-      { micSource: state.micSource, sourceLang: config.defaultSourceLang },
-      state.sessionId, // resume the prior session if we restored one
-    );
-  };
-
-  // 3) The single event subscription (audio + system events).
-  const off = bridge.onEvenHubEvent((event: EvenHubEvent) => {
-    if (event.audioEvent) {
-      if (state.listening) client?.sendAudio(pcmBytes(event.audioEvent));
-      return;
-    }
-    if (event.sysEvent) {
-      handleSysEvent(event);
-    }
-  });
-
-  const cleanup = async () => {
-    off();
-    if (cueTimer) clearTimeout(cueTimer);
-    await capture.stop();
-    client?.stop();
-    await store.flush();
-  };
-
-  function handleSysEvent(event: EvenHubEvent): void {
-    const type = event.sysEvent?.eventType ?? OsEventTypeList.CLICK_EVENT; // zero-omission
-    switch (type) {
-      case OsEventTypeList.CLICK_EVENT:
-        // Single click toggles pause/resume of the caption stream.
-        state.listening = !state.listening;
-        state.partial = "";
-        renderStatus();
-        renderCaption();
-        break;
-      case OsEventTypeList.DOUBLE_CLICK_EVENT:
-        // Canonical exit: confirm dialog; real teardown happens on SYSTEM_EXIT.
-        void bridge.shutDownPageContainer(1);
-        break;
-      case OsEventTypeList.FOREGROUND_EXIT_EVENT:
-        void store.flush();
-        break;
-      case OsEventTypeList.SYSTEM_EXIT_EVENT:
-      case OsEventTypeList.ABNORMAL_EXIT_EVENT:
-        void cleanup();
-        break;
-    }
-  }
-
-  // 4) Idle until the phone page reports the auth state: a cached sign-in
-  // connects immediately (no phone interaction at all); otherwise the lens
-  // shows where to sign in.
-  showSignInPrompt();
-  return { connect, disconnect };
+  return new LensTextWriter((container, content) => setText(bridge, container, content));
 }
 
 void main().catch((err) => console.error("tenir failed to start:", err));

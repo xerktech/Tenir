@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     stt_min_segment_ms: int = 400  # don't close a turn on silence below this length
     stt_silence_ms: int = 700  # trailing silence that closes a turn
     stt_silence_rms: float = 0.005  # energy threshold below which audio is "silent"
+    # LocalAgreement-2 (XERK-90): commit a partial's words only once two consecutive
+    # window hypotheses agree, so live captions grow word by word instead of
+    # rewriting the whole line each cadence. Off falls back to the raw-window partial.
+    stt_local_agreement: bool = True
 
     # Fallback household scope. The household normally comes from the authenticated
     # principal's token (auth is always on, see auth_* below); this is only the

@@ -2,7 +2,7 @@
 
 One release publishes **all four components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **vLLM STT** image, the Even **`.ehpk`**, and the Android **`.apk`**.
+UI), the **Parakeet STT** image, the Even **`.ehpk`**, and the Android **`.apk`**.
 Driven by `.github/workflows/release.yml`; the logic lives in
 `.github/scripts/` (see its README).
 
@@ -59,7 +59,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 `changes.test.js`) is:
 
 ```
-api/**  contract/**  packages/**  web/**  vllm-stt/**  even/**  mobile/**
+api/**  contract/**  packages/**  web/**  parakeet-stt/**  even/**  mobile/**
 package.json  package-lock.json
 ```
 
@@ -70,7 +70,7 @@ component, **build or carry**:
 - **Unchanged** components are **carried**: their prior artifact is published in
   the new release *at its own prior version*, not rebuilt. A mobile-only merge
   builds the new `.apk` and copies the previous `.ehpk` (and references the
-  previous api/vllm-stt image tags) onto the release unchanged.
+  previous api/parakeet-stt image tags) onto the release unchanged.
 
 Because Tenir is an npm-workspace monorepo, a single change can fan out: a
 `contract/**` edit rebuilds the api image *and* both frontend bundles (it

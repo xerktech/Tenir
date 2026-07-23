@@ -431,9 +431,8 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
     padding: var(--space-4) var(--space-3);
   }
 
-  /* Compact, wrapping header; the household identity drops to its own line. */
+  /* Compact, wrapping header. */
   .app-header { padding-bottom: var(--space-3); }
-  .app-header .muted { font-size: var(--text-xs); }
 
   .shell { margin-top: var(--space-3); }
 

@@ -8,13 +8,15 @@ to anyone else in the session.
 
 Where they appear:
 
-- **Live** (web + mobile): a bordered card band above the live transcript,
-  auto-dismissed after 10s.
-- **Glasses**: a bordered box above the on-lens caption band, auto-dismissed
-  after 10s.
-- **History** (web + mobile): an inline, clickable box at the point in the
-  transcript where the cue appeared; tapping it opens a popup with the detail
-  (not a new page).
+- **Live** (web + mobile + glasses phone Session page): a bordered card above
+  the live transcript, auto-dismissed after 10s.
+- **Glasses lens**: a bordered box above the on-lens caption band — the same
+  full-width popup strip the double-tap menu uses (XERK-85), showing the cue's
+  title over its detail, auto-dismissed after 10s. The interactive menu takes
+  precedence: a cue arriving while the menu is open is dropped.
+- **History** (web + mobile + glasses phone History page): an inline, clickable
+  box at the point in the transcript where the cue appeared; tapping it opens a
+  popup with the detail (not a new page).
 
 Each cue has a **title** (1–3 words) and a **body** (the fact/context).
 
@@ -52,11 +54,11 @@ server maps the level to a prompt strictness and a minimum gap between cues
 (`api/src/api/cue/levels.py`): conservative spaces cues out and only fires on
 unambiguous facts; aggressive lets them come thick and fast.
 
-The **glasses** display cues but have no on-lens settings surface (post-XERK-82
-their companion page is the web UI, and the Even host's `localStorage` doesn't
-survive restarts), so they omit `cueLevel` on `session.start` and the server
-default (`API_CUE_DEFAULT_LEVEL`, balanced) applies — a deliberate platform
-difference.
+The **glasses** client (the on-lens UI and its phone Session/History pages) has
+no cue-level control surface — the lens is display-only and the phone pages are a
+live mirror + a review list — so it omits `cueLevel` on `session.start` and the
+server default (`API_CUE_DEFAULT_LEVEL`, balanced) applies. A deliberate platform
+difference; the toggle lives on the web + mobile clients.
 
 ## Backends (`API_CUE_BACKEND`)
 
@@ -72,18 +74,19 @@ history), so the whole path is covered without a GPU.
 ## The model
 
 The production cue model is **Qwen3.6-27B-FP8**, served by vLLM and aliased
-`qwen3-llm` on the shared LiteLLM gateway. It runs as the `tenir-vllm` container
-in the `tenir-gpu` compose stack (docker-ops repo), co-tenant with the Voxtral
-STT server on the GPU box.
+`qwen3-llm` on the shared LiteLLM gateway. It runs as the `tenir-vllm-cue`
+container in the `tenir-gpu` compose stack (docker-ops repo), co-tenant with the
+Parakeet STT server on the GPU box. (STT moved Voxtral→Parakeet in XERK-92; the
+cue model is unaffected — it is a separate chat route through the same gateway.)
 
 Why this model:
 
 - **World knowledge.** Cues are factual lookups (distances, entities, trivia), so
   breadth of knowledge matters most. The Qwen3 family leads open-weight models on
   knowledge/instruction-following benchmarks (MMLU-Pro, IFEval) at this size.
-- **Speed as a GPU co-tenant.** FP8 weights keep latency low while sharing the
-  card with Voxtral; cue generation is a short, bursty chat call, not a sustained
-  load.
+- **Speed as a GPU co-tenant.** FP8 weights keep latency low; the only other model
+  on the card is Parakeet STT (~2.4 GB), so the cue LLM gets the lion's share and
+  cue generation is a short, bursty chat call, not a sustained load.
 - **Reliable structured output.** vLLM's guided decoding + a JSON-only prompt give
   dependable `{cue, title, body}` objects, which the parser still guards
   defensively for reasoning-model wrapping.
@@ -96,7 +99,7 @@ The base `docker-compose.yml` keeps cues `off`. To see them:
 # Model-free demo cues (no extra container):
 API_CUE_BACKEND=stub docker compose up --build
 
-# Real model (large; needs its own GPU share alongside Voxtral):
+# Real model (large; needs its own GPU share alongside Parakeet):
 API_CUE_BACKEND=openai docker compose --profile cues up --build
 ```
 

@@ -14,7 +14,7 @@ chat, …) was stripped back to; features return one at a time, slowly.
 ## What it does
 
 - **Streaming transcription** — phone, browser or glasses mic → real-time
-  captions, powered by a self-hosted STT model (Voxtral) behind a LiteLLM
+  captions, powered by a self-hosted STT model (NVIDIA Parakeet) behind a LiteLLM
   gateway
 - **Recorded, stored sessions** — every session is persisted as a conversation:
   transcript segments in Postgres, full audio retained on disk; browse, search,
@@ -23,14 +23,14 @@ chat, …) was stripped back to; features return one at a time, slowly.
   REST surface, *and* the built web UI on a single origin (`:8080`)
 - **Multi-user auth** — login issues a bearer token; every session and
   conversation is scoped to the user's household
-- **Clients** — the web UI (also the phone surface for the Even app), an Even G2
-  glasses app (live captions on the lens), and an Android app (phone-mic capture
-  + history)
+- **Clients** — the web UI, an Even G2 glasses app (live captions on the lens,
+  with dedicated Session + History pages on the phone), and an Android app
+  (phone-mic capture + history)
 
 ## Quick start
 
 ```bash
-# Backend (single-host stack — app + Postgres + LiteLLM + Voxtral STT)
+# Backend (single-host stack — app + Postgres + LiteLLM + Parakeet STT)
 cp .env.example .env           # set API_AUTH_SECRET + bootstrap admin
 docker compose up --build      # app (api + web UI) on :8080
 curl localhost:8080/health
@@ -60,7 +60,7 @@ Toolkit for the STT server; everything else is CPU-only.
 | `app` | 8080 | ONE container: FastAPI api (`/health`, `/ws`, auth + history REST) **and** the built web UI, served same-origin — no CORS, no separate web container. Built from `api/Dockerfile` (repo-root context) |
 | `postgres-tenir` | 5432 | plain Postgres — transcripts, users (`schema.sql` applied on first boot) |
 | `litellm` | 4000 | LiteLLM gateway — the OpenAI-compatible front door the api uses for STT; master-key auth, routing in `litellm/config.yaml` |
-| `vllm-stt` | 9400 | OpenAI-compatible Voxtral STT, built from `vllm-stt/Dockerfile`, behind the gateway |
+| `parakeet` | 9401 | OpenAI-compatible NVIDIA Parakeet STT (multilingual + auto language detection), built from `parakeet-stt/Dockerfile`, behind the gateway |
 
 Retained audio lives on a bind mount (`API_AUDIO_DIR`, the "disk" audio
 backend). Smoke check once up: `curl localhost:8080/health`, then open
@@ -71,8 +71,8 @@ backend). Smoke check once up: `curl localhost:8080/health`, then open
 The api reaches the STT server through a single **LiteLLM gateway**: one base
 URL + one key (`API_LITELLM_ENDPOINT`, `API_LITELLM_API_KEY`) instead of a
 per-model endpoint. Routing lives in [`litellm/config.yaml`](litellm/config.yaml):
-the alias the api sends (`API_STT_MODEL`, default `voxtral`) fans out to the
-real model vllm-stt serves. To split hosts, run the gateway + STT server on the
+the alias the api sends (`API_STT_MODEL`, default `parakeet`) fans out to the
+real model the parakeet server serves. To split hosts, run the gateway + STT server on the
 GPU box and point `API_LITELLM_ENDPOINT` at it — no code changes, just env.
 
 ### Configuration

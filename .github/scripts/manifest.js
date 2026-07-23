@@ -30,8 +30,8 @@ function freshComponent(component, version, tag, opts) {
       // The api image carries the web SPA (baked in by its multi-stage build);
       // there is no separate web image.
       return { version, kind: "image", ref: `ghcr.io/${owner}/tenir:${version}`, built: true };
-    case "vllm-stt":
-      return { version, kind: "image", ref: `ghcr.io/${owner}/tenir-vllm-stt:${version}`, built: true };
+    case "parakeet-stt":
+      return { version, kind: "image", ref: `ghcr.io/${owner}/tenir-parakeet-stt:${version}`, built: true };
     case "even":
       return { version, kind: "asset", asset: `tenir-even-v${version}.ehpk`, release_tag: tag, built: true };
     case "mobile":

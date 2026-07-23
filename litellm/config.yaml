@@ -1,29 +1,27 @@
 # tenir — LiteLLM gateway config.
 #
 # One OpenAI-compatible front door (http://litellm:4000) for the STT model: the
-# api sends /v1/audio/transcriptions with the short alias "voxtral" and the
-# gateway routes it to the vllm-stt server. The api carries a single base URL +
-# key, and LiteLLM adds shared auth (the master key below).
+# api sends /v1/audio/transcriptions with the short alias "parakeet" and the
+# gateway routes it to the parakeet STT server. The api carries a single base URL
+# + key, and LiteLLM adds shared auth (the master key below).
 #
 # model_name is the short alias apps send as "model" — keep it in sync with the
-# api's API_STT_MODEL. litellm_params.model is the provider-prefixed REAL model
-# the backend container serves: vllm-stt runs with NO --served-model-name, so it
-# exposes its true model id and this gateway owns the aliasing. api_base is the
-# compose service DNS name; api_key on the routed entry is a placeholder (vLLM
-# doesn't authenticate) — real auth is the master key below.
+# api's API_STT_MODEL. litellm_params.model is the provider-prefixed model id; the
+# parakeet server serves one model and ignores the id, so it's cosmetic. api_base
+# is the compose service DNS name; api_key on the routed entry is a placeholder
+# (the server doesn't authenticate) — real auth is the master key below.
 
 model_list:
-  # Live STT — Voxtral on vllm-stt, OpenAI /audio/transcriptions. mode flags it for
-  # the transcription route (LiteLLM otherwise assumes chat). Routed via the mistral/
-  # provider, NOT openai/: the openai whisper transform unconditionally rewrites
-  # response_format json/text -> verbose_json (to read 'duration' for cost calc), but
-  # vLLM-served Voxtral rejects verbose_json with a 400 ("Currently do not support
-  # verbose_json for voxtral") — so every live caption failed. The mistral transform
-  # passes response_format through and posts to the same {api_base}/audio/transcriptions.
-  - model_name: voxtral
+  # Live STT — Parakeet on the parakeet server, OpenAI /audio/transcriptions. mode
+  # flags it for the transcription route (LiteLLM otherwise assumes chat). Routed
+  # via the openai/ provider: the parakeet server implements verbose_json, so the
+  # openai transform's json->verbose_json rewrite (to read 'duration' for cost
+  # calc) works — the very rewrite vLLM-served Voxtral 400'd on, which is why the
+  # old route needed mistral/. verbose_json also carries the word timestamps back.
+  - model_name: parakeet
     litellm_params:
-      model: mistral/mistralai/Voxtral-Mini-3B-2507
-      api_base: http://vllm-stt:8000/v1
+      model: openai/parakeet-tdt-0.6b-v3
+      api_base: http://parakeet:8000/v1
       api_key: tenir-local
     model_info:
       mode: audio_transcription
@@ -40,7 +38,7 @@ model_list:
       api_key: tenir-local
 
 litellm_settings:
-  # vLLM 400s on OpenAI params it doesn't implement; drop them silently instead.
+  # Drop OpenAI params the backend doesn't implement instead of erroring.
   drop_params: true
 
 general_settings:

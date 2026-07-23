@@ -7,9 +7,14 @@ is the WS client, replacing the template's HTTP STT stub.
 
 It is a **single page** on purpose (XERK-82): the lens renders through the SDK
 bridge while the phone side of the same WebView shows the login page and, once
-signed in, the server-hosted **Tenir web UI embedded full-bleed** — the phone
-companion *is* the web UI. (Navigating the WebView to a separate page would
-unload the lens app, so nothing here ever navigates.)
+signed in, the app's **own phone pages** (XERK-93) — **Session**, a full-page
+live transcript mirroring the running glasses session, and **History**, the
+stored sessions from the api (search, transcript detail, audio playback,
+delete) — with the web UI's bottom navigation between them, all styled on the
+web UI's "Lumen" design system. (Navigating the WebView to a separate page
+would unload the lens app, so pages are DOM toggles and nothing here ever
+navigates. Embedding the web UI itself was tried first and dropped: the live
+transcript strip squished the embedded page.)
 
 Like the web client, the api is a **required, user-editable setting**: the
 login page collects your self-hosted server address plus the household
@@ -25,13 +30,17 @@ run — a saved choice always wins.
 
 ```
 src/
-  main.ts              bridge/dev boot, lens render loop gated on auth, input + lifecycle
+  main.ts              bridge/dev boot + wiring: lens surface, login page, phone pages + nav
+  lens/controller.ts   session state machine: click start/stop, listening/clock ticker (XERK-85)
   config.ts            initConfig(storage): effective api URL (saved → seed → localhost) + device token store
-  phone/login.ts       phone-side login page + embedded web UI (token handed over via #token= fragment)
+  phone/login.ts       phone-side login page; signed in it reveals the Session/History shell
+  phone/session.ts     phone-side Session page: full-page live transcript of the running session (XERK-93)
+  phone/history.ts     phone-side History page: stored sessions — search, detail, audio, delete (XERK-93)
+  phone/nav.ts         phone-side bottom navigation between the Session and History pages (XERK-93)
   state/storage.ts     KeyValueStorage: BridgeStorage (device, survives restarts) / BrowserStorage (dev)
   state/settings.ts    required, user-editable server URL: validate + persist (shared with the lens)
   state/credentials.ts cached username/password + silent re-login when the token expires
-  lens/layout.ts       576x288 HUD: status line / caption band
+  lens/layout.ts       576x288 HUD: status line / clock / caption band, fit-to-band trimming
   audio/capture.ts     audioControl + PCM extraction (16kHz s16le mono)
   state/persist.ts     session persistence across background/foreground (Even SDK)
 app.json               Even Hub manifest (permissions, languages)
@@ -100,13 +109,47 @@ glasses (and passes review) before relying on it for production.
 
 ## Lens controls
 
-- **Single click** — pause / resume the caption stream.
-- **Double click** — exit (confirm dialog).
+- **Single tap** — start a new session when idle. While one records, single
+  taps do NOTHING (a brushed temple must not end a recording).
+- **Double tap (recording)** — a bordered full-width strip from the top of
+  the screen (its own container, added via `rebuildPageContainer`) with
+  **Continue** (default, top) / **Exit session**, padded above and below.
+  Everything the strip covers — the status line, the clock, the first two
+  transcript rows — is blanked while it is up (exactly what an opaque popup
+  would hide), and the rest of the transcript keeps flowing below it. Swipe
+  to move the highlight, single
+  tap to confirm, another double tap dismisses (same as Continue). Exit
+  session stops the session — the api finalizes and stores it — and the lens
+  idles at "tap to start". Should the popup-page rebuild ever fail on the
+  host, the menu falls back into the caption band itself, so the wearer is
+  never stranded inside a session.
+- **Double tap (idle / signed out)** — exit the app (confirm dialog).
+
+No VISIBLE container ever captures input (the OS plays its scroll animation
+on whatever container captures a scroll gesture — it hit the session text
+first, then the clock): every page carries an invisible full-band "touch"
+overlay (content: one space) at the caption band's geometry, which captures
+all gestures — the bounce animation moves content nobody can see. Gestures
+arrive on the `sysEvent` and `textEvent` channels; both feed one handler,
+deduped per gesture type.
+
+Once signed in, the top-right corner shows the current time (12-hour) — on
+the idle "ready" page and while recording alike. While a session records, the
+status line (top left) reads `listening` with moving dots, and the caption
+band keeps only the tail of the transcript that fits on screen — old
+text falls off the top, and with nothing overflowing there is nothing to
+scroll. The phone page mirrors the running session's transcript in real time
+in a strip above the embedded web UI.
 
 ## Notes
 
 - Live text uses `textContainerUpgrade` only (flicker-free); never a rebuild.
-- `createStartUpPageContainer` runs exactly once at boot.
+- `createStartUpPageContainer` runs exactly once at boot — and FIRST, before
+  any storage round-trip, so a slow BLE hop can't leave the lens blank.
+- BLE is fragile (XERK-82): every bridge call is timeout-bounded
+  (`withBleTimeout`), and all lens text writes go through the serialized
+  `LensTextWriter` — concurrent bridge calls can crash the connection, which
+  presents as the app closing itself.
 - Set the prod api host via `TENIR_API_HOSTS` at pack time (it fills
   `app.json`'s `network` whitelist) — and ensure the api returns CORS headers
   for explicit origins (`API_CORS_ORIGINS`); whitelisting alone does not bypass

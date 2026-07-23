@@ -1,4 +1,4 @@
 <resources>
-    <!-- Lumen --bg (dark): matches web/src/styles.css and ui/theme.ts. -->
+    <!-- Lumen bg token (dark): matches web/src/styles.css and ui/theme.ts. -->
     <color name="colorBackground">#0E1116</color>
 </resources>

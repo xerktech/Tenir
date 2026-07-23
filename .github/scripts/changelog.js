@@ -17,20 +17,20 @@
 // "Other".
 const COMPONENT_HEADING = {
   api: "API",
-  "vllm-stt": "vLLM STT",
+  "parakeet-stt": "Parakeet STT",
   even: "Even",
   mobile: "Mobile",
 };
-const HEADING_ORDER = ["API", "vLLM STT", "Even", "Mobile", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "Even", "Mobile", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
   api: "API (image, incl. web UI)",
-  "vllm-stt": "vLLM STT (image)",
+  "parakeet-stt": "Parakeet STT (image)",
   even: "Even (.ehpk)",
   mobile: "Android (.apk)",
 };
-const TABLE_ORDER = ["api", "vllm-stt", "even", "mobile"];
+const TABLE_ORDER = ["api", "parakeet-stt", "even", "mobile"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.
@@ -128,7 +128,7 @@ function renderComponentTable(manifest) {
 const INSTALL_DETAILS = [
   "<details><summary>Install / deploy</summary>",
   "",
-  "- **Images** (`API` — which serves the web UI — and `vLLM STT`): pulled from GHCR",
+  "- **Images** (`API` — which serves the web UI — and `Parakeet STT`): pulled from GHCR",
   "  by the Docker Compose stack. `:latest` tracks main; pin a build with the",
   "  `ghcr.io/...` ref in the table above.",
   "- **Even** (`.ehpk`): download below and sideload via the Even Hub app.",

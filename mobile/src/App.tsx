@@ -37,7 +37,7 @@ import { LiveScreen } from "./screens/Live";
 import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
-import { normalizeServerUrl } from "./lib/serverUrl";
+import { displayServerUrl, normalizeServerUrl } from "./lib/serverUrl";
 import { saveLastTab, saveServerUrl } from "./storage";
 import { UpdateBanner } from "./ui/UpdateBanner";
 import { TabIcon } from "./ui/icons";
@@ -118,30 +118,28 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
   if (auth.loading) return <FullScreenSpinner />;
 
   if (!auth.data) {
-    return <SetupScreen initialServerUrl={wsUrl} onConnect={connectAndSignIn} />;
+    return <SetupScreen initialServerUrl={displayServerUrl(wsUrl)} onConnect={connectAndSignIn} />;
   }
 
   const principal = auth.data;
 
   return (
     <View style={styles.fill}>
-      <UpdateBanner />
       <View style={styles.header}>
         {/* Wordmark row: the glow-dot + name, mirroring the web header. */}
         <View style={styles.wordmark}>
           <View style={styles.wordmarkDot} />
           <Text style={styles.title}>Tenir</Text>
         </View>
-        <Text style={styles.identity}>
-          {principal.username} · {principal.household} · {principal.role}
-        </Text>
       </View>
+      {/* Turma-style update card, sliding in under the header (XERK-91). */}
+      <UpdateBanner />
       <Dashboard
         wsUrl={wsUrl}
         initialTab={initialTab}
         settings={
           <SettingsScreen
-            wsUrl={wsUrl}
+            wsUrl={displayServerUrl(wsUrl)}
             onApplyServer={reconnect}
             principal={principal}
             onSignOut={auth.signOut}
@@ -240,7 +238,6 @@ const makeStyles = (colors: Palette) =>
     wordmark: { flexDirection: "row", alignItems: "center", gap: space.sm },
     wordmarkDot: { width: 9, height: 9, borderRadius: 4.5, backgroundColor: colors.accent },
     title: { color: colors.text, fontSize: 18, fontWeight: "600", letterSpacing: -0.2 },
-    identity: { color: colors.muted, fontSize: 12 },
     tabBar: {
       flexDirection: "row",
       borderTopColor: colors.border,

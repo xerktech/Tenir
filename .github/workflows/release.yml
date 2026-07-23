@@ -2,9 +2,9 @@ name: release
 
 # The unified release pipeline: ONE v<MAJOR>.<MINOR>.<PATCH> tag per release,
 # carrying ALL four components (the api image — which bakes in the web SPA —,
-# the vLLM STT image, the Even .ehpk, and the Android .apk) + a changelog.
+# the Parakeet STT image, the Even .ehpk, and the Android .apk) + a changelog.
 # Replaces the per-component main-push publish jobs that used to live in api.yml,
-# vllm-stt.yml, even.yml and mobile.yml (now PR-only CI). See RELEASING.md and
+# parakeet-stt.yml, even.yml and mobile.yml (now PR-only CI). See RELEASING.md and
 # .github/scripts/README.md.
 #
 # Model:
@@ -40,7 +40,7 @@ on:
       - "contract/**"
       - "packages/**"
       - "web/**"
-      - "vllm-stt/**"
+      - "parakeet-stt/**"
       - "even/**"
       - "mobile/**"
       - "package.json"
@@ -91,7 +91,7 @@ jobs:
       base_minor: ${{ steps.plan.outputs.base_minor }}
       release_type: ${{ steps.plan.outputs.release_type }}
       build_api: ${{ steps.plan.outputs.build_api }}
-      build_vllm_stt: ${{ steps.plan.outputs.build_vllm_stt }}
+      build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
       build_even: ${{ steps.plan.outputs.build_even }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
@@ -219,16 +219,17 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
-  # -------------------------------------------------------- build: vllm-stt ---
-  # Self-hosted: builds on vllm/vllm-openai, a multi-GB base a hosted runner
-  # cannot hold in its ~14 GB of free disk.
-  build-vllm-stt:
+  # ---------------------------------------------------- build: parakeet-stt ---
+  # Self-hosted: builds on the NGC NeMo container, a multi-GB base a hosted runner
+  # cannot hold in its ~14 GB of free disk. Context is the repo root because the
+  # Dockerfile COPYs parakeet-stt/{requirements.txt,server.py}.
+  build-parakeet-stt:
     needs: [plan, bump]
     if: >-
       !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
-      && needs.plan.outputs.build_vllm_stt == 'true'
+      && needs.plan.outputs.build_parakeet_stt == 'true'
     runs-on: [self-hosted, linux]
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
         with:
@@ -236,16 +237,31 @@ jobs:
       - name: Lowercase owner for GHCR
         id: owner
         run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-      - name: Build + push tenir-vllm-stt
+      # The Dockerfile's base is nvcr.io/nvidia/nemo, which NGC serves only to
+      # authenticated pulls — an anonymous pull 400s with "error from registry:
+      # denied" and fails the build. Log in when an NGC key is configured; if it
+      # isn't, fall through and rely on any nvcr.io login already on this
+      # self-hosted runner (docker login persists in its ~/.docker/config.json).
+      - name: Log in to nvcr.io for the NeMo base
+        env:
+          NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
+        run: |
+          if [ -n "$NGC_API_KEY" ]; then
+            echo "$NGC_API_KEY" | docker login nvcr.io -u '$oauthtoken' --password-stdin
+            echo "Logged in to nvcr.io via NGC_API_KEY."
+          else
+            echo "NGC_API_KEY not set — relying on an existing nvcr.io login on this runner."
+          fi
+      - name: Build + push tenir-parakeet-stt
         uses: ./.github/actions/build-push-image
         with:
-          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-vllm-stt
+          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-parakeet-stt
           tags: |
             latest
             ${{ needs.plan.outputs.version }}
             sha-${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
-          context: ./vllm-stt
-          dockerfile: vllm-stt/Dockerfile
+          context: .
+          dockerfile: parakeet-stt/Dockerfile
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
@@ -352,12 +368,12 @@ jobs:
   # that was SUPPOSED to run failed (a skipped/carried component is fine).
   publish:
     needs:
-      [plan, bump, build-api, build-vllm-stt, build-even, build-mobile]
+      [plan, bump, build-api, build-parakeet-stt, build-even, build-mobile]
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.bump.result != 'failure'
       && needs.build-api.result != 'failure'
-      && needs.build-vllm-stt.result != 'failure'
+      && needs.build-parakeet-stt.result != 'failure'
       && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'
     runs-on: ubuntu-latest

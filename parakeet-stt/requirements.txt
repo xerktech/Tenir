@@ -1,0 +1,9 @@
+# Web layer on top of the NeMo base image (which already carries torch + NeMo ASR).
+# NeMo usually ships numpy/soundfile/librosa already; listing them is idempotent and
+# makes the server's runtime deps explicit and self-contained.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+soundfile>=0.12
+librosa>=0.10
+numpy

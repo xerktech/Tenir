@@ -35,6 +35,7 @@ from api.persistence import (
     get_audio_store,
     get_conversation_store,
     pcm16_to_wav,
+    wav_to_pcm16,
 )
 from api.stt import Transcriber, make_transcriber
 
@@ -362,7 +363,18 @@ class Session:
         # Persist retained audio, then point the conversation at it.
         if self._audio_store is not None and self._full_audio:
             key = audio_key(self._household, self.session_id)
-            wav = pcm16_to_wav(bytes(self._full_audio))
+            pcm = bytes(self._full_audio)
+            # Extend, don't overwrite. A session that resumes after the grace window
+            # has lapsed reaches the api as a *new* Session on the same conversation
+            # id, so its buffer holds only the post-resume audio — the glasses do
+            # exactly this, persisting their session id across drops and relaunches.
+            # Prepend whatever is already retained for this conversation so the stored
+            # clip spans the whole session and stays replayable end to end, instead of
+            # being clobbered with the latest fragment (XERK-86).
+            existing = await asyncio.to_thread(self._audio_store.get, key)
+            if existing:
+                pcm = wav_to_pcm16(existing) + pcm
+            wav = pcm16_to_wav(pcm)
             await asyncio.to_thread(self._audio_store.put, key, wav)
             await asyncio.to_thread(
                 self._conversations.set_audio_key, self._household, self.session_id, key

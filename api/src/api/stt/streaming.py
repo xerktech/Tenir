@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator
 
 from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
+from api.stt.agreement import LocalAgreement
 from api.stt.engine import BYTES_PER_SEC, WhisperEngine, pcm16_to_float32, rms
 
 log = logging.getLogger("api.stt.streaming")
@@ -58,6 +59,7 @@ class StreamingTranscriber:
         min_segment_ms: int = 400,
         silence_ms: int = 700,
         silence_rms: float = 0.005,
+        local_agreement: bool = True,
     ) -> None:
         self._engine = engine
         self._language = language
@@ -70,6 +72,11 @@ class StreamingTranscriber:
         self._min_segment_bytes = _ms_to_bytes(min_segment_ms)
         self._silence_bytes = _ms_to_bytes(silence_ms)
         self._silence_rms = silence_rms
+
+        # LocalAgreement-2 makes partials grow word by word instead of rewriting the
+        # whole line each cadence (XERK-90). One buffer per in-flight segment; reset
+        # at every finalize. None disables it (legacy: emit each raw window verbatim).
+        self._agreement = LocalAgreement() if local_agreement else None
 
         self._buf = bytearray()
         self._since_partial = 0
@@ -115,25 +122,39 @@ class StreamingTranscriber:
             buf = buf[-window_bytes:]
         samples = pcm16_to_float32(bytes(buf))
         t0 = time.perf_counter()
-        result = await asyncio.to_thread(
-            self._engine.transcribe, samples, language=self._language
-        )
+        result = await asyncio.to_thread(self._engine.transcribe, samples, language=self._language)
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         return result
 
     async def _emit_partial(self) -> None:
         self._since_partial = 0
-        result = await self._run_engine(window_bytes=self._partial_window_bytes, stage="partial")
-        text = result.text.strip()
-        if not text:
-            return
-        await self._queue.put(
-            CaptionPartial(
-                type="caption.partial",
-                text=text,
-                lang=_lang(result.language or self._language),
+
+        if self._agreement is None:
+            # Legacy path: decode the trailing window and emit it verbatim, which
+            # rewrites the whole caption line each cadence.
+            result = await self._run_engine(
+                window_bytes=self._partial_window_bytes, stage="partial"
             )
-        )
+            text = result.text.strip()
+            if not text:
+                return
+            lang = _lang(result.language or self._language)
+            await self._queue.put(CaptionPartial(type="caption.partial", text=text, lang=lang))
+            return
+
+        # LocalAgreement-2 needs every hypothesis anchored at the same audio start so
+        # successive decodes share a stable prefix — a sliding trailing window never
+        # lines up and nothing commits. So partials decode the whole in-flight segment
+        # here (still bounded by max_segment_ms and, in practice, short because a pause
+        # finalizes the turn). The running commit then keeps already-shown words fixed
+        # and only the trailing word or two can still change.
+        result = await self._run_engine(window_bytes=0, stage="partial")
+        lang = _lang(result.language or self._language)
+        self._agreement.commit(result.text.split())
+        caption = self._agreement.caption_text()
+        if not caption:
+            return
+        await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
     async def _finalize(self) -> None:
         result = await self._run_engine(stage="final")
@@ -146,6 +167,10 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        # The committed prefix belongs to the turn just closed; start the next turn's
+        # word-by-word commit from scratch.
+        if self._agreement is not None:
+            self._agreement = LocalAgreement()
 
         text = result.text.strip()
         if not text:
