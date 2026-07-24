@@ -15,8 +15,8 @@ const readText = (rel: string) => readFileSync(resolve(process.cwd(), rel)).toSt
 describe("selectable transcript text (XERK-104)", () => {
   it("Live: committed segments and the partial caption are selectable", () => {
     const src = readText("src/screens/Live.tsx");
-    // The committed-segment <Text> wrapping {seg.text} carries `selectable`.
-    expect(src).toMatch(/<Text selectable style=\{\{ color: colors\.text \}\}>\s*\{seg\.text\}/);
+    // The committed-segment <Text> wrapping the turn text carries `selectable`.
+    expect(src).toMatch(/<Text selectable style=\{\{ color: colors\.text \}\}>\s*\{item\.segment\.text\}/);
     // The live partial renders through <Muted selectable>.
     expect(src).toMatch(/<Muted selectable>\{`› \$\{state\.partial\}`\}<\/Muted>/);
   });

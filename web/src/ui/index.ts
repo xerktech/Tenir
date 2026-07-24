@@ -2,6 +2,7 @@ export { Badge } from "./Badge";
 export { Button, type ButtonProps, type ButtonVariant } from "./Button";
 export { Card } from "./Card";
 export { ConfirmButton, type ConfirmButtonProps } from "./ConfirmButton";
+export { CueDisclosure } from "./CueDisclosure";
 export { EmptyState } from "./EmptyState";
 export { Field, type FieldProps } from "./Field";
 export { IconButton, type IconButtonProps } from "./IconButton";

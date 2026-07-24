@@ -17,12 +17,55 @@ import { isPinnedToBottom } from "@tenir/client-core";
 
 import type { CueCard } from "../lens/layout";
 
+/**
+ * A cue that has already had its turn in the band and now sits inline in the
+ * transcript for review (XERK-108), anchored after the finalized turn it
+ * followed. `afterIndex` is that turn's index in `segments`; a value outside the
+ * range (its turn scrolled off, or the cue landed before any speech) leads the
+ * transcript. `id` is a stable key so its expand state survives caption redraws.
+ */
+export interface PastCue extends CueCard {
+  id: string;
+  afterIndex: number;
+}
+
 export interface LiveSessionView {
   recording: boolean;
   connection: "connecting" | "open" | "closed";
   segments: string[]; // finalized turns
   partial: string; // current live hypothesis
   cue: CueCard | null; // the current private context cue (XERK-81), or none
+  pastCues: PastCue[]; // released cues embedded in the transcript for review (XERK-108)
+}
+
+/** One row of the rendered transcript: a finalized turn or a reviewed cue. */
+type TranscriptRow = { kind: "segment"; text: string } | { kind: "cue"; cue: PastCue };
+
+/**
+ * Interleave finalized turns with reviewed cues (XERK-108): each cue lands right
+ * after the turn it was anchored to, and a cue whose anchor is out of range —
+ * before any speech, or a turn since scrolled off — leads the transcript. The
+ * index-anchored counterpart to client-core's id-anchored `liveTranscript`, kept
+ * here because the phone mirror carries plain-string turns without ids.
+ */
+export function liveTranscriptRows(segments: string[], pastCues: PastCue[]): TranscriptRow[] {
+  const byIndex = new Map<number, PastCue[]>();
+  const leading: PastCue[] = [];
+  for (const cue of pastCues) {
+    if (cue.afterIndex >= 0 && cue.afterIndex < segments.length) {
+      const list = byIndex.get(cue.afterIndex);
+      if (list) list.push(cue);
+      else byIndex.set(cue.afterIndex, [cue]);
+    } else {
+      leading.push(cue);
+    }
+  }
+  const rows: TranscriptRow[] = leading.map((cue) => ({ kind: "cue", cue }));
+  segments.forEach((text, i) => {
+    rows.push({ kind: "segment", text });
+    for (const cue of byIndex.get(i) ?? []) rows.push({ kind: "cue", cue });
+  });
+  return rows;
 }
 
 export interface SessionPageElements {
@@ -70,6 +113,10 @@ export interface SessionPageCallbacks {
 
 export class SessionPage {
   private wasRecording = false;
+  // Which reviewed cues are expanded, by cue id (XERK-108). Held on the page so
+  // an expanded past cue stays open across the frequent caption redraws — the
+  // transcript is rebuilt wholesale on every update, unlike React's live tree.
+  private expanded = new Set<string>();
 
   constructor(
     private readonly els: SessionPageElements,
@@ -91,7 +138,9 @@ export class SessionPage {
     // transcript, shown only while a cue is live and a session is recording.
     this.renderCue(view.recording ? view.cue : null);
 
-    const hasText = view.recording && (view.segments.length > 0 || view.partial !== "");
+    const hasText =
+      view.recording &&
+      (view.segments.length > 0 || view.pastCues.length > 0 || view.partial !== "");
     this.els.text.hidden = !hasText;
     this.els.empty.hidden = hasText;
     if (!hasText) {
@@ -102,6 +151,8 @@ export class SessionPage {
         ? "Captions appear here as they are heard."
         : "Tap your glasses to start a session.";
       this.els.text.replaceChildren();
+      // Nothing on screen to keep open; forget any stale expand state.
+      this.expanded.clear();
     } else {
       const box = this.els.text;
       // Was the viewer following the live feed (at the bottom) before this
@@ -109,10 +160,17 @@ export class SessionPage {
       const pinned = isPinnedToBottom(box);
       const doc = box.ownerDocument;
       const frag = doc.createDocumentFragment();
-      for (const segment of view.segments) {
-        const li = doc.createElement("li");
-        li.textContent = segment;
-        frag.appendChild(li);
+      // Interleave finalized turns with reviewed cues (XERK-108): a released cue
+      // sits inline as a collapsed dropdown after the turn that triggered it, so
+      // it can be re-read without disturbing the live cue card pinned above.
+      for (const row of liveTranscriptRows(view.segments, view.pastCues)) {
+        if (row.kind === "segment") {
+          const li = doc.createElement("li");
+          li.textContent = row.text;
+          frag.appendChild(li);
+        } else {
+          frag.appendChild(this.buildCueRow(row.cue));
+        }
       }
       if (view.partial) {
         const li = doc.createElement("li");
@@ -148,5 +206,58 @@ export class SessionPage {
     body.textContent = cue.body;
     this.els.cue.replaceChildren(title, body);
     this.els.cue.hidden = false;
+  }
+
+  /**
+   * A reviewed cue embedded in the transcript (XERK-108): an inline collapsed
+   * dropdown — "▸ ✦ <title>" — that expands in place to reveal the body, the
+   * phone counterpart to the web/mobile CueDisclosure. Its open state is keyed
+   * off `this.expanded`, so a rebuilt row comes back in whatever state the
+   * viewer left it, and the toggle flips the DOM directly (no full redraw).
+   */
+  private buildCueRow(cue: PastCue): HTMLElement {
+    const doc = this.els.text.ownerDocument;
+    const open = this.expanded.has(cue.id);
+    const bodyId = `session-cue-body-${cue.id}`;
+
+    const li = doc.createElement("li");
+    li.className = "session-cue-line";
+
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "cue-inline";
+    button.setAttribute("aria-expanded", String(open));
+    button.setAttribute("aria-controls", bodyId);
+    button.title = open ? "Hide cue detail" : "Show cue detail";
+    const caret = this.make("span", "cue-inline-caret", open ? "▾" : "▸");
+    caret.setAttribute("aria-hidden", "true");
+    const mark = this.make("span", "cue-inline-mark", "✦");
+    mark.setAttribute("aria-hidden", "true");
+    const titleEl = this.make("span", "cue-inline-title", cue.title);
+    button.append(caret, mark, titleEl);
+
+    const body = this.make("p", "cue-inline-body", cue.body);
+    body.id = bodyId;
+    body.hidden = !open;
+
+    button.addEventListener("click", () => {
+      const nowOpen = !this.expanded.has(cue.id);
+      if (nowOpen) this.expanded.add(cue.id);
+      else this.expanded.delete(cue.id);
+      button.setAttribute("aria-expanded", String(nowOpen));
+      button.title = nowOpen ? "Hide cue detail" : "Show cue detail";
+      caret.textContent = nowOpen ? "▾" : "▸";
+      body.hidden = !nowOpen;
+    });
+
+    li.append(button, body);
+    return li;
+  }
+
+  private make(tag: string, className: string, text: string): HTMLElement {
+    const el = this.els.text.ownerDocument.createElement(tag);
+    el.className = className;
+    el.textContent = text;
+    return el;
   }
 }

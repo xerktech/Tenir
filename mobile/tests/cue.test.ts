@@ -43,3 +43,24 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
     expect(history).not.toContain("setOpenCue");
   });
 });
+
+describe("released cues are embedded inline in the live transcript (XERK-108)", () => {
+  const live = readText("src/screens/Live.tsx");
+
+  it("interleaves finalized turns and past cues via the shared liveTranscript helper", () => {
+    // Built from the shared timeline helper, so the interleave matches web/even.
+    expect(live).toContain("liveTranscript");
+    expect(live).toContain("const items = liveTranscript(state.segments, state.pastCues)");
+    // The transcript renders that merged list, not the bare segment array.
+    expect(live).not.toContain("state.segments.map(");
+    expect(live).toContain("items.map((item) =>");
+  });
+
+  it("renders a past cue with the same inline dropdown history uses", () => {
+    expect(live).toContain(
+      "<CueDisclosure key={`cue-${item.cue.id}`} title={item.cue.title} body={item.cue.body} />",
+    );
+    // Past cues count as content so a transcript of only-reviewed cues still shows.
+    expect(live).toContain("state.pastCues.length > 0");
+  });
+});

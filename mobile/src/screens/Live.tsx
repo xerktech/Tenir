@@ -18,12 +18,12 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 
-import { DISCLOSURES, isPinnedToBottom, type CueLevel } from "@tenir/client-core";
+import { DISCLOSURES, isPinnedToBottom, liveTranscript, type CueLevel } from "@tenir/client-core";
 import { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
 import { deviceKeyValue } from "../secureStorage";
 import { loadCueLevel, saveCueLevel } from "../storage";
-import { CueLevelToggle, LiveCueBand } from "../ui/cue";
+import { CueDisclosure, CueLevelToggle, LiveCueBand } from "../ui/cue";
 import {
   Badge,
   Button,
@@ -102,7 +102,13 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const mic = state.micSource === "g2-microphone" ? "glasses mic" : "phone mic";
   const live = state.running && state.connection === "open" && state.listening;
 
-  const hasContent = state.segments.length > 0 || Boolean(state.partial);
+  const hasContent =
+    state.segments.length > 0 || state.pastCues.length > 0 || Boolean(state.partial);
+
+  // Interleave finalized turns with cues already released from the band so a past
+  // cue can be re-read inline without disturbing the cues still coming in above
+  // (XERK-108) — the same segment/cue timeline the history screen renders.
+  const items = liveTranscript(state.segments, state.pastCues);
 
   return (
     // A fixed column — controls + cue band stay put — over a transcript that
@@ -161,14 +167,19 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
           onContentSizeChange={followNewest}
         >
           {/* Transcript text is selectable so it can be long-pressed and copied
-              (XERK-104), matching the web/even clients. */}
-          {state.segments.map((seg) => (
-            <ListItem key={seg.id}>
-              <Text selectable style={{ color: colors.text }}>
-                {seg.text}
-              </Text>
-            </ListItem>
-          ))}
+              (XERK-104), matching the web/even clients. Released cues are embedded
+              inline as collapsed dropdowns (XERK-108). */}
+          {items.map((item) =>
+            item.kind === "segment" ? (
+              <ListItem key={item.segment.id}>
+                <Text selectable style={{ color: colors.text }}>
+                  {item.segment.text}
+                </Text>
+              </ListItem>
+            ) : (
+              <CueDisclosure key={`cue-${item.cue.id}`} title={item.cue.title} body={item.cue.body} />
+            ),
+          )}
           {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
         </ScrollView>
       ) : null}

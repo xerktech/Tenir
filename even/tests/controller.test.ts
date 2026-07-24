@@ -589,4 +589,57 @@ describe("wireLens cues (XERK-81)", () => {
     expect(cueEl.textContent).toContain("Sun");
     expect(cueEl.textContent).toContain("150 million");
   });
+
+  it("embeds a released cue into the phone transcript for review (XERK-108)", async () => {
+    const { bridge, emit } = fakeBridge();
+    const writer = new layout.LensTextWriter(async () => true);
+    document.body.innerHTML = `
+      <section id="page-session">
+        <span id="session-dot" hidden></span>
+        <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="session-cue" id="session-cue" hidden></div>
+        <div class="empty" id="session-empty">
+          <p id="session-empty-title"></p>
+          <p id="session-empty-hint"></p>
+        </div>
+        <ul id="session-text" hidden></ul>
+      </section>`;
+    const phone = new sessionMod.SessionPage(sessionMod.querySessionPageElements()!);
+    const api = fakeClientFactory();
+    const controls = await controllerMod.wireLens(bridge, new MemStorage(), writer, phone, {
+      createClient: api.createClient,
+    });
+    await settle();
+    controls.enable();
+    await settle();
+    emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent); // start
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+
+    // A turn, then a cue triggered by it; the cue rides the live band.
+    api.handlers().onFinal?.({
+      type: "caption.final",
+      segmentId: "s1",
+      text: "the sun is far",
+      startMs: 0,
+      endMs: 900,
+    });
+    api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    const box = document.getElementById("session-text")!;
+    // While it's still in the band it is not yet embedded in the transcript.
+    expect(box.querySelector("li.session-cue-line")).toBeNull();
+
+    // After its TTL the cue leaves the band and drops into the transcript as an
+    // inline dropdown, anchored after the turn that triggered it.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(document.getElementById("session-cue")!.hidden).toBe(true); // gone from the band
+    const cueLine = box.querySelector("li.session-cue-line");
+    expect(cueLine).not.toBeNull();
+    expect(cueLine!.querySelector(".cue-inline-title")!.textContent).toBe("Sun");
+    // It sits after the spoken turn, and its body is collapsed by default.
+    const lis = [...box.querySelectorAll("li")];
+    expect(lis[0].textContent).toBe("the sun is far");
+    expect(lis[1].classList.contains("session-cue-line")).toBe(true);
+    expect(cueLine!.querySelector<HTMLElement>(".cue-inline-body")!.hidden).toBe(true);
+  });
 });
