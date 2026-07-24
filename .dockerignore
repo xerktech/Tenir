@@ -15,7 +15,10 @@
 api/tests
 docs
 docker-compose.yml
-schema.sql
+# NOTE: schema.sql is intentionally NOT ignored — the api image bakes it in
+# (api/Dockerfile) and applies it idempotently on Postgres pool open, so an
+# existing data dir gains additively-added tables (e.g. `cues`). Postgres only
+# runs schema.sql on a fresh volume, so it can't be excluded from the context.
 scripts
 litellm
 .env.example

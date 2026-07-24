@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # docker-compose.yml (compose also sets this var explicitly, but the default
     # must resolve for anyone relying on it).
     database_url: str = "postgresql://tenir:tenir@postgres-tenir:5432/tenir"
+    # Optional explicit path to schema.sql. Left empty, the Postgres store locates
+    # it (the image ships it at the workdir; dev/test resolve the repo-root file)
+    # and applies it idempotently on pool open, so an existing data dir gains
+    # additively-added tables/indexes — Postgres only runs schema.sql on a FRESH
+    # volume, so a DB created before a new table (e.g. `cues`) never gets it.
+    schema_path: str = ""
 
     # ---- component status dashboard (see api.status) ------------------------
     # A background loop probes each real backend's health endpoint and caches the
