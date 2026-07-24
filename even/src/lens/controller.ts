@@ -41,11 +41,16 @@ import { SessionStore, type PersistedSession } from "../state/persist";
 import { withBleTimeout, type KeyValueStorage } from "../state/storage";
 import {
   CONTAINER,
+  CUE_ROW_FIRST,
+  CUE_ROW_LAST,
   LensTextWriter,
+  MENU_ROW_FIRST,
+  MENU_ROW_LAST,
   buildCuePage,
   buildMainPage,
   buildMenuPage,
   clockText,
+  cueMaxScroll,
   cueText,
   fitCaption,
   menuText,
@@ -165,6 +170,9 @@ export async function wireLens(
   // be derived on every tick rather than decremented — the ticker idles while
   // the lens is backgrounded, and a derived count comes back correct.
   let cueShownAt: number | null = null;
+  // Which body row the cue box's window starts at (XERK-112): 0 when a cue goes
+  // up, advanced a row at a time by a swipe while the body runs past the box.
+  let cueScroll = 0;
   let enabled = false; // signed in — clicks act only while enabled
   let foreground = true; // lens visible — the ticker idles while backgrounded
   let tick = 0;
@@ -186,7 +194,11 @@ export async function wireLens(
     // up (menu or cue), the rows its box covers are masked — an opaque popup
     // hides exactly those — and the rows around it keep flowing.
     const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
-    return popupUp() ? occludedCaption(bounded) : fitCaption(bounded);
+    if (!popupUp()) return fitCaption(bounded);
+    // Mask exactly the rows the popup that's up covers: the taller cue box
+    // (XERK-112) hides more rows than the menu.
+    const [first, last] = state.cue ? [CUE_ROW_FIRST, CUE_ROW_LAST] : [MENU_ROW_FIRST, MENU_ROW_LAST];
+    return occludedCaption(bounded, first, last);
   };
   // A popup strip is up: the interactive menu, or a private-context cue box
   // (XERK-81). Both live in the same bordered container across the top.
@@ -213,7 +225,7 @@ export async function wireLens(
   const renderMenu = () => {
     if (menuFallback) return;
     if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
-    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue, cueCountdown()));
+    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue, cueCountdown(), cueScroll));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
   // The clock shows whenever signed in — on the idle "ready" page and while
@@ -241,7 +253,7 @@ export async function wireLens(
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
       : state.cue
-        ? buildCuePage(contents, state.cue, cueCountdown())
+        ? buildCuePage(contents, state.cue, cueCountdown(), cueScroll)
         : buildMainPage(contents);
     const openingMenu = state.menu !== null;
     const openingCue = state.menu === null && state.cue !== null;
@@ -503,6 +515,7 @@ export async function wireLens(
       return;
     }
     state.cue = anchored;
+    cueScroll = 0; // a freshly-shown cue starts at the top of its body (XERK-112)
     startCueTimer();
     rebuildPage();
     syncPhone();
@@ -524,6 +537,7 @@ export async function wireLens(
     // so there's no menu to guard against here.
     embedPastCue(state.cue);
     state.cue = state.cueQueue.shift() ?? null;
+    cueScroll = 0; // the next cue starts at the top of its own body (XERK-112)
     if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
@@ -548,6 +562,7 @@ export async function wireLens(
     menuFallback = false;
     // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).
     state.cue = state.cueQueue.shift() ?? null;
+    cueScroll = 0; // the surfacing cue starts at the top of its body (XERK-112)
     if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
@@ -559,6 +574,24 @@ export async function wireLens(
     state.menu = choice;
     renderMenu();
     if (menuFallback) renderCaption();
+  };
+
+  /**
+   * Scroll the active cue's body by `delta` rows (XERK-112): a swipe moves the
+   * box's window through a body that wraps past its visible rows. Clamped to the
+   * body, and a no-op when the body already fits. Reading restarts the
+   * auto-dismiss timer (and with it the countdown) so a long cue can't vanish
+   * mid-read.
+   */
+  const scrollCue = (delta: number) => {
+    if (!state.cue) return;
+    const max = cueMaxScroll(state.cue.body);
+    if (max === 0) return; // the body fits — nothing to scroll
+    const next = Math.min(Math.max(0, cueScroll + delta), max);
+    if (next === cueScroll) return; // already at that end of the body
+    cueScroll = next;
+    startCueTimer(); // reading buys the cue more time on the lens
+    renderMenu();
   };
 
   function handleGesture(type: OsEventTypeList): void {
@@ -589,13 +622,17 @@ export async function wireLens(
         void bridge.shutDownPageContainer(1);
         break;
       case OsEventTypeList.SCROLL_TOP_EVENT:
-        // Swipe up in the popup: highlight the top row (Continue). Anywhere
-        // else the gesture lands on the invisible overlay and does nothing.
-        moveMenuHighlight("continue");
+        // Swipe up: highlight the menu's top row (Continue), or scroll a cue's
+        // body toward its start (XERK-112). Anywhere else the gesture lands on
+        // the invisible overlay and does nothing.
+        if (state.menu) moveMenuHighlight("continue");
+        else scrollCue(-1);
         break;
       case OsEventTypeList.SCROLL_BOTTOM_EVENT:
-        // Swipe down in the popup: highlight the bottom row (Exit session).
-        moveMenuHighlight("exit");
+        // Swipe down: highlight the menu's bottom row (Exit session), or scroll
+        // a cue's body toward its end (XERK-112).
+        if (state.menu) moveMenuHighlight("exit");
+        else scrollCue(1);
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
         foreground = true;

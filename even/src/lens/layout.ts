@@ -99,6 +99,29 @@ export const MENU_TEXT_W = MENU_W - 2 * (MENU_PAD + MENU_BORDER) - MEASURE_SAFET
 export const MENU_ROW_FIRST = Math.max(0, Math.floor((MENU_Y - LINE_H) / LINE_H));
 export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
+// ---- the private-context cue box (XERK-112) ---------------------------------
+// The cue box is the same bordered strip as the menu, but taller: a title row
+// over CUE_BODY_LINES body rows, so a cue reads at a glance instead of being
+// clipped to one line. When the wrapped body runs past those rows the controller
+// scrolls the window through it (a swipe moves it a row at a time); the box
+// height never changes, only which slice of the body it shows.
+export const CUE_BODY_LINES = 3;
+// Title + body rows. The box is exactly this many rows tall, always — a short
+// cue leaves the spare rows blank rather than shrinking the box.
+export const CUE_ROWS = 1 + CUE_BODY_LINES;
+export const CUE_BORDER = MENU_BORDER;
+export const CUE_PAD = MENU_PAD;
+export const CUE_W = SCREEN_W;
+export const CUE_X = 0;
+export const CUE_Y = 0;
+// CUE_ROWS content rows + symmetric padding + border. With pad+border = 13 this
+// is 134px, inside the 5th transcript row's 135px boundary, so the box occupies
+// four whole caption rows and never grows a half-line the host would scroll.
+export const CUE_H = CUE_ROWS * LINE_H + 2 * (CUE_PAD + CUE_BORDER);
+export const CUE_TEXT_W = CUE_W - 2 * (CUE_PAD + CUE_BORDER) - MEASURE_SAFETY_PX;
+export const CUE_ROW_FIRST = Math.max(0, Math.floor((CUE_Y - LINE_H) / LINE_H));
+export const CUE_ROW_LAST = Math.ceil((CUE_Y + CUE_H - LINE_H) / LINE_H) - 1;
+
 /** The text every base container carries when a page is (re)built. */
 export interface PageContents {
   status: string;
@@ -192,23 +215,51 @@ export function buildMainPage(contents: PageContents): RebuildPageContainer {
   });
 }
 
+/** The geometry of a popup strip: same container, different size per popup kind. */
+interface PopupBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pad: number;
+  border: number;
+}
+
+const MENU_BOX: PopupBox = {
+  x: MENU_X,
+  y: MENU_Y,
+  width: MENU_W,
+  height: MENU_H,
+  pad: MENU_PAD,
+  border: MENU_BORDER,
+};
+const CUE_BOX: PopupBox = {
+  x: CUE_X,
+  y: CUE_Y,
+  width: CUE_W,
+  height: CUE_H,
+  pad: CUE_PAD,
+  border: CUE_BORDER,
+};
+
 /**
- * The bordered popup strip across the top two lines — shared by the double-tap
- * menu and the private-context cue box (XERK-81). The controller blanks
- * everything the strip covers (status, clock, caption rows via
- * `occludedCaption`), so nothing shows through the box. `text` is the two-row
- * body it carries (menu options, or a cue's title + detail).
+ * The bordered popup strip from the top of the screen — shared by the
+ * double-tap menu and the private-context cue box (XERK-81). The controller
+ * blanks everything the strip covers (status, clock, caption rows via
+ * `occludedCaption`), so nothing shows through the box. `text` is the body it
+ * carries (menu options, or a cue's title + detail); `box` sizes the strip —
+ * the menu is two rows, the cue box CUE_ROWS (XERK-112).
  */
-function popupPage(contents: PageContents, text: string): RebuildPageContainer {
+function popupPage(contents: PageContents, text: string, box: PopupBox): RebuildPageContainer {
   const popup = new TextContainerProperty({
     containerID: CONTAINER.menu.id,
     containerName: CONTAINER.menu.name,
-    xPosition: MENU_X,
-    yPosition: MENU_Y,
-    width: MENU_W,
-    height: MENU_H,
-    paddingLength: MENU_PAD,
-    borderWidth: MENU_BORDER,
+    xPosition: box.x,
+    yPosition: box.y,
+    width: box.width,
+    height: box.height,
+    paddingLength: box.pad,
+    borderWidth: box.border,
     // Any non-black color renders as the HUD's single lit color.
     borderColor: 0xffffff,
     borderRadius: 10,
@@ -223,20 +274,23 @@ function popupPage(contents: PageContents, text: string): RebuildPageContainer {
 
 /** The page with the double-tap menu popup up (Continue / Exit session). */
 export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
-  return popupPage(contents, menuText(selected));
+  return popupPage(contents, menuText(selected), MENU_BOX);
 }
 
 /**
  * The page with a cue popup up (XERK-81): the same bordered strip, showing a
- * private context card's title over its detail — a bordered box above the live
- * transcript, private to the wearer, auto-dismissed by the controller after ~10s.
+ * private context card's title over up to CUE_BODY_LINES rows of its body — a
+ * bordered box above the live transcript, private to the wearer, auto-dismissed
+ * by the controller after ~10s. `scroll` (XERK-112) is the body row the window
+ * starts at, so a long body can be read a swipe at a time.
  */
 export function buildCuePage(
   contents: PageContents,
   cue: CueCard,
   secondsLeft?: number,
+  scroll = 0,
 ): RebuildPageContainer {
-  return popupPage(contents, cueText(cue, secondsLeft));
+  return popupPage(contents, cueText(cue, secondsLeft, scroll), CUE_BOX);
 }
 
 /** A private context cue shown on the lens (XERK-81). */
@@ -263,26 +317,44 @@ function rowWithRightEdge(left: string, right: string, width: number): string {
   return `${left}${" ".repeat(spaces)}${right}`;
 }
 
+/** The cue body wrapped into the rows the box renders (XERK-112). */
+export function cueBodyLines(body: string): string[] {
+  return wrapLines(body, CUE_TEXT_W);
+}
+
 /**
- * Fit a cue into the two rows of the popup box: the title (upper-cased) over
- * the first line of the detail that fits the strip width. The box clips the
- * rest; the full cue lives on the phone Session/History pages.
+ * How far the body can scroll: 0 when it fits the visible rows, otherwise the
+ * number of rows hidden below the window (XERK-112). The controller clamps a
+ * swipe to this so scrolling can't run off the end of the body.
+ */
+export function cueMaxScroll(body: string): number {
+  return Math.max(0, cueBodyLines(body).length - CUE_BODY_LINES);
+}
+
+/**
+ * Fit a cue into the popup box: the title (upper-cased) over up to
+ * CUE_BODY_LINES rows of the body (XERK-112). A body that wraps past those rows
+ * is scrolled through `scroll` rows at a time (the controller drives it from
+ * swipes); the box clips whatever's outside the window, and the full cue always
+ * lives on the phone Session/History pages.
  *
  * `secondsLeft` (XERK-110) paints the countdown to auto-dismissal at the right
  * end of the title row — the lens counterpart to the countdown in the top-right
  * corner of the web/mobile cue cards. The title is wrapped to whatever width
  * the countdown leaves, so a long one is trimmed instead of pushing the row
- * over the edge and wrapping the box into a third line it has no room for.
- * Omitted (no countdown) the row is the title alone.
+ * over the edge. Omitted (no countdown) the row is the title alone.
  */
-export function cueText(cue: CueCard, secondsLeft?: number): string {
+export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string {
   const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
   // Reserve the countdown plus one space of separation out of the title's row.
   const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
   const upper = cue.title.toUpperCase();
-  const titleLine = wrapLines(upper, MENU_TEXT_W - reserved)[0] ?? upper;
-  const bodyLine = wrapLines(cue.body, MENU_TEXT_W)[0] ?? cue.body;
-  return `${rowWithRightEdge(titleLine, countdown, MENU_TEXT_W)}\n${bodyLine}`;
+  const titleLine = wrapLines(upper, CUE_TEXT_W - reserved)[0] ?? upper;
+  const body = cueBodyLines(cue.body);
+  // Clamp the window to the body so a stale/over-large scroll can't blank the box.
+  const start = Math.min(Math.max(0, scroll), cueMaxScroll(cue.body));
+  const visible = body.slice(start, start + CUE_BODY_LINES);
+  return [rowWithRightEdge(titleLine, countdown, CUE_TEXT_W), ...visible].join("\n");
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */
@@ -509,12 +581,18 @@ export function fitCaption(
  * The caption band while the popup is up (XERK-85): the same fitted rows, but
  * the rows the popup box touches are masked to "" — exactly what an opaque
  * popup would hide. Rows above and below keep flowing, so the conversation
- * visibly continues around the box and nothing renders underneath it.
+ * visibly continues around the box and nothing renders underneath it. The
+ * masked range depends on which popup is up: the menu covers MENU rows, the
+ * taller cue box covers CUE rows (XERK-112) — the controller passes the range.
  */
-export function occludedCaption(text: string): string {
+export function occludedCaption(
+  text: string,
+  firstRow = MENU_ROW_FIRST,
+  lastRow = MENU_ROW_LAST,
+): string {
   if (!text) return "";
   const rows = fitCaptionRows(text);
-  for (let r = MENU_ROW_FIRST; r <= MENU_ROW_LAST; r++) rows[r] = "";
+  for (let r = firstRow; r <= lastRow; r++) rows[r] = "";
   return rows.join("\n");
 }
 
