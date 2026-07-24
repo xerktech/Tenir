@@ -28,6 +28,7 @@ import {
 
 import { bootstrap } from "./bootstrap";
 import { configureApiFromWs } from "./config";
+import { CaptureProvider, useCaptureContext } from "./lib/capture";
 import { useAuth } from "./lib/controllers";
 import { NotifyProvider } from "./lib/notify";
 import { deviceKeyValue } from "./secureStorage";
@@ -41,7 +42,7 @@ import { saveLastTab, saveServerUrl } from "./storage";
 import { UpdateBanner } from "./ui/UpdateBanner";
 import { TabIcon } from "./ui/icons";
 import { ThemeProvider, useTheme, useThemedStyles } from "./ui/ThemeContext";
-import { space, type Palette } from "./ui/theme";
+import { space, withAlpha, type Palette } from "./ui/theme";
 
 const TABS = ["Live", "History", "Status", "Settings"] as const;
 type Tab = (typeof TABS)[number];
@@ -158,11 +159,30 @@ function Dashboard({
   initialTab: Tab;
   settings: JSX.Element;
 }): JSX.Element {
+  // The capture session lives above the tab switch so a live recording keeps
+  // running when you move to another tab (XERK-111); the shell reads it back to
+  // signal the ongoing recording from anywhere in the dashboard.
+  return (
+    <CaptureProvider wsUrl={wsUrl}>
+      <DashboardShell initialTab={initialTab} settings={settings} />
+    </CaptureProvider>
+  );
+}
+
+function DashboardShell({
+  initialTab,
+  settings,
+}: {
+  initialTab: Tab;
+  settings: JSX.Element;
+}): JSX.Element {
   const styles = useThemedStyles(makeStyles);
   // Start on the tab the user last had open (restored at bootstrap) and
   // persist each switch, so relaunching the app keeps the user's place — the
   // mobile equivalent of the web SPA surviving a page refresh (XERK-80).
   const [tab, setTab] = useState<Tab>(initialTab);
+  const { controller } = useCaptureContext();
+  const recording = controller.state.running;
   const selectTab = (next: Tab) => {
     setTab(next);
     saveLastTab(deviceKeyValue(), next);
@@ -171,13 +191,39 @@ function Dashboard({
     <View style={styles.fill}>
       {/* Content fills the space above the fixed bottom tab bar. */}
       <View style={styles.fill}>
-        {tab === "Live" && <LiveScreen wsUrl={wsUrl} />}
+        {/* Away from Live while recording: a reassurance the session is still
+            live, and a one-tap way back to it (XERK-111). */}
+        {recording && tab !== "Live" && <BackgroundRecordingBar onReturn={() => selectTab("Live")} />}
+        {tab === "Live" && <LiveScreen />}
         {tab === "History" && <HistoryScreen />}
         {tab === "Status" && <StatusScreen />}
         {tab === "Settings" && settings}
       </View>
-      <TabBar tab={tab} onSelect={selectTab} />
+      <TabBar tab={tab} recording={recording} onSelect={selectTab} />
     </View>
+  );
+}
+
+/**
+ * A live recording keeps running in the background when you leave the Live tab
+ * (XERK-111). This strip reassures the recording is still live from any other
+ * tab and returns to the Live screen in one tap, mirroring the web banner.
+ */
+function BackgroundRecordingBar({ onReturn }: { onReturn: () => void }): JSX.Element {
+  const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Recording in the background — return to Live"
+      onPress={onReturn}
+      style={styles.bgRecording}
+    >
+      <View style={[styles.recDot, { backgroundColor: colors.danger }]} />
+      <Text style={[styles.bgRecordingText, { color: colors.text }]}>
+        Recording in the background — return to Live
+      </Text>
+    </Pressable>
   );
 }
 
@@ -186,7 +232,15 @@ function Dashboard({
  * The active tab is tinted with the accent colour and carries the same 28×3 top
  * accent indicator as the web's bottom bar; the rest sit muted.
  */
-function TabBar({ tab, onSelect }: { tab: Tab; onSelect: (t: Tab) => void }): JSX.Element {
+function TabBar({
+  tab,
+  recording,
+  onSelect,
+}: {
+  tab: Tab;
+  recording: boolean;
+  onSelect: (t: Tab) => void;
+}): JSX.Element {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   return (
@@ -204,7 +258,14 @@ function TabBar({ tab, onSelect }: { tab: Tab; onSelect: (t: Tab) => void }): JS
             style={styles.tabItem}
           >
             {active && <View style={styles.tabActiveBar} />}
-            <TabIcon name={t} color={color} />
+            <View>
+              <TabIcon name={t} color={color} />
+              {/* A live recording keeps running in the background (XERK-111): a
+                  dot on the Live tab signals it from every screen. */}
+              {t === "Live" && recording && (
+                <View style={[styles.recDot, styles.tabRecDot, { backgroundColor: colors.danger }]} />
+              )}
+            </View>
             <Text style={[styles.tabLabel, { color }]}>{t}</Text>
           </Pressable>
         );
@@ -259,4 +320,23 @@ const makeStyles = (colors: Palette) =>
       backgroundColor: colors.accent,
     },
     tabLabel: { fontSize: 11, fontWeight: "600" },
+    // Live-recording indicator (XERK-111): a small danger-tinted dot, reused on
+    // the Live tab icon and in the background-recording bar.
+    recDot: { width: 8, height: 8, borderRadius: 4 },
+    tabRecDot: { position: "absolute", top: -3, right: -4 },
+    // The "recording in the background" strip shown above non-Live content.
+    bgRecording: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: space.sm,
+      marginHorizontal: space.lg,
+      marginTop: space.md,
+      paddingVertical: space.sm,
+      paddingHorizontal: space.md,
+      borderWidth: 1,
+      borderColor: withAlpha(colors.danger, 0.4),
+      borderRadius: 10,
+      backgroundColor: withAlpha(colors.danger, 0.1),
+    },
+    bgRecordingText: { fontSize: 13, fontWeight: "600" },
   });

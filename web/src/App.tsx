@@ -10,6 +10,7 @@
 import { describeLoginError, login, logout, me, type Principal } from "@tenir/client-core";
 import { useState, type FormEvent } from "react";
 
+import { CaptureProvider, useCaptureContext } from "./lib/capture";
 import { useAsync } from "./lib/hooks";
 import { useHashTab } from "./lib/route";
 import { useNotify } from "./lib/toast";
@@ -115,11 +116,24 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }): JSX.Element {
 }
 
 function Dashboard({ principal }: { principal: Principal }): JSX.Element {
+  // The capture session lives above the tab switch so a live recording keeps
+  // running when you move to another tab (XERK-111); the shell reads it back to
+  // signal the ongoing recording from anywhere in the dashboard.
+  return (
+    <CaptureProvider>
+      <DashboardShell principal={principal} />
+    </CaptureProvider>
+  );
+}
+
+function DashboardShell({ principal }: { principal: Principal }): JSX.Element {
   const isAdmin = principal.role === "admin";
   const tabs: Tab[] = [...BASE_TABS, ...(isAdmin ? ADMIN_TABS : [])];
   // The active tab is mirrored into the URL hash so a page refresh (or a
   // shared link) restores the same tab instead of resetting to Live (XERK-80).
   const [tab, setTab] = useHashTab<Tab>(tabs, "Live");
+  const { controller } = useCaptureContext();
+  const recording = controller.state.running;
   return (
     <div className="shell">
       <nav className="nav-tabs" aria-label="Sections">
@@ -130,12 +144,25 @@ function Dashboard({ principal }: { principal: Principal }): JSX.Element {
             aria-current={t === tab ? "page" : undefined}
             onClick={() => setTab(t)}
           >
-            <NavIcon page={t} />
+            <span className="nav-icon-wrap">
+              <NavIcon page={t} />
+              {/* A live recording keeps running in the background (XERK-111): a
+                  pulsing dot on the Live item signals it from every tab. */}
+              {t === "Live" && recording && <span className="rec-dot" aria-hidden="true" />}
+            </span>
             <span className="nav-label">{t}</span>
           </button>
         ))}
       </nav>
       <div className="content">
+        {/* Away from Live while recording: a reassurance the session is still
+            live, and a one-tap way back to it (XERK-111). */}
+        {recording && tab !== "Live" && (
+          <button type="button" className="bg-recording" onClick={() => setTab("Live")}>
+            <span className="rec-dot" aria-hidden="true" />
+            Recording in the background — return to Live
+          </button>
+        )}
         {tab === "Live" && <LivePanel />}
         {tab === "History" && <HistoryPanel />}
         {tab === "Status" && <StatusPanel />}

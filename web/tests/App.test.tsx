@@ -4,7 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { ToastProvider } from "../src/lib/toast";
 
-const { me } = vi.hoisted(() => ({ me: vi.fn() }));
+const { me, captureStats } = vi.hoisted(() => ({
+  me: vi.fn(),
+  // Instrumentation for the capture session so a test can prove the session is
+  // created once, above the tab switch, and never stopped on navigation, and can
+  // drive it into a "running" state to assert the background affordance (XERK-111).
+  captureStats: { constructed: 0, stops: 0, running: false },
+}));
 
 vi.mock("@tenir/client-core", () => ({
   configureApi: vi.fn(),
@@ -33,19 +39,23 @@ vi.mock("@tenir/client-core", () => ({
     stop: vi.fn(async () => {}),
   })),
   CaptureSession: class CaptureSession {
+    constructor() { captureStats.constructed += 1; }
     getState() {
       return {
-        running: false,
+        running: captureStats.running,
         connection: "closed" as const,
         listening: false,
         micSource: "phone-microphone" as const,
         segments: [],
         partial: "",
+        activeCue: null,
+        queuedCues: [],
+        pastCues: [],
       };
     }
     subscribe(_cb: unknown) { return () => {}; }
     start() { return Promise.resolve(false); }
-    stop() { return Promise.resolve(); }
+    stop() { captureStats.stops += 1; return Promise.resolve(); }
     togglePause() {}
   },
 }));
@@ -210,6 +220,59 @@ describe("URL hash routing", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-current", "page"),
     );
+  });
+
+  it("keeps the capture session alive across tab switches (XERK-111)", async () => {
+    captureStats.constructed = 0;
+    captureStats.stops = 0;
+    me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Live" })).toBeInTheDocument());
+
+    // One session is created for the dashboard, above the tabs...
+    expect(captureStats.constructed).toBe(1);
+
+    // ...and moving Live -> History -> Status -> Live neither tears it down nor
+    // spins up a new one: the recording keeps running in the background.
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "History" })).toHaveAttribute("aria-current", "page"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Status" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Status" })).toHaveAttribute("aria-current", "page"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Live" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-current", "page"),
+    );
+
+    expect(captureStats.constructed).toBe(1);
+    expect(captureStats.stops).toBe(0);
+  });
+
+  it("surfaces a background-recording affordance on other tabs while recording (XERK-111)", async () => {
+    captureStats.running = true;
+    try {
+      me.mockResolvedValue({ userId: "u1", username: "ada", household: "h1", role: "owner" });
+      renderApp();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Live" })).toBeInTheDocument());
+
+      // On Live itself there's no "return to Live" prompt — you're already there.
+      expect(screen.queryByText(/Recording in the background/)).not.toBeInTheDocument();
+
+      // Move to History: a prompt appears that the recording is still live, and
+      // tapping it jumps back to the Live panel.
+      fireEvent.click(screen.getByRole("button", { name: "History" }));
+      const banner = await screen.findByRole("button", { name: /Recording in the background/ });
+      fireEvent.click(banner);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Live" })).toHaveAttribute("aria-current", "page"),
+      );
+      expect(screen.queryByText(/Recording in the background/)).not.toBeInTheDocument();
+    } finally {
+      captureStats.running = false;
+    }
   });
 
   it("keeps non-admins deep-linking #/users on Live", async () => {

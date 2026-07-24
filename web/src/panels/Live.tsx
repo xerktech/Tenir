@@ -15,15 +15,14 @@ import {
   DISCLOSURES,
   isPinnedToBottom,
   liveTranscript,
-  wsFromHttpBase,
   type CueLevel,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 
-import { getServerUrl } from "../config";
+import { useCaptureContext } from "../lib/capture";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
-import { CUE_LEVELS, loadCueLevel, saveCueLevel } from "../lib/cueLevelStore";
-import { useCapture, type CaptureController } from "../lib/useCapture";
+import { CUE_LEVELS } from "../lib/cueLevelStore";
+import { type CaptureController } from "../lib/useCapture";
 import { Badge, Button, Card, CueDisclosure, EmptyState } from "../ui";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording");
@@ -264,13 +263,9 @@ function RecordingNotice({ onAccept }: { onAccept: () => void }): JSX.Element {
 
 export function LivePanel(): JSX.Element {
   const [accepted, setAccepted] = useState(() => recordingNoticeAccepted());
-  const [cueLevel, setCueLevel] = useState<CueLevel>(() => loadCueLevel());
-  const controller = useCapture(wsFromHttpBase(getServerUrl()), cueLevel);
-
-  const changeCueLevel = (l: CueLevel) => {
-    setCueLevel(l);
-    saveCueLevel(l);
-  };
+  // The session and cue level live in the app-level capture context so a live
+  // recording survives switching to another tab and back (XERK-111).
+  const { controller, cueLevel, setCueLevel } = useCaptureContext();
 
   if (!accepted) {
     return (
@@ -283,5 +278,5 @@ export function LivePanel(): JSX.Element {
     );
   }
 
-  return <LiveView controller={controller} cueLevel={cueLevel} onCueLevelChange={changeCueLevel} />;
+  return <LiveView controller={controller} cueLevel={cueLevel} onCueLevelChange={setCueLevel} />;
 }

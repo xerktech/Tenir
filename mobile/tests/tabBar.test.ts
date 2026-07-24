@@ -58,7 +58,7 @@ describe("last-tab restore across relaunches", () => {
 
   it("persists each tab switch", () => {
     expect(app).toContain("saveLastTab(deviceKeyValue(), next)");
-    expect(app).toContain("<TabBar tab={tab} onSelect={selectTab} />");
+    expect(app).toContain("<TabBar tab={tab} recording={recording} onSelect={selectTab} />");
   });
 });
 
