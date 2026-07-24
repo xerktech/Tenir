@@ -139,9 +139,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------ bump ----
-  # Minor/major only, and only for real: commit the new VERSION + a CHANGELOG.md
-  # rollup to main BEFORE the builds, so the tag lands on a commit whose VERSION
+  # Minor/major only, and only for real: land the new VERSION + a CHANGELOG.md
+  # rollup on main BEFORE the builds, so the tag lands on a commit whose VERSION
   # already matches. Patch releases never touch the repo.
+  #
+  # The default-branch ruleset requires every change to main to arrive via a
+  # merged pull request (no direct pushes, no bypass actors), so the bump can't
+  # push straight to main — it opens and merges a PR with the workflow token
+  # (see the commit step). Needs pull-requests:write for that, on top of the
+  # contents:write the merge itself takes.
   bump:
     needs: plan
     if: >-
@@ -150,6 +156,9 @@ jobs:
       && needs.plan.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write # push the bump branch, merge the PR
+      pull-requests: write # open the bump PR
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
@@ -173,16 +182,50 @@ jobs:
           DATE="$(date -u +%Y-%m-%d)" NEW_VERSION="$NEW_VERSION" \
             BASE_MAJOR="$BASE_MAJOR" BASE_MINOR="$BASE_MINOR" \
             node .github/scripts/changelog-cli.js
-      - name: Commit + push
+      # The default-branch ruleset forbids a direct `git push origin HEAD:main`,
+      # so land the bump the sanctioned way: push a short-lived branch, open a
+      # PR, and merge it with the workflow token. The ruleset requires zero
+      # approvals and no status checks, so the PR is immediately mergeable; the
+      # resulting squash commit on main is the sha the builds and the tag hang
+      # off. VERSION/CHANGELOG.md are outside the push trigger's path filter, so
+      # merging this commit does not itself re-trigger the release. Both the
+      # branch push and the PR create/merge tolerate a leftover branch/PR from a
+      # superseded run, so a retried release is self-healing.
+      - name: Commit + merge bump PR
         id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="release/bump-${TAG}"
+          git switch -c "$BRANCH"
           git add VERSION CHANGELOG.md
-          git commit -m "Release ${{ needs.plan.outputs.tag }}"
-          git push origin HEAD:main
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git commit -m "Release ${TAG}"
+          # --force: this branch is automation-owned and may linger from a prior
+          # failed run; overwrite it rather than fail on a non-fast-forward.
+          git push --force origin "$BRANCH"
+          # Reuse an existing PR if a prior run already opened one for this head.
+          gh pr create --base main --head "$BRANCH" \
+            --title "Release ${TAG}" \
+            --body "Automated VERSION + CHANGELOG.md rollup for ${TAG}, merged by the release workflow." \
+            || echo "A PR for ${BRANCH} already exists — reusing it."
+          # Mergeability is computed asynchronously just after create; retry.
+          for attempt in 1 2 3 4 5 6; do
+            if gh pr merge "$BRANCH" --squash --delete-branch; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::bump PR for ${TAG} never became mergeable" >&2
+              exit 1
+            fi
+            echo "merge not ready (attempt ${attempt}) — retrying in 5s"
+            sleep 5
+          done
+          git fetch origin main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
 
   # ------------------------------------------------------------- build: api ---
   # Self-hosted: the api image is a multi-stage build with the REPO ROOT as its
