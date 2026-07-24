@@ -362,6 +362,28 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.text(C().clock)).toBe("2:06 PM");
   });
 
+  it("keeps the clock and listening dots live while the app is backgrounded (XERK-113)", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    t.api.handlers().onConnectionChange?.("open");
+    await settle();
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().status)).toBe("listening..");
+
+    // Wearer pockets the phone: the glasses keep showing the lens over BLE, so
+    // the dots must still move and the clock must still follow the minute.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.FOREGROUND_EXIT_EVENT } } as EvenHubEvent);
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().status)).toBe("listening..."); // dots advanced while backgrounded
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().status)).toBe("listening.");
+
+    vi.setSystemTime(new Date(2026, 6, 22, 14, 7));
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    expect(t.text(C().clock)).toBe("2:07 PM"); // clock still follows the minute
+  });
+
   it("renders captions fitted to the band — bottom-anchored, old text dropped", async () => {
     const t = await boot();
     t.controls.enable();
