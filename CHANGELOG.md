@@ -5,3 +5,7 @@ This file rolls up each **minor** release — the changes since the previous min
 `RELEASING.md`.
 
 <!-- releases:newest-first -->
+
+## 0.2.0 — 2026-07-24
+
+_No changes._
