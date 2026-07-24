@@ -706,3 +706,98 @@ describe("wireLens cues (XERK-81)", () => {
     expect(cueLine!.querySelector<HTMLElement>(".cue-inline-body")!.hidden).toBe(true);
   });
 });
+
+describe("wireLens cue scrolling (XERK-112)", () => {
+  // A body that wraps well past the box's three visible rows.
+  const LONG = {
+    type: "cue" as const,
+    cueId: "long1",
+    title: "History",
+    body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
+    atMs: 1000,
+  };
+  const SHORT = {
+    type: "cue" as const,
+    cueId: "short1",
+    title: "Sun",
+    body: "About 150 million km away.",
+    atMs: 1000,
+  };
+  const record = async () => {
+    const t = await boot();
+    t.controls.enable();
+    await settle();
+    await t.click();
+    await settle();
+    return t;
+  };
+
+  it("scrolls a long cue's body a row at a time, both ways, clamped to the body", async () => {
+    const t = await record();
+    // Sanity: this body really does overflow the box (so there is something to scroll).
+    expect(layout.cueMaxScroll(LONG.body)).toBeGreaterThanOrEqual(2);
+
+    t.api.handlers().onCue?.(LONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 0)); // starts at the top
+
+    // Swipe down walks the window toward the end; each swipe resets the count.
+    await t.swipeDown();
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 1));
+    await t.swipeDown();
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2));
+
+    // Swipe up walks it back toward the start, and never past the top.
+    await t.swipeUp();
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 1));
+    await t.swipeUp();
+    await t.swipeUp();
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 0)); // clamped at 0
+  });
+
+  it("ignores swipes on a cue whose body already fits", async () => {
+    const t = await record();
+    expect(layout.cueMaxScroll(SHORT.body)).toBe(0);
+
+    t.api.handlers().onCue?.(SHORT);
+    await vi.advanceTimersByTimeAsync(50);
+    const before = t.text(C().menu);
+    await t.swipeDown();
+    await t.swipeUp();
+    expect(t.text(C().menu)).toBe(before); // nothing scrolled
+  });
+
+  it("a swipe resets the auto-dismiss so a long cue can be read past its TTL", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(LONG);
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Read on: a swipe roughly 8s in restarts the dismiss timer.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000);
+    await t.swipeDown();
+
+    // Past the ORIGINAL TTL, the box is still up — the swipe bought it more time.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+
+    // A full fresh TTL after the swipe, it finally auto-dismisses.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("each freshly-surfaced cue starts at the top of its own body", async () => {
+    const t = await record();
+    const CUE2 = { ...LONG, cueId: "long2", title: "Geography" };
+    t.api.handlers().onCue?.(LONG);
+    await vi.advanceTimersByTimeAsync(50);
+    // Queue a second cue behind the first, then scroll the first down.
+    t.api.handlers().onCue?.(CUE2);
+    await t.swipeDown();
+    await t.swipeDown();
+    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2));
+
+    // When the first releases at its TTL, the second pops at the top, not at 2.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10, 0));
+  });
+});
