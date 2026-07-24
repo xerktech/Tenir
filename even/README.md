@@ -90,6 +90,41 @@ The committed `app.json` keeps the localhost dev whitelist; `scripts/gen-app-jso
 writes a deploy-ready `app.packed.json` (gitignored) from it + `TENIR_API_HOSTS`,
 and `pack` packs that.
 
+## Publish to the Even Hub dev portal
+
+`scripts/evenhub-publish.mjs` automates the dev-portal upload the portal UI
+does by hand — bump, pack, and push a new version in one command:
+
+```bash
+# bump app.json, run `npm run pack`, upload draft + create the version
+TENIR_API_HOSTS='*' npm run publish:hub -- \
+  --next-version 0.1.2 --changelog 'Private build 0.1.2'
+
+# upload an already-packed tenir.ehpk as-is
+npm run publish:hub -- --skip-build --changelog 'Private build'
+
+# everything except the upload (no credentials needed)
+npm run publish:hub -- --dry-run
+```
+
+Under the hood it POSTs the portal's own API (`/api/v1/versions/draft` with
+the `.ehpk` as multipart, then `/api/v1/versions/create` with the returned
+`draft_id` + changelog) using the same `X-Even-Authorization` JWT the
+`evenhub` CLI manages. Auth resolves in order:
+
+1. `EVENHUB_TOKEN` — a raw access token, used verbatim;
+2. `~/.config/evenhub/credentials.yaml` — written by `npx evenhub login`;
+   access tokens expire after ~10 min, so the script auto-refreshes via
+   `/api/v1/auth/refresh` and persists the new tokens back (as the CLI does);
+3. `EVENHUB_EMAIL` + `EVENHUB_PASSWORD` — non-interactive login, for CI.
+
+After a publish: **promoting the build is still manual** in the portal; then
+force-quit and reopen the Even app on the phone and hit Update on the app.
+`EVENHUB_BASE_URL` overrides the portal host (default
+`https://hub.evenrealities.com`). Note the portal API is unofficial —
+reverse-engineered from the CLI and portal traffic — so treat breakage after
+portal updates as expected, not as a bug in the script.
+
 ### BYO self-hosting (arbitrary user servers)
 
 The api URL is a **runtime, user-editable setting** (phone login → Server), so the

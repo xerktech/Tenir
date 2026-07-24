@@ -166,7 +166,9 @@ Pipeline:
 ```bash
 npm run build
 npx evenhub pack app.json dist -o tenir.ehpk   # -c checks package_id availability
-# submit .ehpk to the Even Hub developer portal
+# submit .ehpk to the Even Hub developer portal — or automate it:
+#   npm run publish:hub -w tenir-even -- --next-version x.y.z --changelog '...'
+# (see even/README.md "Publish to the Even Hub dev portal")
 npx evenhub qr --url http://<ip>:5173                      # live test on real glasses (hot reload)
 ```
 
