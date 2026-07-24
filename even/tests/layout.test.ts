@@ -23,6 +23,7 @@ import {
   MENU_PAD,
   MENU_ROW_FIRST,
   MENU_ROW_LAST,
+  MENU_TEXT_W,
   MENU_W,
   MENU_Y,
   menuText,
@@ -425,13 +426,53 @@ describe("cue popup (XERK-81)", () => {
   });
 
   it("builds the same bordered strip as the menu, carrying the cue text", () => {
-    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, cue);
+    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, cue, 7);
     expect(page.containerTotalNum).toBe(5);
     const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
     expect(popup.yPosition).toBe(MENU_Y); // a strip from the top of the screen
     expect(popup.height).toBe(MENU_H);
     expect(popup.borderWidth).toBe(MENU_BORDER);
     expect(popup.isEventCapture).toBe(0);
-    expect(popup.content).toBe(cueText(cue));
+    expect(popup.content).toBe(cueText(cue, 7));
+  });
+
+  describe("countdown to dismissal (XERK-110)", () => {
+    it("ends the title row with the seconds left, flush to the right edge", () => {
+      const rows = cueText(cue, 7).split("\n");
+      expect(rows).toHaveLength(2); // still two rows — the box has room for no more
+      expect(rows[0]).toMatch(/^SUN {2,}7s$/); // title left, count right, gap between
+      // The count sits as far right as whole spaces reach: one more space would
+      // push it past the row.
+      const spaceWidth = getTextWidth(" ");
+      expect(getTextWidth(rows[0])).toBeLessThanOrEqual(MENU_TEXT_W);
+      expect(getTextWidth(rows[0]) + spaceWidth).toBeGreaterThan(MENU_TEXT_W);
+    });
+
+    it("keeps every count from 10s down to 0s inside the box", () => {
+      for (let s = 10; s >= 0; s--) {
+        const rows = cueText(cue, s).split("\n");
+        expect(rows).toHaveLength(2);
+        expect(rows[0].endsWith(`${s}s`)).toBe(true);
+        for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(MENU_TEXT_W);
+      }
+    });
+
+    it("trims a long title rather than letting it push the count off the row", () => {
+      const long = {
+        title: "A ludicrously long cue title that could never fit one lens row",
+        body: "Body.",
+      };
+      const rows = cueText(long, 3).split("\n");
+      expect(rows).toHaveLength(2);
+      expect(rows[0].endsWith("3s")).toBe(true);
+      expect(getTextWidth(rows[0])).toBeLessThanOrEqual(MENU_TEXT_W);
+      // The title lost its tail to make room; what remains is its own start.
+      expect(long.title.toUpperCase().startsWith(rows[0].split("  ")[0])).toBe(true);
+    });
+
+    it("leaves the row as the bare title when no countdown is given", () => {
+      expect(cueText(cue)).toBe(`SUN\n${cueText(cue).split("\n")[1]}`);
+      expect(cueText(cue).split("\n")[0]).toBe("SUN");
+    });
   });
 });

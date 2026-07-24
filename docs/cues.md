@@ -14,6 +14,16 @@ Where they appear:
   full-width popup strip the double-tap menu uses (XERK-85), showing the cue's
   title over its detail, auto-dismissed after 10s. The interactive menu takes
   precedence: a cue arriving while the menu is open is dropped.
+
+Every live surface counts that dismissal down (XERK-110): across from the title,
+in the cue's top-right corner, `10s` → `9s` → … → `0s`. The count is derived from
+when the cue went up (`cueSecondsLeft` in client-core, shared by all three
+frontends) rather than decremented per tick, so a throttled tab or a
+backgrounded app resyncs to the truth instead of drifting away from the release
+timer. On the lens — where a row is one string and there is no alignment control
+— it is spaced out to the right edge of the popup's title row, and the title is
+trimmed to whatever width that leaves. History cues carry no countdown: they are
+kept permanently, so there is nothing to count down to.
 - **History** (web + mobile + glasses phone History page): an inline, clickable
   box at the point in the transcript where the cue appeared; tapping it opens a
   popup with the detail (not a new page).

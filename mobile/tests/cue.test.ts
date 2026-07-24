@@ -68,6 +68,35 @@ describe("released cues are embedded inline in the live transcript (XERK-108)", 
   });
 });
 
+describe("live cue counts down to its dismissal (XERK-110)", () => {
+  const cue = readText("src/ui/cue.tsx");
+
+  it("derives the count from the shared client-core helpers, not its own timing", () => {
+    // Same primitives the web card and the lens box use, so all three surfaces
+    // count identically (10s, 9s, … 0s) off the one TTL.
+    expect(cue).toContain("cueSecondsLeft");
+    expect(cue).toContain("cueCountdownLabel");
+    expect(cue).toContain("CUE_COUNTDOWN_TICK_MS");
+    // Derived from when the cue appeared rather than decremented per tick, so a
+    // backgrounded app resyncs instead of drifting from the release timer.
+    expect(cue).toContain("const startedAt = Date.now();");
+    expect(cue).toContain("setSecondsLeft(cueSecondsLeft(Date.now() - startedAt))");
+    // Restarts per cue: a promoted cue gets its own full countdown.
+    expect(cue).toContain("}, [cueId]);");
+    expect(cue).toContain("useCueCountdown(cue?.id)");
+  });
+
+  it("paints the count across from the title, out of the a11y tree", () => {
+    // Title left, countdown right, on one row of the card.
+    expect(cue).toMatch(/cardHead: \{[\s\S]*?justifyContent: "space-between"/);
+    expect(cue).toContain("<View style={styles.cardHead}>");
+    expect(cue).toContain("{cueCountdownLabel(secondsLeft)}");
+    // A number changing every second must not be read out over the cue itself.
+    expect(cue).toContain('importantForAccessibility="no-hide-descendants"');
+    expect(cue).toContain("accessibilityElementsHidden");
+  });
+});
+
 describe("live cue floats over the transcript (XERK-107)", () => {
   const cue = readText("src/ui/cue.tsx");
   const live = readText("src/screens/Live.tsx");

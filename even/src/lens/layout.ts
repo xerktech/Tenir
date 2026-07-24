@@ -35,6 +35,8 @@ import {
 } from "@evenrealities/even_hub_sdk";
 import { getTextWidth } from "@evenrealities/pretext";
 
+import { cueCountdownLabel } from "@tenir/client-core";
+
 export const SCREEN_W = 576;
 export const SCREEN_H = 288;
 export const LINE_H = 27; // baked-in LVGL line height
@@ -88,6 +90,12 @@ export const MENU_Y = 0;
 // The caption-band rows the box touches (0-based within the band): masked to
 // "" while the popup is up so nothing renders underneath the box. (The box
 // also covers the status line above the band — blanked separately.)
+// The width the popup's own rows get: the strip minus its border and padding
+// on both sides, measured with the same safety margin as the caption band.
+// Text laid out for the box (menu rows, a cue's title/detail) must wrap at THIS
+// width — the full screen width would wrap late and spill the box onto a third
+// line it has no room for.
+export const MENU_TEXT_W = MENU_W - 2 * (MENU_PAD + MENU_BORDER) - MEASURE_SAFETY_PX;
 export const MENU_ROW_FIRST = Math.max(0, Math.floor((MENU_Y - LINE_H) / LINE_H));
 export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
@@ -223,8 +231,12 @@ export function buildMenuPage(contents: PageContents, selected: MenuChoice): Reb
  * private context card's title over its detail — a bordered box above the live
  * transcript, private to the wearer, auto-dismissed by the controller after ~10s.
  */
-export function buildCuePage(contents: PageContents, cue: CueCard): RebuildPageContainer {
-  return popupPage(contents, cueText(cue));
+export function buildCuePage(
+  contents: PageContents,
+  cue: CueCard,
+  secondsLeft?: number,
+): RebuildPageContainer {
+  return popupPage(contents, cueText(cue, secondsLeft));
 }
 
 /** A private context cue shown on the lens (XERK-81). */
@@ -234,14 +246,43 @@ export interface CueCard {
 }
 
 /**
+ * Lay a left and a right label out on one popup row, the right one flush to
+ * the row's right edge (XERK-110). The lens has no alignment control — a row
+ * is one string — so the gap is spelled out in spaces, sized by measuring them
+ * against the slack the two labels leave. `left` must already be narrow enough
+ * to leave room for `right`, which `cueText` guarantees by wrapping to the
+ * reduced width; the single-space floor is a belt-and-braces guard so the two
+ * can never run together even if a font measures unexpectedly.
+ */
+function rowWithRightEdge(left: string, right: string, width: number): string {
+  if (!right) return left;
+  const spaceWidth = getTextWidth(" ");
+  if (spaceWidth <= 0) return `${left} ${right}`;
+  const slack = width - getTextWidth(left) - getTextWidth(right);
+  const spaces = Math.max(1, Math.floor(slack / spaceWidth));
+  return `${left}${" ".repeat(spaces)}${right}`;
+}
+
+/**
  * Fit a cue into the two rows of the popup box: the title (upper-cased) over
  * the first line of the detail that fits the strip width. The box clips the
  * rest; the full cue lives on the phone Session/History pages.
+ *
+ * `secondsLeft` (XERK-110) paints the countdown to auto-dismissal at the right
+ * end of the title row — the lens counterpart to the countdown in the top-right
+ * corner of the web/mobile cue cards. The title is wrapped to whatever width
+ * the countdown leaves, so a long one is trimmed instead of pushing the row
+ * over the edge and wrapping the box into a third line it has no room for.
+ * Omitted (no countdown) the row is the title alone.
  */
-export function cueText(cue: CueCard): string {
-  const titleLine = wrapLines(cue.title.toUpperCase())[0] ?? cue.title.toUpperCase();
-  const bodyLine = wrapLines(cue.body)[0] ?? cue.body;
-  return `${titleLine}\n${bodyLine}`;
+export function cueText(cue: CueCard, secondsLeft?: number): string {
+  const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
+  // Reserve the countdown plus one space of separation out of the title's row.
+  const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
+  const upper = cue.title.toUpperCase();
+  const titleLine = wrapLines(upper, MENU_TEXT_W - reserved)[0] ?? upper;
+  const bodyLine = wrapLines(cue.body, MENU_TEXT_W)[0] ?? cue.body;
+  return `${rowWithRightEdge(titleLine, countdown, MENU_TEXT_W)}\n${bodyLine}`;
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */

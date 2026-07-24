@@ -31,7 +31,7 @@
 
 import { OsEventTypeList, type EvenAppBridge, type EvenHubEvent } from "@evenrealities/even_hub_sdk";
 
-import { ApiClient, type ApiHandlers, type SessionParams } from "@tenir/client-core";
+import { ApiClient, cueSecondsLeft, type ApiHandlers, type SessionParams } from "@tenir/client-core";
 
 import { AudioCapture, pcmBytes } from "../audio/capture";
 import { config } from "../config";
@@ -161,6 +161,10 @@ export async function wireLens(
     pastCues: [],
   };
   let cueTimer: ReturnType<typeof setTimeout> | null = null;
+  // When the cue currently in the box went up, so its countdown (XERK-110) can
+  // be derived on every tick rather than decremented — the ticker idles while
+  // the lens is backgrounded, and a derived count comes back correct.
+  let cueShownAt: number | null = null;
   let enabled = false; // signed in — clicks act only while enabled
   let foreground = true; // lens visible — the ticker idles while backgrounded
   let tick = 0;
@@ -200,11 +204,16 @@ export async function wireLens(
     clock: clockContent(),
   });
   const renderCaption = () => writer.set(CONTAINER.caption, pageContents().caption);
-  // Repaint the shared popup box: the menu highlight, or the cue's text.
+  // Seconds left before the cue in the box is auto-dismissed (XERK-110), for
+  // the countdown at the right end of its title row.
+  const cueCountdown = () => cueSecondsLeft(cueShownAt == null ? 0 : Date.now() - cueShownAt);
+  // Repaint the shared popup box: the menu highlight, or the cue's text (which
+  // carries its countdown, so this is also how the countdown advances — the
+  // writer drops the frame whenever the second hasn't turned over).
   const renderMenu = () => {
     if (menuFallback) return;
     if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
-    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue));
+    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue, cueCountdown()));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
   // The clock shows whenever signed in — on the idle "ready" page and while
@@ -217,6 +226,7 @@ export async function wireLens(
       segments: state.segments,
       partial: state.partial,
       cue: state.cue,
+      cueSecondsLeft: cueCountdown(),
       pastCues: state.pastCues,
     });
 
@@ -231,7 +241,7 @@ export async function wireLens(
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
       : state.cue
-        ? buildCuePage(contents, state.cue)
+        ? buildCuePage(contents, state.cue, cueCountdown())
         : buildMainPage(contents);
     const openingMenu = state.menu !== null;
     const openingCue = state.menu === null && state.cue !== null;
@@ -247,8 +257,7 @@ export async function wireLens(
         // A cue is a best-effort aside — if its popup page never appeared,
         // drop it rather than leave the caption band masked with no box.
         state.cue = null;
-        if (cueTimer) clearTimeout(cueTimer);
-        cueTimer = null;
+        clearCueTimer();
         writer.set(CONTAINER.caption, pageContents().caption);
       }
     });
@@ -375,8 +384,7 @@ export async function wireLens(
     state.cue = null;
     state.cueQueue = [];
     state.pastCues = []; // the transcript is cleared on stop, so the review cues go with it
-    if (cueTimer) clearTimeout(cueTimer);
-    cueTimer = null;
+    clearCueTimer();
     menuFallback = false;
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
@@ -421,6 +429,14 @@ export async function wireLens(
     tick += 1;
     renderClock();
     if (state.recording && state.connection === "open") renderStatus();
+    // Advance the live cue's countdown (XERK-110) on both surfaces it shows on.
+    // TICK_MS is well under a second, so the number never lags the release
+    // timer by more than a tick; unchanged frames cost no BLE write, and the
+    // phone gets a targeted text update rather than a transcript rebuild.
+    if (state.cue) {
+      renderMenu();
+      sessionPage?.tickCue(cueCountdown());
+    }
   }, TICK_MS);
 
   // The single event subscription (audio + gestures + system events). Touch
@@ -456,7 +472,16 @@ export async function wireLens(
 
   const startCueTimer = () => {
     if (cueTimer) clearTimeout(cueTimer);
+    // The countdown (XERK-110) runs off the same instant the release timer does.
+    cueShownAt = Date.now();
     cueTimer = setTimeout(() => dismissCue(), CUE_TTL_MS);
+  };
+
+  /** Cancel the pending auto-dismiss, and with it the countdown behind it. */
+  const clearCueTimer = () => {
+    if (cueTimer) clearTimeout(cueTimer);
+    cueTimer = null;
+    cueShownAt = null;
   };
 
   /**
@@ -491,10 +516,7 @@ export async function wireLens(
   };
 
   const dismissCue = () => {
-    if (cueTimer) {
-      clearTimeout(cueTimer);
-      cueTimer = null;
-    }
+    clearCueTimer();
     if (!state.cue) return;
     // The dismissed cue drops into the transcript for review (XERK-108), then
     // the next queued cue (if any) pops immediately (XERK-102); otherwise the box
@@ -514,8 +536,7 @@ export async function wireLens(
     if (state.cue) {
       embedPastCue(state.cue);
       state.cue = null;
-      if (cueTimer) clearTimeout(cueTimer);
-      cueTimer = null;
+      clearCueTimer();
     }
     state.menu = "continue"; // Continue is the default
     rebuildPage();

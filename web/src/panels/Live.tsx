@@ -8,7 +8,10 @@
  */
 
 import {
+  CUE_COUNTDOWN_TICK_MS,
   CUE_EXIT_MS,
+  cueCountdownLabel,
+  cueSecondsLeft,
   DISCLOSURES,
   isPinnedToBottom,
   liveTranscript,
@@ -81,6 +84,30 @@ function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } 
 }
 
 /**
+ * Count the seconds a cue has left on screen (XERK-110).
+ *
+ * The countdown is derived from a timestamp taken when the cue appeared rather
+ * than decremented per tick, so a throttled tab (or a slow frame) resyncs to
+ * the truth instead of accumulating drift away from the release timer in
+ * `CaptureSession`. It restarts whenever a different cue takes the band —
+ * including a queued cue promoted into it, which gets its own full countdown.
+ */
+function useCueCountdown(cueId: string | undefined): number {
+  const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
+  useEffect(() => {
+    if (!cueId) return;
+    setSecondsLeft(cueSecondsLeft(0));
+    const startedAt = Date.now();
+    const timer = window.setInterval(
+      () => setSecondsLeft(cueSecondsLeft(Date.now() - startedAt)),
+      CUE_COUNTDOWN_TICK_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [cueId]);
+  return secondsLeft;
+}
+
+/**
  * The single active private-context cue over the live transcript (XERK-102).
  * One cue shows at a time; any others wait in a FIFO queue and pop the moment
  * this one is released. When the queue is non-empty a small "+N more" note tells
@@ -102,6 +129,7 @@ function LiveCueBand({
   queuedCount: number;
 }): JSX.Element | null {
   const { cue, exiting } = useCueExit(activeCue);
+  const secondsLeft = useCueCountdown(cue?.id);
   if (!cue) return null;
   return (
     <div
@@ -110,7 +138,16 @@ function LiveCueBand({
       aria-hidden={exiting || undefined}
     >
       <div className="cue-card" key={cue.id}>
-        <div className="cue-card-title">{cue.title}</div>
+        <div className="cue-card-head">
+          <div className="cue-card-title">{cue.title}</div>
+          {/* The countdown to auto-dismissal (XERK-110), across from the title.
+              Hidden from the accessibility tree on purpose: the card announces
+              itself politely, and a number changing every second inside that
+              live region would re-announce the whole cue once a second. */}
+          <div className="cue-card-countdown" aria-hidden="true">
+            {cueCountdownLabel(secondsLeft)}
+          </div>
+        </div>
         <div className="cue-card-body">{cue.body}</div>
       </div>
       {queuedCount > 0 && (

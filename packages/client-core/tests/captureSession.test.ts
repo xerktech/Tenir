@@ -6,6 +6,8 @@ import type { PcmAudioSource } from "../src/pcmSource";
 import {
   CaptureSession,
   CUE_TTL_MS,
+  cueCountdownLabel,
+  cueSecondsLeft,
   initialCaptureState,
   liveTranscript,
   reduce,
@@ -155,6 +157,44 @@ describe("reduce", () => {
     expect(s.pastCues.length).toBe(60);
     expect(s.pastCues[0].id).toBe("c10"); // oldest dropped
     expect(s.pastCues[s.pastCues.length - 1].id).toBe("c69");
+  });
+});
+
+// ---- the live cue countdown (XERK-110) -------------------------------------
+
+describe("cueSecondsLeft", () => {
+  it("counts the whole seconds a cue still has on screen", () => {
+    // The full count the instant it lands, and each boundary counts as the
+    // second about to elapse — 9.001s left still reads as 10.
+    expect(cueSecondsLeft(0)).toBe(10);
+    expect(cueSecondsLeft(999)).toBe(10);
+    expect(cueSecondsLeft(1000)).toBe(9);
+    expect(cueSecondsLeft(1001)).toBe(9);
+    expect(cueSecondsLeft(CUE_TTL_MS - 1000)).toBe(1);
+    // 1 through the whole final second; 0 only once the cue is actually gone.
+    expect(cueSecondsLeft(CUE_TTL_MS - 1)).toBe(1);
+    expect(cueSecondsLeft(CUE_TTL_MS)).toBe(0);
+  });
+
+  it("clamps to the range the cue ever had", () => {
+    // A late timer or a clock that jumped can't paint a negative count…
+    expect(cueSecondsLeft(CUE_TTL_MS * 3)).toBe(0);
+    // …nor one above the TTL it started from.
+    expect(cueSecondsLeft(-5000)).toBe(10);
+  });
+
+  it("honours a caller's own TTL", () => {
+    expect(cueSecondsLeft(0, 4000)).toBe(4);
+    expect(cueSecondsLeft(2500, 4000)).toBe(2);
+    expect(cueSecondsLeft(4000, 4000)).toBe(0);
+  });
+});
+
+describe("cueCountdownLabel", () => {
+  it("renders the count the way every cue surface paints it", () => {
+    expect(cueCountdownLabel(10)).toBe("10s");
+    expect(cueCountdownLabel(1)).toBe("1s");
+    expect(cueCountdownLabel(0)).toBe("0s");
   });
 });
 
