@@ -37,6 +37,26 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
 }
 
+// Consecutive spoken turns are grouped into a run so they can render inside one
+// selectable <Text> — RN only extends a text selection within a single <Text>
+// tree, so a run is the largest span a drag-select can cover. A cue is a
+// separate tappable view (the collapsed dropdown), so it ends the current run.
+type Run = { kind: "segments"; segs: SegmentView[] } | { kind: "cue"; cue: CueView };
+
+function runs(items: TranscriptItem[]): Run[] {
+  const out: Run[] = [];
+  for (const item of items) {
+    if (item.kind === "cue") {
+      out.push({ kind: "cue", cue: item.cue });
+    } else {
+      const last = out[out.length - 1];
+      if (last && last.kind === "segments") last.segs.push(item.seg);
+      else out.push({ kind: "segments", segs: [item.seg] });
+    }
+  }
+  return out;
+}
+
 export function HistoryScreen(): JSX.Element {
   const notify = useNotify();
   const ctrl = useHistory();
@@ -133,16 +153,25 @@ function Detail({
         {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 && (
           <Muted>No transcript was recorded for this session.</Muted>
         )}
-        {items.map((item) =>
-          item.kind === "segment" ? (
-            // Transcript text is selectable so it can be long-pressed and copied
-            // (XERK-104); `selectable` on the row also covers the nested timing.
-            <Text key={item.seg.segmentId} selectable style={{ color: colors.text }}>
-              <Text style={{ color: colors.muted }}>[{msToClock(item.seg.startMs)}] </Text>
-              {item.seg.text}
-            </Text>
+        {/* Each run of consecutive turns is ONE selectable <Text>, so a
+            selection can be dragged across every turn in it and copied
+            (XERK-104). RN only extends a selection within a single <Text> tree;
+            a cue dropdown is a separate view, so it necessarily ends a run —
+            selecting across a cue is a documented platform gap vs. the web/even
+            DOM clients, where selection spans the whole transcript. */}
+        {runs(items).map((run, i) =>
+          run.kind === "cue" ? (
+            <CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />
           ) : (
-            <CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />
+            <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
+              {run.segs.map((seg, j) => (
+                <Text key={seg.segmentId}>
+                  {j > 0 ? "\n" : null}
+                  <Text style={{ color: colors.muted }}>[{msToClock(seg.startMs)}] </Text>
+                  {seg.text}
+                </Text>
+              ))}
+            </Text>
           ),
         )}
       </View>
