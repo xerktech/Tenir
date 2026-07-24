@@ -8,7 +8,7 @@
  * framework-agnostic `CaptureSession`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -23,14 +23,12 @@ import {
   isPinnedToBottom,
   liveTranscript,
   type CaptureSegment,
-  type CueLevel,
   type LiveCue,
   type LiveTranscriptItem,
 } from "@tenir/client-core";
-import { useCapture } from "../lib/useCapture";
+import { useCaptureContext } from "../lib/capture";
+import type { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
-import { deviceKeyValue } from "../secureStorage";
-import { loadCueLevel, saveCueLevel } from "../storage";
 import { CueDisclosure, CueLevelToggle, LiveCueBand } from "../ui/cue";
 import {
   Badge,
@@ -74,9 +72,10 @@ function connectionLabel(state: ReturnType<typeof useCapture>["state"]): string 
   return "× reconnecting";
 }
 
-export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
-  const [cueLevel, setCueLevel] = useState<CueLevel>("balanced");
-  const cap = useCapture(wsUrl, cueLevel);
+export function LiveScreen(): JSX.Element {
+  // The session and cue level live in the app-level capture context so a live
+  // recording survives switching to another tab and back (XERK-111).
+  const { controller: cap, cueLevel, setCueLevel } = useCaptureContext();
   const notify = useNotify();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -100,20 +99,6 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   };
   const followNewest = () => {
     if (pinnedRef.current) scrollRef.current?.scrollToEnd({ animated: false });
-  };
-
-  // Hydrate the persisted cue-level preference once on mount.
-  useEffect(() => {
-    let live = true;
-    void loadCueLevel(deviceKeyValue()).then((l) => live && setCueLevel(l));
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  const changeCueLevel = (l: CueLevel) => {
-    setCueLevel(l);
-    void saveCueLevel(deviceKeyValue(), l);
   };
 
   const start = async () => {
@@ -178,7 +163,7 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
           )}
         </Row>
         {!state.running && <Muted>{RECORDING_NOTICE}</Muted>}
-        <CueLevelToggle level={cueLevel} onChange={changeCueLevel} />
+        <CueLevelToggle level={cueLevel} onChange={setCueLevel} />
       </Card>
 
       {/* The cue floats inside this stage, over the transcript's top edge, so it

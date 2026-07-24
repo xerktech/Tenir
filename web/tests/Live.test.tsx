@@ -5,6 +5,7 @@ import { CUE_EXIT_MS } from "@tenir/client-core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CaptureProvider } from "../src/lib/capture";
 import type { CaptureController } from "../src/lib/useCapture";
 import { LivePanel, LiveView } from "../src/panels/Live";
 
@@ -299,7 +300,12 @@ describe("LivePanel consent gate", () => {
   beforeEach(() => window.localStorage.clear());
 
   it("blocks capture behind the recording notice until accepted", () => {
-    render(<LivePanel />);
+    // LivePanel reads the shared session from the capture context (XERK-111).
+    render(
+      <CaptureProvider>
+        <LivePanel />
+      </CaptureProvider>,
+    );
     // Notice is shown; the Record control is not yet present.
     expect(screen.getByText(/Recording notice/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
