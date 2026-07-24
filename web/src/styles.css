@@ -220,6 +220,9 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .transcript { list-style: none; margin: 0; padding: 0; }
 .transcript li { padding: var(--space-2) 0; line-height: 1.55; }
 .transcript li + li { border-top: 1px solid var(--border); }
+/* A released cue embedded inline (XERK-108): the dropdown block carries its own
+   spacing, so drop the row padding/divider a spoken turn gets. */
+.transcript li.transcript-cue { padding: 0; border-top: 0; }
 
 /* Conversation and history transcript text is user-selectable so it can be
    copied (XERK-104): the live transcript, the stored-conversation segments, and

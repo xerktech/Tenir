@@ -11,6 +11,7 @@ import {
   CUE_EXIT_MS,
   DISCLOSURES,
   isPinnedToBottom,
+  liveTranscript,
   wsFromHttpBase,
   type CueLevel,
 } from "@tenir/client-core";
@@ -20,7 +21,7 @@ import { getServerUrl } from "../config";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
 import { CUE_LEVELS, loadCueLevel, saveCueLevel } from "../lib/cueLevelStore";
 import { useCapture, type CaptureController } from "../lib/useCapture";
-import { Badge, Button, Card, EmptyState } from "../ui";
+import { Badge, Button, Card, CueDisclosure, EmptyState } from "../ui";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording");
 
@@ -134,7 +135,12 @@ export function LiveView({
   onCueLevelChange: (l: CueLevel) => void;
 }): JSX.Element {
   const { state } = controller;
-  const hasContent = state.segments.length > 0 || Boolean(state.partial);
+  const hasContent = state.segments.length > 0 || state.pastCues.length > 0 || Boolean(state.partial);
+
+  // Interleave finalized turns with the cues already released from the band, so a
+  // past cue can be re-read inline without disturbing the cues still coming in
+  // above (XERK-108) — the same segment/cue timeline the history detail renders.
+  const items = liveTranscript(state.segments, state.pastCues);
 
   // The transcript scrolls inside its own bounded box so a long session never
   // scrolls the page and carries the cue band out of view (XERK-103). Keep the
@@ -145,7 +151,7 @@ export function LiveView({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
-  }, [state.segments.length, state.partial]);
+  }, [state.segments.length, state.pastCues.length, state.partial]);
   const onTranscriptScroll = () => {
     const el = scrollRef.current;
     if (el) pinnedRef.current = isPinnedToBottom(el);
@@ -187,9 +193,16 @@ export function LiveView({
         ) : (
           <div className="transcript-scroll" ref={scrollRef} onScroll={onTranscriptScroll}>
             <ul className="transcript">
-              {state.segments.map((s) => (
-                <li key={s.id}>{s.text}</li>
-              ))}
+              {items.map((item) =>
+                item.kind === "segment" ? (
+                  <li key={item.segment.id}>{item.segment.text}</li>
+                ) : (
+                  // A released cue, embedded inline as a collapsed dropdown (XERK-108).
+                  <li className="transcript-cue" key={`cue-${item.cue.id}`}>
+                    <CueDisclosure title={item.cue.title} body={item.cue.body} />
+                  </li>
+                ),
+              )}
               {state.partial && <li className="muted">{state.partial}</li>}
             </ul>
           </div>

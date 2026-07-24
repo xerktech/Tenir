@@ -17,6 +17,7 @@ const baseState = () => ({
   partial: "",
   activeCue: null as { id: string; title: string; body: string } | null,
   queuedCues: [] as { id: string; title: string; body: string }[],
+  pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
 });
 
 function fakeController(overrides: Partial<CaptureController["state"]> = {}): CaptureController {
@@ -95,6 +96,29 @@ describe("LiveView", () => {
     expect(screen.getByText(/150 million km/)).toBeInTheDocument();
     expect(screen.queryByText(/384,400 km/)).not.toBeInTheDocument();
     expect(screen.getByText("+2 more")).toBeInTheDocument();
+  });
+
+  it("embeds a released cue inline in the transcript as a collapsed dropdown (XERK-108)", () => {
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        segments: [{ id: "a", text: "hello world" }],
+        // A cue that already had its turn in the band, anchored after turn "a".
+        pastCues: [{ id: "c1", title: "Sun", body: "About 150 million km away.", afterSegmentId: "a" }],
+      }),
+    );
+    // The past cue shows inline as a collapsed dropdown; its body stays hidden
+    // until expanded, so it doesn't interfere with cues still coming in.
+    const toggle = screen.getByRole("button", { name: /Sun/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+    // It sits inside the transcript list, after the turn it was anchored to —
+    // not up in the live cue band.
+    expect(screen.getByText("hello world")).toBeInTheDocument();
   });
 
   it("wraps the transcript in its own scroll box, but not the empty state (XERK-103)", () => {

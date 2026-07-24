@@ -277,6 +277,7 @@
       .transcript li,
       .item,
       .session-cue-body,
+      .cue-inline-body,
       .cue-popup-body {
         user-select: text;
         -webkit-user-select: text;
@@ -299,6 +300,23 @@
         text-transform: uppercase; letter-spacing: .04em;
       }
       .session-cue-body { margin-top: 2px; line-height: 1.5; }
+
+      /* A reviewed cue embedded inline in the live transcript (XERK-108): a
+         collapsed dropdown that expands in place, matching the web/mobile
+         CueDisclosure. The dropdown block carries its own spacing, so the row it
+         sits in drops the padding/divider a spoken turn gets. */
+      .transcript li.session-cue-line { padding: 0; border-top: 0; }
+      .cue-inline-caret { font-size: var(--text-xs); width: 0.8em; }
+      .cue-inline-title { font-weight: 600; }
+      .cue-inline-body {
+        margin: var(--space-1) 0 var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        border-left: 2px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        border-radius: var(--radius-sm);
+        line-height: 1.5;
+      }
+      .cue-inline-body[hidden] { display: none; }
 
       /* ---- History page: session list + conversation detail ---- */
       #history-list[hidden], #history-detail[hidden] { display: none; }

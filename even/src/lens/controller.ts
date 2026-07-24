@@ -35,7 +35,7 @@ import { ApiClient, type ApiHandlers, type SessionParams } from "@tenir/client-c
 
 import { AudioCapture, pcmBytes } from "../audio/capture";
 import { config } from "../config";
-import { SessionPage } from "../phone/session";
+import { SessionPage, type PastCue } from "../phone/session";
 import { silentLogin } from "../state/credentials";
 import { SessionStore, type PersistedSession } from "../state/persist";
 import { withBleTimeout, type KeyValueStorage } from "../state/storage";
@@ -51,7 +51,6 @@ import {
   menuText,
   occludedCaption,
   statusLine,
-  type CueCard,
   type MenuChoice,
   type PageContents,
 } from "./layout";
@@ -63,6 +62,10 @@ export const CUE_TTL_MS = 10000;
 // pops the moment the box frees. This bounds that backlog; over the cap the
 // stalest waiting cue is dropped so the freshest still get their turn.
 export const MAX_QUEUED_CUES = 8;
+// A released cue drops into the phone transcript as a reviewable past cue
+// (XERK-108); this bounds how many we keep so a long session can't grow them
+// without limit. Over the cap the oldest falls off, matching MAX_SEGMENTS.
+export const MAX_PAST_CUES = 60;
 
 // Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
 // fitCaption trims further to what the band can show — this only bounds the
@@ -99,8 +102,11 @@ type Mutable = {
   connection: "connecting" | "open" | "closed";
   recording: boolean; // a session is running (XERK-85: tap starts, popup exits)
   menu: MenuChoice | null; // the in-session popup's highlight; null = closed
-  cue: CueCard | null; // the private context cue currently on the lens (XERK-81)
-  cueQueue: CueCard[]; // cues waiting behind the active one (FIFO, XERK-102)
+  // The active/queued cues carry a transcript anchor (afterIndex, XERK-108) fixed
+  // when they arrive, so a released one lands after the turn that triggered it.
+  cue: PastCue | null; // the private context cue currently on the lens (XERK-81)
+  cueQueue: PastCue[]; // cues waiting behind the active one (FIFO, XERK-102)
+  pastCues: PastCue[]; // released cues embedded in the phone transcript (XERK-108)
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -152,6 +158,7 @@ export async function wireLens(
     menu: null,
     cue: null,
     cueQueue: [],
+    pastCues: [],
   };
   let cueTimer: ReturnType<typeof setTimeout> | null = null;
   let enabled = false; // signed in — clicks act only while enabled
@@ -210,6 +217,7 @@ export async function wireLens(
       segments: state.segments,
       partial: state.partial,
       cue: state.cue,
+      pastCues: state.pastCues,
     });
 
   /**
@@ -304,13 +312,19 @@ export async function wireLens(
       },
       onFinal: (m) => {
         state.segments.push(m.text);
-        if (state.segments.length > MAX_SEGMENTS) state.segments.shift();
+        if (state.segments.length > MAX_SEGMENTS) {
+          state.segments.shift();
+          // The oldest turn fell off the bounded window: shift every embedded
+          // cue's anchor to match, so each stays after the same words (or leads
+          // the transcript once its anchor turn is gone) (XERK-108).
+          for (const pc of state.pastCues) pc.afterIndex -= 1;
+        }
         state.partial = "";
         renderCaption();
         syncPhone();
         persist();
       },
-      onCue: (m) => showCue({ title: m.title, body: m.body }),
+      onCue: (m) => showCue({ id: m.cueId, title: m.title, body: m.body }),
       onError: (m) => {
         console.warn("api error", m.code, m.message);
         if (m.code === "unauthorized") {
@@ -346,6 +360,9 @@ export async function wireLens(
     // A resumed transcript comes back as a single restored block.
     state.segments = resume?.transcript ? [resume.transcript] : [];
     state.partial = "";
+    // A new session reviews its own cues from scratch — the prior session's
+    // embedded past cues don't carry over (XERK-108).
+    state.pastCues = [];
     connect();
     syncPhone();
   };
@@ -357,6 +374,7 @@ export async function wireLens(
     state.menu = null;
     state.cue = null;
     state.cueQueue = [];
+    state.pastCues = []; // the transcript is cleared on stop, so the review cues go with it
     if (cueTimer) clearTimeout(cueTimer);
     cueTimer = null;
     menuFallback = false;
@@ -448,17 +466,28 @@ export async function wireLens(
    * shared popup — is queued rather than clobbering what's there, and pops the
    * moment the box frees (dismissCue / closeMenu drain the queue).
    */
-  const showCue = (cue: CueCard) => {
+  const showCue = (cue: { id: string; title: string; body: string }) => {
+    // Anchor the cue to the last finalized turn the moment it arrives, so once
+    // it's reviewed it lands inline right after the words that triggered it
+    // (XERK-108). No turns yet → -1, i.e. it leads the transcript.
+    const anchored: PastCue = { ...cue, afterIndex: state.segments.length - 1 };
     if (state.menu || state.cue) {
-      state.cueQueue.push(cue);
+      state.cueQueue.push(anchored);
       // Bound the backlog: over the cap, drop the stalest waiting cue.
       if (state.cueQueue.length > MAX_QUEUED_CUES) state.cueQueue.shift();
       return;
     }
-    state.cue = cue;
+    state.cue = anchored;
     startCueTimer();
     rebuildPage();
     syncPhone();
+  };
+
+  /** A cue leaving the band drops into the phone transcript for review (XERK-108). */
+  const embedPastCue = (cue: PastCue) => {
+    state.pastCues.push(cue);
+    // Bound the retained cues: over the cap, the oldest falls off.
+    if (state.pastCues.length > MAX_PAST_CUES) state.pastCues.shift();
   };
 
   const dismissCue = () => {
@@ -467,9 +496,11 @@ export async function wireLens(
       cueTimer = null;
     }
     if (!state.cue) return;
-    // Promote the next queued cue, if any, so it pops immediately (XERK-102);
-    // otherwise the box frees back to the plain page. The menu never coexists
-    // with an active cue, so there's no menu to guard against here.
+    // The dismissed cue drops into the transcript for review (XERK-108), then
+    // the next queued cue (if any) pops immediately (XERK-102); otherwise the box
+    // frees back to the plain page. The menu never coexists with an active cue,
+    // so there's no menu to guard against here.
+    embedPastCue(state.cue);
     state.cue = state.cueQueue.shift() ?? null;
     if (state.cue) startCueTimer();
     rebuildPage();
@@ -478,8 +509,10 @@ export async function wireLens(
 
   /** Open the popup page: the bordered box on top, captions flowing around it. */
   const openMenu = () => {
-    // The menu takes over the shared popup box — clear any cue showing there.
+    // The menu takes over the shared popup box — a cue showing there has had its
+    // turn, so embed it in the transcript for review (XERK-108) before clearing.
     if (state.cue) {
+      embedPastCue(state.cue);
       state.cue = null;
       if (cueTimer) clearTimeout(cueTimer);
       cueTimer = null;

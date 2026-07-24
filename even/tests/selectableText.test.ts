@@ -13,10 +13,11 @@ describe("selectable transcript text (XERK-104)", () => {
   const html = readText("index.html");
 
   it("makes the session transcript, history segments and cue bodies selectable", () => {
-    // One rule lists all four conversation-text surfaces and sets both the
-    // standard and the -webkit- prefixed property to `text`.
+    // One rule lists every conversation-text surface — including the inline cue
+    // dropdown body embedded in the live transcript (XERK-108) — and sets both
+    // the standard and the -webkit- prefixed property to `text`.
     expect(html).toMatch(
-      /\.transcript li,\s*\.item,\s*\.session-cue-body,\s*\.cue-popup-body\s*\{\s*user-select:\s*text;\s*-webkit-user-select:\s*text;\s*\}/,
+      /\.transcript li,\s*\.item,\s*\.session-cue-body,\s*\.cue-inline-body,\s*\.cue-popup-body\s*\{\s*user-select:\s*text;\s*-webkit-user-select:\s*text;\s*\}/,
     );
   });
 });

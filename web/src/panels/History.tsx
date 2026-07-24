@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Button, Card, ConfirmButton, EmptyState, Input, Spinner } from "../ui";
+import { Button, Card, ConfirmButton, CueDisclosure, EmptyState, Input, Spinner } from "../ui";
 
 type SortKey = "date" | "duration" | "turns" | "status";
 type SortDir = "asc" | "desc";
@@ -211,39 +211,6 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
 }
 
-/** An inline cue in the history transcript: a collapsed dropdown that expands
- *  in place to reveal the body (XERK-105). It replaced a click-through popup so
- *  the detail reads on the timeline without a modal; it defaults to minimized so
- *  the transcript stays scannable. */
-function CueDisclosure({ cue }: { cue: CueView }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const bodyId = `cue-body-${cue.cueId}`;
-  return (
-    <div className="cue-inline-block">
-      <button
-        className="cue-inline"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        title={open ? "Hide cue detail" : "Show cue detail"}
-      >
-        <span className="cue-inline-caret" aria-hidden="true">
-          {open ? "▾" : "▸"}
-        </span>
-        <span className="cue-inline-mark" aria-hidden="true">
-          ✦
-        </span>
-        <span className="cue-inline-title">{cue.title}</span>
-      </button>
-      {open && (
-        <p className="cue-inline-body" id={bodyId}>
-          {cue.body}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function ConversationDetail({
   conv,
   onDelete,
@@ -280,7 +247,7 @@ function ConversationDetail({
                 <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
               </div>
             ) : (
-              <CueDisclosure key={item.cue.cueId} cue={item.cue} />
+              <CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />
             ),
           )
         )}

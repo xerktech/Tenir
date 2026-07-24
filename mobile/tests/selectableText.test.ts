@@ -13,16 +13,17 @@ import { describe, expect, it } from "vitest";
 const readText = (rel: string) => readFileSync(resolve(process.cwd(), rel)).toString("utf8");
 
 describe("selectable transcript text (XERK-104)", () => {
-  it("Live: all turns and the partial share ONE selectable <Text>", () => {
+  it("Live: consecutive turns share ONE selectable <Text> run, cues break runs", () => {
     const src = readText("src/screens/Live.tsx");
-    // A single selectable block, not a <Text> (or ListItem) per segment.
-    expect(src).toMatch(/<Text selectable style=\{\{ color: colors\.text, lineHeight: 22 \}\}>/);
-    // Segments are mapped inside it and newline-separated (so the drag-select
+    // Each run of consecutive turns is a single selectable <Text> (XERK-104),
+    // with a released cue dropdown ending the run (XERK-108) — mirroring History.
+    expect(src).toMatch(/<Text key=\{`run-\$\{i\}`\} selectable style=\{\{ color: colors\.text, lineHeight: 22 \}\}>/);
+    // Turns are mapped inside the run and newline-separated (so the drag-select
     // spans them).
-    expect(src).toMatch(/state\.segments\.map\(\(seg, i\) =>/);
-    expect(src).toMatch(/\{i > 0 \? "\\n" : null\}/);
+    expect(src).toMatch(/run\.segs\.map\(\(seg, j\) =>/);
+    expect(src).toMatch(/\{j > 0 \? "\\n" : null\}/);
     // No per-turn ListItem wrapper remains around a transcript <Text>.
-    expect(src).not.toMatch(/<ListItem key=\{seg\.id\}>/);
+    expect(src).not.toMatch(/<ListItem key=/);
   });
 
   it("History: consecutive turns are grouped into one selectable <Text> run", () => {

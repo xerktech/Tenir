@@ -8,9 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   SessionPage,
+  liveTranscriptRows,
   querySessionPageElements,
   sessionStatus,
   type LiveSessionView,
+  type PastCue,
 } from "../src/phone/session";
 
 function mountDom(): void {
@@ -35,9 +37,17 @@ function view(overrides: Partial<LiveSessionView> = {}): LiveSessionView {
     segments: [],
     partial: "",
     cue: null,
+    pastCues: [],
     ...overrides,
   };
 }
+
+const pastCue = (id: string, afterIndex: number, title = id, body = `${id}-body`): PastCue => ({
+  id,
+  title,
+  body,
+  afterIndex,
+});
 
 describe("querySessionPageElements", () => {
   beforeEach(mountDom);
@@ -183,6 +193,64 @@ describe("SessionPage", () => {
     expect(box.scrollTop).toBe(0);
   });
 
+  const cueLine = () => document.querySelector<HTMLElement>("#session-text li.session-cue-line");
+  const cueToggle = () => cueLine()!.querySelector<HTMLButtonElement>("button.cue-inline")!;
+  const cueBody = () => cueLine()!.querySelector<HTMLElement>(".cue-inline-body")!;
+
+  it("embeds a released cue inline as a collapsed dropdown, after its turn (XERK-108)", () => {
+    mount().update(
+      view({
+        segments: ["first turn", "second turn"],
+        pastCues: [pastCue("c1", 0, "Sun", "About 150 million km away.")],
+      }),
+    );
+    // The cue sits in the transcript list (not the pinned band), right after the
+    // turn it was anchored to.
+    const lis = [...document.querySelectorAll<HTMLElement>("#session-text li")];
+    expect(lis.map((li) => li.className)).toEqual(["", "session-cue-line", ""]);
+    expect(lis[0].textContent).toBe("first turn");
+    expect(lis[2].textContent).toBe("second turn");
+    expect(cueLine()!.querySelector(".cue-inline-title")!.textContent).toBe("Sun");
+    const toggle = cueToggle();
+    // Collapsed by default, and its body stays hidden so it doesn't crowd the
+    // live feed until the viewer opens it.
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(cueBody().hidden).toBe(true);
+    expect(cueBody().textContent).toBe("About 150 million km away.");
+    // The still-pinned live cue band is untouched by past cues.
+    expect(cue().hidden).toBe(true);
+  });
+
+  it("expands and collapses a reviewed cue in place on click", () => {
+    mount().update(view({ segments: ["a"], pastCues: [pastCue("c1", 0, "Sun", "150M km")] }));
+    const toggle = cueToggle();
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(cueBody().hidden).toBe(false);
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(cueBody().hidden).toBe(true);
+  });
+
+  it("keeps a reviewed cue expanded across the frequent caption redraws (XERK-108)", () => {
+    const page = mount();
+    page.update(view({ segments: ["a"], pastCues: [pastCue("c1", 0, "Sun", "150M km")] }));
+    cueToggle().click();
+    expect(cueBody().hidden).toBe(false);
+    // A fresh caption rebuilds the transcript; the open cue must come back open,
+    // not snap shut under the viewer.
+    page.update(view({ segments: ["a", "b"], pastCues: [pastCue("c1", 0, "Sun", "150M km")] }));
+    expect(cueToggle().getAttribute("aria-expanded")).toBe("true");
+    expect(cueBody().hidden).toBe(false);
+  });
+
+  it("renders the reviewed cue title/body as text, not markup", () => {
+    mount().update(view({ segments: ["a"], pastCues: [pastCue("c1", 0, "<i>x</i>", "<b>y</b>")] }));
+    expect(cueLine()!.querySelector("i")).toBeNull();
+    expect(cueLine()!.querySelector("b")).toBeNull();
+    expect(cueBody().textContent).toBe("<b>y</b>");
+  });
+
   it("fires onRecordingStart only on the idle → recording edge", () => {
     const onRecordingStart = vi.fn();
     const page = mount({ onRecordingStart });
@@ -195,6 +263,29 @@ describe("SessionPage", () => {
     page.update(view({ recording: false }));
     page.update(view());
     expect(onRecordingStart).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("liveTranscriptRows (XERK-108)", () => {
+  const ids = (rows: ReturnType<typeof liveTranscriptRows>) =>
+    rows.map((r) => (r.kind === "segment" ? r.text : `cue:${r.cue.id}`));
+
+  it("places each reviewed cue right after the turn it was anchored to", () => {
+    const rows = liveTranscriptRows(["a", "b"], [pastCue("c1", 0), pastCue("c2", 1)]);
+    expect(ids(rows)).toEqual(["a", "cue:c1", "b", "cue:c2"]);
+  });
+
+  it("leads with cues anchored before any turn, or to a turn scrolled off", () => {
+    const rows = liveTranscriptRows(
+      ["b"],
+      [pastCue("lead", -1), pastCue("gone", -3 /* anchor turn dropped */), pastCue("c", 0)],
+    );
+    expect(ids(rows)).toEqual(["cue:lead", "cue:gone", "b", "cue:c"]);
+  });
+
+  it("keeps release order for multiple cues sharing a turn", () => {
+    const rows = liveTranscriptRows(["a"], [pastCue("c1", 0), pastCue("c2", 0)]);
+    expect(ids(rows)).toEqual(["a", "cue:c1", "cue:c2"]);
   });
 });
 

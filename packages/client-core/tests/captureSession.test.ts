@@ -7,9 +7,11 @@ import {
   CaptureSession,
   CUE_TTL_MS,
   initialCaptureState,
+  liveTranscript,
   reduce,
   type CaptureSessionDeps,
   type CaptureState,
+  type LiveCue,
   type ApiLike,
 } from "../src/captureSession";
 
@@ -58,7 +60,8 @@ describe("reduce", () => {
 
   it("shows the first cue and queues the rest behind it (XERK-102)", () => {
     let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
-    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "150M" });
+    // No turns yet, so the cue anchors before the transcript (afterSegmentId null).
+    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "150M", afterSegmentId: null });
     expect(s.queuedCues).toEqual([]);
     // A second cue while the first is up waits its turn rather than clobbering it.
     s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } });
@@ -74,11 +77,11 @@ describe("reduce", () => {
     s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } }); // queued
     // Same id as the active cue updates it in place, not a duplicate.
     s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" } });
-    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "updated" });
+    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "updated", afterSegmentId: null });
     expect(s.queuedCues.map((c) => c.id)).toEqual(["c2"]);
     // Same id as a queued cue updates that slot, keeping its place in line.
     s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "closer" } });
-    expect(s.queuedCues).toEqual([{ id: "c2", title: "Moon", body: "closer" }]);
+    expect(s.queuedCues).toEqual([{ id: "c2", title: "Moon", body: "closer", afterSegmentId: null }]);
   });
 
   it("caps the backlog, dropping the stalest waiting cue", () => {
@@ -104,6 +107,101 @@ describe("reduce", () => {
     // A stale release (wrong / already-gone id) is a no-op (same reference back).
     const same = reduce(s, { type: "cueRelease", id: "ghost" });
     expect(same).toBe(s);
+  });
+
+  // ---- past cues embedded in the live transcript (XERK-108) -----------------
+
+  it("anchors a cue to the last turn and embeds it in the transcript on release", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hello" });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
+    // The cue is anchored to the turn that was showing when it arrived.
+    expect(s.activeCue?.afterSegmentId).toBe("a");
+    expect(s.pastCues).toEqual([]); // not in the transcript while it's still in the band
+    // A later turn doesn't move an already-anchored cue.
+    s = reduce(s, { type: "final", segmentId: "b", text: "world" });
+    s = reduce(s, { type: "cueRelease", id: "c1" });
+    expect(s.activeCue).toBeNull();
+    expect(s.pastCues).toEqual([{ id: "c1", title: "Sun", body: "150M", afterSegmentId: "a" }]);
+  });
+
+  it("keeps embedded past cues across a session stop, only clearing live band cues", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    s = reduce(s, { type: "cueRelease", id: "c1" }); // c1 → transcript
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // still in band
+    s = reduce(s, { type: "stop" });
+    expect(s.pastCues.map((c) => c.id)).toEqual(["c1"]); // reviewed cue stays with the transcript
+    expect(s.activeCue).toBeNull(); // the still-live band cue is dropped
+  });
+
+  it("does not double a past cue if its release is re-applied (stale timer / resume)", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    s = reduce(s, { type: "cueRelease", id: "c1" });
+    expect(s.pastCues.map((c) => c.id)).toEqual(["c1"]);
+    // A resume re-delivers the already-reviewed cue: it must not re-enter the band.
+    const after = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    expect(after).toBe(s); // no-op
+    expect(after.activeCue).toBeNull();
+    expect(after.pastCues.map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  it("bounds the retained past cues", () => {
+    let s = base();
+    // Release 70 cues one after another; only the last 60 are kept.
+    for (let i = 0; i < 70; i++) {
+      s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" } });
+      s = reduce(s, { type: "cueRelease", id: `c${i}` });
+    }
+    expect(s.pastCues.length).toBe(60);
+    expect(s.pastCues[0].id).toBe("c10"); // oldest dropped
+    expect(s.pastCues[s.pastCues.length - 1].id).toBe("c69");
+  });
+});
+
+// ---- liveTranscript: interleave turns and reviewed cues (XERK-108) ----------
+
+describe("liveTranscript", () => {
+  const seg = (id: string, text = id) => ({ id, text });
+  const pastCue = (id: string, afterSegmentId: string | null): LiveCue => ({
+    id,
+    title: id,
+    body: `${id}-body`,
+    afterSegmentId,
+  });
+
+  it("places each past cue right after the turn it was anchored to", () => {
+    const items = liveTranscript(
+      [seg("a"), seg("b")],
+      [pastCue("c1", "a"), pastCue("c2", "b")],
+    );
+    expect(items.map((i) => (i.kind === "segment" ? i.segment.id : `cue:${i.cue.id}`))).toEqual([
+      "a",
+      "cue:c1",
+      "b",
+      "cue:c2",
+    ]);
+  });
+
+  it("leads with cues anchored before the transcript (null) or to a scrolled-off turn", () => {
+    const items = liveTranscript(
+      [seg("b")],
+      [pastCue("c0", null), pastCue("c-gone", "a" /* dropped from the window */), pastCue("c1", "b")],
+    );
+    expect(items.map((i) => (i.kind === "segment" ? i.segment.id : `cue:${i.cue.id}`))).toEqual([
+      "cue:c0",
+      "cue:c-gone",
+      "b",
+      "cue:c1",
+    ]);
+  });
+
+  it("keeps release order for multiple cues sharing one anchor", () => {
+    const items = liveTranscript([seg("a")], [pastCue("c1", "a"), pastCue("c2", "a")]);
+    expect(items.map((i) => (i.kind === "segment" ? i.segment.id : `cue:${i.cue.id}`))).toEqual([
+      "a",
+      "cue:c1",
+      "cue:c2",
+    ]);
   });
 });
 
@@ -279,7 +377,12 @@ describe("CaptureSession", () => {
       const { session, refs } = harness();
       await session.start();
       refs.client!.handlers.onCue?.(cue("c1", "Sun", "About 150M km"));
-      expect(session.getState().activeCue).toEqual({ id: "c1", title: "Sun", body: "About 150M km" });
+      expect(session.getState().activeCue).toEqual({
+        id: "c1",
+        title: "Sun",
+        body: "About 150M km",
+        afterSegmentId: null,
+      });
 
       vi.advanceTimersByTime(CUE_TTL_MS - 1);
       expect(session.getState().activeCue).not.toBeNull(); // still visible just before TTL
