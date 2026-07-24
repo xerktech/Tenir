@@ -38,7 +38,8 @@ describe("selectable transcript text (XERK-104)", () => {
 
   it("Cues: the live band body and the inline disclosure body are selectable", () => {
     const src = readText("src/ui/cue.tsx");
-    expect(src).toMatch(/<Text selectable style=\{styles\.cardBody\}>\s*\{activeCue\.body\}/);
+    // The band paints `cue` — the active cue, or the one still fading out (XERK-107).
+    expect(src).toMatch(/<Text selectable style=\{styles\.cardBody\}>\s*\{cue\.body\}/);
     // The history cue detail is an inline dropdown (XERK-105); its expanded body
     // stays selectable so it can still be copied.
     expect(src).toMatch(/<Text selectable style=\{styles\.disclosureBody\}>\s*\{body\}/);

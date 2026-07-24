@@ -4,8 +4,9 @@
  * caption identically.
  *
  * The running conversation lives in its own bounded, internally-scrolling box
- * with the cue band pinned above it: a growing session must never scroll the
- * whole page and carry the cues out of view. That box "sticks" to the bottom —
+ * with the cue band floating over its top edge (XERK-107): a growing session
+ * must never scroll the whole page and carry the cues out of view. That box
+ * "sticks" to the bottom —
  * following new text — only while the viewer is already there; once they scroll
  * up to re-read, fresh captions stop yanking them back down until they return
  * to the bottom themselves.
