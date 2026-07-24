@@ -121,9 +121,12 @@ the `.ehpk` as multipart, then `/api/v1/versions/create` with the returned
 After a publish: **promoting the build is still manual** in the portal; then
 force-quit and reopen the Even app on the phone and hit Update on the app.
 The release pipeline runs this automatically: every release that rebuilds the
-even component uploads its `.ehpk` to the portal via the `publish-evenhub`
-job in `release.yml`, authenticated by the `EVENHUB_EMAIL` /
-`EVENHUB_PASSWORD` repository secrets (see `RELEASING.md`).
+even component packs and uploads its `.ehpk` to the portal from the
+`build-even` job in `release.yml` — the portal, not the GitHub release, is
+the glasses app's distribution channel — authenticated by the
+`EVENHUB_EMAIL` / `EVENHUB_PASSWORD` repository secrets (see `RELEASING.md`).
+Publishing skips versions the portal already has, so retried release runs
+are safe.
 `EVENHUB_BASE_URL` overrides the portal host (default
 `https://hub.evenrealities.com`). Note the portal API is unofficial —
 reverse-engineered from the CLI and portal traffic — so treat breakage after

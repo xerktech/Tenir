@@ -27,7 +27,7 @@ const HEADING_ORDER = ["API", "Parakeet STT", "Even", "Mobile", "Other"];
 const COMPONENT_LABEL = {
   api: "API (image, incl. web UI)",
   "parakeet-stt": "Parakeet STT (image)",
-  even: "Even (.ehpk)",
+  even: "Even (Even Hub)",
   mobile: "Android (.apk)",
 };
 const TABLE_ORDER = ["api", "parakeet-stt", "even", "mobile"];
@@ -120,6 +120,7 @@ function renderComponentTable(manifest) {
     let artifact = "";
     if (c.kind === "image") artifact = "`" + c.ref + "`";
     else if (c.kind === "asset") artifact = "`" + c.asset + "`" + (c.version_code ? ` (code ${c.version_code})` : "");
+    else if (c.kind === "evenhub") artifact = "`" + c.package_id + "` (Even Hub portal)";
     rows.push(`| ${COMPONENT_LABEL[key]} | ${c.version} | ${status} | ${artifact} |`);
   }
   return rows.join("\n");
@@ -131,7 +132,8 @@ const INSTALL_DETAILS = [
   "- **Images** (`API` — which serves the web UI — and `Parakeet STT`): pulled from GHCR",
   "  by the Docker Compose stack. `:latest` tracks main; pin a build with the",
   "  `ghcr.io/...` ref in the table above.",
-  "- **Even** (`.ehpk`): download below and sideload via the Even Hub app.",
+  "- **Even**: published to the Even Hub developer portal (no release asset);",
+  "  promote the build there, then update the app from the Even phone app.",
   "- **Android** (`.apk`): download below and install (enable \"install unknown apps\").",
   "",
   "Carried components are unchanged since the version shown; their artifact name reflects the",

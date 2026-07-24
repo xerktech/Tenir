@@ -136,6 +136,24 @@ export function buildCreateVersionForm(draftId, changelog) {
   return form;
 }
 
+/**
+ * Whether a versions/list-private response already contains `version`, without
+ * assuming the exact collection field name. Used to make publishing idempotent:
+ * the release pipeline uploads before the git tag exists, so a release run that
+ * fails downstream and retries would otherwise re-publish the same version and
+ * be rejected by the portal.
+ */
+export function versionListContains(data, version) {
+  if (data == null) return false;
+  const list = Array.isArray(data)
+    ? data
+    : (data.list ?? data.items ?? data.versions ?? data.records ?? []);
+  return (
+    Array.isArray(list) &&
+    list.some((v) => v === version || (v && typeof v === "object" && v.version === version))
+  );
+}
+
 /** Pull the draft id out of the draft response without assuming one field name. */
 export function extractDraftId(data) {
   if (data == null) return undefined;
@@ -255,6 +273,25 @@ async function resolveAccessToken(baseUrl) {
 // Portal upload
 // ---------------------------------------------------------------------------
 
+/**
+ * True when the portal already has `version` for this package. Best-effort: an
+ * unreachable or unrecognized list response warns and returns false so a
+ * listing hiccup can't block a publish.
+ */
+async function portalHasVersion(baseUrl, token, packageId, version) {
+  try {
+    const params = new URLSearchParams({ package_id: packageId, page: "1", page_size: "50" });
+    const res = await fetch(`${baseUrl}/api/v1/versions/list-private?${params}`, {
+      headers: { "X-Even-Authorization": token },
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return versionListContains(unwrapEnvelope(await res.json(), "versions/list-private"), version);
+  } catch (err) {
+    console.warn(`evenhub-publish: version listing failed (${err.message}) — publishing anyway`);
+    return false;
+  }
+}
+
 async function uploadDraft(baseUrl, token, packageId, artifactPath) {
   const form = new FormData();
   form.append(
@@ -325,6 +362,12 @@ if (isMain) {
     );
   } else {
     const token = await resolveAccessToken(baseUrl);
+    if (await portalHasVersion(baseUrl, token, packageId, app.version)) {
+      console.log(
+        `evenhub-publish: portal already has ${packageId}@${app.version} — nothing to publish.`,
+      );
+      process.exit(0);
+    }
     const draft = await uploadDraft(baseUrl, token, packageId, artifactPath);
     const draftId = extractDraftId(draft);
     if (draftId === undefined) {

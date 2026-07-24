@@ -29,7 +29,8 @@ Root `VERSION` holds `MAJOR.MINOR` only. The **patch is derived from the
 `v<M>.<m>.<p>` git tags** (max on that line + 1), never committed — so the
 auto-patch path is read-only against the repo and can't re-trigger itself. One
 tag namespace, `v<M>.<m>.<p>`, one release, all four components (the api image
-— which bakes in the web SPA —, the Parakeet STT image, the Even `.ehpk`, and the
+— which bakes in the web SPA —, the Parakeet STT image, the Even glasses app —
+published to the Even Hub portal, not attached as a release asset —, and the
 Android `.apk`).
 
 ## CLI I/O contract (for release.yml)
