@@ -15,6 +15,8 @@ is exercised by the compose stack.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Iterator
 
 from api.persistence.models import (
     Conversation,
@@ -28,6 +30,43 @@ from api.persistence.models import (
 log = logging.getLogger("api.persistence.postgres")
 
 
+def find_schema_file() -> Path | None:
+    """Locate schema.sql. Prefer an explicit ``API_SCHEMA_PATH``; then the process
+    working directory (the api image ships it at its workdir); then the repo-root
+    file found by walking up from this module (dev/test). ``None`` if nowhere."""
+    from api.config import settings
+
+    candidates: list[Path] = []
+    if settings.schema_path:
+        candidates.append(Path(settings.schema_path))
+    candidates.append(Path("schema.sql"))
+    candidates.extend(parent / "schema.sql" for parent in Path(__file__).resolve().parents)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def iter_statements(sql: str) -> Iterator[str]:
+    """Split a SQL script into individual statements. schema.sql has no dollar-quoted
+    bodies or string-literal semicolons, so a plain ``;`` split is safe; chunks that
+    are only whitespace/line-comments (e.g. the trailing newline) are skipped."""
+    for chunk in sql.split(";"):
+        has_sql = any(
+            line.strip() and not line.strip().startswith("--") for line in chunk.splitlines()
+        )
+        if has_sql:
+            yield chunk.strip()
+
+
+def apply_schema(conn, sql: str) -> None:
+    """Run every statement of an idempotent schema on ``conn``. Each is a
+    ``CREATE ... IF NOT EXISTS`` / ``INSERT ... ON CONFLICT DO NOTHING``, so this is
+    a no-op once the database has converged."""
+    for statement in iter_statements(sql):
+        conn.execute(statement)
+
+
 class SqlConversationStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -39,7 +78,25 @@ class SqlConversationStore:
 
             log.info("opening Postgres connection pool")
             self._pool = ConnectionPool(self._dsn, open=True)
+            # Self-heal schema drift on boot. Postgres only applies schema.sql on a
+            # FRESH data volume (docker-entrypoint-initdb.d), so a database created
+            # before an additive change — e.g. the `cues` table (XERK-81) that reads
+            # like get() JOIN against — never gets it, and every such read (and the
+            # session.start create() that calls get()) then fails "relation does not
+            # exist", killing transcription. Re-applying the idempotent schema here
+            # converges an old data dir without a manual migration.
+            self._apply_schema()
         return self._pool
+
+    def _apply_schema(self) -> None:  # pragma: no cover - requires a live database
+        assert self._pool is not None
+        path = find_schema_file()
+        if path is None:
+            log.warning("schema.sql not found; skipping boot schema apply")
+            return
+        with self._pool.connection() as conn:
+            apply_schema(conn, path.read_text(encoding="utf-8"))
+        log.info("applied idempotent schema from %s on pool open", path)
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover

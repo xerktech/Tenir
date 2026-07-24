@@ -60,6 +60,13 @@ RUN if [ -n "$API_EXTRAS" ]; then \
     fi \
     && pip uninstall -y setuptools wheel
 
+# The idempotent schema, shipped so the api can self-heal an existing Postgres
+# data dir on boot (SqlConversationStore applies it on pool open). Postgres itself
+# only runs schema.sql on a FRESH volume via docker-entrypoint-initdb.d, so a DB
+# predating an additive table (e.g. `cues`) would never gain it otherwise. Lands
+# at the workdir (/srv/schema.sql), where find_schema_file() looks first.
+COPY schema.sql ./schema.sql
+
 # The built web UI, served statically by the api (API_WEB_DIR defaults here).
 COPY --from=webbuild /app/web/dist /srv/web
 
