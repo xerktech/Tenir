@@ -74,14 +74,14 @@ test("renderComponentTable reads rebuilt/carried status straight from the manife
     components: {
       api: { version: "0.1.1", kind: "image", ref: "ghcr.io/x/tenir:0.1.1", built: true },
       "parakeet-stt": { version: "0.1.0", kind: "image", ref: "ghcr.io/x/tenir-parakeet-stt:0.1.0", built: false },
-      even: { version: "0.1.0", kind: "asset", asset: "tenir-even-v0.1.0.ehpk", built: false },
+      even: { version: "0.1.0", kind: "evenhub", package_id: "com.tenir.local", built: false },
       mobile: { version: "0.1.1", kind: "asset", asset: "tenir-android-v0.1.1.apk", version_code: 10001, built: true },
     },
   };
   const table = CL.renderComponentTable(manifest);
   assert.match(table, /API \(image, incl\. web UI\) \| 0\.1\.1 \| rebuilt/);
   assert.match(table, /Parakeet STT \(image\) \| 0\.1\.0 \| carried/);
-  assert.match(table, /Even \(\.ehpk\) \| 0\.1\.0 \| carried \| `tenir-even-v0\.1\.0\.ehpk`/);
+  assert.match(table, /Even \(Even Hub\) \| 0\.1\.0 \| carried \| `com\.tenir\.local` \(Even Hub portal\)/);
   assert.match(table, /code 10001/);
   assert.ok(!table.includes("tenir-web"));
   assert.ok(!table.includes("sidecar"));

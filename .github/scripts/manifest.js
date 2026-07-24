@@ -12,15 +12,20 @@
 //     retag a carried image to the new version — :0.1.9 pointing at 0.1.4 bits
 //     is the same lie as renaming a carried asset.
 //   - Assets: physically copied onto the new release under their ORIGINAL name
-//     (tenir-even-v0.1.4.ehpk on the v0.1.9 release), so every release page is
+//     (tenir-android-v0.1.4.apk on the v0.1.9 release), so every release page is
 //     self-contained. Renaming to the new version would make a file whose
-//     in-package version (app.json / versionCode) contradicts its name — which
-//     Even Hub and Android act on.
+//     in-package version (versionCode) contradicts its name — which Android
+//     acts on.
+//   - Even Hub (the even component): the .ehpk is NOT a release asset — its
+//     distribution channel is the Even Hub developer portal, uploaded by
+//     build-even at pack time. Nothing to do on carry: the portal already
+//     holds the carried version; the manifest just references it.
 
 "use strict";
 
 const SCHEMA = 1;
 const DEFAULT_OWNER = "xerktech";
+const DEFAULT_EVEN_PACKAGE_ID = "com.tenir.local";
 
 // Fresh descriptor for a component built at `version` on release `tag`.
 function freshComponent(component, version, tag, opts) {
@@ -33,7 +38,12 @@ function freshComponent(component, version, tag, opts) {
     case "parakeet-stt":
       return { version, kind: "image", ref: `ghcr.io/${owner}/tenir-parakeet-stt:${version}`, built: true };
     case "even":
-      return { version, kind: "asset", asset: `tenir-even-v${version}.ehpk`, release_tag: tag, built: true };
+      return {
+        version,
+        kind: "evenhub",
+        package_id: (opts && opts.evenPackageId) || DEFAULT_EVEN_PACKAGE_ID,
+        built: true,
+      };
     case "mobile":
       return {
         version,
@@ -68,6 +78,19 @@ function buildManifest(opts) {
       // never emit a manifest with a hole.
       throw new Error(`component ${component} is unchanged but absent from the previous manifest; rebuild it`);
     }
+    // Pre-portal manifests shipped the .ehpk as a release asset; the portal is
+    // its channel now, so a carried even entry is normalized to the evenhub
+    // kind instead of copying a stale asset forward (the portal already holds
+    // that version — it uploads on every rebuild).
+    if (component === "even" && prev.kind === "asset") {
+      components[component] = {
+        version: prev.version,
+        kind: "evenhub",
+        package_id: (opts && opts.evenPackageId) || DEFAULT_EVEN_PACKAGE_ID,
+        built: false,
+      };
+      continue;
+    }
     const carried = Object.assign({}, prev, { built: false });
     if (carried.kind === "asset") carried.release_tag = tag;
     components[component] = carried;
@@ -95,4 +118,4 @@ function carryPlan(manifest, prevManifest) {
   return actions;
 }
 
-module.exports = { SCHEMA, DEFAULT_OWNER, freshComponent, buildManifest, carryPlan };
+module.exports = { SCHEMA, DEFAULT_OWNER, DEFAULT_EVEN_PACKAGE_ID, freshComponent, buildManifest, carryPlan };

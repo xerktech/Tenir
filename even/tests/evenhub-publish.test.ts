@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // @ts-expect-error — plain .mjs build script, no types
-import { buildCreateVersionForm, dumpFlatYaml, extractDraftId, isJwtExpired, obfuscatePassword, parseArgs, parseFlatYaml, unwrapEnvelope } from "../scripts/evenhub-publish.mjs";
+import { buildCreateVersionForm, dumpFlatYaml, extractDraftId, isJwtExpired, obfuscatePassword, parseArgs, parseFlatYaml, unwrapEnvelope, versionListContains } from "../scripts/evenhub-publish.mjs";
 
 function makeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: Record<string, unknown>) =>
@@ -124,6 +124,28 @@ describe("extractDraftId", () => {
     expect(extractDraftId({ id: "d4" })).toBe("d4");
     expect(extractDraftId({ other: 1 })).toBeUndefined();
     expect(extractDraftId(null)).toBeUndefined();
+  });
+});
+
+describe("versionListContains", () => {
+  // The idempotency guard: the release pipeline publishes before the git tag
+  // exists, so a run that fails downstream retries at the same version — the
+  // publish must detect the version already on the portal and skip.
+  it("finds a version across plausible collection field names", () => {
+    expect(versionListContains({ list: [{ version: "0.2.2" }] }, "0.2.2")).toBe(true);
+    expect(versionListContains({ items: [{ version: "0.2.2" }] }, "0.2.2")).toBe(true);
+    expect(versionListContains({ versions: [{ version: "0.2.2" }] }, "0.2.2")).toBe(true);
+    expect(versionListContains({ records: [{ version: "0.2.2" }] }, "0.2.2")).toBe(true);
+    expect(versionListContains([{ version: "0.2.2" }], "0.2.2")).toBe(true);
+    expect(versionListContains(["0.2.2"], "0.2.2")).toBe(true);
+  });
+
+  it("is false for absent versions and unrecognized shapes", () => {
+    expect(versionListContains({ list: [{ version: "0.2.1" }] }, "0.2.2")).toBe(false);
+    expect(versionListContains({ list: [] }, "0.2.2")).toBe(false);
+    expect(versionListContains({ total: 3 }, "0.2.2")).toBe(false);
+    expect(versionListContains(null, "0.2.2")).toBe(false);
+    expect(versionListContains("weird", "0.2.2")).toBe(false);
   });
 });
 

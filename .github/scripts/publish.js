@@ -16,6 +16,18 @@ const changelog = require("./changelog.js");
 const { collectEntries } = require("./collect.js");
 const git = require("./git.js");
 
+// The portal package id the manifest's even entry references: the same
+// EVENHUB_PACKAGE_ID override build-even publishes under, else the committed
+// even/app.json, else the module default.
+function resolveEvenPackageId() {
+  if (process.env.EVENHUB_PACKAGE_ID) return process.env.EVENHUB_PACKAGE_ID;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(process.cwd(), "even", "app.json"), "utf8")).package_id;
+  } catch {
+    return manifestMod.DEFAULT_EVEN_PACKAGE_ID;
+  }
+}
+
 function main() {
   const version = process.env.VERSION_FULL;
   const tag = process.env.TAG;
@@ -35,6 +47,7 @@ function main() {
     changed,
     prevManifest,
     androidVersionCode,
+    evenPackageId: resolveEvenPackageId(),
   });
 
   const entries = collectEntries(prevTag ? `${prevTag}..HEAD` : "");

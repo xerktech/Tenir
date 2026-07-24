@@ -2,9 +2,11 @@
 
 One release publishes **all four components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **Parakeet STT** image, the Even **`.ehpk`**, and the Android **`.apk`**.
-Driven by `.github/workflows/release.yml`; the logic lives in
-`.github/scripts/` (see its README).
+UI), the **Parakeet STT** image, the Even **glasses app**, and the Android
+**`.apk`**. Driven by `.github/workflows/release.yml`; the logic lives in
+`.github/scripts/` (see its README). The Even build is **not a release
+asset**: its distribution channel is the Even Hub developer portal, uploaded
+by `build-even` right after packing (see "Even Hub dev-portal publish").
 
 ## How the version is decided
 
@@ -52,13 +54,18 @@ certificate itself changes; every update after that installs in place.
 
 ## Even Hub dev-portal publish
 
-After the GitHub release is created, the `publish-evenhub` job uploads the
-freshly built `.ehpk` to the Even Hub developer portal (the portal's
-draft + create-version API, via `even/scripts/evenhub-publish.mjs`). It runs
-only when the even component was **rebuilt** — a carried `.ehpk` is the same
-bits at the same `app.json` version, which the portal already has — and only
-after the release exists, so a portal outage can't block or half-publish a
-release. **Promoting** the uploaded build in the portal remains a manual step.
+The `build-even` job packs the `.ehpk` and immediately uploads it to the Even
+Hub developer portal (the portal's draft + create-version API, via
+`even/scripts/evenhub-publish.mjs`). The portal — not the GitHub release — is
+the glasses app's distribution channel, so the `.ehpk` is not attached to the
+release; a portal failure fails `build-even` and blocks the release like any
+other build failure. The upload happens **before the tag exists**: if a later
+job fails, no tag is minted, and the retrying run recomputes the same version —
+the publish script detects a version the portal already has (via
+`versions/list-private`) and skips, so retries are safe. A carried (unchanged)
+even component publishes nothing: the portal already holds its version, and the
+manifest references it (`kind: "evenhub"`). **Promoting** the uploaded build in
+the portal remains a manual step.
 
 Configuration (Settings → Secrets and variables → Actions):
 
@@ -71,10 +78,11 @@ Configuration (Settings → Secrets and variables → Actions):
 - **Variable `TENIR_API_HOSTS`** *(optional, pre-existing)* — pins the packed
   network whitelist; defaults to the `*` wildcard for BYO self-hosting.
 
-If the secrets are missing on a real release, the job fails with a clear error
-after the GitHub release has already been published — nothing else is affected.
-A `dry_run` dispatch exercises the job end-to-end (artifact download + config
-resolution) without authenticating or uploading.
+If the secrets are missing on a real release, `build-even` fails with a clear
+error before anything is tagged or published. A `dry_run` dispatch exercises
+the publish step (config + artifact resolution) without authenticating or
+uploading, and uploads the packed `.ehpk` as an Actions artifact
+(`even-ehpk-dry-run`) for inspection.
 
 ## Patch releases (automatic)
 
@@ -93,10 +101,10 @@ package.json  package-lock.json
 component, **build or carry**:
 
 - **Changed** components are rebuilt at the new version.
-- **Unchanged** components are **carried**: their prior artifact is published in
-  the new release *at its own prior version*, not rebuilt. A mobile-only merge
-  builds the new `.apk` and copies the previous `.ehpk` (and references the
-  previous api/parakeet-stt image tags) onto the release unchanged.
+- **Unchanged** components are **carried**: they ship *at their own prior
+  version*, not rebuilt. An even-only merge builds and portal-publishes the new
+  glasses app, copies the previous `.apk` onto the release unchanged, and
+  references the previous api/parakeet-stt image tags.
 
 Because Tenir is an npm-workspace monorepo, a single change can fan out: a
 `contract/**` edit rebuilds the api image *and* both frontend bundles (it
@@ -110,10 +118,11 @@ The release notes render a **rebuilt vs carried** table from the attached
 Carried **images** are referenced in the manifest at their prior `:version` tag
 (we do not retag an unchanged image to the new version — `:0.1.9` pointing at
 `0.1.4` bits would be as misleading as renaming a carried asset). `:latest` is
-already correct on a carried image, so the Compose stack needs nothing. Carried
-**assets** are copied forward under their **original filename**, because Even Hub
-and Android version an install by the version baked *inside* the file — the name
-must describe the bits.
+already correct on a carried image, so the Compose stack needs nothing. A
+carried **`.apk`** is copied forward under its **original filename**, because
+Android versions an install by the version baked *inside* the file — the name
+must describe the bits. A carried **even** component needs nothing physical:
+the Even Hub portal already holds its version, and the manifest references it.
 
 ## Minor / major releases (manual)
 
