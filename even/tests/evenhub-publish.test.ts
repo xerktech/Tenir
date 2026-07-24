@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // @ts-expect-error — plain .mjs build script, no types
-import { dumpFlatYaml, extractDraftId, isJwtExpired, obfuscatePassword, parseArgs, parseFlatYaml, unwrapEnvelope } from "../scripts/evenhub-publish.mjs";
+import { buildCreateVersionForm, dumpFlatYaml, extractDraftId, isJwtExpired, obfuscatePassword, parseArgs, parseFlatYaml, unwrapEnvelope } from "../scripts/evenhub-publish.mjs";
 
 function makeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: Record<string, unknown>) =>
@@ -91,6 +91,27 @@ describe("unwrapEnvelope", () => {
 
   it("throws on a non-envelope response", () => {
     expect(() => unwrapEnvelope("<html>", "x")).toThrow(/unexpected response shape/);
+  });
+});
+
+describe("buildCreateVersionForm", () => {
+  // Regression (v0.2.1 release): versions/create must be multipart form data,
+  // exactly as the portal frontend sends it — a JSON body is rejected with
+  // code 1001 "parameter parsing error".
+  it("builds a FormData with draft_id and changelog", () => {
+    const form = buildCreateVersionForm("d-123", "Tenir v0.2.1");
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get("draft_id")).toBe("d-123");
+    expect(form.get("changelog")).toBe("Tenir v0.2.1");
+  });
+
+  it("stringifies a numeric draft id", () => {
+    expect(buildCreateVersionForm(42, "x").get("draft_id")).toBe("42");
+  });
+
+  it("omits changelog when empty or undefined, like the portal does", () => {
+    expect(buildCreateVersionForm("d", "").has("changelog")).toBe(false);
+    expect(buildCreateVersionForm("d", undefined).has("changelog")).toBe(false);
   });
 });
 

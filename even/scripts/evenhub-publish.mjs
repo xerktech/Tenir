@@ -2,7 +2,11 @@
 // half of the dev loop the portal UI does by hand. Two portal API calls:
 //
 //   1. POST /api/v1/versions/draft?package_id=<pkg>   multipart, field `ehpk` -> draft_id
-//   2. POST /api/v1/versions/create?package_id=<pkg>  JSON {draft_id, changelog} -> version
+//   2. POST /api/v1/versions/create?package_id=<pkg>  multipart {draft_id, changelog} -> version
+//
+// BOTH calls are multipart/form-data — create too, exactly as the portal
+// frontend sends it (its bundle appends draft_id/changelog to a FormData);
+// a JSON body gets rejected with code 1001 "parameter parsing error".
 //
 // Auth mirrors @evenrealities/evenhub-cli exactly: the portal wants an
 // `X-Even-Authorization: <access_token>` header, where the token is the JWT the
@@ -118,6 +122,18 @@ export function unwrapEnvelope(json, what) {
     throw new Error(`${what}: portal returned code ${json.code}: ${json.message ?? "(no message)"}`);
   }
   return json.data;
+}
+
+/**
+ * The versions/create request body, mirroring the portal frontend exactly: a
+ * multipart form with draft_id and — only when non-empty — changelog. The
+ * portal rejects a JSON body with code 1001 "parameter parsing error".
+ */
+export function buildCreateVersionForm(draftId, changelog) {
+  const form = new FormData();
+  form.append("draft_id", String(draftId));
+  if (changelog !== undefined && changelog !== "") form.append("changelog", changelog);
+  return form;
 }
 
 /** Pull the draft id out of the draft response without assuming one field name. */
@@ -255,13 +271,16 @@ async function uploadDraft(baseUrl, token, packageId, artifactPath) {
 }
 
 async function createVersion(baseUrl, token, packageId, draftId, changelog) {
-  const json = await postJson(
-    baseUrl,
-    `/api/v1/versions/create?package_id=${encodeURIComponent(packageId)}`,
-    { draft_id: draftId, changelog },
-    { "X-Even-Authorization": token },
+  const res = await fetch(
+    `${baseUrl}/api/v1/versions/create?package_id=${encodeURIComponent(packageId)}`,
+    {
+      method: "POST",
+      headers: { "X-Even-Authorization": token },
+      body: buildCreateVersionForm(draftId, changelog),
+    },
   );
-  return unwrapEnvelope(json, "versions/create");
+  if (!res.ok) throw new Error(`versions/create: ${res.status} ${res.statusText}`);
+  return unwrapEnvelope(await res.json(), "versions/create");
 }
 
 // ---------------------------------------------------------------------------
