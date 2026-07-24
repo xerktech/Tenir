@@ -93,6 +93,68 @@ describe("LiveView", () => {
     expect(screen.getByText("+2 more")).toBeInTheDocument();
   });
 
+  it("wraps the transcript in its own scroll box, but not the empty state (XERK-103)", () => {
+    const { container, rerender } = renderLive(fakeController());
+    // Idle: the empty state renders directly, with no scroll box to bound.
+    expect(container.querySelector(".transcript-scroll")).toBeNull();
+
+    rerender(
+      <LiveView
+        controller={fakeController({
+          running: true,
+          connection: "open",
+          segments: [{ id: "a", text: "hello world" }],
+        })}
+        cueLevel="balanced"
+        onCueLevelChange={vi.fn()}
+      />,
+    );
+    const box = container.querySelector(".transcript-scroll");
+    expect(box).not.toBeNull();
+    // The transcript lives inside the scroll box; the cue band is a sibling
+    // above it so it never scrolls away with the captions.
+    expect(box!.querySelector("ul.transcript")).not.toBeNull();
+  });
+
+  it("follows the newest caption while pinned, and releases when scrolled up (XERK-103)", () => {
+    const c = fakeController({
+      running: true,
+      connection: "open",
+      segments: [{ id: "a", text: "one" }],
+    });
+    const { container, rerender } = renderLive(c);
+    const box = container.querySelector<HTMLElement>(".transcript-scroll")!;
+    Object.defineProperty(box, "scrollHeight", { get: () => 500, configurable: true });
+    Object.defineProperty(box, "clientHeight", { get: () => 200, configurable: true });
+
+    const withSegments = (segments: { id: string; text: string }[]) =>
+      rerender(
+        <LiveView
+          controller={fakeController({ running: true, connection: "open", segments })}
+          cueLevel="balanced"
+          onCueLevelChange={vi.fn()}
+        />,
+      );
+
+    // A new caption while pinned to the bottom follows to the newest text.
+    withSegments([
+      { id: "a", text: "one" },
+      { id: "b", text: "two" },
+    ]);
+    expect(box.scrollTop).toBe(500);
+
+    // The viewer scrolls up to re-read earlier text (now far from the bottom).
+    box.scrollTop = 0;
+    fireEvent.scroll(box);
+    // Fresh captions must not yank them back down.
+    withSegments([
+      { id: "a", text: "one" },
+      { id: "b", text: "two" },
+      { id: "c", text: "three" },
+    ]);
+    expect(box.scrollTop).toBe(0);
+  });
+
   it("reflects the active cue level and reports changes", () => {
     const { onCueLevelChange } = renderLive(fakeController());
     const aggressive = screen.getByRole("button", { name: "Aggressive" });

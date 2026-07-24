@@ -7,8 +7,8 @@
  * test without a real mic or socket.
  */
 
-import { DISCLOSURES, wsFromHttpBase, type CueLevel } from "@tenir/client-core";
-import { useState } from "react";
+import { DISCLOSURES, isPinnedToBottom, wsFromHttpBase, type CueLevel } from "@tenir/client-core";
+import { useEffect, useRef, useState } from "react";
 
 import { getServerUrl } from "../config";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
@@ -92,8 +92,25 @@ export function LiveView({
   onCueLevelChange: (l: CueLevel) => void;
 }): JSX.Element {
   const { state } = controller;
+  const hasContent = state.segments.length > 0 || Boolean(state.partial);
+
+  // The transcript scrolls inside its own bounded box so a long session never
+  // scrolls the page and carries the cue band out of view (XERK-103). Keep the
+  // box following the newest caption while the viewer is at the bottom; once
+  // they scroll up to re-read, stop yanking them back down (shared geometry).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [state.segments.length, state.partial]);
+  const onTranscriptScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinnedRef.current = isPinnedToBottom(el);
+  };
+
   return (
-    <section>
+    <section className="live">
       <div className="row">
         <h2 className="grow">Live</h2>
         <Badge tone={state.connection === "open" ? "accent" : "neutral"}>{state.connection}</Badge>
@@ -123,15 +140,17 @@ export function LiveView({
       <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
 
       <Card>
-        {state.segments.length === 0 && !state.partial ? (
+        {!hasContent ? (
           <EmptyState title="No captions yet." hint="Press Record to start a live conversation." />
         ) : (
-          <ul className="transcript">
-            {state.segments.map((s) => (
-              <li key={s.id}>{s.text}</li>
-            ))}
-            {state.partial && <li className="muted">{state.partial}</li>}
-          </ul>
+          <div className="transcript-scroll" ref={scrollRef} onScroll={onTranscriptScroll}>
+            <ul className="transcript">
+              {state.segments.map((s) => (
+                <li key={s.id}>{s.text}</li>
+              ))}
+              {state.partial && <li className="muted">{state.partial}</li>}
+            </ul>
+          </div>
         )}
       </Card>
     </section>

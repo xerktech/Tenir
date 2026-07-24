@@ -258,6 +258,15 @@
       .transcript li { padding: var(--space-2) 0; line-height: 1.55; }
       .transcript li + li { border-top: 1px solid var(--border); }
       .transcript li.partial { color: var(--text-muted); }
+      /* The running transcript scrolls inside its own bounded box that scales
+         with the viewport (XERK-103), so a long session never scrolls the page
+         and carries the cue card above it out of view. It auto-follows the
+         newest caption; the cue card stays pinned above. */
+      #session-text.transcript {
+        max-height: 55vh;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
 
       /* Conversation and history transcript text is user-selectable so it can be
          copied (XERK-104): the live session transcript, the stored-conversation

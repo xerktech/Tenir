@@ -22,3 +22,4 @@ export * from "./pcmSource";
 export * from "./captureSession";
 export * from "./disclosures";
 export * from "./browserAudio";
+export * from "./scroll";

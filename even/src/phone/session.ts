@@ -13,6 +13,8 @@
  * jsdom without the Even SDK.
  */
 
+import { isPinnedToBottom } from "@tenir/client-core";
+
 import type { CueCard } from "../lens/layout";
 
 export interface LiveSessionView {
@@ -101,7 +103,11 @@ export class SessionPage {
         : "Tap your glasses to start a session.";
       this.els.text.replaceChildren();
     } else {
-      const doc = this.els.text.ownerDocument;
+      const box = this.els.text;
+      // Was the viewer following the live feed (at the bottom) before this
+      // update? Measure before swapping the rows in.
+      const pinned = isPinnedToBottom(box);
+      const doc = box.ownerDocument;
       const frag = doc.createDocumentFragment();
       for (const segment of view.segments) {
         const li = doc.createElement("li");
@@ -114,11 +120,12 @@ export class SessionPage {
         li.textContent = view.partial;
         frag.appendChild(li);
       }
-      this.els.text.replaceChildren(frag);
-      // Follow the newest text, like the lens: the page is a live feed.
-      // (Guarded: jsdom doesn't implement scrollIntoView.)
-      const last = this.els.text.lastElementChild as HTMLElement | null;
-      if (last && typeof last.scrollIntoView === "function") last.scrollIntoView({ block: "end" });
+      box.replaceChildren(frag);
+      // Follow the newest caption inside the transcript's OWN scroll box, so the
+      // cue card pinned above it stays in view (XERK-103) — scrolling the page
+      // would carry the cue out of view. Only stick while already at the bottom;
+      // a viewer who scrolled up to re-read is left where they are.
+      if (pinned) box.scrollTop = box.scrollHeight;
     }
 
     // After the render, so the page is current the moment it is brought forward.

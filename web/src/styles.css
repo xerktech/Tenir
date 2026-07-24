@@ -232,6 +232,17 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   -webkit-user-select: text;
 }
 
+/* The transcript scrolls inside its own bounded box that scales with the
+   viewport (XERK-103), so a long session never grows the page and pushes the
+   cue band above it out of view. The box auto-follows the newest caption; the
+   cue band stays pinned above. */
+.transcript-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; margin-top: var(--space-2); }
 
 .toast {
@@ -502,4 +513,8 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   /* History table: let it scroll sideways rather than crush the columns. */
   .history-table { display: block; overflow-x: auto; white-space: nowrap; }
   .history-table th, .history-table td { padding: var(--space-2); }
+
+  /* Leave room for the fixed bottom nav so the transcript box + cue band fit
+     the phone viewport without the page itself needing to scroll (XERK-103). */
+  .transcript-scroll { max-height: 50vh; }
 }

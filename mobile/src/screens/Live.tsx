@@ -8,10 +8,17 @@
  * framework-agnostic `CaptureSession`.
  */
 
-import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "react-native";
 
-import { DISCLOSURES, type CueLevel } from "@tenir/client-core";
+import { DISCLOSURES, isPinnedToBottom, type CueLevel } from "@tenir/client-core";
 import { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
 import { deviceKeyValue } from "../secureStorage";
@@ -26,9 +33,9 @@ import {
   ListItem,
   Muted,
   Row,
-  Screen,
 } from "../ui/components";
-import { useTheme } from "../ui/ThemeContext";
+import { useTheme, useThemedStyles } from "../ui/ThemeContext";
+import { space, type Palette } from "../ui/theme";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording")?.body ?? "";
 
@@ -44,8 +51,27 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const cap = useCapture(wsUrl, cueLevel);
   const notify = useNotify();
   const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [busy, setBusy] = useState(false);
   const { state } = cap;
+
+  // The transcript scrolls inside its own box below the fixed controls + cue
+  // band, so a long session never scrolls them off-screen (XERK-103). Follow
+  // the newest caption while the viewer is at the bottom; release once they
+  // scroll up to re-read (shared geometry with the web + even companion).
+  const scrollRef = useRef<ScrollView>(null);
+  const pinnedRef = useRef(true);
+  const onTranscriptScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    pinnedRef.current = isPinnedToBottom({
+      scrollTop: contentOffset.y,
+      scrollHeight: contentSize.height,
+      clientHeight: layoutMeasurement.height,
+    });
+  };
+  const followNewest = () => {
+    if (pinnedRef.current) scrollRef.current?.scrollToEnd({ animated: false });
+  };
 
   // Hydrate the persisted cue-level preference once on mount.
   useEffect(() => {
@@ -76,8 +102,12 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const mic = state.micSource === "g2-microphone" ? "glasses mic" : "phone mic";
   const live = state.running && state.connection === "open" && state.listening;
 
+  const hasContent = state.segments.length > 0 || Boolean(state.partial);
+
   return (
-    <Screen>
+    // A fixed column — controls + cue band stay put — over a transcript that
+    // scrolls on its own, so the cues above it are never scrolled away (XERK-103).
+    <View style={styles.screen}>
       <Heading>Live</Heading>
 
       <Card>
@@ -116,24 +146,41 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
 
       <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
 
-      {state.segments.length === 0 && !state.partial && !state.running ? (
+      {!hasContent && !state.running ? (
         <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />
       ) : null}
-      {state.segments.length === 0 && !state.partial && state.running ? (
-        <Muted>Listening…</Muted>
+      {!hasContent && state.running ? <Muted>Listening…</Muted> : null}
+
+      {hasContent ? (
+        <ScrollView
+          ref={scrollRef}
+          style={styles.transcript}
+          contentContainerStyle={styles.transcriptContent}
+          onScroll={onTranscriptScroll}
+          scrollEventThrottle={100}
+          onContentSizeChange={followNewest}
+        >
+          {/* Transcript text is selectable so it can be long-pressed and copied
+              (XERK-104), matching the web/even clients. */}
+          {state.segments.map((seg) => (
+            <ListItem key={seg.id}>
+              <Text selectable style={{ color: colors.text }}>
+                {seg.text}
+              </Text>
+            </ListItem>
+          ))}
+          {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
+        </ScrollView>
       ) : null}
-
-      {/* Transcript text is selectable so it can be long-pressed and copied
-          (XERK-104), matching the web/even clients. */}
-      {state.segments.map((seg) => (
-        <ListItem key={seg.id}>
-          <Text selectable style={{ color: colors.text }}>
-            {seg.text}
-          </Text>
-        </ListItem>
-      ))}
-
-      {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
-    </Screen>
+    </View>
   );
 }
+
+const makeStyles = (colors: Palette) =>
+  StyleSheet.create({
+    // Mirror the shared `Screen` padding/background, but as a fixed column so
+    // only the transcript below scrolls (the cue band above stays in view).
+    screen: { flex: 1, backgroundColor: colors.bg, padding: space.lg, gap: space.md },
+    transcript: { flex: 1 },
+    transcriptContent: { gap: space.xs, paddingBottom: space.md },
+  });

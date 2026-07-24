@@ -153,6 +153,36 @@ describe("SessionPage", () => {
     expect(cue().textContent).toBe("");
   });
 
+  it("follows the newest caption inside the transcript's own scroll box (XERK-103)", () => {
+    const page = mount();
+    const box = text();
+    // Content shorter than the box → the viewer is always "at the bottom", so
+    // new captions keep it pinned there. (jsdom has no layout; drive geometry.)
+    Object.defineProperty(box, "scrollHeight", { get: () => 100, configurable: true });
+    Object.defineProperty(box, "clientHeight", { get: () => 300, configurable: true });
+    box.scrollTop = 0;
+
+    page.update(view({ segments: ["one", "two", "three"] }));
+
+    // Scrolled the transcript box itself to its bottom — never the page (which
+    // would carry the cue card above it out of view).
+    expect(box.scrollTop).toBe(100);
+  });
+
+  it("leaves a viewer who scrolled up to re-read where they are (XERK-103)", () => {
+    const page = mount();
+    const box = text();
+    // A tall transcript scrolled to the top: the viewer is reading earlier text.
+    Object.defineProperty(box, "scrollHeight", { get: () => 600, configurable: true });
+    Object.defineProperty(box, "clientHeight", { get: () => 200, configurable: true });
+    box.scrollTop = 0;
+
+    page.update(view({ segments: ["a", "b", "c", "d"] }));
+
+    // New text must not yank them back down to the bottom.
+    expect(box.scrollTop).toBe(0);
+  });
+
   it("fires onRecordingStart only on the idle → recording edge", () => {
     const onRecordingStart = vi.fn();
     const page = mount({ onRecordingStart });
