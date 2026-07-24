@@ -18,7 +18,15 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 
-import { DISCLOSURES, isPinnedToBottom, liveTranscript, type CueLevel } from "@tenir/client-core";
+import {
+  DISCLOSURES,
+  isPinnedToBottom,
+  liveTranscript,
+  type CaptureSegment,
+  type CueLevel,
+  type LiveCue,
+  type LiveTranscriptItem,
+} from "@tenir/client-core";
 import { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
 import { deviceKeyValue } from "../secureStorage";
@@ -30,7 +38,6 @@ import {
   Card,
   EmptyState,
   Heading,
-  ListItem,
   Muted,
   Row,
 } from "../ui/components";
@@ -38,6 +45,27 @@ import { useTheme, useThemedStyles } from "../ui/ThemeContext";
 import { space, type Palette } from "../ui/theme";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording")?.body ?? "";
+
+// Consecutive turns are grouped into a run so they render inside one selectable
+// <Text> — RN only extends a text selection within a single <Text> tree, so a
+// run is the largest span a drag-select can cover (XERK-104). A released cue is
+// a separate tappable dropdown (XERK-108), so it ends the current run — the same
+// grouping the History screen uses.
+type LiveRun = { kind: "segments"; segs: CaptureSegment[] } | { kind: "cue"; cue: LiveCue };
+
+function liveRuns(items: LiveTranscriptItem[]): LiveRun[] {
+  const out: LiveRun[] = [];
+  for (const item of items) {
+    if (item.kind === "cue") {
+      out.push({ kind: "cue", cue: item.cue });
+    } else {
+      const last = out[out.length - 1];
+      if (last && last.kind === "segments") last.segs.push(item.segment);
+      else out.push({ kind: "segments", segs: [item.segment] });
+    }
+  }
+  return out;
+}
 
 function connectionLabel(state: ReturnType<typeof useCapture>["state"]): string {
   if (!state.running) return "idle";
@@ -107,8 +135,10 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
 
   // Interleave finalized turns with cues already released from the band so a past
   // cue can be re-read inline without disturbing the cues still coming in above
-  // (XERK-108) — the same segment/cue timeline the history screen renders.
-  const items = liveTranscript(state.segments, state.pastCues);
+  // (XERK-108), then group consecutive turns into selectable runs (XERK-104) —
+  // the same segment/cue timeline the history screen renders.
+  const runList = liveRuns(liveTranscript(state.segments, state.pastCues));
+  const lastIsSegments = runList[runList.length - 1]?.kind === "segments";
 
   return (
     // A fixed column — controls + cue band stay put — over a transcript that
@@ -166,21 +196,37 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
           scrollEventThrottle={100}
           onContentSizeChange={followNewest}
         >
-          {/* Transcript text is selectable so it can be long-pressed and copied
-              (XERK-104), matching the web/even clients. Released cues are embedded
-              inline as collapsed dropdowns (XERK-108). */}
-          {items.map((item) =>
-            item.kind === "segment" ? (
-              <ListItem key={item.segment.id}>
-                <Text selectable style={{ color: colors.text }}>
-                  {item.segment.text}
-                </Text>
-              </ListItem>
+          {/* Each run of consecutive turns is ONE selectable <Text>, so a
+              selection can be dragged across every turn in it and copied
+              (XERK-104). A released cue is a separate dropdown that ends the run
+              (XERK-108); selecting across a cue is a documented platform gap vs.
+              the web/even DOM clients. The live partial rides the trailing turn
+              run so it's selectable too. */}
+          {runList.map((run, i) =>
+            run.kind === "cue" ? (
+              <CueDisclosure key={`cue-${run.cue.id}`} title={run.cue.title} body={run.cue.body} />
             ) : (
-              <CueDisclosure key={`cue-${item.cue.id}`} title={item.cue.title} body={item.cue.body} />
+              <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
+                {run.segs.map((seg, j) => (
+                  <Text key={seg.id}>
+                    {j > 0 ? "\n" : null}
+                    {seg.text}
+                  </Text>
+                ))}
+                {state.partial && i === runList.length - 1 ? (
+                  <Text style={{ color: colors.muted }}>
+                    {run.segs.length > 0 ? "\n" : null}
+                    {`› ${state.partial}`}
+                  </Text>
+                ) : null}
+              </Text>
             ),
           )}
-          {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
+          {/* A partial with no trailing turn run to ride (a cue is last, or no
+              turns yet) gets its own selectable line. */}
+          {state.partial && !lastIsSegments ? (
+            <Text selectable style={{ color: colors.muted, lineHeight: 22 }}>{`› ${state.partial}`}</Text>
+          ) : null}
         </ScrollView>
       ) : null}
     </View>

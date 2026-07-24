@@ -36,7 +36,9 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
 
   it("wires the history transcript to the inline dropdown", () => {
     expect(history).toContain("CueDisclosure");
-    expect(history).toContain("<CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />");
+    // A cue ends a run of selectable turns (XERK-104), so it renders from the
+    // run's `cue` rather than a raw timeline item — still the inline dropdown.
+    expect(history).toContain("<CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />");
     // The modal open/close state is gone from the detail screen.
     expect(history).not.toContain("CueModal");
     expect(history).not.toContain("InlineCue");
@@ -48,17 +50,18 @@ describe("released cues are embedded inline in the live transcript (XERK-108)", 
   const live = readText("src/screens/Live.tsx");
 
   it("interleaves finalized turns and past cues via the shared liveTranscript helper", () => {
-    // Built from the shared timeline helper, so the interleave matches web/even.
+    // Built from the shared timeline helper, so the interleave matches web/even,
+    // then grouped into selectable runs (XERK-104 parity).
     expect(live).toContain("liveTranscript");
-    expect(live).toContain("const items = liveTranscript(state.segments, state.pastCues)");
-    // The transcript renders that merged list, not the bare segment array.
+    expect(live).toContain("liveRuns(liveTranscript(state.segments, state.pastCues))");
+    // The transcript renders that merged/grouped list, not the bare segment array.
     expect(live).not.toContain("state.segments.map(");
-    expect(live).toContain("items.map((item) =>");
+    expect(live).toContain("runList.map((run, i) =>");
   });
 
   it("renders a past cue with the same inline dropdown history uses", () => {
     expect(live).toContain(
-      "<CueDisclosure key={`cue-${item.cue.id}`} title={item.cue.title} body={item.cue.body} />",
+      "<CueDisclosure key={`cue-${run.cue.id}`} title={run.cue.title} body={run.cue.body} />",
     );
     // Past cues count as content so a transcript of only-reviewed cues still shows.
     expect(live).toContain("state.pastCues.length > 0");
