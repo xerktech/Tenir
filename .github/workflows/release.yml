@@ -207,11 +207,21 @@ jobs:
           # --force: this branch is automation-owned and may linger from a prior
           # failed run; overwrite it rather than fail on a non-fast-forward.
           git push --force origin "$BRANCH"
-          # Reuse an existing PR if a prior run already opened one for this head.
-          gh pr create --base main --head "$BRANCH" \
+          # Open the bump PR. Reuse a leftover PR from a superseded run, but let
+          # any OTHER failure (e.g. "GitHub Actions is not permitted to create
+          # pull requests" when the org/repo setting is off) fail the step here
+          # with its real message — swallowing it only resurfaces downstream as a
+          # misleading "never became mergeable".
+          if ! err="$(gh pr create --base main --head "$BRANCH" \
             --title "Release ${TAG}" \
-            --body "Automated VERSION + CHANGELOG.md rollup for ${TAG}, merged by the release workflow." \
-            || echo "A PR for ${BRANCH} already exists — reusing it."
+            --body "Automated VERSION + CHANGELOG.md rollup for ${TAG}, merged by the release workflow." 2>&1)"; then
+            if printf '%s' "$err" | grep -qi "already exists"; then
+              echo "Reusing the existing PR for ${BRANCH}."
+            else
+              printf '%s\n' "$err" >&2
+              exit 1
+            fi
+          fi
           # Mergeability is computed asynchronously just after create; retry.
           for attempt in 1 2 3 4 5 6; do
             if gh pr merge "$BRANCH" --squash --delete-branch; then
