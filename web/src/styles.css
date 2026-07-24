@@ -248,6 +248,8 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   text-transform: uppercase; letter-spacing: .04em;
 }
 .cue-card-body { margin-top: 2px; line-height: 1.5; }
+/* "+N more" note under the active cue when cues are queued behind it (XERK-102). */
+.cue-queued { font-size: var(--text-sm); letter-spacing: .02em; align-self: flex-start; }
 @keyframes cue-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 
 /* The global "how eager are cues" toggle on the Live panel. */

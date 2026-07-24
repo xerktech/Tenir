@@ -58,6 +58,11 @@ import {
 
 // A cue box stays on the lens this long, then is auto-dismissed (XERK-81).
 export const CUE_TTL_MS = 10000;
+// Only one cue shows on the lens at a time (XERK-102): a cue arriving while
+// another is up — or while the double-tap menu owns the popup — is queued and
+// pops the moment the box frees. This bounds that backlog; over the cap the
+// stalest waiting cue is dropped so the freshest still get their turn.
+export const MAX_QUEUED_CUES = 8;
 
 // Keep the on-lens transcript bounded; textContainerUpgrade caps at 2000 chars.
 // fitCaption trims further to what the band can show — this only bounds the
@@ -94,7 +99,8 @@ type Mutable = {
   connection: "connecting" | "open" | "closed";
   recording: boolean; // a session is running (XERK-85: tap starts, popup exits)
   menu: MenuChoice | null; // the in-session popup's highlight; null = closed
-  cue: CueCard | null; // a private context cue currently on the lens (XERK-81)
+  cue: CueCard | null; // the private context cue currently on the lens (XERK-81)
+  cueQueue: CueCard[]; // cues waiting behind the active one (FIFO, XERK-102)
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -145,6 +151,7 @@ export async function wireLens(
     recording: false,
     menu: null,
     cue: null,
+    cueQueue: [],
   };
   let cueTimer: ReturnType<typeof setTimeout> | null = null;
   let enabled = false; // signed in — clicks act only while enabled
@@ -349,6 +356,7 @@ export async function wireLens(
     state.recording = false;
     state.menu = null;
     state.cue = null;
+    state.cueQueue = [];
     if (cueTimer) clearTimeout(cueTimer);
     cueTimer = null;
     menuFallback = false;
@@ -428,16 +436,27 @@ export async function wireLens(
     await store.flush();
   };
 
-  /**
-   * Show a private context cue (XERK-81): a bordered box above the transcript,
-   * auto-dismissed after CUE_TTL_MS. The interactive menu owns the shared popup,
-   * so a cue arriving while it is open is dropped rather than clobbering it.
-   */
-  const showCue = (cue: CueCard) => {
-    if (state.menu) return;
-    state.cue = cue;
+  const startCueTimer = () => {
     if (cueTimer) clearTimeout(cueTimer);
     cueTimer = setTimeout(() => dismissCue(), CUE_TTL_MS);
+  };
+
+  /**
+   * Show a private context cue (XERK-81): a bordered box above the transcript,
+   * auto-dismissed after CUE_TTL_MS. Only one cue shows at a time (XERK-102): a
+   * cue arriving while another is up — or while the interactive menu owns the
+   * shared popup — is queued rather than clobbering what's there, and pops the
+   * moment the box frees (dismissCue / closeMenu drain the queue).
+   */
+  const showCue = (cue: CueCard) => {
+    if (state.menu || state.cue) {
+      state.cueQueue.push(cue);
+      // Bound the backlog: over the cap, drop the stalest waiting cue.
+      if (state.cueQueue.length > MAX_QUEUED_CUES) state.cueQueue.shift();
+      return;
+    }
+    state.cue = cue;
+    startCueTimer();
     rebuildPage();
     syncPhone();
   };
@@ -448,7 +467,11 @@ export async function wireLens(
       cueTimer = null;
     }
     if (!state.cue) return;
-    state.cue = null;
+    // Promote the next queued cue, if any, so it pops immediately (XERK-102);
+    // otherwise the box frees back to the plain page. The menu never coexists
+    // with an active cue, so there's no menu to guard against here.
+    state.cue = state.cueQueue.shift() ?? null;
+    if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
   };
@@ -469,7 +492,11 @@ export async function wireLens(
   const closeMenu = () => {
     state.menu = null;
     menuFallback = false;
+    // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).
+    state.cue = state.cueQueue.shift() ?? null;
+    if (state.cue) startCueTimer();
     rebuildPage();
+    syncPhone();
   };
 
   /** Move the popup highlight (swipe): repaint the box — or the band, in fallback. */

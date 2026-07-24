@@ -21,11 +21,15 @@ import { decodeBase64 } from "./pcm";
 
 // Cap how many finalized turns we keep on screen; this just bounds memory.
 const MAX_SEGMENTS = 60;
-// A live cue is shown above the transcript for this long, then auto-dismissed
-// (XERK-81). The history view keeps cues permanently; this is the live band only.
+// The active cue is shown above the transcript for this long, then released
+// (XERK-81). The history view keeps cues permanently; this is the live surface only.
 export const CUE_TTL_MS = 10000;
-// Bound how many cues can be visible at once (rapid-fire cues shouldn't stack up).
-const MAX_LIVE_CUES = 4;
+// Only ONE cue is shown at a time (XERK-102): a cue arriving while another is
+// active is queued and pops the moment the active one is released. This bounds
+// how deep that backlog can grow — well past any normal conversation — so a
+// torrent of cues can't grow the queue without limit. Over the cap, the stalest
+// waiting cue is dropped so the freshest still get their turn.
+const MAX_QUEUED_CUES = 16;
 
 export type Connection = "connecting" | "open" | "closed";
 
@@ -52,8 +56,13 @@ export interface CaptureState {
   sessionId?: string;
   segments: CaptureSegment[];
   partial: string;
-  /** Cues currently visible above the transcript; auto-expired after CUE_TTL_MS. */
-  cues: LiveCue[];
+  /** The cue currently shown above the transcript; released after CUE_TTL_MS (XERK-102). */
+  activeCue: LiveCue | null;
+  /**
+   * Cues waiting behind the active one (FIFO, XERK-102): when the active cue is
+   * released, the head of this queue immediately becomes the new active cue.
+   */
+  queuedCues: LiveCue[];
   error?: string;
 }
 
@@ -64,7 +73,7 @@ export type CaptureAction =
   | { type: "partial"; text: string }
   | { type: "final"; segmentId: string; text: string }
   | { type: "cue"; cue: LiveCue }
-  | { type: "cueExpire"; id: string }
+  | { type: "cueRelease"; id: string }
   | { type: "error"; message: string }
   | { type: "togglePause" }
   | { type: "micSwitch"; micSource: MicSource }
@@ -78,7 +87,8 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     micSource,
     segments: [],
     partial: "",
-    cues: [],
+    activeCue: null,
+    queuedCues: [],
   };
 }
 
@@ -105,16 +115,33 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       return { ...state, segments, partial: "" };
     }
     case "cue": {
-      // Newest cue last; drop the oldest if we're over the visible cap. A repeat
-      // id replaces in place (a re-delivered cue on resume shouldn't duplicate).
-      const withoutDupe = state.cues.filter((c) => c.id !== action.cue.id);
-      const cues = [...withoutDupe, action.cue];
-      if (cues.length > MAX_LIVE_CUES) cues.shift();
-      return { ...state, cues };
+      // A re-delivered cue (e.g. on resume) shouldn't duplicate: if its id is
+      // already the active or a queued cue, update that entry in place.
+      const cue = action.cue;
+      if (state.activeCue?.id === cue.id) return { ...state, activeCue: cue };
+      const queuedIdx = state.queuedCues.findIndex((c) => c.id === cue.id);
+      if (queuedIdx !== -1) {
+        const queuedCues = [...state.queuedCues];
+        queuedCues[queuedIdx] = cue;
+        return { ...state, queuedCues };
+      }
+      // Nothing showing → this cue becomes active. Otherwise it waits its turn
+      // at the back of the queue (XERK-102).
+      if (!state.activeCue) return { ...state, activeCue: cue };
+      let queuedCues = [...state.queuedCues, cue];
+      // Bound the backlog: over the cap, drop the stalest waiting cue.
+      if (queuedCues.length > MAX_QUEUED_CUES) {
+        queuedCues = queuedCues.slice(queuedCues.length - MAX_QUEUED_CUES);
+      }
+      return { ...state, queuedCues };
     }
-    case "cueExpire": {
-      const cues = state.cues.filter((c) => c.id !== action.id);
-      return cues.length === state.cues.length ? state : { ...state, cues };
+    case "cueRelease": {
+      // The active cue's time is up (or it was dismissed): promote the head of
+      // the queue immediately, or clear the surface if nothing is waiting. Guard
+      // on id so a stale timer can't release a cue that already moved on.
+      if (!state.activeCue || state.activeCue.id !== action.id) return state;
+      const [next, ...rest] = state.queuedCues;
+      return { ...state, activeCue: next ?? null, queuedCues: rest };
     }
     case "error":
       return { ...state, error: action.message };
@@ -125,14 +152,15 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       return { ...state, micSource: action.micSource };
     case "stop":
       // Session over: drop to idle but keep the transcript on screen to read back.
-      // Live cues are ephemeral, so clear them.
+      // Live cues (active + queued) are ephemeral, so clear them.
       return {
         ...state,
         running: false,
         listening: true,
         connection: "closed",
         partial: "",
-        cues: [],
+        activeCue: null,
+        queuedCues: [],
       };
   }
 }
@@ -172,9 +200,11 @@ export class CaptureSession {
   private client: ApiLike | null = null;
   private state: CaptureState;
   private listeners = new Set<(s: CaptureState) => void>();
-  // Pending auto-dismiss timers for live cues, cleared on stop so a cue can't
-  // fire its expiry after the session ends.
-  private cueTimers = new Set<ReturnType<typeof setTimeout>>();
+  // The single auto-release timer for the active cue (XERK-102): only one cue
+  // shows at a time, so only one timer is ever pending. `cueTimerFor` is the id
+  // of the cue it targets, so a promoted cue re-arms and stop() can cancel it.
+  private cueTimer: ReturnType<typeof setTimeout> | null = null;
+  private cueTimerFor: string | null = null;
 
   constructor(deps: CaptureSessionDeps) {
     this.deps = deps;
@@ -250,19 +280,44 @@ export class CaptureSession {
     return true;
   }
 
-  /** Show a live cue and schedule its auto-dismiss after CUE_TTL_MS (XERK-81). */
+  /**
+   * Enqueue a live cue (XERK-81, XERK-102). It shows immediately if nothing is
+   * active, otherwise it waits behind the active cue; either way `syncCueTimer`
+   * makes sure the current active cue has a release timer running.
+   */
   private showCue(cue: LiveCue): void {
     this.dispatch({ type: "cue", cue });
-    const timer = setTimeout(() => {
-      this.cueTimers.delete(timer);
-      this.dispatch({ type: "cueExpire", id: cue.id });
-    }, CUE_TTL_MS);
-    this.cueTimers.add(timer);
+    this.syncCueTimer();
   }
 
-  private clearCueTimers(): void {
-    for (const t of this.cueTimers) clearTimeout(t);
-    this.cueTimers.clear();
+  /**
+   * Ensure exactly one release timer is pending, targeting the current active
+   * cue. Called after every cue transition: a newly-active cue arms its timer,
+   * a promoted cue re-arms, and an empty surface clears it. When the timer
+   * fires it releases the active cue (promoting the queue head) and re-syncs so
+   * the promoted cue gets its own countdown.
+   */
+  private syncCueTimer(): void {
+    const active = this.state.activeCue;
+    if (!active) {
+      this.clearCueTimer();
+      return;
+    }
+    if (this.cueTimerFor === active.id) return; // already timing this cue
+    this.clearCueTimer();
+    this.cueTimerFor = active.id;
+    this.cueTimer = setTimeout(() => {
+      this.cueTimer = null;
+      this.cueTimerFor = null;
+      this.dispatch({ type: "cueRelease", id: active.id });
+      this.syncCueTimer();
+    }, CUE_TTL_MS);
+  }
+
+  private clearCueTimer(): void {
+    if (this.cueTimer) clearTimeout(this.cueTimer);
+    this.cueTimer = null;
+    this.cueTimerFor = null;
   }
 
   /** Pause/resume audio upload without closing the socket. */
@@ -281,7 +336,7 @@ export class CaptureSession {
     await this.deps.audio.stop();
     this.client?.stop();
     this.client = null;
-    this.clearCueTimers();
+    this.clearCueTimer();
     this.deps.clearSessionId();
     this.dispatch({ type: "stop" });
   }

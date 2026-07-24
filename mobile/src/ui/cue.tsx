@@ -50,18 +50,34 @@ export function CueLevelToggle({
   );
 }
 
-/** The live band of cues above the transcript (auto-dismissed by the core). */
-export function LiveCueBand({ cues }: { cues: LiveCue[] }): JSX.Element | null {
+/**
+ * The single active cue above the transcript (XERK-102). One cue shows at a
+ * time; others wait in a FIFO queue and pop the moment this one is released. A
+ * "+N more" note appears while cues are queued behind it.
+ */
+export function LiveCueBand({
+  activeCue,
+  queuedCount,
+}: {
+  activeCue: LiveCue | null;
+  queuedCount: number;
+}): JSX.Element | null {
   const styles = useThemedStyles(makeStyles);
-  if (cues.length === 0) return null;
+  if (!activeCue) return null;
   return (
     <View style={styles.band}>
-      {cues.map((c) => (
-        <View key={c.id} style={styles.card}>
-          <Text style={styles.cardTitle}>{c.title.toUpperCase()}</Text>
-          <Text style={styles.cardBody}>{c.body}</Text>
-        </View>
-      ))}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>{activeCue.title.toUpperCase()}</Text>
+        <Text style={styles.cardBody}>{activeCue.body}</Text>
+      </View>
+      {queuedCount > 0 && (
+        <Text
+          style={styles.queued}
+          accessibilityLabel={`${queuedCount} more ${queuedCount === 1 ? "cue" : "cues"} queued`}
+        >
+          +{queuedCount} more
+        </Text>
+      )}
     </View>
   );
 }
@@ -139,6 +155,7 @@ const makeStyles = (colors: Palette) =>
     },
     cardTitle: { color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 },
     cardBody: { color: colors.text, lineHeight: 20 },
+    queued: { color: colors.muted, fontSize: 12, fontWeight: "600" },
     inline: {
       alignSelf: "flex-start",
       borderColor: colors.accent,

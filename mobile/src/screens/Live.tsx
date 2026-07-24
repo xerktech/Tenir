@@ -114,7 +114,7 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
         <CueLevelToggle level={cueLevel} onChange={changeCueLevel} />
       </Card>
 
-      <LiveCueBand cues={state.cues} />
+      <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
 
       {state.segments.length === 0 && !state.partial && !state.running ? (
         <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />

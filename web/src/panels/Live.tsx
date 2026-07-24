@@ -50,17 +50,34 @@ export function CueLevelToggle({
   );
 }
 
-/** A private context cue shown above the live transcript (auto-dismissed by the core). */
-function LiveCueBand({ cues }: { cues: CaptureController["state"]["cues"] }): JSX.Element | null {
-  if (cues.length === 0) return null;
+/**
+ * The single active private-context cue above the live transcript (XERK-102).
+ * One cue shows at a time; any others wait in a FIFO queue and pop the moment
+ * this one is released. When the queue is non-empty a small "+N more" note tells
+ * the wearer more cues are lined up.
+ */
+function LiveCueBand({
+  activeCue,
+  queuedCount,
+}: {
+  activeCue: CaptureController["state"]["activeCue"];
+  queuedCount: number;
+}): JSX.Element | null {
+  if (!activeCue) return null;
   return (
     <div className="cue-band" aria-live="polite">
-      {cues.map((c) => (
-        <div className="cue-card" key={c.id}>
-          <div className="cue-card-title">{c.title}</div>
-          <div className="cue-card-body">{c.body}</div>
+      <div className="cue-card" key={activeCue.id}>
+        <div className="cue-card-title">{activeCue.title}</div>
+        <div className="cue-card-body">{activeCue.body}</div>
+      </div>
+      {queuedCount > 0 && (
+        <div
+          className="cue-queued muted"
+          aria-label={`${queuedCount} more ${queuedCount === 1 ? "cue" : "cues"} queued`}
+        >
+          +{queuedCount} more
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -103,7 +120,7 @@ export function LiveView({
         <CueLevelToggle level={cueLevel} onChange={onCueLevelChange} />
       </div>
 
-      <LiveCueBand cues={state.cues} />
+      <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
 
       <Card>
         {state.segments.length === 0 && !state.partial ? (
