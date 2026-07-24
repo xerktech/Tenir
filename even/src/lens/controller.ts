@@ -174,7 +174,6 @@ export async function wireLens(
   // up, advanced a row at a time by a swipe while the body runs past the box.
   let cueScroll = 0;
   let enabled = false; // signed in — clicks act only while enabled
-  let foreground = true; // lens visible — the ticker idles while backgrounded
   let tick = 0;
   // The popup-page rebuild failed on the host: the menu renders inside the
   // caption band instead, so the wearer always has a way out of a session.
@@ -432,19 +431,26 @@ export async function wireLens(
     syncPhone();
   };
 
-  // The activity ticker (XERK-85): while signed in and foregrounded, keep the
-  // top-right clock on the current minute (idle "ready" page included), and
-  // while recording move the "listening" dots. The writer drops unchanged
-  // frames, so this costs BLE only when text changes.
+  // The activity ticker (XERK-85): while signed in, keep the top-right clock on
+  // the current minute (idle "ready" page included), move the "listening" dots
+  // while recording, and advance a live cue's countdown (XERK-110) on both
+  // surfaces it shows on.
+  //
+  // None of this is gated on the phone app being foregrounded (XERK-113): the
+  // lens is what the wearer reads, and the glasses keep showing it over the BLE
+  // link while the phone app is backgrounded. So the clock, the dots, and the
+  // cue count all have to stay live there — just as the cue's auto-dismiss timer
+  // does. Gating them once left a backgrounded cue frozen at "10s", the clock
+  // stuck on a stale minute, and the dots stalled, until the app was next
+  // foregrounded. TICK_MS is well under a second, so the cue count never lags
+  // the release timer by more than a tick; the writer drops unchanged frames, so
+  // this still costs BLE only when text actually changes; and the phone gets a
+  // targeted text update rather than a transcript rebuild.
   const ticker = setInterval(() => {
-    if (!enabled || !foreground) return;
+    if (!enabled) return;
     tick += 1;
     renderClock();
     if (state.recording && state.connection === "open") renderStatus();
-    // Advance the live cue's countdown (XERK-110) on both surfaces it shows on.
-    // TICK_MS is well under a second, so the number never lags the release
-    // timer by more than a tick; unchanged frames cost no BLE write, and the
-    // phone gets a targeted text update rather than a transcript rebuild.
     if (state.cue) {
       renderMenu();
       sessionPage?.tickCue(cueCountdown());
@@ -635,9 +641,11 @@ export async function wireLens(
         else scrollCue(1);
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
-        foreground = true;
-        // The host may have redrawn while we were away: repaint everything
-        // (the popup box included, if it is up).
+        // The host may have redrawn while we were away: drop the writer's
+        // dedupe cache and repaint everything (the popup box included, if it is
+        // up) so a stale host frame can't linger. The ticker keeps the clock,
+        // dots and cue count live even while backgrounded (XERK-113); this just
+        // forces a clean, full resync on return.
         writer.invalidate();
         if (!enabled) showSignInPrompt();
         else if (state.recording) {
@@ -650,7 +658,8 @@ export async function wireLens(
         }
         break;
       case OsEventTypeList.FOREGROUND_EXIT_EVENT:
-        foreground = false;
+        // Persist on the way out, but keep rendering: the glasses still show the
+        // lens over BLE while the phone app is backgrounded (XERK-113).
         void store.flush();
         break;
       case OsEventTypeList.SYSTEM_EXIT_EVENT:
