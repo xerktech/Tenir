@@ -161,7 +161,7 @@ describe("HistoryPanel", () => {
     expect(screen.queryByRole("link", { name: "Download audio.wav" })).not.toBeInTheDocument();
   });
 
-  it("renders inline cue boxes and opens a popup with the detail", async () => {
+  it("renders inline cues as dropdowns that expand in place, collapsed by default (XERK-105)", async () => {
     list.mockResolvedValue([summary()]);
     get.mockResolvedValue({
       ...summary(),
@@ -171,19 +171,25 @@ describe("HistoryPanel", () => {
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
 
-    // The cue shows inline as a clickable box with its title.
-    const cueBox = await screen.findByRole("button", { name: /Sun/ });
-    // The body isn't shown until the popup opens.
+    // The cue shows inline as a collapsed dropdown with its title.
+    const cueToggle = await screen.findByRole("button", { name: /Sun/ });
+    expect(cueToggle).toHaveAttribute("aria-expanded", "false");
+    // The body is hidden until the dropdown is expanded — and there is no popup.
     expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    fireEvent.click(cueBox);
-    const dialog = await screen.findByRole("dialog", { name: "Sun" });
-    expect(within(dialog).getByText(/150 million km/)).toBeInTheDocument();
-
-    // Closing the popup returns to the transcript without navigating away.
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Expanding reveals the body inline, in place — no modal.
+    fireEvent.click(cueToggle);
+    expect(cueToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The transcript stays put behind the expanded cue.
     expect(screen.getByText(/how far is the sun/)).toBeInTheDocument();
+
+    // Collapsing hides the body again.
+    fireEvent.click(cueToggle);
+    expect(cueToggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument());
   });
 
   it("deletes a conversation from its row via arm-then-confirm", async () => {

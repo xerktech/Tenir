@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Button, Card, ConfirmButton, EmptyState, Input, Modal, Spinner } from "../ui";
+import { Button, Card, ConfirmButton, EmptyState, Input, Spinner } from "../ui";
 
 type SortKey = "date" | "duration" | "turns" | "status";
 type SortDir = "asc" | "desc";
@@ -211,6 +211,39 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
 }
 
+/** An inline cue in the history transcript: a collapsed dropdown that expands
+ *  in place to reveal the body (XERK-105). It replaced a click-through popup so
+ *  the detail reads on the timeline without a modal; it defaults to minimized so
+ *  the transcript stays scannable. */
+function CueDisclosure({ cue }: { cue: CueView }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const bodyId = `cue-body-${cue.cueId}`;
+  return (
+    <div className="cue-inline-block">
+      <button
+        className="cue-inline"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        title={open ? "Hide cue detail" : "Show cue detail"}
+      >
+        <span className="cue-inline-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        <span className="cue-inline-mark" aria-hidden="true">
+          ✦
+        </span>
+        <span className="cue-inline-title">{cue.title}</span>
+      </button>
+      {open && (
+        <p className="cue-inline-body" id={bodyId}>
+          {cue.body}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ConversationDetail({
   conv,
   onDelete,
@@ -220,7 +253,6 @@ function ConversationDetail({
   onDelete: () => void;
   onBack: () => void;
 }): JSX.Element {
-  const [openCue, setOpenCue] = useState<CueView | null>(null);
   const items = timeline(conv);
   return (
     <Card className="detail">
@@ -248,26 +280,11 @@ function ConversationDetail({
                 <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
               </div>
             ) : (
-              <button
-                className="cue-inline"
-                key={item.cue.cueId}
-                onClick={() => setOpenCue(item.cue)}
-                title="Show cue detail"
-              >
-                <span className="cue-inline-mark" aria-hidden="true">
-                  ✦
-                </span>
-                <span className="cue-inline-title">{item.cue.title}</span>
-              </button>
+              <CueDisclosure key={item.cue.cueId} cue={item.cue} />
             ),
           )
         )}
       </div>
-      {openCue && (
-        <Modal title={openCue.title} onClose={() => setOpenCue(null)}>
-          <p>{openCue.body}</p>
-        </Modal>
-      )}
       {conv.hasAudio && (
         <div className="audio-player">
           {/* Native playback with the browser's built-in transport + seek bar

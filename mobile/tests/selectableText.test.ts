@@ -27,10 +27,12 @@ describe("selectable transcript text (XERK-104)", () => {
     expect(src).toMatch(/<Text key=\{item\.seg\.segmentId\} selectable /);
   });
 
-  it("Cues: the live band body and the detail modal body are selectable", () => {
+  it("Cues: the live band body and the inline disclosure body are selectable", () => {
     const src = readText("src/ui/cue.tsx");
     expect(src).toMatch(/<Text selectable style=\{styles\.cardBody\}>\s*\{activeCue\.body\}/);
-    expect(src).toMatch(/<Text selectable style=\{styles\.modalBody\}>\s*\{body\}/);
+    // The history cue detail is now an inline dropdown (XERK-105), not a modal;
+    // its expanded body stays selectable so it can still be copied.
+    expect(src).toMatch(/<Text selectable style=\{styles\.disclosureBody\}>\s*\{body\}/);
   });
 
   it("Muted forwards a `selectable` prop to its underlying <Text>", () => {

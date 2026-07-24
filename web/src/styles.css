@@ -286,10 +286,11 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   color: var(--accent-strong);
 }
 
-/* Inline clickable cue in the history transcript; opens the detail modal. */
+/* Inline cue in the history transcript: a dropdown that expands in place to
+   reveal the body, collapsed by default (XERK-105). */
+.cue-inline-block { margin: var(--space-2) 0; }
 .cue-inline {
   display: inline-flex; align-items: center; gap: var(--space-1);
-  margin: var(--space-2) 0;
   border: 1px solid var(--accent);
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -299,7 +300,16 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   cursor: pointer;
 }
 .cue-inline:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.cue-inline-caret { font-size: var(--text-xs); width: 0.8em; }
 .cue-inline-mark { font-size: var(--text-xs); }
+.cue-inline-body {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  animation: cue-in 160ms ease-out;
+}
 
 /* ---- Modal dialog (cue detail popup, reusable) ---- */
 .modal-backdrop {
