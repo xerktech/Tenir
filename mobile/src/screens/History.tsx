@@ -136,7 +136,9 @@ function Detail({
         )}
         {items.map((item) =>
           item.kind === "segment" ? (
-            <Text key={item.seg.segmentId} style={{ color: colors.text }}>
+            // Transcript text is selectable so it can be long-pressed and copied
+            // (XERK-104); `selectable` on the row also covers the nested timing.
+            <Text key={item.seg.segmentId} selectable style={{ color: colors.text }}>
               <Text style={{ color: colors.muted }}>[{msToClock(item.seg.startMs)}] </Text>
               {item.seg.text}
             </Text>

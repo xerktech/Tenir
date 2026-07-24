@@ -68,7 +68,10 @@ export function LiveCueBand({
     <View style={styles.band}>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>{activeCue.title.toUpperCase()}</Text>
-        <Text style={styles.cardBody}>{activeCue.body}</Text>
+        {/* Cue text is selectable so it can be copied (XERK-104). */}
+        <Text selectable style={styles.cardBody}>
+          {activeCue.body}
+        </Text>
       </View>
       {queuedCount > 0 && (
         <Text
@@ -118,7 +121,10 @@ export function CueModal({
               <Text style={styles.modalClose}>✕</Text>
             </Pressable>
           </View>
-          <Text style={styles.modalBody}>{body}</Text>
+          {/* Cue text is selectable so it can be copied (XERK-104). */}
+          <Text selectable style={styles.modalBody}>
+            {body}
+          </Text>
         </Pressable>
       </Pressable>
     </Modal>
