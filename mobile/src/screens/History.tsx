@@ -9,7 +9,7 @@ import { conversationLabel, errText, msToClock } from "../lib/format";
 import { useNotify } from "../lib/notify";
 import { audioPlayerAvailable } from "../native/audioPlayer";
 import { AudioPlayer } from "../ui/AudioPlayer";
-import { CueModal, InlineCue } from "../ui/cue";
+import { CueDisclosure } from "../ui/cue";
 import {
   Button,
   ConfirmButton,
@@ -120,7 +120,6 @@ function Detail({
   onBack: () => void;
 }): JSX.Element {
   const { colors } = useTheme();
-  const [openCue, setOpenCue] = useState<CueView | null>(null);
   const items = timeline(conv);
   return (
     <Screen>
@@ -143,13 +142,10 @@ function Detail({
               {item.seg.text}
             </Text>
           ) : (
-            <InlineCue key={item.cue.cueId} title={item.cue.title} onPress={() => setOpenCue(item.cue)} />
+            <CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />
           ),
         )}
       </View>
-      {openCue && (
-        <CueModal title={openCue.title} body={openCue.body} onClose={() => setOpenCue(null)} />
-      )}
       {/* Retained audio plays in-app with a seek bar (XERK-67). Where the native
           player isn't available (iOS), fall back to opening it in the browser. */}
       {conv.hasAudio &&

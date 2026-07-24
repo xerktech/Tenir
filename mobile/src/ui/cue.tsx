@@ -1,11 +1,12 @@
 /**
  * Cue UI for the mobile app (XERK-81) — parity with the web SPA's cue surfaces:
  * the global aggressiveness toggle + live band on the Live screen, and the inline
- * clickable box + detail popup in history. Themed via the shared ThemeContext.
+ * cue dropdown in history. Themed via the shared ThemeContext.
  */
 
 import type { CueLevel, LiveCue } from "@tenir/client-core";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { CUE_LEVELS } from "../storage";
 import { useThemedStyles } from "./ThemeContext";
@@ -85,49 +86,35 @@ export function LiveCueBand({
   );
 }
 
-/** An inline clickable cue in the history transcript; opens the detail popup. */
-export function InlineCue({ title, onPress }: { title: string; onPress: () => void }): JSX.Element {
+/**
+ * An inline cue in the history transcript: a collapsed dropdown that expands in
+ * place to reveal the body (XERK-105). It replaced a click-through modal so the
+ * detail reads on the timeline; it defaults to minimized to keep the transcript
+ * scannable.
+ */
+export function CueDisclosure({ title, body }: { title: string; body: string }): JSX.Element {
   const styles = useThemedStyles(makeStyles);
+  const [open, setOpen] = useState(false);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Cue: ${title}`}
-      onPress={onPress}
-      style={styles.inline}
-    >
-      <Text style={styles.inlineText}>✦ {title}</Text>
-    </Pressable>
-  );
-}
-
-/** The cue detail popup — a modal, not a new screen. */
-export function CueModal({
-  title,
-  body,
-  onClose,
-}: {
-  title: string;
-  body: string;
-  onClose: () => void;
-}): JSX.Element {
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <Modal transparent animationType="fade" visible onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.modal} onPress={() => {}}>
-          <View style={styles.modalHead}>
-            <Text style={styles.modalTitle}>{title}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose}>
-              <Text style={styles.modalClose}>✕</Text>
-            </Pressable>
-          </View>
-          {/* Cue text is selectable so it can be copied (XERK-104). */}
-          <Text selectable style={styles.modalBody}>
-            {body}
-          </Text>
-        </Pressable>
+    <View style={styles.disclosure}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Cue: ${title}`}
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((o) => !o)}
+        style={styles.inline}
+      >
+        <Text style={styles.inlineText}>
+          {open ? "▾" : "▸"} ✦ {title}
+        </Text>
       </Pressable>
-    </Modal>
+      {/* Cue text is selectable so it can be copied (XERK-104). */}
+      {open && (
+        <Text selectable style={styles.disclosureBody}>
+          {body}
+        </Text>
+      )}
+    </View>
   );
 }
 
@@ -162,6 +149,7 @@ const makeStyles = (colors: Palette) =>
     cardTitle: { color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 },
     cardBody: { color: colors.text, lineHeight: 20 },
     queued: { color: colors.muted, fontSize: 12, fontWeight: "600" },
+    disclosure: { alignSelf: "flex-start", marginVertical: space.xs },
     inline: {
       alignSelf: "flex-start",
       borderColor: colors.accent,
@@ -170,28 +158,17 @@ const makeStyles = (colors: Palette) =>
       backgroundColor: withAlpha(colors.accent, 0.14),
       paddingHorizontal: space.sm,
       paddingVertical: 4,
-      marginVertical: space.xs,
     },
     inlineText: { color: colors.accentStrong, fontWeight: "600" },
-    backdrop: {
-      flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: space.lg,
+    disclosureBody: {
+      color: colors.text,
+      lineHeight: 22,
+      marginTop: space.xs,
+      paddingVertical: space.sm,
+      paddingHorizontal: space.md,
+      borderLeftColor: colors.accent,
+      borderLeftWidth: 2,
+      backgroundColor: withAlpha(colors.accent, 0.14),
+      borderRadius: radius.sm,
     },
-    modal: {
-      width: "100%",
-      maxWidth: 420,
-      backgroundColor: colors.surfaceRaised,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: radius.lg,
-      padding: space.lg,
-      gap: space.sm,
-    },
-    modalHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
-    modalTitle: { color: colors.text, fontSize: 18, fontWeight: "700", flexGrow: 1 },
-    modalClose: { color: colors.muted, fontSize: 16 },
-    modalBody: { color: colors.text, lineHeight: 22 },
   });
