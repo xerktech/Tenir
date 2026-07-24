@@ -48,9 +48,11 @@ services:
       API_AUDIO_DIR: /data/audio
       API_DATABASE_URL: postgresql://tenir:tenir@postgres-tenir:5432/tenir
       # Status page: on this single-host stack the api shares a network with the
-      # STT server, so it probes it directly for a per-model light. Leave unset in
-      # a split-host deploy — the light then follows the LiteLLM gateway probe.
+      # model servers, so it probes them directly for a per-model light. Leave unset
+      # in a split-host deploy — each light then follows the LiteLLM gateway probe.
+      # The cue LLM only runs (and is only probed) under the "cues" profile.
       API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://parakeet:8000}
+      API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-http://vllm-cue:8000}
     volumes:
       # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
       # container recreation.

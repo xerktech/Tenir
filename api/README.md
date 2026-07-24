@@ -58,6 +58,7 @@ the `API_AUTH_ADMIN_*` bootstrap admin to log in.
 | `API_SESSION_RESUME_GRACE_SECONDS` | `30` | how long a dropped session stays resumable |
 | `API_WEB_DIR` | `/srv/web` | built web SPA served at `/` when the dir exists |
 | `API_STATUS_STT_URL` | "" | optional direct STT health URL; empty = mirror the gateway probe |
+| `API_STATUS_LLM_URL` | "" | optional direct cue-LLM health URL; empty = mirror the gateway probe |
 
 The WS message contract is generated — edit
 `contract/ws-messages.schema.json` and run `make gen` at the repo root; never

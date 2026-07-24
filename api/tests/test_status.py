@@ -214,6 +214,94 @@ def test_direct_probe_still_reports_a_genuinely_dead_model_server(
     assert comps["stt"].state == st.STATE_DOWN
 
 
+# ---- cue LLM registers alongside STT behind the same gateway ----------------
+
+
+def test_refresh_registers_cue_llm_via_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Cues on, STT still the model-free stub: the cue LLM is a real gateway-fronted
+    # server, so the gateway is probed and the cue light mirrors it (no direct URL).
+    monkeypatch.setattr(settings, "stt_backend", "stub")
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "status_llm_url", "")
+
+    probed: list[str] = []
+
+    async def _http(url: str) -> tuple[str, str]:
+        probed.append(url)
+        return st.READY, "ready"
+
+    monkeypatch.setattr(st, "_http_probe", _http)
+
+    comps = {c.id: c for c in asyncio.run(st.refresh())}
+    # STT is a stub (no server), so only the gateway + cue LLM are registered.
+    assert set(comps) == {"litellm", "llm"}
+    assert probed == ["http://litellm:4000/health/liveliness"]
+    assert comps["llm"].category == "model"
+    assert comps["llm"].label == "Cue LLM"
+    assert comps["llm"].state == st.STATE_READY
+    assert comps["llm"].detail == "reachable via LiteLLM gateway"
+
+
+def test_stt_and_cue_share_a_single_gateway_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Full deploy: STT + cues both real. The gateway they share is probed exactly once
+    # and both model lights resolve against it.
+    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "status_stt_url", "")
+    monkeypatch.setattr(settings, "status_llm_url", "")
+
+    probed: list[str] = []
+
+    async def _http(url: str) -> tuple[str, str]:
+        probed.append(url)
+        return st.READY, "ready"
+
+    monkeypatch.setattr(st, "_http_probe", _http)
+
+    comps = {c.id: c for c in asyncio.run(st.refresh())}
+    assert set(comps) == {"litellm", "stt", "llm"}
+    # The gateway is not double-probed for the two models.
+    assert probed == ["http://litellm:4000/health/liveliness"]
+
+
+def test_direct_cue_llm_probe_when_a_url_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Single-host stack: a declared URL means the api can reach the cue model server,
+    # so it is probed directly instead of mirroring the gateway.
+    monkeypatch.setattr(settings, "stt_backend", "stub")
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "status_llm_url", "http://vllm-cue:8000")
+
+    probed: list[str] = []
+
+    async def _http(url: str) -> tuple[str, str]:
+        probed.append(url)
+        return st.READY, "ready"
+
+    monkeypatch.setattr(st, "_http_probe", _http)
+
+    comps = {c.id: c for c in asyncio.run(st.refresh())}
+    assert "http://vllm-cue:8000/health" in probed
+    assert comps["llm"].detail == "ready"
+
+
+def test_cue_llm_goes_down_with_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A dead gateway takes the cue LLM with it, same as the STT model.
+    monkeypatch.setattr(settings, "stt_backend", "stub")
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "status_llm_url", "")
+    monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
+
+    async def _refused(url: str) -> tuple[str, str]:
+        return st.UNREACHABLE, "connection refused"
+
+    monkeypatch.setattr(st, "_http_probe", _refused)
+
+    comps = {c.id: c for c in asyncio.run(st.refresh())}
+    assert comps["litellm"].state == st.STATE_DOWN
+    assert comps["llm"].state == st.STATE_DOWN
+    assert "refused" in comps["llm"].detail
+
+
 def test_refresh_registers_infra_for_real_backends(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "persistence_backend", "postgres")
     monkeypatch.setattr(settings, "audio_backend", "disk")
@@ -293,7 +381,7 @@ def test_snapshot_reasons_empty_when_all_ready() -> None:
 def test_status_endpoint_reports_degraded_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "status_probe_interval_seconds", 0.0)
     st._cache = [
-        st.Component("stt", "Live STT (Voxtral)", "model", st.STATE_DOWN, "connection refused", 1234.0),
+        st.Component("stt", "Live STT (Parakeet)", "model", st.STATE_DOWN, "connection refused", 1234.0),
         st.Component("llm", "Cue LLM", "model", st.STATE_READY, "ready", 1234.0),
     ]
     with TestClient(app) as client:
@@ -306,7 +394,7 @@ def test_status_endpoint_reports_degraded_reason(monkeypatch: pytest.MonkeyPatch
 def test_status_endpoint_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     # Disable the boot probe + loop so our seeded cache is what the endpoint returns.
     monkeypatch.setattr(settings, "status_probe_interval_seconds", 0.0)
-    st._cache = [st.Component("stt", "Live STT (Voxtral)", "model", "down", "refused", 1234.0)]
+    st._cache = [st.Component("stt", "Live STT (Parakeet)", "model", "down", "refused", 1234.0)]
     with TestClient(app) as client:
         resp = client.get("/status")
     assert resp.status_code == 200
