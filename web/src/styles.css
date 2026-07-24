@@ -356,6 +356,17 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   color: var(--accent-strong);
 }
 
+/* "Show cues" toggle above the conversation transcript (XERK-104): hides the
+   inline cue blocks so the transcript reads as one uninterrupted, selectable
+   run. Shown only when the conversation has cues. */
+.cue-toggle {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  color: var(--text-muted); font-size: var(--text-sm);
+  margin-bottom: var(--space-2); cursor: pointer;
+  user-select: none;
+}
+.cue-toggle input { accent-color: var(--accent); cursor: pointer; }
+
 /* Inline cue in the history transcript: a dropdown that expands in place to
    reveal the body, collapsed by default (XERK-105). */
 .cue-inline-block { margin: var(--space-2) 0; }

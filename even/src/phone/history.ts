@@ -39,6 +39,8 @@ export interface PhoneHistoryElements {
   back: HTMLButtonElement;
   del: HTMLButtonElement; // arm-then-confirm delete
   meta: HTMLElement; // "date · duration · turns" line
+  cueToggle: HTMLElement; // "Show cues" toggle label (hidden when no cues)
+  cueToggleInput: HTMLInputElement; // the toggle checkbox itself
   transcript: HTMLElement; // the segment block
   audio: HTMLElement; // audio player wrapper (hidden when no audio retained)
   audioEl: HTMLAudioElement;
@@ -66,6 +68,8 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
   const back = byId("history-back");
   const del = byId("history-delete");
   const meta = byId("history-meta");
+  const cueToggle = byId("history-cue-toggle");
+  const cueToggleInput = byId("history-cue-toggle-input");
   const transcript = byId("history-transcript");
   const audio = byId("history-audio");
   const audioEl = byId("history-audio-el");
@@ -77,7 +81,8 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
   const cuePopupClose = byId("history-cue-popup-close");
   if (
     !list || !form || !query || !status || !rows || !detail ||
-    !back || !del || !meta || !transcript || !audio || !audioEl || !audioLink ||
+    !back || !del || !meta || !cueToggle || !cueToggleInput ||
+    !transcript || !audio || !audioEl || !audioLink ||
     !cuePopup || !cuePopupCard || !cuePopupTitle || !cuePopupBody || !cuePopupClose
   ) {
     return null;
@@ -92,6 +97,8 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
     back: back as HTMLButtonElement,
     del: del as HTMLButtonElement,
     meta,
+    cueToggle,
+    cueToggleInput: cueToggleInput as HTMLInputElement,
     transcript,
     audio,
     audioEl: audioEl as HTMLAudioElement,
@@ -175,6 +182,12 @@ export class PhoneHistory {
     });
     this.els.back.addEventListener("click", () => this.showList());
     this.els.del.addEventListener("click", () => this.deleteClick());
+
+    // Toggling cues re-renders the open conversation's transcript; with cues
+    // hidden it reads as one uninterrupted, selectable run (XERK-104).
+    this.els.cueToggleInput.addEventListener("change", () => {
+      if (this.current) this.renderTranscript(this.current);
+    });
 
     // Cue-detail popup (XERK-81), mirroring the web Modal: a click on the
     // backdrop or the close button dismisses it; a click inside the card does not.
@@ -285,38 +298,12 @@ export class PhoneHistory {
       conv.durationMs,
     )} · ${conv.segmentCount} turns`;
 
-    // A session can hold no turns at all (nothing was said, or the transcript
-    // was lost). Say so — an empty block reads as a detail that failed to open.
-    const cues = conv.cues ?? [];
-    if (conv.segments.length === 0 && cues.length === 0) {
-      this.els.transcript.replaceChildren(
-        this.make("p", "muted", "No transcript was recorded for this session."),
-      );
-    } else {
-      const doc = this.els.transcript.ownerDocument;
-      const frag = doc.createDocumentFragment();
-      for (const item of timeline(conv)) {
-        if (item.kind === "segment") {
-          const row = this.make("div", "item");
-          row.appendChild(this.make("span", "muted", segmentTiming(item.seg)));
-          row.append(` ${item.seg.text}`);
-          frag.appendChild(row);
-        } else {
-          // An inline clickable chip (XERK-81): "✦ <title>" opens the cue popup.
-          const button = this.make("button", "cue-inline") as HTMLButtonElement;
-          button.type = "button";
-          button.title = "Show cue detail";
-          const mark = this.make("span", "cue-inline-mark", "✦");
-          mark.setAttribute("aria-hidden", "true");
-          button.appendChild(mark);
-          button.appendChild(this.make("span", "cue-inline-title", item.cue.title));
-          const cue = item.cue;
-          button.addEventListener("click", () => this.openCue(cue));
-          frag.appendChild(button);
-        }
-      }
-      this.els.transcript.replaceChildren(frag);
-    }
+    // Cues default to shown every time a conversation is opened (not persisted),
+    // and the toggle is only offered when there are cues to hide (XERK-104).
+    const hasCues = (conv.cues?.length ?? 0) > 0;
+    this.els.cueToggleInput.checked = true;
+    this.els.cueToggle.hidden = !hasCues;
+    this.renderTranscript(conv);
 
     if (conv.hasAudio) {
       const url = this.api.audioUrl(conv.id);
@@ -330,6 +317,50 @@ export class PhoneHistory {
 
     this.els.list.hidden = true;
     this.els.detail.hidden = false;
+  }
+
+  /**
+   * (Re)render the transcript for the open conversation, honouring the cue
+   * toggle. With cues hidden the block is nothing but segment rows, so the
+   * whole transcript reads (and selects) as one uninterrupted run (XERK-104).
+   */
+  private renderTranscript(conv: Conversation): void {
+    // A session can hold no turns at all (nothing was said, or the transcript
+    // was lost). Say so — an empty block reads as a detail that failed to open.
+    const cues = conv.cues ?? [];
+    if (conv.segments.length === 0 && cues.length === 0) {
+      this.els.transcript.replaceChildren(
+        this.make("p", "muted", "No transcript was recorded for this session."),
+      );
+      return;
+    }
+    const showCues = this.els.cueToggleInput.checked;
+    // A cue popup left open would dangle over a transcript that no longer shows
+    // the chip that opened it.
+    if (!showCues) this.closeCue();
+    const doc = this.els.transcript.ownerDocument;
+    const frag = doc.createDocumentFragment();
+    for (const item of timeline(conv)) {
+      if (item.kind === "segment") {
+        const row = this.make("div", "item");
+        row.appendChild(this.make("span", "muted", segmentTiming(item.seg)));
+        row.append(` ${item.seg.text}`);
+        frag.appendChild(row);
+      } else if (showCues) {
+        // An inline clickable chip (XERK-81): "✦ <title>" opens the cue popup.
+        const button = this.make("button", "cue-inline") as HTMLButtonElement;
+        button.type = "button";
+        button.title = "Show cue detail";
+        const mark = this.make("span", "cue-inline-mark", "✦");
+        mark.setAttribute("aria-hidden", "true");
+        button.appendChild(mark);
+        button.appendChild(this.make("span", "cue-inline-title", item.cue.title));
+        const cue = item.cue;
+        button.addEventListener("click", () => this.openCue(cue));
+        frag.appendChild(button);
+      }
+    }
+    this.els.transcript.replaceChildren(frag);
   }
 
   private showList(): void {

@@ -347,6 +347,18 @@
       .audio-player[hidden] { display: none; }
       .audio-player-el { width: 100%; }
 
+      /* "Show cues" toggle above the conversation transcript (XERK-104): hides
+         the inline cue chips so the transcript reads as one uninterrupted,
+         selectable run. Shown only when the conversation has cues. */
+      .cue-toggle {
+        display: inline-flex; align-items: center; gap: var(--space-2);
+        color: var(--text-muted); font-size: var(--text-sm);
+        margin-bottom: var(--space-2); cursor: pointer;
+        user-select: none; -webkit-user-select: none;
+      }
+      .cue-toggle[hidden] { display: none; }
+      .cue-toggle input { accent-color: var(--accent); cursor: pointer; }
+
       /* Inline clickable cue in the history transcript (XERK-81); opens the popup. */
       .cue-inline {
         display: inline-flex; align-items: center; gap: var(--space-1);
@@ -484,6 +496,13 @@
               <button class="btn btn-danger" id="history-delete" type="button">Delete</button>
             </div>
             <p class="muted" id="history-meta"></p>
+            <!-- Toggle cues off to read the transcript as one uninterrupted,
+                 selectable run (XERK-104); shown only when the conversation has
+                 cues, and defaults to on each time a conversation is opened. -->
+            <label class="cue-toggle" id="history-cue-toggle" hidden>
+              <input type="checkbox" id="history-cue-toggle-input" checked />
+              Show cues
+            </label>
             <div class="transcript-block" id="history-transcript"></div>
             <div class="audio-player" id="history-audio" hidden>
               <!-- Native playback with the browser's built-in transport + seek
