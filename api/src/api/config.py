@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     # real traffic takes. Set it only where the api can genuinely open a socket to
     # the server (the single-host compose stack does).
     status_stt_url: str = ""
+    # Direct health-probe URL for the cue LLM server, same contract as
+    # status_stt_url: empty means the cue light mirrors the gateway probe (the api
+    # reaches the model only through LiteLLM), and a value is used only where the api
+    # can open a socket straight to the model server.
+    status_llm_url: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

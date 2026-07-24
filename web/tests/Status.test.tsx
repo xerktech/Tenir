@@ -19,12 +19,14 @@ describe("StatusPanel", () => {
       overall: "degraded",
       generatedAt: "2026-06-19T00:00:00+00:00",
       components: [
-        { id: "stt", label: "Live STT (Voxtral)", category: "model", state: "connecting", detail: "loading", checkedAt: "x" },
+        { id: "stt", label: "Live STT (Parakeet)", category: "model", state: "connecting", detail: "loading", checkedAt: "x" },
+        { id: "llm", label: "Cue LLM", category: "model", state: "ready", detail: "reachable via LiteLLM gateway", checkedAt: "x" },
         { id: "postgres", label: "Database (Postgres)", category: "infra", state: "ready", detail: "reachable", checkedAt: "x" },
       ],
     });
     render(<StatusPanel />);
-    await waitFor(() => expect(screen.getByText("Live STT (Voxtral)")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Live STT (Parakeet)")).toBeInTheDocument());
+    expect(screen.getByText("Cue LLM")).toBeInTheDocument();
     expect(screen.getByText("Some components degraded")).toBeInTheDocument();
     expect(screen.getByText("Connecting…")).toBeInTheDocument();
     expect(screen.getByText("Database (Postgres)")).toBeInTheDocument();

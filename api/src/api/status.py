@@ -4,7 +4,8 @@ The stack used to fail silently when a model server was unreachable or still
 loading: a live recording produced no captions and no signal anything was wrong.
 This probes each *real* configured backend's health endpoint on a background loop
 and caches the result so the api can surface a red/yellow/green light per
-component (the infra stores, the STT server, and the LiteLLM gateway).
+component (the infra stores, the STT + cue-LLM model servers, and the LiteLLM
+gateway that fronts them).
 
 Detection is pure HTTP so it works across physical hosts (no Docker access). Each
 probe yields a raw outcome — ``READY`` / ``NOT_READY`` (reachable but loading) /
@@ -122,25 +123,42 @@ async def _gather() -> list[_RawResult]:
         raw, detail = await _infra_probe(audio.ready if audio else None)
         results.append(("audio", "Audio store (disk)", "infra", raw, detail))
 
-    # --- LiteLLM gateway + the STT model behind it ---
-    if s.stt_backend == "voxtral":
+    # --- LiteLLM gateway + the models behind it ---
+    # Both the live STT engine and the cue LLM reach their model through the same
+    # LiteLLM gateway, so the gateway is probed once whenever *either* is backed by a
+    # real server (stub/off backends have nothing to reach). Each model light then
+    # resolves against that single gateway probe (see _gateway_fronted_model).
+    stt_via_gateway = s.stt_backend == "voxtral"
+    cue_via_gateway = s.cue_backend == "openai"
+    if stt_via_gateway or cue_via_gateway:
         gw = await _http_probe(f"{s.litellm_probe_url}/health/liveliness")
         results.append(("litellm", "LiteLLM gateway", "gateway", *gw))
 
-        # Health of the LiteLLM-fronted STT model. The gateway is the api's real
-        # path to it, so unless the deployment declares a direct URL it can
-        # actually reach, the light mirrors the one gateway probe — probing a host
-        # the api has no route to reports a false red for a server that is serving
-        # traffic fine. A genuine outage still surfaces: the gateway's own /health
-        # fails with it.
-        if s.status_stt_url:
-            raw, detail = await _http_probe(f"{s.status_stt_url}/health")
-        else:
-            raw, detail = gw
-            detail = "reachable via LiteLLM gateway" if raw == READY else detail
-        results.append(("stt", "Live STT (Voxtral)", "model", raw, detail))
+        if stt_via_gateway:
+            raw, detail = await _gateway_fronted_model(gw, s.status_stt_url)
+            results.append(("stt", "Live STT (Parakeet)", "model", raw, detail))
+
+        if cue_via_gateway:
+            raw, detail = await _gateway_fronted_model(gw, s.status_llm_url)
+            results.append(("llm", "Cue LLM", "model", raw, detail))
 
     return results
+
+
+async def _gateway_fronted_model(gw: tuple[str, str], direct_url: str) -> tuple[str, str]:
+    """Resolve the health of a LiteLLM-fronted model server.
+
+    The gateway is the api's real path to the model, so unless the deployment
+    declares a direct URL it can actually reach, the model light mirrors the one
+    gateway probe — probing a host the api has no route to reports a false red for a
+    server that is serving traffic fine. A genuine outage still surfaces: the
+    gateway's own /health fails with it. When a direct URL *is* configured (the
+    single-host stack), probe it for true per-model resolution.
+    """
+    if direct_url:
+        return await _http_probe(f"{direct_url}/health")
+    raw, detail = gw
+    return raw, ("reachable via LiteLLM gateway" if raw == READY else detail)
 
 
 def _apply(cid: str, raw: str, detail: str) -> tuple[str, str]:
