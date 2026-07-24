@@ -61,7 +61,7 @@ services:
       postgres-tenir:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -100,7 +100,7 @@ services:
       # OVERRIDE in prod.
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -128,7 +128,7 @@ services:
     ipc: host
     healthcheck:
       # 503 until the model is resident (first boot downloads the weights), 200 after.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -163,6 +163,16 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
     ipc: host
+    healthcheck:
+      # 503 until the model is resident (first boot downloads the weights), 200 after.
+      # NOTE: the vllm/vllm-openai image ships only `python3` (no `python` on PATH) —
+      # a `python`-based probe exec-fails forever and pins the container at
+      # `health: starting`, so this MUST use `python3`.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 600s
     deploy:
       resources:
         reservations:
