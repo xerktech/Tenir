@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { View } from "react-native";
 
 /** The mobile dashboard sections that carry a tab icon. */
-export type TabIconName = "Live" | "History" | "Status" | "Settings" | "Privacy";
+export type TabIconName = "Live" | "History" | "Status" | "Settings";
 
 type IconProps = { color: string; size?: number };
 
@@ -105,44 +105,11 @@ function SettingsIcon({ color, size }: IconProps): JSX.Element {
   );
 }
 
-/** Padlock — the privacy / disclosure page. */
-function PrivacyIcon({ color, size }: IconProps): JSX.Element {
-  return (
-    <Box size={size}>
-      <View style={{ alignItems: "center" }}>
-        {/* Shackle: top half of a rounded rect (no bottom edge). */}
-        <View
-          style={{
-            width: 10,
-            height: 8,
-            borderColor: color,
-            borderWidth: 2,
-            borderBottomWidth: 0,
-            borderTopLeftRadius: 5,
-            borderTopRightRadius: 5,
-            marginBottom: -1,
-          }}
-        />
-        {/* Body. */}
-        <View
-          style={{
-            width: 16,
-            height: 11,
-            borderRadius: 3,
-            backgroundColor: color,
-          }}
-        />
-      </View>
-    </Box>
-  );
-}
-
 const ICONS: Record<TabIconName, (p: IconProps) => JSX.Element> = {
   Live: LiveIcon,
   History: HistoryIcon,
   Status: StatusIcon,
   Settings: SettingsIcon,
-  Privacy: PrivacyIcon,
 };
 
 /** Render the bottom-tab icon for a mobile dashboard section. */
