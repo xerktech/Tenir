@@ -259,6 +259,20 @@
       .transcript li + li { border-top: 1px solid var(--border); }
       .transcript li.partial { color: var(--text-muted); }
 
+      /* Conversation and history transcript text is user-selectable so it can be
+         copied (XERK-104): the live session transcript, the stored-conversation
+         segments, and the cue bodies (session card + detail popup). The Even Hub
+         WebView can default the document to non-selectable, so opt these text
+         surfaces in explicitly; interactive chrome (buttons, the inline cue chip)
+         is deliberately left alone. */
+      .transcript li,
+      .item,
+      .session-cue-body,
+      .cue-popup-body {
+        user-select: text;
+        -webkit-user-select: text;
+      }
+
       /* The private context cue card (XERK-81): a bordered accent card above the
          live transcript, the phone counterpart to the lens's popup box. */
       .session-cue {

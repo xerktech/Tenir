@@ -123,13 +123,17 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
         <Muted>Listening…</Muted>
       ) : null}
 
+      {/* Transcript text is selectable so it can be long-pressed and copied
+          (XERK-104), matching the web/even clients. */}
       {state.segments.map((seg) => (
         <ListItem key={seg.id}>
-          <Text style={{ color: colors.text }}>{seg.text}</Text>
+          <Text selectable style={{ color: colors.text }}>
+            {seg.text}
+          </Text>
         </ListItem>
       ))}
 
-      {state.partial ? <Muted>{`› ${state.partial}`}</Muted> : null}
+      {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
     </Screen>
   );
 }

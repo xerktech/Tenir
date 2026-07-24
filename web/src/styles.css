@@ -217,6 +217,21 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .transcript li { padding: var(--space-2) 0; line-height: 1.55; }
 .transcript li + li { border-top: 1px solid var(--border); }
 
+/* Conversation and history transcript text is user-selectable so it can be
+   copied (XERK-104): the live transcript, the stored-conversation segments, and
+   the cue bodies (live band + detail modal). Desktop browsers already default
+   to selectable, but stating it explicitly keeps the text copyable under
+   long-press on touch and inside constrained WebViews, and guards against a
+   future global user-select reset. Interactive chrome (buttons, the inline cue
+   chip) is deliberately left alone. */
+.transcript li,
+.item,
+.cue-card-body,
+.modal-body {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; margin-top: var(--space-2); }
 
 .toast {
