@@ -24,6 +24,11 @@ const MAX_SEGMENTS = 60;
 // The active cue is shown above the transcript for this long, then released
 // (XERK-81). The history view keeps cues permanently; this is the live surface only.
 export const CUE_TTL_MS = 10000;
+// How long a released cue lingers on screen while it fades out (XERK-107). The
+// live cue floats *over* the transcript rather than displacing it, so nothing
+// reflows when it comes and goes; this is purely how long the fade lasts, and
+// every frontend uses the same value so the surfaces feel identical.
+export const CUE_EXIT_MS = 160;
 // Only ONE cue is shown at a time (XERK-102): a cue arriving while another is
 // active is queued and pops the moment the active one is released. This bounds
 // how deep that backlog can grow — well past any normal conversation — so a

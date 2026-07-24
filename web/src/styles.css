@@ -15,6 +15,10 @@
   --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --font-display: "Space Grotesk", var(--font-sans);
 
+  /* motion — how long the live cue fades in/out over the transcript.
+     Keep in sync with CUE_EXIT_MS in client-core, which times the unmount. */
+  --cue-fade: 160ms;
+
   /* radius + shadow (soft two-layer elevation, à la Turma) */
   --radius-sm: 8px; --radius-md: 11px; --radius-lg: 14px;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.35), 0 2px 10px rgba(0,0,0,.30);
@@ -262,13 +266,36 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 /* ---- Cues (XERK-81): private context surfaced from the conversation ---- */
 
 /* Live band above the transcript; cards auto-dismiss after their TTL. */
-.cue-band { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
+/* The live cue floats over the top of the transcript box instead of sitting
+   above it in the flow (XERK-107). Cues come and go on a 10s timer, and as a
+   flow element each arrival pushed the transcript down and each expiry let it
+   snap back — disorienting mid-conversation. As an overlay it displaces
+   nothing; it just covers the oldest visible captions, which are the ones
+   nobody is reading (the box follows the newest text at the bottom). */
+.cue-stage { position: relative; }
+.cue-band {
+  position: absolute;
+  /* Inset to the card's own padding so the cue lines up with the captions. */
+  top: var(--space-4); left: var(--space-5); right: var(--space-5);
+  z-index: 2;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  /* Click-through: the transcript underneath still scrolls and selects. The
+     cue card itself takes pointer events back so its text stays copyable. */
+  pointer-events: none;
+  transition: opacity var(--cue-fade) ease-out, transform var(--cue-fade) ease-out;
+}
+/* Released, mid-fade: on its way out and no longer interactive (XERK-107). */
+.cue-band.exiting { opacity: 0; transform: translateY(-4px); }
 .cue-card {
+  pointer-events: auto;
   border: 1px solid var(--accent);
-  background: var(--accent-soft);
+  /* Opaque (accent wash over the raised surface) + lifted, so the captions it
+     covers don't read through it. */
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
+  box-shadow: var(--shadow-md);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
-  animation: cue-in 160ms ease-out;
+  animation: cue-in var(--cue-fade) ease-out;
 }
 .cue-card-title {
   font-family: var(--font-display, inherit);
@@ -277,9 +304,24 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   text-transform: uppercase; letter-spacing: .04em;
 }
 .cue-card-body { margin-top: 2px; line-height: 1.5; }
-/* "+N more" note under the active cue when cues are queued behind it (XERK-102). */
-.cue-queued { font-size: var(--text-sm); letter-spacing: .02em; align-self: flex-start; }
+/* "+N more" note under the active cue when cues are queued behind it (XERK-102).
+   Chipped like the cue card because it now sits over the captions. */
+.cue-queued {
+  pointer-events: auto;
+  align-self: flex-start;
+  font-size: var(--text-sm); letter-spacing: .02em; line-height: 1.4;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  box-shadow: var(--shadow-sm);
+}
 @keyframes cue-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+/* Reduced motion: the cue still appears and clears, just without the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .cue-band, .cue-card { transition: none; animation: none; }
+  .cue-band.exiting { transform: none; }
+}
 
 /* The global "how eager are cues" toggle on the Live panel. */
 .cue-level { display: inline-flex; align-items: center; gap: var(--space-1); }
@@ -517,7 +559,11 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   .history-table { display: block; overflow-x: auto; white-space: nowrap; }
   .history-table th, .history-table td { padding: var(--space-2); }
 
-  /* Leave room for the fixed bottom nav so the transcript box + cue band fit
-     the phone viewport without the page itself needing to scroll (XERK-103). */
+  /* Leave room for the fixed bottom nav so the transcript box (with the cue
+     floating over it) fits the phone viewport without the page itself needing
+     to scroll (XERK-103). */
   .transcript-scroll { max-height: 50vh; }
+
+  /* Track the card's narrow-screen padding so the overlay stays aligned. */
+  .cue-band { top: var(--space-4); left: var(--space-4); right: var(--space-4); }
 }

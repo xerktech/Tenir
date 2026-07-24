@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { palettes, withAlpha, type Palette } from "../src/ui/theme";
+import { mix, palettes, withAlpha, type Palette } from "../src/ui/theme";
 
 // Vitest runs with the workspace root (mobile/) as cwd; the web SPA is a sibling.
 const css = readFileSync(resolve(process.cwd(), "../web/src/styles.css"), "utf8");
@@ -65,5 +65,15 @@ describe("withAlpha", () => {
   it("renders a hex colour as rgba at the given opacity", () => {
     expect(withAlpha("#3FD9C9", 0.45)).toBe("rgba(63, 217, 201, 0.45)");
     expect(withAlpha("#0E1116", 1)).toBe("rgba(14, 17, 22, 1)");
+  });
+});
+
+describe("mix", () => {
+  it("blends two hex colours into an opaque rgb (the color-mix stand-in)", () => {
+    // The cue overlay's fill: 14% accent over the raised surface (XERK-107).
+    expect(mix("#3FD9C9", "#1C232C", 0.14)).toBe("rgb(33, 60, 66)");
+    // The endpoints are the pure colours, so nothing shows through at either end.
+    expect(mix("#3FD9C9", "#1C232C", 0)).toBe("rgb(28, 35, 44)");
+    expect(mix("#3FD9C9", "#1C232C", 1)).toBe("rgb(63, 217, 201)");
   });
 });
