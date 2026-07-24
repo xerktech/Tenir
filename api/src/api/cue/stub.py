@@ -9,9 +9,10 @@ toggle visibly changes how often cues fire even against the stub.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from api.contract import CueLevel
-from api.cue.base import CueGenerator, GeneratedCue
+from api.cue.base import CueGenerator, GeneratedCue, normalize_cue_title
 
 # Skip these when picking a 1-3 word title from the trigger line.
 _STOPWORDS = {
@@ -64,7 +65,13 @@ def _title_from(line: str) -> str:
 
 
 class StubCueGenerator(CueGenerator):
-    def generate(self, transcript: str, *, level: CueLevel) -> GeneratedCue | None:
+    def generate(
+        self,
+        transcript: str,
+        *,
+        level: CueLevel,
+        avoid_titles: Sequence[str] = (),
+    ) -> GeneratedCue | None:
         last = _last_line(transcript)
         if not last:
             return None
@@ -78,4 +85,10 @@ class StubCueGenerator(CueGenerator):
             trigger = has_question or has_number
         if not trigger:
             return None
-        return GeneratedCue(title=_title_from(last), body=f"Context for “{last}”.")
+        title = _title_from(last)
+        # Already surfaced this cue earlier in the conversation? Don't repeat it
+        # (XERK-102) — the deterministic stub has no other line to draw from, so
+        # returning None lets a later, different turn produce the next cue.
+        if normalize_cue_title(title) in {normalize_cue_title(t) for t in avoid_titles}:
+            return None
+        return GeneratedCue(title=title, body=f"Context for “{last}”.")

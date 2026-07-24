@@ -10,6 +10,7 @@ import pytest
 
 from api.config import settings
 from api.contract import CaptionFinal, Cue, CueLevel, MicSource, ServerMessage
+from api.cue import GeneratedCue
 from api.persistence import get_conversation_store
 from api.session import Session
 
@@ -114,6 +115,82 @@ def test_dedupes_repeated_title(monkeypatch: pytest.MonkeyPatch) -> None:
         await _drain_cues(session)
         await session.close()
         assert len(_cues(sent)) == 1
+
+    asyncio.run(run())
+
+
+def test_dedupe_spans_the_whole_conversation_not_a_short_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-102): a cue that already appeared must not pop up again
+    later in the same conversation, even after many other cues — the old dedupe
+    was a 10-deep rolling window an aged-out title slipped back through."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+
+        # The first cue of the conversation.
+        session._consider_cue(_final("pokemon number 1?", segment_id="s1"))
+        await _drain_cues(session)
+        assert len(_cues(sent)) == 1
+        first_title = _cues(sent)[0].title
+
+        # Fourteen more DISTINCT cues follow — well past any short rolling window.
+        for i in range(2, 16):
+            session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
+            session._consider_cue(_final(f"pokemon number {i}?", segment_id=f"s{i}"))
+            await _drain_cues(session)
+        assert len(_cues(sent)) == 15
+
+        # The very first cue's topic recurs much later.
+        session._last_cue_monotonic = time.monotonic() - 3600
+        session._consider_cue(_final("pokemon number 1?", segment_id="again"))
+        await _drain_cues(session)
+        await session.close()
+
+        # It must not surface a second time.
+        titles = [c.title for c in _cues(sent)]
+        assert len(titles) == 15
+        assert titles.count(first_title) == 1
+
+    asyncio.run(run())
+
+
+def test_session_hands_generator_the_titles_already_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-102: each generation is told which cues already appeared, in order, so
+    a model-backed generator can produce a genuinely new cue rather than repeat."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+
+        seen_avoid: list[list[str]] = []
+        counter = {"n": 0}
+
+        class SpyGen:
+            def generate(self, transcript, *, level, avoid_titles=()):  # type: ignore[no-untyped-def]
+                seen_avoid.append(list(avoid_titles))
+                counter["n"] += 1
+                return GeneratedCue(title=f"Cue {counter['n']}", body="body")
+
+        session._cue_generator = SpyGen()
+
+        for i, seg in enumerate(("a", "b", "c")):
+            if i:
+                session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
+            session._consider_cue(_final(f"trigger {i}?", segment_id=seg))
+            await _drain_cues(session)
+        await session.close()
+
+        # First call had nothing to avoid; each later call receives every cue
+        # surfaced so far, in order.
+        assert seen_avoid == [[], ["Cue 1"], ["Cue 1", "Cue 2"]]
+        assert [c.title for c in _cues(sent)] == ["Cue 1", "Cue 2", "Cue 3"]
 
     asyncio.run(run())
 

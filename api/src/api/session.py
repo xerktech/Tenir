@@ -26,7 +26,7 @@ from api.contract import (
     ServerMessage,
     SessionReady,
 )
-from api.cue import CueGenerator, make_cue_generator, min_interval_ms
+from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize_cue_title
 from api.metrics import metrics
 from api.persistence import (
     Cue as CueRecord,
@@ -48,6 +48,12 @@ Sender = Callable[[ServerMessage], Awaitable[None]]
 # during the gap are replayed on rebind, but a never-resumed session must not grow
 # without bound — keep the most recent ones.
 _DETACHED_BUFFER_MAX = 500
+
+# How many already-surfaced cue titles to hand the generator as "don't repeat"
+# context (XERK-102). Bounds the prompt in a long conversation; the full set is
+# still enforced by the post-hoc de-dupe, so nothing repeats beyond this window —
+# it only limits how many the model is explicitly reminded of.
+_CUE_AVOID_PROMPT_LIMIT = 40
 
 
 def _enum_str(value: object | None) -> str | None:
@@ -74,7 +80,13 @@ class Session:
         self._cue_generator: CueGenerator | None = None
         self._cue_level: CueLevel = CueLevel(settings.cue_default_level)
         self._recent_finals: deque[str] = deque(maxlen=max(1, settings.cue_context_segments))
-        self._recent_cue_titles: deque[str] = deque(maxlen=10)
+        # De-dupe cues for the WHOLE conversation, not a short rolling window
+        # (XERK-102): a cue surfaced once must not pop up again later, however far
+        # apart. ``_surfaced_cue_norms`` is the normalized-title membership set;
+        # ``_surfaced_cue_titles`` keeps the original titles (order-preserving) to
+        # hand the generator so it can steer clear of them and find fresh context.
+        self._surfaced_cue_norms: set[str] = set()
+        self._surfaced_cue_titles: list[str] = []
         self._last_cue_monotonic: float | None = None
         self._cue_inflight = False
         self._cue_tasks: set[asyncio.Task[None]] = set()
@@ -293,8 +305,16 @@ class Session:
             if not transcript.strip():
                 return
             assert self._cue_generator is not None
+            # Steer the generator away from cues already surfaced this conversation
+            # (XERK-102) so it finds fresh context instead of re-proposing an old one.
+            # Only the most recent titles ride the prompt (older ones are still
+            # caught by the full backstop set below), so the ask stays compact.
+            avoid = list(self._surfaced_cue_titles[-_CUE_AVOID_PROMPT_LIMIT:])
             generated = await asyncio.to_thread(
-                self._cue_generator.generate, transcript, level=self._cue_level
+                self._cue_generator.generate,
+                transcript,
+                level=self._cue_level,
+                avoid_titles=avoid,
             )
             if generated is None:
                 return
@@ -302,10 +322,16 @@ class Session:
             body = generated.body.strip()
             if not title or not body:
                 return
-            # Dedupe: don't surface the same cue title twice in a row.
-            if title.lower() in self._recent_cue_titles:
+            # Backstop de-dupe: never surface the same cue twice in a conversation,
+            # however far apart (XERK-102) — the report was an old cue popping up
+            # again later once it had aged out of a short rolling window. A repeat
+            # is dropped WITHOUT resetting the rate-limit clock, so the next turn
+            # can immediately try again for a genuinely new cue.
+            norm = normalize_cue_title(title)
+            if norm in self._surfaced_cue_norms:
                 return
-            self._recent_cue_titles.append(title.lower())
+            self._surfaced_cue_norms.add(norm)
+            self._surfaced_cue_titles.append(title)
             self._last_cue_monotonic = time.monotonic()
             cue_id = uuid.uuid4().hex
             try:

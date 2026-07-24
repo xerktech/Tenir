@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 
 from api.contract import CueLevel
 from api.cue.base import CueGenerator, GeneratedCue
@@ -61,9 +62,22 @@ class OpenAICueGenerator(CueGenerator):
         self._disable_thinking = disable_thinking
         self._timeout = timeout
 
-    def _build_payload(self, transcript: str, level: CueLevel) -> dict:
+    def _build_payload(
+        self, transcript: str, level: CueLevel, avoid_titles: Sequence[str] = ()
+    ) -> dict:
         """The /chat/completions request body. Pure (no I/O) so it's unit-tested."""
         system = _SYSTEM.format(guidance=level_guidance(level))
+        # Cues already surfaced this conversation: tell the model not to repeat
+        # them (XERK-102), so it finds fresh context instead of re-proposing an
+        # old cue that would only be discarded. Order-preserving de-dupe keeps the
+        # instruction compact.
+        already = list(dict.fromkeys(t.strip() for t in avoid_titles if t.strip()))
+        if already:
+            system += (
+                "\nYou have ALREADY surfaced these cues earlier in this "
+                "conversation; do NOT repeat any of them — surface something new "
+                'or reply {"cue": false}: ' + ", ".join(already) + "."
+            )
         payload: dict = {
             "model": self._model,
             "messages": [
@@ -89,11 +103,11 @@ class OpenAICueGenerator(CueGenerator):
         return message.get("content") or message.get("reasoning_content") or ""
 
     def generate(  # pragma: no cover - requires httpx + a live chat endpoint
-        self, transcript: str, *, level: CueLevel
+        self, transcript: str, *, level: CueLevel, avoid_titles: Sequence[str] = ()
     ) -> GeneratedCue | None:
         import httpx
 
-        payload = self._build_payload(transcript, level)
+        payload = self._build_payload(transcript, level, avoid_titles)
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         try:
             resp = httpx.post(self._url, json=payload, headers=headers, timeout=self._timeout)
