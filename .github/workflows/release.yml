@@ -5,7 +5,8 @@ name: release
 # the Parakeet STT image, the Even .ehpk, and the Android .apk) + a changelog.
 # Replaces the per-component main-push publish jobs that used to live in api.yml,
 # parakeet-stt.yml, even.yml and mobile.yml (now PR-only CI). See RELEASING.md and
-# .github/scripts/README.md.
+# .github/scripts/README.md. After the release lands, a rebuilt .ehpk is also
+# pushed to the Even Hub developer portal (publish-evenhub job).
 #
 # Model:
 #   - PATCH is derived from the existing v* tags (max+1), never committed — so
@@ -497,3 +498,60 @@ jobs:
             --title "Tenir ${{ needs.plan.outputs.tag }}" \
             --notes-file meta/release-notes.md \
             dist/*
+
+  # ---------------------------------------------------- publish: Even Hub -----
+  # Push the freshly built .ehpk to the Even Hub developer portal (the portal's
+  # draft + create API, via the tested even/scripts/evenhub-publish.mjs — no npm
+  # install needed, the script is dependency-free). Runs AFTER the GitHub release
+  # exists so a portal hiccup can never block or half-publish the release itself,
+  # and only when the even component was actually REBUILT: a carried .ehpk is the
+  # same bits at the same app.json version, which the portal already has (it keys
+  # versions on app.json's "version", stamped by build-even). Auth is a
+  # non-interactive login from repo secrets — portal access tokens live ~10 min,
+  # so a stored token secret can never work for CI; email + password is the only
+  # durable credential. On dry_run the script resolves config + artifact and
+  # skips auth and both uploads. Promotion in the portal remains manual.
+  publish-evenhub:
+    needs: [plan, bump, publish]
+    if: >-
+      !cancelled() && needs.publish.result == 'success'
+      && needs.plan.outputs.build_even == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v5
+        with:
+          name: asset-even
+          path: dist
+      - name: Publish .ehpk to the Even Hub dev portal
+        env:
+          EVENHUB_EMAIL: ${{ secrets.EVENHUB_EMAIL }}
+          EVENHUB_PASSWORD: ${{ secrets.EVENHUB_PASSWORD }}
+          PACKAGE_ID: ${{ vars.EVENHUB_PACKAGE_ID }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "$DRY_RUN" = "true" ]; then
+            FLAGS+=(--dry-run)
+          elif [ -z "$EVENHUB_EMAIL" ] || [ -z "$EVENHUB_PASSWORD" ]; then
+            echo "::error::EVENHUB_EMAIL / EVENHUB_PASSWORD repository secrets are not set — the portal upload cannot authenticate. See RELEASING.md." >&2
+            exit 1
+          fi
+          # The committed app.json package_id is the dev default; the repo
+          # variable EVENHUB_PACKAGE_ID overrides it when the portal listing
+          # uses a different id.
+          if [ -n "$PACKAGE_ID" ]; then FLAGS+=(--package-id "$PACKAGE_ID"); fi
+          node even/scripts/evenhub-publish.mjs \
+            --skip-build \
+            --artifact "$GITHUB_WORKSPACE/dist/tenir-even-v${VERSION}.ehpk" \
+            --changelog "Tenir ${TAG} — https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            "${FLAGS[@]}"

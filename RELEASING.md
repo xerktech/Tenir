@@ -50,6 +50,32 @@ committed default — no code change needed. Note that switching signing keys
 per-runner debug key) requires one final uninstall/reinstall, because the
 certificate itself changes; every update after that installs in place.
 
+## Even Hub dev-portal publish
+
+After the GitHub release is created, the `publish-evenhub` job uploads the
+freshly built `.ehpk` to the Even Hub developer portal (the portal's
+draft + create-version API, via `even/scripts/evenhub-publish.mjs`). It runs
+only when the even component was **rebuilt** — a carried `.ehpk` is the same
+bits at the same `app.json` version, which the portal already has — and only
+after the release exists, so a portal outage can't block or half-publish a
+release. **Promoting** the uploaded build in the portal remains a manual step.
+
+Configuration (Settings → Secrets and variables → Actions):
+
+- **Secret `EVENHUB_EMAIL`** — the Even Hub developer-account email.
+- **Secret `EVENHUB_PASSWORD`** — its password. The job logs in
+  non-interactively each run; a stored token can't work because portal access
+  tokens expire after ~10 minutes.
+- **Variable `EVENHUB_PACKAGE_ID`** *(optional)* — overrides the committed
+  `even/app.json` `package_id` when the portal listing uses a different id.
+- **Variable `TENIR_API_HOSTS`** *(optional, pre-existing)* — pins the packed
+  network whitelist; defaults to the `*` wildcard for BYO self-hosting.
+
+If the secrets are missing on a real release, the job fails with a clear error
+after the GitHub release has already been published — nothing else is affected.
+A `dry_run` dispatch exercises the job end-to-end (artifact download + config
+resolution) without authenticating or uploading.
+
 ## Patch releases (automatic)
 
 Every merge to `main` that touches a component's source cuts a patch release — a
