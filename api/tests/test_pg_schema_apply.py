@@ -54,11 +54,26 @@ def test_iter_statements_splits_and_skips_comment_only_chunks() -> None:
     )
     statements = list(iter_statements(sql))
     assert len(statements) == 2
-    assert statements[0].startswith("-- a leading comment")  # inline comments are kept
-    assert "CREATE TABLE IF NOT EXISTS a" in statements[0]
-    assert "CREATE INDEX IF NOT EXISTS a_idx" in statements[1]
+    # Comments are stripped, so each statement is pure SQL the driver can run — no
+    # leading comment text that would confuse the parser.
+    assert statements[0] == "CREATE TABLE IF NOT EXISTS a (id TEXT)"
+    assert statements[1] == "CREATE INDEX IF NOT EXISTS a_idx ON a (id)"
     # The dangling chunk after the last ';' (whitespace + a bare comment) is dropped,
     # so no empty statement reaches the driver.
+
+
+def test_iter_statements_ignores_semicolons_inside_comments() -> None:
+    # Regression: a ';' inside a line comment must NOT split the statement. schema.sql
+    # has exactly this ("...scoped to it; users") right before the households table.
+    # The naive split cut there and handed the driver a fragment beginning with the
+    # leftover comment word ("users ... CREATE TABLE ..."), which Postgres rejected as
+    # `syntax error at or near "users"`, aborting the whole boot schema-apply.
+    sql = (
+        "-- The boundary is scoped to it; users authenticate into it.\n"
+        "CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY);\n"
+    )
+    statements = list(iter_statements(sql))
+    assert statements == ["CREATE TABLE IF NOT EXISTS households (id TEXT PRIMARY KEY)"]
 
 
 def test_find_schema_file_locates_repo_schema() -> None:

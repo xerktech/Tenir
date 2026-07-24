@@ -48,14 +48,16 @@ def find_schema_file() -> Path | None:
 
 
 def iter_statements(sql: str) -> Iterator[str]:
-    """Split a SQL script into individual statements. schema.sql has no dollar-quoted
-    bodies or string-literal semicolons, so a plain ``;`` split is safe; chunks that
-    are only whitespace/line-comments (e.g. the trailing newline) are skipped."""
-    for chunk in sql.split(";"):
-        has_sql = any(
-            line.strip() and not line.strip().startswith("--") for line in chunk.splitlines()
-        )
-        if has_sql:
+    """Split a SQL script into individual statements. Line comments (``--`` to end of
+    line) are stripped first, so a semicolon *inside* a comment — e.g. schema.sql's
+    "Conversations are scoped to it; users" — can't terminate a statement early and
+    hand the driver a fragment starting with the leftover comment text. schema.sql has
+    no dollar-quoted bodies, and no ``--`` or ``;`` inside string literals, so a plain
+    ``;`` split of the comment-stripped code is safe. Whitespace-only chunks (e.g. the
+    trailing newline after the last ``;``) are skipped."""
+    code = "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+    for chunk in code.split(";"):
+        if chunk.strip():
             yield chunk.strip()
 
 
