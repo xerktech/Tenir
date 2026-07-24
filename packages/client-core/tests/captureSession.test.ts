@@ -47,31 +47,62 @@ describe("reduce", () => {
   it("drops to idle on stop but keeps the transcript and clears live cues", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
     s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // queued
     s = reduce(s, { type: "stop" });
     expect(s.running).toBe(false);
     expect(s.connection).toBe("closed");
     expect(s.segments.length).toBe(1); // transcript stays on screen to read back
-    expect(s.cues).toEqual([]); // ephemeral cues cleared
+    expect(s.activeCue).toBeNull(); // active cue cleared
+    expect(s.queuedCues).toEqual([]); // and the whole backlog with it
   });
 
-  it("appends live cues, de-duplicates by id, and caps the visible set", () => {
+  it("shows the first cue and queues the rest behind it (XERK-102)", () => {
     let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
-    expect(s.cues).toEqual([{ id: "c1", title: "Sun", body: "150M" }]);
-    // Same id replaces in place rather than duplicating.
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" } });
-    expect(s.cues).toEqual([{ id: "c1", title: "Sun", body: "updated" }]);
-    // Overflow drops the oldest (visible cap is 4).
-    for (let i = 2; i <= 6; i++) s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" } });
-    expect(s.cues.length).toBe(4);
-    expect(s.cues[s.cues.length - 1].id).toBe("c6");
+    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "150M" });
+    expect(s.queuedCues).toEqual([]);
+    // A second cue while the first is up waits its turn rather than clobbering it.
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } });
+    expect(s.activeCue?.id).toBe("c1");
+    expect(s.queuedCues.map((c) => c.id)).toEqual(["c2"]);
+    // A third stacks behind the second (FIFO).
+    s = reduce(s, { type: "cue", cue: { id: "c3", title: "Mars", body: "225M" } });
+    expect(s.queuedCues.map((c) => c.id)).toEqual(["c2", "c3"]);
   });
 
-  it("expires a cue by id", () => {
+  it("de-duplicates a re-delivered cue by id in place, active or queued", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } }); // queued
+    // Same id as the active cue updates it in place, not a duplicate.
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" } });
+    expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "updated" });
+    expect(s.queuedCues.map((c) => c.id)).toEqual(["c2"]);
+    // Same id as a queued cue updates that slot, keeping its place in line.
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "closer" } });
+    expect(s.queuedCues).toEqual([{ id: "c2", title: "Moon", body: "closer" }]);
+  });
+
+  it("caps the backlog, dropping the stalest waiting cue", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "active", title: "t", body: "b" } });
+    // 16 more pile up behind the active one; the queue holds at most 16.
+    for (let i = 1; i <= 20; i++) s = reduce(s, { type: "cue", cue: { id: `q${i}`, title: "t", body: "b" } });
+    expect(s.activeCue?.id).toBe("active");
+    expect(s.queuedCues.length).toBe(16);
+    // The oldest waiting cues (q1..q4) fell off; the freshest survive, in order.
+    expect(s.queuedCues[0].id).toBe("q5");
+    expect(s.queuedCues[s.queuedCues.length - 1].id).toBe("q20");
+  });
+
+  it("releases the active cue and promotes the queue head (XERK-102)", () => {
     let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cueExpire", id: "c1" });
-    expect(s.cues).toEqual([]);
-    // Expiring an unknown id is a no-op (same reference back).
-    const same = reduce(s, { type: "cueExpire", id: "ghost" });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // queued
+    s = reduce(s, { type: "cueRelease", id: "c1" });
+    expect(s.activeCue?.id).toBe("c2"); // next in line pops immediately
+    expect(s.queuedCues).toEqual([]);
+    // Releasing the last cue clears the surface.
+    s = reduce(s, { type: "cueRelease", id: "c2" });
+    expect(s.activeCue).toBeNull();
+    // A stale release (wrong / already-gone id) is a no-op (same reference back).
+    const same = reduce(s, { type: "cueRelease", id: "ghost" });
     expect(same).toBe(s);
   });
 });
@@ -244,27 +275,57 @@ describe("CaptureSession", () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());
 
-    it("shows an incoming cue then auto-dismisses it after the TTL", async () => {
+    it("shows an incoming cue then releases it after the TTL", async () => {
       const { session, refs } = harness();
       await session.start();
       refs.client!.handlers.onCue?.(cue("c1", "Sun", "About 150M km"));
-      expect(session.getState().cues).toEqual([{ id: "c1", title: "Sun", body: "About 150M km" }]);
+      expect(session.getState().activeCue).toEqual({ id: "c1", title: "Sun", body: "About 150M km" });
 
       vi.advanceTimersByTime(CUE_TTL_MS - 1);
-      expect(session.getState().cues).toHaveLength(1); // still visible just before TTL
+      expect(session.getState().activeCue).not.toBeNull(); // still visible just before TTL
       vi.advanceTimersByTime(1);
-      expect(session.getState().cues).toEqual([]); // dismissed at TTL
+      expect(session.getState().activeCue).toBeNull(); // released at TTL
     });
 
-    it("cancels pending cue-dismiss timers on stop", async () => {
+    it("queues cues and pops the next one the moment the active is released (XERK-102)", async () => {
+      const { session, refs } = harness();
+      await session.start();
+      // Three cues arrive back to back; only the first shows, the rest queue.
+      refs.client!.handlers.onCue?.(cue("c1", "Sun", "150M"));
+      refs.client!.handlers.onCue?.(cue("c2", "Moon", "384k"));
+      refs.client!.handlers.onCue?.(cue("c3", "Mars", "225M"));
+      expect(session.getState().activeCue?.id).toBe("c1");
+      expect(session.getState().queuedCues.map((c) => c.id)).toEqual(["c2", "c3"]);
+
+      // First TTL: c2 takes over immediately with its own fresh countdown.
+      vi.advanceTimersByTime(CUE_TTL_MS);
+      expect(session.getState().activeCue?.id).toBe("c2");
+      expect(session.getState().queuedCues.map((c) => c.id)).toEqual(["c3"]);
+
+      // c2's countdown is its own full TTL, not a leftover from c1.
+      vi.advanceTimersByTime(CUE_TTL_MS - 1);
+      expect(session.getState().activeCue?.id).toBe("c2");
+      vi.advanceTimersByTime(1);
+      expect(session.getState().activeCue?.id).toBe("c3");
+
+      // Last one drains the queue empty.
+      vi.advanceTimersByTime(CUE_TTL_MS);
+      expect(session.getState().activeCue).toBeNull();
+      expect(session.getState().queuedCues).toEqual([]);
+    });
+
+    it("cancels the pending cue-release timer and clears the queue on stop", async () => {
       const { session, refs } = harness();
       await session.start();
       refs.client!.handlers.onCue?.(cue("c1"));
+      refs.client!.handlers.onCue?.(cue("c2")); // queued behind c1
       await session.stop();
-      expect(session.getState().cues).toEqual([]); // cleared by stop
+      expect(session.getState().activeCue).toBeNull(); // cleared by stop
+      expect(session.getState().queuedCues).toEqual([]); // backlog cleared too
       // The pending timer must not resurrect or error after teardown.
       vi.advanceTimersByTime(CUE_TTL_MS * 2);
-      expect(session.getState().cues).toEqual([]);
+      expect(session.getState().activeCue).toBeNull();
+      expect(session.getState().queuedCues).toEqual([]);
     });
   });
 });

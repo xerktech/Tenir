@@ -516,14 +516,40 @@ describe("wireLens cues (XERK-81)", () => {
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
   });
 
-  it("drops a cue that arrives while the menu is open", async () => {
+  it("queues a cue that arrives while the menu is open, then shows it once the menu closes (XERK-102)", async () => {
     const t = await record();
     await t.doubleTap(); // menu up
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    // The interactive menu is untouched; the transient cue was dropped.
+    // The interactive menu is untouched — the cue waits its turn behind it.
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+
+    await t.doubleTap(); // dismiss the menu — the queued cue now gets the popup
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+  });
+
+  it("queues a cue that arrives while another is up and pops it after the first's TTL (XERK-102)", async () => {
+    const t = await record();
+    const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+
+    // Second cue arrives while the first is still up: it must not clobber it.
+    t.api.handlers().onCue?.(CUE2);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+
+    // When the first is released at its TTL, the second pops immediately.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2));
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+
+    // And the second runs its own full TTL before the box frees.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
   it("mirrors the active cue to the phone Session page", async () => {

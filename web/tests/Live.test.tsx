@@ -11,7 +11,8 @@ const baseState = () => ({
   micSource: "phone-microphone" as const,
   segments: [] as { id: string; text: string }[],
   partial: "",
-  cues: [] as { id: string; title: string; body: string }[],
+  activeCue: null as { id: string; title: string; body: string } | null,
+  queuedCues: [] as { id: string; title: string; body: string }[],
 });
 
 function fakeController(overrides: Partial<CaptureController["state"]> = {}): CaptureController {
@@ -62,16 +63,34 @@ describe("LiveView", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
-  it("renders live cue cards above the transcript", () => {
+  it("renders the active cue card above the transcript", () => {
     renderLive(
       fakeController({
         running: true,
         connection: "open",
-        cues: [{ id: "c1", title: "Sun", body: "About 150 million km away." }],
+        activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
       }),
     );
     expect(screen.getByText("Sun")).toBeInTheDocument();
     expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+  });
+
+  it("shows a '+N more' note when cues are queued behind the active one", () => {
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
+        queuedCues: [
+          { id: "c2", title: "Moon", body: "384,400 km away." },
+          { id: "c3", title: "Mars", body: "225 million km away." },
+        ],
+      }),
+    );
+    // Only the active cue's body renders; the queued ones stay hidden behind it.
+    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+    expect(screen.queryByText(/384,400 km/)).not.toBeInTheDocument();
+    expect(screen.getByText("+2 more")).toBeInTheDocument();
   });
 
   it("reflects the active cue level and reports changes", () => {
