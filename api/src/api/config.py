@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # Cap the model's cue body length (characters) so a cue fits the glasses box and
     # the live band; the generator prompt also asks for brevity.
     cue_max_body_chars: int = 240
+    # Disable the chat model's chain-of-thought for cue calls. The prod model
+    # (Qwen3) is a reasoning model: left thinking it spends the whole token budget
+    # on reasoning and returns an empty `content`, so no cue is ever produced. Cues
+    # want fast structured JSON, not reasoning, so default on. Turn off only for a
+    # non-reasoning model whose chat template rejects the `enable_thinking` kwarg.
+    cue_disable_thinking: bool = True
 
     # Realtime windowing / VAD. Tune for the latency budget.
     stt_partial_interval_ms: int = 700  # re-run the partial hypothesis this often
