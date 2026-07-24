@@ -37,5 +37,6 @@ def make_cue_generator() -> CueGenerator | None:
             model=settings.llm_model,
             api_key=settings.litellm_api_key,
             max_body_chars=settings.cue_max_body_chars,
+            disable_thinking=settings.cue_disable_thinking,
         )
     raise ValueError(f"unknown cue backend: {backend!r} (expected 'off', 'stub' or 'openai')")

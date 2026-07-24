@@ -130,3 +130,38 @@ def test_parse_truncates_long_body() -> None:
     gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=10)
     cue = gen._parse('{"cue": true, "title": "T", "body": "0123456789ABCDEF"}')
     assert cue is not None and cue.body == "0123456789"
+
+
+# ---- request payload (regression: reasoning model must not think) -----------
+
+
+def test_payload_disables_thinking_by_default() -> None:
+    # Qwen3 left thinking spends the whole token budget on reasoning and returns an
+    # empty content, so no cue is produced. The payload must switch thinking off.
+    payload = _gen()._build_payload("how far is the sun?", CueLevel.balanced)
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["model"] == "qwen3-llm"
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
+    assert payload["messages"][1]["content"] == "how far is the sun?"
+
+
+def test_payload_keeps_thinking_when_disabled_off() -> None:
+    gen = OpenAICueGenerator(endpoint="e", model="m", disable_thinking=False)
+    payload = gen._build_payload("hi", CueLevel.balanced)
+    assert "chat_template_kwargs" not in payload
+
+
+# ---- response content extraction (regression: reasoning model empty content) --
+
+
+def test_message_content_prefers_content() -> None:
+    assert OpenAICueGenerator._message_content({"content": "hello"}) == "hello"
+
+
+def test_message_content_falls_back_to_reasoning_content() -> None:
+    # A reasoning model/gateway may leave content empty and put the answer in
+    # reasoning_content; None content must not crash and must fall back.
+    msg = {"content": None, "reasoning_content": '{"cue": true, "title": "T", "body": "B"}'}
+    assert OpenAICueGenerator._message_content(msg) == '{"cue": true, "title": "T", "body": "B"}'
+    assert OpenAICueGenerator._message_content({}) == ""

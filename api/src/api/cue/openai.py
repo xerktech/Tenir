@@ -2,12 +2,20 @@
 
 Reuses the SAME gateway base URL + key the STT engine uses (no new URL/key var):
 it POSTs /chat/completions instead of /audio/transcriptions. In prod the alias is
-``qwen3-llm`` → Qwen3.6-27B-FP8 on the tenir-vllm container. The model is asked to
-return a small JSON object; a reasoning model (Qwen3) may wrap it, so we extract
-the first JSON object defensively.
+``qwen3-llm`` → Qwen3.6-27B-FP8 on the tenir-vllm container.
 
-Network/model I/O, so excluded from coverage — CI runs the deterministic stub and
-the session-level behaviour (rate-limit, dedupe, delivery) is covered against it.
+The prod model is a *reasoning* model: left to its own devices Qwen3 spends the
+token budget on a chain-of-thought it returns in ``reasoning_content`` and leaves
+``content`` empty (``finish_reason: length``), so the JSON answer never arrives and
+every cue is silently dropped. Cues want fast, structured output, not reasoning, so
+we disable thinking (`chat_template_kwargs.enable_thinking = false`) — the JSON then
+lands in ``content`` and the call finishes cleanly. We still extract the first JSON
+object defensively, and fall back to ``reasoning_content`` if a gateway ever routes
+the answer there instead.
+
+The network call is excluded from coverage — CI runs the deterministic stub and the
+session-level behaviour (rate-limit, dedupe, delivery) is covered against it — but
+the payload builder and response parser below are pure and unit-tested.
 """
 
 from __future__ import annotations
@@ -43,21 +51,20 @@ class OpenAICueGenerator(CueGenerator):
         model: str,
         api_key: str = "",
         max_body_chars: int = 240,
+        disable_thinking: bool = True,
         timeout: float = 20.0,
     ) -> None:
         self._url = endpoint.rstrip("/") + "/chat/completions"
         self._model = model
         self._api_key = api_key
         self._max_body_chars = max_body_chars
+        self._disable_thinking = disable_thinking
         self._timeout = timeout
 
-    def generate(  # pragma: no cover - requires httpx + a live chat endpoint
-        self, transcript: str, *, level: CueLevel
-    ) -> GeneratedCue | None:
-        import httpx
-
+    def _build_payload(self, transcript: str, level: CueLevel) -> dict:
+        """The /chat/completions request body. Pure (no I/O) so it's unit-tested."""
         system = _SYSTEM.format(guidance=level_guidance(level))
-        payload = {
+        payload: dict = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system},
@@ -67,11 +74,31 @@ class OpenAICueGenerator(CueGenerator):
             "max_tokens": 300,
             "response_format": {"type": "json_object"},
         }
+        if self._disable_thinking:
+            # Qwen3 is a reasoning model; without this it burns the whole token budget
+            # thinking and returns an empty `content`. LiteLLM forwards the kwarg to
+            # vLLM, which applies it to the chat template.
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        return payload
+
+    @staticmethod
+    def _message_content(message: dict) -> str:
+        """The text to parse a cue out of: normally ``content``, but fall back to
+        ``reasoning_content`` for a reasoning model/gateway that routes the answer
+        there and leaves ``content`` empty (`or` also handles a ``None`` content)."""
+        return message.get("content") or message.get("reasoning_content") or ""
+
+    def generate(  # pragma: no cover - requires httpx + a live chat endpoint
+        self, transcript: str, *, level: CueLevel
+    ) -> GeneratedCue | None:
+        import httpx
+
+        payload = self._build_payload(transcript, level)
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         try:
             resp = httpx.post(self._url, json=payload, headers=headers, timeout=self._timeout)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"] or ""
+            content = self._message_content(resp.json()["choices"][0]["message"])
         except Exception:
             # A cue is a best-effort aside; never let it disturb the caption stream.
             log.warning("cue generation call failed", exc_info=True)

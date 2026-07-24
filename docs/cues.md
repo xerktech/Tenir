@@ -33,8 +33,11 @@ Each cue has a **title** (1–3 words) and a **body** (the fact/context).
    endpoint + key the STT engine uses (`API_LITELLM_ENDPOINT` /
    `API_LITELLM_API_KEY`) — no new URL/key var. The model alias is `API_LLM_MODEL`
    (default `qwen3-llm`). The model returns a small JSON object
-   (`{cue, title, body}`); a reasoning model may wrap it, so the first JSON object
-   is extracted defensively.
+   (`{cue, title, body}`). The prod model (Qwen3) is a *reasoning* model, so the
+   call disables thinking (`chat_template_kwargs.enable_thinking = false`, toggle
+   `API_CUE_DISABLE_THINKING`) — otherwise it spends the whole token budget
+   reasoning and returns an empty `content`, and no cue is ever produced. The first
+   JSON object is still extracted defensively, falling back to `reasoning_content`.
 3. **Delivery + persistence.** A cue is delivered as a `cue` WebSocket message
    (see `contract/ws-messages.schema.json`) and persisted to the `cues` table
    (`schema.sql`) at `at_ms` — its position on the transcript timeline — so history
