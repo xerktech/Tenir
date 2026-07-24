@@ -437,18 +437,28 @@ export async function wireLens(
   // while recording move the "listening" dots. The writer drops unchanged
   // frames, so this costs BLE only when text changes.
   const ticker = setInterval(() => {
-    if (!enabled || !foreground) return;
-    tick += 1;
-    renderClock();
-    if (state.recording && state.connection === "open") renderStatus();
+    if (!enabled) return;
     // Advance the live cue's countdown (XERK-110) on both surfaces it shows on.
-    // TICK_MS is well under a second, so the number never lags the release
-    // timer by more than a tick; unchanged frames cost no BLE write, and the
-    // phone gets a targeted text update rather than a transcript rebuild.
+    // This is NOT gated on `foreground`: the cue sits on the glasses lens, which
+    // the wearer keeps reading over the BLE link even when the phone app is
+    // backgrounded — while the auto-dismiss timer (and the derived count) run
+    // regardless. Gating it here left a cue that arrived while backgrounded
+    // frozen at "10s" until it vanished, with only the first cue of a session —
+    // shown while the app was still foregrounded from the start tap — ever
+    // counting down (XERK-113). TICK_MS is well under a second, so the number
+    // never lags the release timer by more than a tick; unchanged frames cost no
+    // BLE write, and the phone gets a targeted text update, not a transcript
+    // rebuild.
     if (state.cue) {
       renderMenu();
       sessionPage?.tickCue(cueCountdown());
     }
+    // The clock and "listening" dots are ordinary lens chrome — leave them idle
+    // while backgrounded; a re-foreground repaints them (FOREGROUND_ENTER_EVENT).
+    if (!foreground) return;
+    tick += 1;
+    renderClock();
+    if (state.recording && state.connection === "open") renderStatus();
   }, TICK_MS);
 
   // The single event subscription (audio + gestures + system events). Touch

@@ -611,6 +611,30 @@ describe("wireLens cues (XERK-81)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
+  it("keeps a cue counting down on the lens while the app is backgrounded (XERK-113)", async () => {
+    const t = await record();
+    // A first cue counts down normally while foregrounded, then dismisses.
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 9));
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+
+    // The wearer pockets the phone: the app backgrounds, but the glasses keep
+    // showing the lens over BLE. A cue that arrives now must still count down —
+    // the auto-dismiss timer runs regardless, so its number has to as well.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.FOREGROUND_EXIT_EVENT } } as EvenHubEvent);
+    const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
+    t.api.handlers().onCue?.(CUE2);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10)); // shows on the lens
+
+    // Before XERK-113 the count froze here at 10s until the cue vanished.
+    await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 9));
+    await vi.advanceTimersByTimeAsync(3000); // ~4.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 6));
+  });
+
   it("counts down on the phone Session page too (XERK-110)", async () => {
     const { bridge, emit } = fakeBridge();
     const writer = new layout.LensTextWriter(async () => true);
