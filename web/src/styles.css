@@ -258,8 +258,16 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
 
 /* ---- Cues (XERK-81): private context surfaced from the conversation ---- */
 
-/* Live band above the transcript; cards auto-dismiss after their TTL. */
-.cue-band { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
+/* Live band above the transcript; cards auto-dismiss after their TTL.
+   The band sits between the capture controls and the transcript card, so it
+   carries the same vertical margin the card does (`section, .detail, .card`
+   below): equal breathing room above and below, instead of butting up against
+   the Stop/Pause buttons (XERK-106). The bottom margin collapses with the
+   card's own equal top margin, keeping both gaps at --space-4. */
+.cue-band {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
 .cue-card {
   border: 1px solid var(--accent);
   background: var(--accent-soft);
