@@ -163,6 +163,41 @@ describe("SessionPage", () => {
     expect(cue().textContent).toBe("");
   });
 
+  describe("cue countdown (XERK-110)", () => {
+    const countdown = () => cue().querySelector(".session-cue-countdown");
+
+    it("shows the seconds left across from the title", () => {
+      mount().update(view({ cue: { title: "Aptos, CA", body: "Coastal town." }, cueSecondsLeft: 7 }));
+      const head = cue().querySelector(".session-cue-head")!;
+      expect(head.querySelector(".session-cue-title")!.textContent).toBe("Aptos, CA");
+      expect(head.querySelector(".session-cue-countdown")!.textContent).toBe("7s");
+      // The card announces itself; a number changing every second inside that
+      // live region must not re-announce the whole cue, so it stays hidden.
+      expect(countdown()!.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    it("ticks the number without redrawing the card or the transcript", () => {
+      const page = mount();
+      page.update(view({ segments: ["a turn"], cue: { title: "T", body: "B" }, cueSecondsLeft: 10 }));
+      const card = countdown()!;
+      const firstRow = document.querySelector("#session-text li")!;
+
+      page.tickCue(9);
+      expect(countdown()!.textContent).toBe("9s");
+      // Same nodes: only the text inside the countdown changed.
+      expect(countdown()).toBe(card);
+      expect(document.querySelector("#session-text li")).toBe(firstRow);
+    });
+
+    it("has nothing to tick once the cue is gone", () => {
+      const page = mount();
+      page.update(view({ cue: { title: "T", body: "B" }, cueSecondsLeft: 3 }));
+      page.update(view({ cue: null }));
+      expect(() => page.tickCue(2)).not.toThrow();
+      expect(cue().textContent).toBe("");
+    });
+  });
+
   it("follows the newest caption inside the transcript's own scroll box (XERK-103)", () => {
     const page = mount();
     const box = text();

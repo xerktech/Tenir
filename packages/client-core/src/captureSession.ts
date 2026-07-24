@@ -29,6 +29,11 @@ export const CUE_TTL_MS = 10000;
 // reflows when it comes and goes; this is purely how long the fade lasts, and
 // every frontend uses the same value so the surfaces feel identical.
 export const CUE_EXIT_MS = 160;
+// How often a live cue's countdown (XERK-110) recomputes. Comfortably under a
+// second so the displayed number turns over within a frame or two of the real
+// second boundary — a countdown ticked on a 1000ms interval drifts visibly
+// behind the release timer it is supposed to describe.
+export const CUE_COUNTDOWN_TICK_MS = 250;
 // Only ONE cue is shown at a time (XERK-102): a cue arriving while another is
 // active is queued and pops the moment the active one is released. This bounds
 // how deep that backlog can grow — well past any normal conversation — so a
@@ -249,6 +254,26 @@ export function liveTranscript(segments: CaptureSegment[], pastCues: LiveCue[]):
     for (const cue of byAnchor.get(segment.id) ?? []) items.push({ kind: "cue", cue });
   }
   return items;
+}
+
+/**
+ * Whole seconds left before a live cue auto-dismisses (XERK-110), given how
+ * long it has been on screen. `Math.ceil` so the count reads the way a person
+ * would say it: it shows 10 the instant the cue lands, 1 through the final
+ * second, and 0 only once the cue is actually gone. Clamped at both ends so a
+ * clock jump (or a timer that fires late) can't paint a number outside the
+ * range the cue ever had.
+ *
+ * Pure and shared, so the lens box and the web/mobile cards count identically.
+ */
+export function cueSecondsLeft(elapsedMs: number, ttlMs: number = CUE_TTL_MS): number {
+  const remaining = Math.ceil((ttlMs - elapsedMs) / 1000);
+  return Math.max(0, Math.min(Math.ceil(ttlMs / 1000), remaining));
+}
+
+/** The countdown as it is painted in a cue's top-right corner, e.g. `"7s"`. */
+export function cueCountdownLabel(secondsLeft: number): string {
+  return `${secondsLeft}s`;
 }
 
 /** Minimal slice of `ApiClient` the session drives (so tests can inject a fake). */

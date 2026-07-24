@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { CUE_EXIT_MS } from "@tenir/client-core";
+import { CUE_EXIT_MS, CUE_TTL_MS } from "@tenir/client-core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -286,6 +286,69 @@ describe("LiveView", () => {
     }
   });
 
+  describe("live cue countdown (XERK-110)", () => {
+    const running = { running: true, connection: "open" as const };
+    const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
+      <LiveView
+        controller={fakeController({ ...running, activeCue })}
+        cueLevel="balanced"
+        onCueLevelChange={vi.fn()}
+      />
+    );
+    const cue = { id: "c1", title: "Sun", body: "About 150 million km away." };
+    const countdown = (container: HTMLElement) =>
+      container.querySelector(".cue-card-countdown")?.textContent;
+
+    it("counts the seconds down to dismissal across from the title", () => {
+      vi.useFakeTimers();
+      try {
+        const { container } = render(withCue(cue));
+        // Full TTL the moment the cue lands, in the card's head next to the title.
+        expect(countdown(container)).toBe("10s");
+        const head = container.querySelector(".cue-card-head")!;
+        expect(head.querySelector(".cue-card-title")!.textContent).toBe("Sun");
+        expect(head.querySelector(".cue-card-countdown")).not.toBeNull();
+
+        act(() => void vi.advanceTimersByTime(1000));
+        expect(countdown(container)).toBe("9s");
+        act(() => void vi.advanceTimersByTime(4000));
+        expect(countdown(container)).toBe("5s");
+        // The last second still reads 1s; it only hits 0 once the TTL is up.
+        act(() => void vi.advanceTimersByTime(CUE_TTL_MS - 5000 - 1));
+        expect(countdown(container)).toBe("1s");
+        act(() => void vi.advanceTimersByTime(1));
+        expect(countdown(container)).toBe("0s");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restarts the count for a queued cue promoted into the band", () => {
+      vi.useFakeTimers();
+      try {
+        const { container, rerender } = render(withCue(cue));
+        act(() => void vi.advanceTimersByTime(6000));
+        expect(countdown(container)).toBe("4s");
+
+        // The next cue takes the band: it gets its own full countdown, not the
+        // remainder of its predecessor's.
+        rerender(withCue({ id: "c2", title: "Moon", body: "384,400 km away." }));
+        act(() => void vi.advanceTimersByTime(0));
+        expect(countdown(container)).toBe("10s");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the ticking number out of the card's announcement", () => {
+      // The band is an aria-live region, so a number changing every second
+      // inside it would re-announce the whole cue once a second.
+      const { container } = render(withCue(cue));
+      expect(container.querySelector(".cue-band")).toHaveAttribute("aria-live", "polite");
+      expect(container.querySelector(".cue-card-countdown")).toHaveAttribute("aria-hidden", "true");
+    });
+  });
+
   it("reflects the active cue level and reports changes", () => {
     const { onCueLevelChange } = renderLive(fakeController());
     const aggressive = screen.getByRole("button", { name: "Aggressive" });
@@ -335,6 +398,14 @@ describe("cue overlay styling (XERK-107)", () => {
     const token = css.match(/--cue-fade:\s*(\d+)ms/);
     expect(token).not.toBeNull();
     expect(Number(token![1])).toBe(CUE_EXIT_MS);
+  });
+
+  it("puts the countdown across from the title (XERK-110)", () => {
+    // One row, title left and countdown right, sharing a baseline.
+    expect(css).toMatch(/\.cue-card-head\s*\{[^}]*display:\s*flex/);
+    expect(css).toMatch(/\.cue-card-head\s*\{[^}]*justify-content:\s*space-between/);
+    // Tabular digits so the count doesn't jitter as it ticks down.
+    expect(css).toMatch(/\.cue-card-countdown\s*\{[^}]*font-variant-numeric:\s*tabular-nums/);
   });
 
   it("drops the motion for viewers who ask for reduced motion", () => {

@@ -498,7 +498,7 @@ describe("wireLens cues (XERK-81)", () => {
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
     // The cue rides the shared popup strip, rebuilt on top of the base page.
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
 
     // Auto-dismissed after ~10s: the page rebuilds back to the plain layout.
@@ -510,7 +510,7 @@ describe("wireLens cues (XERK-81)", () => {
     const t = await record();
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
 
     await t.doubleTap(); // open the menu — it owns the shared popup
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
@@ -527,7 +527,7 @@ describe("wireLens cues (XERK-81)", () => {
 
     await t.doubleTap(); // dismiss the menu — the queued cue now gets the popup
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
   });
 
   it("queues a cue that arrives while another is up and pops it after the first's TTL (XERK-102)", async () => {
@@ -535,16 +535,16 @@ describe("wireLens cues (XERK-81)", () => {
     const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
 
     // Second cue arrives while the first is still up: it must not clobber it.
     t.api.handlers().onCue?.(CUE2);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
 
     // When the first is released at its TTL, the second pops immediately.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2));
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10));
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
 
     // And the second runs its own full TTL before the box frees.
@@ -588,6 +588,69 @@ describe("wireLens cues (XERK-81)", () => {
     expect(cueEl.hidden).toBe(false);
     expect(cueEl.textContent).toContain("Sun");
     expect(cueEl.textContent).toContain("150 million");
+  });
+
+  it("counts the cue's remaining seconds down on the lens (XERK-110)", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+
+    // The activity ticker advances the count. It repaints on TICK_MS, so the
+    // lens can trail the true count by up to one tick — each checkpoint below
+    // is therefore read at least TICK_MS into the second it asserts.
+    await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 9));
+    await vi.advanceTimersByTimeAsync(3000); // ~4.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 6));
+    // Still 1s through the final second, and the box is gone by the time the
+    // count would read 0.
+    await vi.advanceTimersByTimeAsync(5000); // ~9.7s in
+    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 1));
+    await vi.advanceTimersByTimeAsync(300 + controllerMod.TICK_MS);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("counts down on the phone Session page too (XERK-110)", async () => {
+    const { bridge, emit } = fakeBridge();
+    const writer = new layout.LensTextWriter(async () => true);
+    document.body.innerHTML = `
+      <section id="page-session">
+        <span id="session-dot" hidden></span>
+        <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="session-cue" id="session-cue" hidden></div>
+        <div class="empty" id="session-empty">
+          <p id="session-empty-title"></p>
+          <p id="session-empty-hint"></p>
+        </div>
+        <ul id="session-text" hidden></ul>
+      </section>`;
+    const phone = new sessionMod.SessionPage(sessionMod.querySessionPageElements()!);
+    const api = fakeClientFactory();
+    const controls = await controllerMod.wireLens(bridge, new MemStorage(), writer, phone, {
+      createClient: api.createClient,
+    });
+    await settle();
+    controls.enable();
+    await settle();
+    emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent); // start
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+
+    api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    const countdown = () =>
+      document.querySelector("#session-cue .session-cue-countdown")?.textContent;
+    expect(countdown()).toBe("10s");
+
+    // Read a tick past the second boundary — the ticker drives this too.
+    await vi.advanceTimersByTimeAsync(2650); // ~2.7s in
+    expect(countdown()).toBe("8s");
+    // The transcript is not rebuilt for a countdown tick — only the number moves.
+    expect(document.getElementById("session-text")!.hidden).toBe(true);
+
+    // Gone with the cue when it is dismissed.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(document.getElementById("session-cue")!.hidden).toBe(true);
   });
 
   it("embeds a released cue into the phone transcript for review (XERK-108)", async () => {

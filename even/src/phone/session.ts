@@ -13,7 +13,7 @@
  * jsdom without the Even SDK.
  */
 
-import { isPinnedToBottom } from "@tenir/client-core";
+import { cueCountdownLabel, isPinnedToBottom } from "@tenir/client-core";
 
 import type { CueCard } from "../lens/layout";
 
@@ -35,6 +35,7 @@ export interface LiveSessionView {
   segments: string[]; // finalized turns
   partial: string; // current live hypothesis
   cue: CueCard | null; // the current private context cue (XERK-81), or none
+  cueSecondsLeft?: number; // seconds until that cue auto-dismisses (XERK-110)
   pastCues: PastCue[]; // released cues embedded in the transcript for review (XERK-108)
 }
 
@@ -117,6 +118,9 @@ export class SessionPage {
   // an expanded past cue stays open across the frequent caption redraws — the
   // transcript is rebuilt wholesale on every update, unlike React's live tree.
   private expanded = new Set<string>();
+  // The live cue card's countdown element (XERK-110) while one is on screen, so
+  // the ticker can repaint just that number.
+  private countdown: HTMLElement | null = null;
 
   constructor(
     private readonly els: SessionPageElements,
@@ -135,8 +139,9 @@ export class SessionPage {
       view.recording && view.connection === "open" ? "badge-accent" : "badge-neutral";
 
     // The private context cue (XERK-81): a bordered accent card above the
-    // transcript, shown only while a cue is live and a session is recording.
-    this.renderCue(view.recording ? view.cue : null);
+    // transcript, shown only while a cue is live and a session is recording,
+    // with the countdown to its dismissal top-right (XERK-110).
+    this.renderCue(view.recording ? view.cue : null, view.cueSecondsLeft);
 
     const hasText =
       view.recording &&
@@ -190,22 +195,49 @@ export class SessionPage {
     if (started) this.callbacks.onRecordingStart?.();
   }
 
-  /** Render (or hide) the live cue card: the title (uppercased, accent) over its body. */
-  private renderCue(cue: CueCard | null): void {
+  /**
+   * Render (or hide) the live cue card: the title (uppercased, accent) with the
+   * countdown to its dismissal across from it (XERK-110), over its body.
+   */
+  private renderCue(cue: CueCard | null, secondsLeft?: number): void {
     if (!cue) {
       this.els.cue.hidden = true;
       this.els.cue.replaceChildren();
+      this.countdown = null;
       return;
     }
     const doc = this.els.cue.ownerDocument;
+    const head = doc.createElement("div");
+    head.className = "session-cue-head";
     const title = doc.createElement("div");
     title.className = "session-cue-title";
     title.textContent = cue.title;
+    const countdown = doc.createElement("div");
+    countdown.className = "session-cue-countdown";
+    // Out of the accessibility tree: the card is an aria-live region, and a
+    // number changing every second would re-announce the whole cue each time.
+    countdown.setAttribute("aria-hidden", "true");
+    countdown.textContent = cueCountdownLabel(secondsLeft ?? 0);
+    head.append(title, countdown);
     const body = doc.createElement("div");
     body.className = "session-cue-body";
     body.textContent = cue.body;
-    this.els.cue.replaceChildren(title, body);
+    this.els.cue.replaceChildren(head, body);
     this.els.cue.hidden = false;
+    this.countdown = countdown;
+  }
+
+  /**
+   * Advance the live cue's countdown (XERK-110) without redrawing anything else.
+   *
+   * The lens ticker calls this several times a second while a cue is up; a full
+   * `update()` at that rate would rebuild the transcript underneath it, fighting
+   * text selection and the scroll position for a number that changes once a
+   * second. No cue on screen → nothing to tick.
+   */
+  tickCue(secondsLeft: number): void {
+    if (!this.countdown) return;
+    this.countdown.textContent = cueCountdownLabel(secondsLeft);
   }
 
   /**

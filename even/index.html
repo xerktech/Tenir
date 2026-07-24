@@ -293,6 +293,17 @@
         margin-bottom: var(--space-3);
       }
       .session-cue[hidden] { display: none; }
+      /* Title on the left, countdown to dismissal on the right (XERK-110). */
+      .session-cue-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: var(--space-3);
+      }
+      .session-cue-countdown {
+        flex: none;
+        font-size: var(--text-xs); font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-muted);
+      }
       .session-cue-title {
         font-family: var(--font-display, inherit);
         font-weight: 700; font-size: var(--text-sm);

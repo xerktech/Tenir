@@ -4,7 +4,14 @@
  * cue dropdown in history. Themed via the shared ThemeContext.
  */
 
-import { CUE_EXIT_MS, type CueLevel, type LiveCue } from "@tenir/client-core";
+import {
+  CUE_COUNTDOWN_TICK_MS,
+  CUE_EXIT_MS,
+  cueCountdownLabel,
+  cueSecondsLeft,
+  type CueLevel,
+  type LiveCue,
+} from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -73,6 +80,28 @@ function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: 
 }
 
 /**
+ * Count the seconds a cue has left on screen (XERK-110). Mirrors the web
+ * `useCueCountdown`: derived from the moment the cue appeared rather than
+ * decremented per tick, so a backgrounded app resyncs to the truth instead of
+ * drifting away from the release timer, and restarts for each cue that takes
+ * the band — a promoted cue gets its own full countdown.
+ */
+function useCueCountdown(cueId: string | undefined): number {
+  const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
+  useEffect(() => {
+    if (!cueId) return;
+    setSecondsLeft(cueSecondsLeft(0));
+    const startedAt = Date.now();
+    const timer = setInterval(
+      () => setSecondsLeft(cueSecondsLeft(Date.now() - startedAt)),
+      CUE_COUNTDOWN_TICK_MS,
+    );
+    return () => clearInterval(timer);
+  }, [cueId]);
+  return secondsLeft;
+}
+
+/**
  * The single active cue over the transcript (XERK-102). One cue shows at a
  * time; others wait in a FIFO queue and pop the moment this one is released. A
  * "+N more" note appears while cues are queued behind it.
@@ -95,6 +124,7 @@ export function LiveCueBand({
 }): JSX.Element | null {
   const styles = useThemedStyles(makeStyles);
   const { cue, exiting } = useCueExit(activeCue);
+  const secondsLeft = useCueCountdown(cue?.id);
   const fade = useRef(new Animated.Value(0)).current;
   const shown = Boolean(cue) && !exiting;
   useEffect(() => {
@@ -117,7 +147,19 @@ export function LiveCueBand({
       ]}
     >
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>{cue.title.toUpperCase()}</Text>
+        <View style={styles.cardHead}>
+          <Text style={styles.cardTitle}>{cue.title.toUpperCase()}</Text>
+          {/* Seconds until the cue auto-dismisses (XERK-110), across from the
+              title. Kept out of the accessibility tree: a number that changes
+              every second would otherwise be read out over the cue itself. */}
+          <Text
+            style={styles.cardCountdown}
+            importantForAccessibility="no-hide-descendants"
+            accessibilityElementsHidden
+          >
+            {cueCountdownLabel(secondsLeft)}
+          </Text>
+        </View>
         {/* Cue text is selectable so it can be copied (XERK-104). */}
         <Text selectable style={styles.cardBody}>
           {cue.body}
@@ -199,7 +241,24 @@ const makeStyles = (colors: Palette) =>
       padding: space.md,
       gap: 2,
     },
-    cardTitle: { color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 },
+    // Title on the left, countdown on the right (XERK-110).
+    cardHead: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: space.sm,
+    },
+    cardTitle: {
+      color: colors.accentStrong,
+      fontWeight: "700",
+      fontSize: 12,
+      letterSpacing: 0.5,
+      // A long title wraps rather than shoving the countdown off the card.
+      flexShrink: 1,
+    },
+    // Quieter than the title: a hint about how long the card lingers, not part
+    // of the cue itself.
+    cardCountdown: { color: colors.muted, fontWeight: "600", fontSize: 11, flexShrink: 0 },
     cardBody: { color: colors.text, lineHeight: 20 },
     // Chipped like the card, since it now sits over the captions too.
     queued: {
