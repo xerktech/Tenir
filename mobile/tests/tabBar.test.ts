@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // regression in the nav shape is caught by typecheck-adjacent tests.
 const readText = (rel: string) => readFileSync(resolve(process.cwd(), rel)).toString("utf8");
 
-const TABS = ["Live", "History", "Status", "Settings", "Privacy"];
+const TABS = ["Live", "History", "Status", "Settings"];
 
 describe("mobile bottom tab bar", () => {
   const app = readText("src/App.tsx");
@@ -35,9 +35,11 @@ describe("mobile bottom tab bar", () => {
     expect(app).toContain("height: 3");
   });
 
-  it("lists exactly the five dashboard tabs", () => {
+  it("lists exactly the four dashboard tabs", () => {
     const decl = app.match(/const TABS = \[([^\]]*)\]/)?.[1] ?? "";
     for (const t of TABS) expect(decl).toContain(`"${t}"`);
+    // Privacy was removed (XERK-96) — its disclosures live inline in Live/Setup.
+    expect(decl).not.toContain('"Privacy"');
   });
 });
 

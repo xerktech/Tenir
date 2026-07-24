@@ -31,7 +31,6 @@ import { configureApiFromWs } from "./config";
 import { useAuth } from "./lib/controllers";
 import { NotifyProvider } from "./lib/notify";
 import { deviceKeyValue } from "./secureStorage";
-import { DisclosureScreen } from "./screens/Disclosure";
 import { HistoryScreen } from "./screens/History";
 import { LiveScreen } from "./screens/Live";
 import { SettingsScreen } from "./screens/Settings";
@@ -44,7 +43,7 @@ import { TabIcon } from "./ui/icons";
 import { ThemeProvider, useTheme, useThemedStyles } from "./ui/ThemeContext";
 import { space, type Palette } from "./ui/theme";
 
-const TABS = ["Live", "History", "Status", "Settings", "Privacy"] as const;
+const TABS = ["Live", "History", "Status", "Settings"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Narrow a persisted string back to a Tab; unknown/absent values mean Live. */
@@ -176,7 +175,6 @@ function Dashboard({
         {tab === "History" && <HistoryScreen />}
         {tab === "Status" && <StatusScreen />}
         {tab === "Settings" && settings}
-        {tab === "Privacy" && <DisclosureScreen />}
       </View>
       <TabBar tab={tab} onSelect={selectTab} />
     </View>
