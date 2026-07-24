@@ -36,7 +36,9 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
 
   it("wires the history transcript to the inline dropdown", () => {
     expect(history).toContain("CueDisclosure");
-    expect(history).toContain("<CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />");
+    // A cue ends a run of selectable turns (XERK-104), so it renders from the
+    // run's `cue` rather than a raw timeline item — still the inline dropdown.
+    expect(history).toContain("<CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />");
     // The modal open/close state is gone from the detail screen.
     expect(history).not.toContain("CueModal");
     expect(history).not.toContain("InlineCue");

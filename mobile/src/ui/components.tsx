@@ -40,22 +40,9 @@ export function Heading({ children }: { children: ReactNode }): JSX.Element {
   return <Text style={styles.heading}>{children}</Text>;
 }
 
-export function Muted({
-  children,
-  // Opt-in text selection so muted conversation text (e.g. the live partial
-  // caption) can be long-pressed and copied (XERK-104). Off by default — most
-  // muted text is chrome (hints, captions) that shouldn't be selectable.
-  selectable,
-}: {
-  children: ReactNode;
-  selectable?: boolean;
-}): JSX.Element {
+export function Muted({ children }: { children: ReactNode }): JSX.Element {
   const styles = useThemedStyles(makeStyles);
-  return (
-    <Text style={styles.muted} selectable={selectable}>
-      {children}
-    </Text>
-  );
+  return <Text style={styles.muted}>{children}</Text>;
 }
 
 /** Uppercase micro-label — section/field captions (the web's `.field-label`). */

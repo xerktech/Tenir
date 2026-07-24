@@ -30,7 +30,6 @@ import {
   Card,
   EmptyState,
   Heading,
-  ListItem,
   Muted,
   Row,
 } from "../ui/components";
@@ -162,16 +161,25 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
             scrollEventThrottle={100}
             onContentSizeChange={followNewest}
           >
-            {/* Transcript text is selectable so it can be long-pressed and copied
-                (XERK-104), matching the web/even clients. */}
-            {state.segments.map((seg) => (
-              <ListItem key={seg.id}>
-                <Text selectable style={{ color: colors.text }}>
+            {/* Every turn (plus the live partial) lives in ONE selectable <Text>
+                so a selection can be dragged across all of them and copied
+                (XERK-104). RN only extends a selection within a single <Text>
+                tree, so separate per-turn views would each be a selection island;
+                turns are newline-separated inside the block instead. */}
+            <Text selectable style={{ color: colors.text, lineHeight: 22 }}>
+              {state.segments.map((seg, i) => (
+                <Text key={seg.id}>
+                  {i > 0 ? "\n" : null}
                   {seg.text}
                 </Text>
-              </ListItem>
-            ))}
-            {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
+              ))}
+              {state.partial ? (
+                <Text style={{ color: colors.muted }}>
+                  {state.segments.length > 0 ? "\n" : null}
+                  {`› ${state.partial}`}
+                </Text>
+              ) : null}
+            </Text>
           </ScrollView>
         ) : null}
 
