@@ -82,6 +82,19 @@ export function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * Two `#RRGGBB` colours blended opaquely — RN's stand-in for the web tokens
+ * derived with `color-mix(in srgb, <top> N%, <base>)`. Unlike `withAlpha` the
+ * result is fully opaque, which is what a surface floating *over* other content
+ * needs so the content underneath can't read through it (XERK-107).
+ */
+export function mix(top: string, base: string, weight: number): string {
+  const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+  const blend = (i: number) =>
+    Math.round(channel(top, i) * weight + channel(base, i) * (1 - weight));
+  return `rgb(${blend(0)}, ${blend(1)}, ${blend(2)})`;
+}
+
 /** 4px-base spacing scale (mirrors --space-1..6). */
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 

@@ -43,3 +43,39 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
     expect(history).not.toContain("setOpenCue");
   });
 });
+
+describe("live cue floats over the transcript (XERK-107)", () => {
+  const cue = readText("src/ui/cue.tsx");
+  const live = readText("src/screens/Live.tsx");
+
+  it("takes the band out of the column and lays it over the transcript", () => {
+    // Absolutely placed against the top of its stage, above the captions.
+    expect(cue).toContain('band: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2');
+    // Click-through band so the transcript underneath still scrolls; the card
+    // keeps its own touches so the cue text stays long-pressable (XERK-104).
+    expect(cue).toContain('pointerEvents="box-none"');
+    // Opaque fill — the captions it covers must not read through it.
+    expect(cue).toContain("backgroundColor: mix(colors.accent, colors.surfaceRaised, 0.14)");
+    // …not the translucent wash it used to sit on when it was in the flow.
+    expect(cue).not.toMatch(/card: \{[^}]*backgroundColor: withAlpha\(/);
+  });
+
+  it("nests the band with the transcript in a positioning stage", () => {
+    // The stage fills the column below the controls; the band overlays it, so
+    // an arriving cue can't shove the captions down (and back up on release).
+    expect(live).toContain("stage: { flex: 1 }");
+    expect(live).toMatch(/<View style=\{styles\.stage\}>[\s\S]*<LiveCueBand[\s\S]*<\/View>/);
+    // The band renders after the ScrollView, not before it in the column.
+    expect(live.indexOf("<ScrollView")).toBeLessThan(live.indexOf("<LiveCueBand"));
+  });
+
+  it("fades a released cue out instead of blinking it away", () => {
+    // Shared timing with the web SPA so both surfaces feel identical.
+    expect(cue).toContain("CUE_EXIT_MS");
+    expect(cue).toContain("duration: CUE_EXIT_MS");
+    // The released cue stays painted for the fade, then unmounts.
+    expect(cue).toContain("setTimeout(() => setPainted(null), CUE_EXIT_MS)");
+    expect(cue).toContain("exiting: !activeCue && painted != null");
+    expect(cue).toContain("<Animated.View");
+  });
+});

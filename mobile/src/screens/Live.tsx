@@ -55,8 +55,9 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const { state } = cap;
 
-  // The transcript scrolls inside its own box below the fixed controls + cue
-  // band, so a long session never scrolls them off-screen (XERK-103). Follow
+  // The transcript scrolls inside its own box below the fixed controls, with the
+  // cue floating over it, so a long session never scrolls them away (XERK-103).
+  // Follow
   // the newest caption while the viewer is at the bottom; release once they
   // scroll up to re-read (shared geometry with the web + even companion).
   const scrollRef = useRef<ScrollView>(null);
@@ -105,8 +106,8 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
   const hasContent = state.segments.length > 0 || Boolean(state.partial);
 
   return (
-    // A fixed column — controls + cue band stay put — over a transcript that
-    // scrolls on its own, so the cues above it are never scrolled away (XERK-103).
+    // A fixed column — the controls stay put — over a transcript that scrolls on
+    // its own, so the cue floating over it is never scrolled away (XERK-103).
     <View style={styles.screen}>
       <Heading>Live</Heading>
 
@@ -144,34 +145,38 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
         <CueLevelToggle level={cueLevel} onChange={changeCueLevel} />
       </Card>
 
-      <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
+      {/* The cue floats inside this stage, over the transcript's top edge, so it
+          never displaces the captions as it comes and goes (XERK-107). */}
+      <View style={styles.stage}>
+        {!hasContent && !state.running ? (
+          <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />
+        ) : null}
+        {!hasContent && state.running ? <Muted>Listening…</Muted> : null}
 
-      {!hasContent && !state.running ? (
-        <EmptyState title="No captions yet." hint="Press Start to begin a live conversation." />
-      ) : null}
-      {!hasContent && state.running ? <Muted>Listening…</Muted> : null}
+        {hasContent ? (
+          <ScrollView
+            ref={scrollRef}
+            style={styles.transcript}
+            contentContainerStyle={styles.transcriptContent}
+            onScroll={onTranscriptScroll}
+            scrollEventThrottle={100}
+            onContentSizeChange={followNewest}
+          >
+            {/* Transcript text is selectable so it can be long-pressed and copied
+                (XERK-104), matching the web/even clients. */}
+            {state.segments.map((seg) => (
+              <ListItem key={seg.id}>
+                <Text selectable style={{ color: colors.text }}>
+                  {seg.text}
+                </Text>
+              </ListItem>
+            ))}
+            {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
+          </ScrollView>
+        ) : null}
 
-      {hasContent ? (
-        <ScrollView
-          ref={scrollRef}
-          style={styles.transcript}
-          contentContainerStyle={styles.transcriptContent}
-          onScroll={onTranscriptScroll}
-          scrollEventThrottle={100}
-          onContentSizeChange={followNewest}
-        >
-          {/* Transcript text is selectable so it can be long-pressed and copied
-              (XERK-104), matching the web/even clients. */}
-          {state.segments.map((seg) => (
-            <ListItem key={seg.id}>
-              <Text selectable style={{ color: colors.text }}>
-                {seg.text}
-              </Text>
-            </ListItem>
-          ))}
-          {state.partial ? <Muted selectable>{`› ${state.partial}`}</Muted> : null}
-        </ScrollView>
-      ) : null}
+        <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
+      </View>
     </View>
   );
 }
@@ -179,8 +184,11 @@ export function LiveScreen({ wsUrl }: { wsUrl: string }): JSX.Element {
 const makeStyles = (colors: Palette) =>
   StyleSheet.create({
     // Mirror the shared `Screen` padding/background, but as a fixed column so
-    // only the transcript below scrolls (the cue band above stays in view).
+    // only the transcript below scrolls (the cue floating over it stays in view).
     screen: { flex: 1, backgroundColor: colors.bg, padding: space.lg, gap: space.md },
+    // Positioning context for the cue overlay (XERK-107): it fills the column
+    // below the controls, and the cue is absolutely placed against its top.
+    stage: { flex: 1 },
     transcript: { flex: 1 },
     transcriptContent: { gap: space.xs, paddingBottom: space.md },
   });

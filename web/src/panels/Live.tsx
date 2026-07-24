@@ -7,7 +7,13 @@
  * test without a real mic or socket.
  */
 
-import { DISCLOSURES, isPinnedToBottom, wsFromHttpBase, type CueLevel } from "@tenir/client-core";
+import {
+  CUE_EXIT_MS,
+  DISCLOSURES,
+  isPinnedToBottom,
+  wsFromHttpBase,
+  type CueLevel,
+} from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 
 import { getServerUrl } from "../config";
@@ -50,25 +56,61 @@ export function CueLevelToggle({
   );
 }
 
+type ActiveCue = CaptureController["state"]["activeCue"];
+
 /**
- * The single active private-context cue above the live transcript (XERK-102).
+ * Keep a released cue mounted for the length of its fade-out (XERK-107).
+ *
+ * Returns the cue to paint plus whether it is on its way out, so the band can
+ * transition to nothing instead of blinking off the screen. A cue that arrives
+ * mid-fade cancels the pending unmount and takes over immediately, matching the
+ * "only one cue at a time" rule (XERK-102).
+ */
+function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } {
+  const [painted, setPainted] = useState<ActiveCue>(activeCue);
+  useEffect(() => {
+    if (activeCue) {
+      setPainted(activeCue);
+      return;
+    }
+    const timer = window.setTimeout(() => setPainted(null), CUE_EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [activeCue]);
+  return { cue: painted, exiting: !activeCue && painted != null };
+}
+
+/**
+ * The single active private-context cue over the live transcript (XERK-102).
  * One cue shows at a time; any others wait in a FIFO queue and pop the moment
  * this one is released. When the queue is non-empty a small "+N more" note tells
  * the wearer more cues are lined up.
+ *
+ * The band *floats over* the top of the transcript box rather than sitting above
+ * it in the flow (XERK-107): a cue arriving or expiring used to push the
+ * transcript down and let it snap back, which is disorienting mid-conversation.
+ * As an overlay it changes no layout at all — it briefly covers the oldest
+ * visible captions instead, which are the ones nobody is reading, since the box
+ * follows the newest text at the bottom. It is click-through except for the card
+ * itself, so the transcript underneath still scrolls and selects.
  */
 function LiveCueBand({
   activeCue,
   queuedCount,
 }: {
-  activeCue: CaptureController["state"]["activeCue"];
+  activeCue: ActiveCue;
   queuedCount: number;
 }): JSX.Element | null {
-  if (!activeCue) return null;
+  const { cue, exiting } = useCueExit(activeCue);
+  if (!cue) return null;
   return (
-    <div className="cue-band" aria-live="polite">
-      <div className="cue-card" key={activeCue.id}>
-        <div className="cue-card-title">{activeCue.title}</div>
-        <div className="cue-card-body">{activeCue.body}</div>
+    <div
+      className={`cue-band ${exiting ? "exiting" : ""}`.trim()}
+      aria-live="polite"
+      aria-hidden={exiting || undefined}
+    >
+      <div className="cue-card" key={cue.id}>
+        <div className="cue-card-title">{cue.title}</div>
+        <div className="cue-card-body">{cue.body}</div>
       </div>
       {queuedCount > 0 && (
         <div
@@ -137,9 +179,9 @@ export function LiveView({
         <CueLevelToggle level={cueLevel} onChange={onCueLevelChange} />
       </div>
 
-      <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
-
-      <Card>
+      {/* The cue floats inside this card, over the transcript's top edge, so it
+          never displaces the captions as it comes and goes (XERK-107). */}
+      <Card className="cue-stage">
         {!hasContent ? (
           <EmptyState title="No captions yet." hint="Press Record to start a live conversation." />
         ) : (
@@ -152,6 +194,7 @@ export function LiveView({
             </ul>
           </div>
         )}
+        <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
       </Card>
     </section>
   );
