@@ -2,7 +2,7 @@
 
 import { history, type Conversation, type CueView, type SegmentView } from "@tenir/client-core";
 import { useState } from "react";
-import { Linking, Text, View } from "react-native";
+import { Linking, Switch, Text, View } from "react-native";
 
 import { useHistory } from "../lib/controllers";
 import { conversationLabel, errText, msToClock } from "../lib/format";
@@ -140,7 +140,14 @@ function Detail({
   onBack: () => void;
 }): JSX.Element {
   const { colors } = useTheme();
-  const items = timeline(conv);
+  // Cues default to shown every time a conversation is opened (not persisted) —
+  // this component remounts per open, so `useState(true)` resets it (XERK-104).
+  const [showCues, setShowCues] = useState(true);
+  const hasCues = (conv.cues?.length ?? 0) > 0;
+  // With cues hidden there are no cue dropdowns breaking the timeline, so every
+  // turn collapses into one run / one selectable <Text> — the whole conversation
+  // is then draggable-selectable end to end (RN only selects within one <Text>).
+  const items = timeline(conv).filter((it) => showCues || it.kind === "segment");
   return (
     <Screen>
       <Row>
@@ -148,6 +155,21 @@ function Detail({
         <Heading>Session detail</Heading>
       </Row>
       <Muted>{conversationLabel(conv)}</Muted>
+      {/* Toggle cues off to make the whole transcript one selectable block; only
+          shown when the conversation actually has cues to toggle. */}
+      {hasCues && (
+        <Row>
+          <Muted>Show cues</Muted>
+          <View style={{ flexGrow: 1 }} />
+          <Switch
+            accessibilityLabel="Show cues"
+            value={showCues}
+            onValueChange={setShowCues}
+            trackColor={{ true: colors.accent, false: colors.borderStrong }}
+            thumbColor={colors.surface}
+          />
+        </Row>
+      )}
       <View>
         {/* An empty transcript block reads as a detail that failed to open — name it. */}
         {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 && (
@@ -156,9 +178,8 @@ function Detail({
         {/* Each run of consecutive turns is ONE selectable <Text>, so a
             selection can be dragged across every turn in it and copied
             (XERK-104). RN only extends a selection within a single <Text> tree;
-            a cue dropdown is a separate view, so it necessarily ends a run —
-            selecting across a cue is a documented platform gap vs. the web/even
-            DOM clients, where selection spans the whole transcript. */}
+            a cue dropdown is a separate view, so it ends a run — hide cues (the
+            toggle above) to drag-select the whole conversation at once. */}
         {runs(items).map((run, i) =>
           run.kind === "cue" ? (
             <CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />

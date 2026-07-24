@@ -33,6 +33,10 @@ function mountDom(): void {
         <button id="history-back" type="button">← History</button>
         <button id="history-delete" type="button">Delete</button>
         <p id="history-meta"></p>
+        <label class="cue-toggle" id="history-cue-toggle" hidden>
+          <input type="checkbox" id="history-cue-toggle-input" checked />
+          Show cues
+        </label>
         <div id="history-transcript"></div>
         <div id="history-audio" hidden>
           <audio id="history-audio-el"></audio>
@@ -286,6 +290,84 @@ describe("conversation detail", () => {
     expect(popup.hidden).toBe(false);
     popup.click(); // the backdrop
     expect(popup.hidden).toBe(true);
+  });
+
+  it("toggles cues off to leave the transcript as segment rows only (XERK-104)", async () => {
+    const api = fakeApi({ get: vi.fn(async () => conversation({ cues: [cue()] })) });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+
+    const toggle = document.getElementById("history-cue-toggle")!;
+    const input = document.getElementById("history-cue-toggle-input")! as HTMLInputElement;
+    // The toggle is offered (there are cues) and defaults to on.
+    expect(toggle.hidden).toBe(false);
+    expect(input.checked).toBe(true);
+    expect(document.querySelector("#history-transcript .cue-inline")).not.toBeNull();
+
+    // Turn cues off: the chip is gone, only the two segment rows remain.
+    input.checked = false;
+    input.dispatchEvent(new Event("change"));
+    expect(document.querySelector("#history-transcript .cue-inline")).toBeNull();
+    expect([...document.querySelectorAll("#history-transcript .item")].map((i) => i.textContent)).toEqual([
+      "0:03–0:07 first turn",
+      "0:09–0:15 second turn",
+    ]);
+
+    // Turn cues back on: the chip returns.
+    input.checked = true;
+    input.dispatchEvent(new Event("change"));
+    expect(document.querySelector("#history-transcript .cue-inline")).not.toBeNull();
+  });
+
+  it("hiding cues also dismisses an open cue popup (XERK-104)", async () => {
+    const api = fakeApi({ get: vi.fn(async () => conversation({ cues: [cue()] })) });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+
+    document.querySelector<HTMLButtonElement>("#history-transcript .cue-inline")!.click();
+    expect(document.getElementById("history-cue-popup")!.hidden).toBe(false);
+
+    const input = document.getElementById("history-cue-toggle-input")! as HTMLInputElement;
+    input.checked = false;
+    input.dispatchEvent(new Event("change"));
+    expect(document.getElementById("history-cue-popup")!.hidden).toBe(true);
+  });
+
+  it("hides the cue toggle for a conversation with no cues, and restores default-on per open", async () => {
+    const withCues = conversation({ id: "c1", cues: [cue()] });
+    const noCues = conversation({ id: "c2", cues: [] });
+    const api = fakeApi({
+      list: vi.fn(async () => [summary({ id: "c1" }), summary({ id: "c2" })]),
+      get: vi.fn(async (id: string) => (id === "c1" ? withCues : noCues)),
+    });
+    const page = mount(api);
+    await page.refresh();
+    const input = document.getElementById("history-cue-toggle-input")! as HTMLInputElement;
+    const toggle = document.getElementById("history-cue-toggle")!;
+
+    // Open the cued conversation and turn cues off.
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    expect(toggle.hidden).toBe(false);
+    input.checked = false;
+    input.dispatchEvent(new Event("change"));
+
+    // A conversation with no cues hides the toggle entirely.
+    document.getElementById("history-back")!.click();
+    rowButtons()[1].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    expect(toggle.hidden).toBe(true);
+
+    // Reopening the cued conversation defaults back to cues-on.
+    document.getElementById("history-back")!.click();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    expect(input.checked).toBe(true);
+    expect(document.querySelector("#history-transcript .cue-inline")).not.toBeNull();
   });
 
   it("renders a cue-only session (no segments) rather than the empty message", async () => {

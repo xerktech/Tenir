@@ -37,6 +37,18 @@ describe("selectable transcript text (XERK-104)", () => {
     expect(src).toMatch(/\{j > 0 \? "\\n" : null\}/);
   });
 
+  it("History: a per-open cue toggle can hide cues so the transcript is one run", () => {
+    const src = readText("src/screens/History.tsx");
+    // Cues default to shown on every open (state resets when Detail remounts).
+    expect(src).toMatch(/const \[showCues, setShowCues\] = useState\(true\);/);
+    // Hiding cues filters them out of the timeline, so runs() yields one run.
+    expect(src).toMatch(/timeline\(conv\)\.filter\(\(it\) => showCues \|\| it\.kind === "segment"\)/);
+    // The toggle is only offered when there are cues to hide.
+    expect(src).toMatch(/const hasCues = \(conv\.cues\?\.length \?\? 0\) > 0;/);
+    expect(src).toMatch(/hasCues && \(/);
+    expect(src).toMatch(/<Switch/);
+  });
+
   it("Cues: the live band body and the inline disclosure body are selectable", () => {
     const src = readText("src/ui/cue.tsx");
     // The band paints `cue` — the active cue, or the one still fading out (XERK-107).

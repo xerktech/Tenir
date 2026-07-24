@@ -220,7 +220,12 @@ function ConversationDetail({
   onDelete: () => void;
   onBack: () => void;
 }): JSX.Element {
-  const items = timeline(conv);
+  // Cues default to shown every time a conversation is opened (not persisted).
+  // Hiding them drops the inline cue blocks so the transcript reads as one
+  // uninterrupted, fully-selectable run — mirroring the mobile toggle (XERK-104).
+  const [showCues, setShowCues] = useState(true);
+  const hasCues = (conv.cues?.length ?? 0) > 0;
+  const items = timeline(conv).filter((item) => showCues || item.kind === "segment");
   return (
     <Card className="detail">
       <div className="row">
@@ -235,6 +240,17 @@ function ConversationDetail({
       <p className="muted">
         {new Date(conv.startedAt).toLocaleString()} · {formatDuration(conv.durationMs)} · {conv.segmentCount} turns
       </p>
+      {/* Only shown when there are cues to toggle. */}
+      {hasCues && (
+        <label className="cue-toggle">
+          <input
+            type="checkbox"
+            checked={showCues}
+            onChange={(e) => setShowCues(e.target.checked)}
+          />
+          Show cues
+        </label>
+      )}
       <div className="transcript-block">
         {/* A session can hold no turns at all (nothing was said, or the transcript
             was lost). Say so — an empty block reads as a detail that failed to open. */}

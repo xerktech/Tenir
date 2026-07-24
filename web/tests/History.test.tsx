@@ -192,6 +192,46 @@ describe("HistoryPanel", () => {
     await waitFor(() => expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument());
   });
 
+  it("hides inline cues via the Show-cues toggle, default on (XERK-104)", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [{ segmentId: "s1", text: "how far is the sun", startMs: 0, endMs: 1500, lang: "en" }],
+      cues: [{ cueId: "cue-1", title: "Sun", body: "About 150 million km away.", atMs: 1500 }],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    // The toggle is offered (there are cues) and defaults to on, so the cue shows.
+    const toggle = await screen.findByRole("checkbox", { name: /Show cues/ });
+    expect(toggle).toBeChecked();
+    expect(screen.getByRole("button", { name: /Sun/ })).toBeInTheDocument();
+
+    // Turning it off drops the cue, leaving the transcript uninterrupted.
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: /Sun/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/how far is the sun/)).toBeInTheDocument();
+
+    // Turning it back on restores the cue.
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /Sun/ })).toBeInTheDocument();
+  });
+
+  it("omits the Show-cues toggle when a conversation has no cues (XERK-104)", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [{ segmentId: "s1", text: "just talking", startMs: 0, endMs: 1500, lang: "en" }],
+      cues: [],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    await screen.findByText(/just talking/);
+    expect(screen.queryByRole("checkbox", { name: /Show cues/ })).not.toBeInTheDocument();
+  });
+
   it("deletes a conversation from its row via arm-then-confirm", async () => {
     list.mockResolvedValue([summary()]);
     remove.mockResolvedValue(undefined);
