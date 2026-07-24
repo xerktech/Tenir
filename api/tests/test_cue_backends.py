@@ -7,7 +7,7 @@ import pytest
 
 from api.config import settings
 from api.contract import CueLevel
-from api.cue import make_cue_generator, min_interval_ms
+from api.cue import make_cue_generator, min_interval_ms, normalize_cue_title
 from api.cue.levels import level_guidance
 from api.cue.openai import OpenAICueGenerator
 from api.cue.stub import StubCueGenerator, _title_from
@@ -43,6 +43,26 @@ def test_stub_uses_last_line_and_empty_transcript() -> None:
     cue = stub.generate("small talk\nfavorite pokemon is 133?", level=CueLevel.balanced)
     assert cue is not None
     assert "133" in cue.body
+
+
+def test_stub_skips_a_cue_it_was_told_to_avoid() -> None:
+    # A cue already surfaced this conversation must not be proposed again (XERK-102);
+    # the avoid list is matched on the normalized title, so casing/punctuation vary.
+    stub = StubCueGenerator()
+    first = stub.generate("how far is the sun?", level=CueLevel.balanced)
+    assert first is not None and first.title == "Sun"
+    assert stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=["Sun"]) is None
+    assert stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=[" sun. "]) is None
+    # An unrelated avoid entry doesn't block a genuinely different cue.
+    other = stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=["Moon"])
+    assert other is not None and other.title == "Sun"
+
+
+def test_normalize_cue_title_collapses_trivial_variants() -> None:
+    assert normalize_cue_title("Sun") == "sun"
+    assert normalize_cue_title(" SUN ! ") == "sun"
+    assert normalize_cue_title("Pikachu #25") == normalize_cue_title("pikachu 25")
+    assert normalize_cue_title("!!!") == ""
 
 
 def test_stub_title_is_one_to_three_significant_words() -> None:
@@ -150,6 +170,25 @@ def test_payload_keeps_thinking_when_disabled_off() -> None:
     gen = OpenAICueGenerator(endpoint="e", model="m", disable_thinking=False)
     payload = gen._build_payload("hi", CueLevel.balanced)
     assert "chat_template_kwargs" not in payload
+
+
+def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
+    # XERK-102: already-surfaced titles ride the system prompt as "don't repeat",
+    # order-preserving and de-duplicated, so the model finds fresh context.
+    payload = _gen()._build_payload(
+        "how deep is the ocean?",
+        CueLevel.balanced,
+        ["Sun", "Moon", "Sun"],
+    )
+    system = payload["messages"][0]["content"]
+    assert "do NOT repeat" in system
+    assert "Sun, Moon" in system  # de-duped, order preserved
+    assert system.count("Sun") == 1
+
+
+def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
+    system = _gen()._build_payload("hi", CueLevel.balanced)["messages"][0]["content"]
+    assert "do NOT repeat" not in system
 
 
 # ---- response content extraction (regression: reasoning model empty content) --

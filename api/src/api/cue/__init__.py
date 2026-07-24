@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from api.config import settings
-from api.cue.base import CueGenerator, GeneratedCue
+from api.cue.base import CueGenerator, GeneratedCue, normalize_cue_title
 from api.cue.levels import level_guidance, min_interval_ms
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "make_cue_generator",
     "level_guidance",
     "min_interval_ms",
+    "normalize_cue_title",
 ]
 
 
