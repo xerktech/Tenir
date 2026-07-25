@@ -373,9 +373,43 @@ function rowWithRightEdge(left: string, right: string, width: number): string {
   return `${left}${" ".repeat(spaces)}${right}`;
 }
 
+// ---- the cue scroll bar (XERK-129) ------------------------------------------
+// A body that runs past the box's visible rows gets a scroll bar down the right
+// edge to say so: a track cell on every body row, with the thumb on the row
+// nearest how far the window has moved through the body. The lens has no
+// graphics primitives — the bar is one glyph per row, laid to the right edge
+// the same way the countdown is. Both glyphs carry the SAME advance width in
+// the lens font (checked in tests), so the cells stack into a straight column.
+export const CUE_BAR_TRACK = "│";
+export const CUE_BAR_THUMB = "█";
+// The room the bar takes out of a body row: the bar cell plus a space of
+// separation — mirroring how the title row reserves for the countdown.
+const CUE_BAR_RESERVED = getTextWidth(CUE_BAR_THUMB) + getTextWidth(" ");
+
 /** The cue body wrapped into the rows the box renders (XERK-112). */
 export function cueBodyLines(body: string): string[] {
-  return wrapLines(body, CUE_TEXT_W);
+  const full = wrapLines(body, CUE_TEXT_W);
+  if (full.length <= CUE_BODY_LINES) return full;
+  // The body overflows the window, so its rows share their right edge with the
+  // scroll bar (XERK-129) and wrap to the width the bar leaves. Rewrapping
+  // narrower can only add rows, so the two widths can never disagree about
+  // whether the body scrolls.
+  return wrapLines(body, CUE_TEXT_W - CUE_BAR_RESERVED);
+}
+
+/**
+ * The scroll bar cells for the window starting at `scroll` (XERK-129): one per
+ * body row, the thumb on the row nearest the window's position through the
+ * body — top row at the start, bottom row at the end. Only a scrollable body
+ * gets a bar (`cueText` skips it when `maxScroll` is 0): its presence is the
+ * affordance that there is more to see.
+ */
+export function cueScrollBar(scroll: number, maxScroll: number): string[] {
+  const at = Math.min(Math.max(0, scroll), maxScroll);
+  const thumb = maxScroll > 0 ? Math.round((at / maxScroll) * (CUE_BODY_LINES - 1)) : 0;
+  return Array.from({ length: CUE_BODY_LINES }, (_, i) =>
+    i === thumb ? CUE_BAR_THUMB : CUE_BAR_TRACK,
+  );
 }
 
 /**
@@ -399,6 +433,11 @@ export function cueMaxScroll(body: string): number {
  * corner of the web/mobile cue cards. The title is wrapped to whatever width
  * the countdown leaves, so a long one is trimmed instead of pushing the row
  * over the edge. Omitted (no countdown) the row is the title alone.
+ *
+ * A body that scrolls carries the scroll bar down the box's right edge
+ * (XERK-129): a bar cell on every body row, the thumb marking where the window
+ * sits in the body. A body that fits gets bare rows — no bar means nothing
+ * more to see.
  */
 export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string {
   const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
@@ -407,10 +446,14 @@ export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string 
   const upper = cue.title.toUpperCase();
   const titleLine = wrapLines(upper, CUE_TEXT_W - reserved)[0] ?? upper;
   const body = cueBodyLines(cue.body);
+  const max = cueMaxScroll(cue.body);
   // Clamp the window to the body so a stale/over-large scroll can't blank the box.
-  const start = Math.min(Math.max(0, scroll), cueMaxScroll(cue.body));
+  const start = Math.min(Math.max(0, scroll), max);
   const visible = body.slice(start, start + CUE_BODY_LINES);
-  return [rowWithRightEdge(titleLine, countdown, CUE_TEXT_W), ...visible].join("\n");
+  const bar = cueScrollBar(start, max);
+  const rows =
+    max > 0 ? visible.map((row, i) => rowWithRightEdge(row, bar[i], CUE_TEXT_W)) : visible;
+  return [rowWithRightEdge(titleLine, countdown, CUE_TEXT_W), ...rows].join("\n");
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */

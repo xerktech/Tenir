@@ -15,7 +15,11 @@ Where they appear:
 - **Glasses lens**: a bordered box above the on-lens caption band — the same
   full-width popup strip the double-tap menu uses (XERK-85), showing the cue's
   title over its detail, auto-dismissed after 10s. The interactive menu takes
-  precedence: a cue arriving while the menu is open is dropped.
+  precedence: a cue arriving while the menu is open is queued behind it
+  (XERK-102). A body longer than the box's three visible rows scrolls a row
+  per swipe (XERK-112) and carries a scroll bar down the box's right edge to
+  say so (XERK-129); tapping or swiping a live cue resets its auto-dismiss
+  countdown, so an engaged reader is never cut off mid-read.
 
 Every live surface counts that dismissal down (XERK-110): across from the title,
 in the cue's top-right corner, `10s` → `9s` → … → `0s`. The count is derived from

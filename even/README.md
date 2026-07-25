@@ -155,7 +155,16 @@ glasses (and passes review) before relying on it for production.
 ## Lens controls
 
 - **Single tap** — start a new session when idle. While one records, single
-  taps do NOTHING (a brushed temple must not end a recording).
+  taps do NOTHING (a brushed temple must not end a recording) — except while
+  a cue is up, when the tap resets the cue's auto-dismiss countdown and
+  nothing else (XERK-129).
+- **While a cue is up (recording)** — tapping or swiping the cue resets its
+  auto-dismiss countdown (XERK-129): touching the cue means it is being read,
+  so it stays up a fresh 10s from the touch — whether or not the swipe could
+  move anything. Swipes also scroll a body longer than the box's three rows a
+  row at a time (XERK-112), and such a body carries a scroll bar down the
+  box's right edge — a track cell per row with a thumb marking the window's
+  position — so a long cue is visibly scrollable at a glance.
 - **Double tap (recording)** — a bordered full-width strip from the top of
   the screen (its own container, added via `rebuildPageContainer`) with
   **Continue** (default, top) / **Exit session**, padded above and below.
