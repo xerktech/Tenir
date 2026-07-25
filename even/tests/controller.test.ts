@@ -437,7 +437,28 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(t.store.get("tenir.session")).toBe("");
   });
 
-  it("resumes a persisted mid-session recording on sign-in", async () => {
+  it("resumes a backgrounded mid-session recording on sign-in (XERK-117)", async () => {
+    const t = await boot({
+      store: {
+        "tenir.session": JSON.stringify({
+          sessionId: "sess-9",
+          micSource: "g2-microphone",
+          transcript: "earlier words",
+          resumable: true, // persisted while backgrounded — the app was not closed
+        }),
+      },
+    });
+    t.controls.enable();
+    await settle();
+    expect(t.api.calls).toHaveLength(1);
+    expect(t.api.calls[0].resume).toBe("sess-9");
+    expect(t.text(C().caption)!.endsWith("earlier words")).toBe(true);
+  });
+
+  it("does NOT resume a session the app was closed on — idles instead (XERK-117)", async () => {
+    // A snapshot left behind by a close/kill is persisted from the foreground, so
+    // it carries no resumable flag. The server has finalized it to history; the
+    // glasses must start fresh rather than reopen it.
     const t = await boot({
       store: {
         "tenir.session": JSON.stringify({
@@ -449,9 +470,46 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     });
     t.controls.enable();
     await settle();
-    expect(t.api.calls).toHaveLength(1);
-    expect(t.api.calls[0].resume).toBe("sess-9");
-    expect(t.text(C().caption)!.endsWith("earlier words")).toBe(true);
+    expect(t.api.calls).toHaveLength(0); // no resume, no new session
+    expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+    expect(t.store.get("tenir.session")).toBe(""); // the stale remnant is cleared
+  });
+
+  it("ends and clears the session when the app is closed, not just backgrounded (XERK-117)", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    t.api.handlers().onReady?.({ type: "session.ready", sessionId: "sess-1" });
+    await vi.advanceTimersByTimeAsync(2000); // past the persist debounce
+
+    // The app closes (SYSTEM_EXIT), distinct from backgrounding: the session is
+    // ended (session.end → the api finalizes it to history) and its snapshot is
+    // cleared so the next boot won't resume it.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.SYSTEM_EXIT_EVENT } } as EvenHubEvent);
+    await settle();
+    expect(t.api.stops).toHaveLength(1); // client.stop() → session.end
+    expect(t.store.get("tenir.session")).toBe("");
+  });
+
+  it("marks the session resumable when backgrounded, so the next boot restores it (XERK-117)", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    t.api.handlers().onReady?.({ type: "session.ready", sessionId: "sess-2" });
+    await vi.advanceTimersByTimeAsync(2000);
+    // Foreground snapshot is not resumable.
+    expect(JSON.parse(t.store.get("tenir.session")!).resumable).toBe(false);
+
+    // Backgrounding flushes a resumable snapshot immediately.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.FOREGROUND_EXIT_EVENT } } as EvenHubEvent);
+    await settle();
+    const snap = JSON.parse(t.store.get("tenir.session")!);
+    expect(snap).toMatchObject({ sessionId: "sess-2", resumable: true });
+
+    // Coming back to the foreground flips it back so a later kill won't resume it.
+    t.emit({ sysEvent: { eventType: OsEventTypeList.FOREGROUND_ENTER_EVENT } } as EvenHubEvent);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(JSON.parse(t.store.get("tenir.session")!).resumable).toBe(false);
   });
 
   it("mirrors the session to the phone Session page in real time", async () => {
