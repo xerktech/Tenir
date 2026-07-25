@@ -25,6 +25,10 @@ class StubTranscriber:
         self._total_bytes = 0
         self._closed = False
 
+    async def warmup(self) -> None:
+        # No model, no socket — nothing to warm.
+        return
+
     async def push(self, pcm: bytes) -> None:
         self._total_bytes += len(pcm)
         self._bytes_since_final += len(pcm)

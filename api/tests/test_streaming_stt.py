@@ -887,6 +887,128 @@ def test_hybrid_close_closes_stream_session() -> None:
     asyncio.run(run())
 
 
+# ----- warmup: pay the stream's per-session startup cost early (XERK-128) ----
+
+
+def test_warmup_opens_stream_ahead_of_audio() -> None:
+    async def run() -> None:
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(FakeEngine(), language="en", stream_engine=se)
+
+        await t.warmup()
+        # The socket is open and primed before a single audio frame arrived: one
+        # silent feed paid the cold-decode cost, one reset cleared it.
+        assert len(se.sessions) == 1
+        assert se.sessions[0].language == "en"
+        assert se.sessions[0].feeds == 1
+        assert se.sessions[0].resets == 1
+        # Priming emitted no caption — silence yields no partial, and the reset wipes it.
+        assert _drain(t) == []
+
+        # First real speech reuses the warmed session instead of opening a second one.
+        await t.push(_pcm(100, amplitude=8000))
+        assert len(se.sessions) == 1
+        assert se.sessions[0].feeds == 2
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert [p.text for p in partials] == ["p0"]  # numbering restarted after reset
+
+    asyncio.run(run())
+
+
+def test_warmup_is_noop_without_stream_engine() -> None:
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), language="en")  # offline-only, no stream
+        await t.warmup()
+        assert t._stream_session is None
+        assert _drain(t) == []
+
+    asyncio.run(run())
+
+
+def test_warmup_is_idempotent() -> None:
+    async def run() -> None:
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(FakeEngine(), language="en", stream_engine=se)
+        await t.warmup()
+        await t.warmup()  # already open -> does nothing more
+        assert len(se.sessions) == 1
+        assert se.sessions[0].feeds == 1
+
+    asyncio.run(run())
+
+
+def test_warmup_open_failure_falls_back_to_lazy() -> None:
+    async def run() -> None:
+        se = FakeStreamEngine(fail_open=True)
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=100000,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        await t.warmup()
+        assert t._stream_failed is True  # couldn't open -> marked failed
+        # Captions still flow via the offline re-decode fallback.
+        await t.push(_pcm(100, amplitude=8000))
+        await t.push(_pcm(100, amplitude=8000))
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert partials and partials[0].text == "hello world"
+
+    asyncio.run(run())
+
+
+def test_warmup_feed_failure_falls_back_to_lazy() -> None:
+    class BadFeedSession(FakeStreamSession):
+        async def feed(self, pcm: bytes) -> str | None:
+            raise RuntimeError("warm feed exploded")
+
+    class BadFeedEngine(FakeStreamEngine):
+        async def open(self, *, language: str | None) -> FakeStreamSession:
+            s = BadFeedSession(language=language)
+            self.sessions.append(s)
+            return s
+
+    async def run() -> None:
+        se = BadFeedEngine()
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=100000,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        await t.warmup()
+        assert t._stream_failed is True
+        assert se.sessions[0].closed is True  # the broken session was dropped
+        await t.push(_pcm(100, amplitude=8000))
+        await t.push(_pcm(100, amplitude=8000))
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert partials and partials[0].text == "hello world"
+
+    asyncio.run(run())
+
+
+def test_stub_warmup_is_noop() -> None:
+    from api.stt.stub import StubTranscriber
+
+    async def run() -> None:
+        t = StubTranscriber()
+        await t.warmup()  # nothing to warm, must not raise or emit
+        assert _drain_stub(t) == []
+
+    asyncio.run(run())
+
+
+def _drain_stub(t: object) -> list[object]:
+    out: list[object] = []
+    while not t._queue.empty():  # type: ignore[attr-defined]
+        out.append(t._queue.get_nowait())  # type: ignore[attr-defined]
+    return out
+
+
 def test_stream_locale_mapping() -> None:
     from api.stt.streaming_engine import to_locale
 

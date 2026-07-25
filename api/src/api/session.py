@@ -72,6 +72,7 @@ class Session:
         self.source_lang: Lang | None = None
         self._transcriber: Transcriber | None = None
         self._pump: asyncio.Task[None] | None = None
+        self._warmup: asyncio.Task[None] | None = None
         # Cues (XERK-81): a private context card the api derives from the running
         # transcript. Generation is off unless a backend is configured; when on, each
         # finalized turn feeds a rolling window to the cue model. Kept off the caption
@@ -152,10 +153,25 @@ class Session:
                 source_lang=_enum_str(source_lang),
             )
         self._pump = asyncio.create_task(self._pump_results())
+        # Warm the transcriber's per-session startup cost now, off the caption path,
+        # so the first spoken words don't wait behind it (XERK-128). Best-effort and
+        # backgrounded: the ready message and the first audio never block on it, and a
+        # resumed session already has a warm transcriber so there's nothing to redo —
+        # but re-warming is a cheap no-op there anyway.
+        self._warmup = asyncio.create_task(self._transcriber.warmup())
+        self._warmup.add_done_callback(self._on_warmup_done)
         await self._send(
             SessionReady(type="session.ready", sessionId=self.session_id, resumed=self.resumed)
         )
         log.info("session %s ready (mic=%s)", self.session_id, mic_source)
+
+    def _on_warmup_done(self, task: asyncio.Task[None]) -> None:
+        # warmup() swallows its own errors, but retrieve any exception (incl. a
+        # cancel on teardown) so it never surfaces as an unretrieved task warning.
+        if task.cancelled():
+            return
+        if (exc := task.exception()) is not None:
+            log.warning("session %s STT warmup failed", self.session_id, exc_info=exc)
 
     async def on_audio(self, pcm: bytes) -> None:
         # Retain the full audio for the stored session: buffered in memory for the
@@ -389,6 +405,11 @@ class Session:
         if self._grace_task is not None:
             self._grace_task.cancel()
             self._grace_task = None
+        # A still-running warmup would race the flush/close below (both drive the same
+        # stream session): cancel it so teardown owns the transcriber cleanly.
+        if self._warmup is not None:
+            self._warmup.cancel()
+            self._warmup = None
         # A failing STT seam can raise from flush()/close() too; guard it so
         # teardown still persists the conversation and never leaks an exception
         # out of close().
