@@ -138,6 +138,36 @@ class StreamingTranscriber:
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._closed = False
 
+    async def warmup(self) -> None:
+        """Open the live stream ahead of the first audio so its per-session setup
+        doesn't land on the first-caption path (XERK-128).
+
+        On the hybrid path the first spoken chunk otherwise pays, inline, the cost of
+        connecting the streaming socket AND the server building this connection's
+        decoder — and because the api reads audio frames serially, that stall holds up
+        every frame behind it, so captions appear late and then in a burst carrying the
+        whole backlog. Opening the stream here (plus a scrap of silence to pay the
+        one-time cold-decode cost, then a reset so it never colours the first real
+        partial) moves all of that off the hot path.
+
+        No-op when there's no streaming engine (the offline model is resident and
+        shared across sessions, so it has no per-session cold cost) or it already
+        failed. Best-effort: any failure just drops back to the lazy open on the first
+        chunk, exactly as before."""
+        if not self._streaming_active() or self._stream_session is not None:
+            return
+        if not await self._ensure_stream():
+            return
+        try:
+            # ~100 ms of silence: enough to trigger one decode step (paying the cold
+            # cost) without the reset that follows leaving any primed text behind.
+            await self._stream_session.feed(bytes(_ms_to_bytes(100)))
+            await self._stream_session.reset()
+        except Exception:  # noqa: BLE001 — a failed warm just falls back to lazy open
+            log.warning("stream warmup failed; using lazy open", exc_info=True)
+            await self._drop_stream()
+            self._stream_failed = True
+
     async def push(self, pcm: bytes) -> None:
         if not pcm:
             return
