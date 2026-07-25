@@ -8,7 +8,9 @@ is the WS client, replacing the template's HTTP STT stub.
 It is a **single page** on purpose (XERK-82): the lens renders through the SDK
 bridge while the phone side of the same WebView shows the login page and, once
 signed in, the app's **own phone pages** (XERK-93) — **Session**, a full-page
-live transcript mirroring the running glasses session, and **History**, the
+live transcript mirroring the running glasses session, with **Start/Stop**
+buttons so a session can be begun and ended from the phone as well as from the
+glasses (XERK-116), and **History**, the
 stored sessions from the api (search, transcript detail, audio playback,
 delete) — with the web UI's bottom navigation between them, all styled on the
 web UI's "Lumen" design system. (Navigating the WebView to a separate page
@@ -31,10 +33,11 @@ run — a saved choice always wins.
 ```
 src/
   main.ts              bridge/dev boot + wiring: lens surface, login page, phone pages + nav
-  lens/controller.ts   session state machine: click start/stop, listening/clock ticker (XERK-85)
+  lens/controller.ts   session state machine: click start/stop, listening/clock ticker (XERK-85);
+                       hands the same start/stop to the phone Session page (XERK-116)
   config.ts            initConfig(storage): effective api URL (saved → seed → localhost) + device token store
   phone/login.ts       phone-side login page; signed in it reveals the Session/History shell
-  phone/session.ts     phone-side Session page: full-page live transcript of the running session (XERK-93)
+  phone/session.ts     phone-side Session page: live transcript + Start/Stop (XERK-93, XERK-116)
   phone/history.ts     phone-side History page: stored sessions — search, detail, audio, delete (XERK-93)
   phone/nav.ts         phone-side bottom navigation between the Session and History pages (XERK-93)
   state/storage.ts     KeyValueStorage: BridgeStorage (device, survives restarts) / BrowserStorage (dev)

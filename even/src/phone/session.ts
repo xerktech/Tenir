@@ -5,9 +5,15 @@
  * WS client runs in this same WebView (the phone side of the Even app), so the
  * captions the lens renders are already here — this page mirrors them
  * full-page in real time, replacing the XERK-85 strip that sat squished above
- * the embedded web UI. Idle it explains how a session starts (from the
- * glasses); while one records it shows the connection state and the running
- * transcript, following the newest text.
+ * the embedded web UI. Idle it offers Start; while one records it shows the
+ * connection state, a Stop button and the running transcript, following the
+ * newest text.
+ *
+ * The Start/Stop pair (XERK-116) drives the same session state machine the
+ * glasses tap does — the lens controller hands this page its start/stop through
+ * `setControls`, so a session no longer has to be begun and ended on the
+ * glasses. Without a lens (a plain browser in dev) no controls are attached and
+ * the row stays hidden, since there would be nothing to record with.
  *
  * Plain DOM, injected elements (like phone/login.ts) so it unit-tests under
  * jsdom without the Even SDK.
@@ -72,6 +78,9 @@ export function liveTranscriptRows(segments: string[], pastCues: PastCue[]): Tra
 export interface SessionPageElements {
   badge: HTMLElement; // connection/idle state pill in the page header
   dot: HTMLElement; // pulsing "live" dot, shown only while recording
+  controls: HTMLElement; // the Start/Stop row (XERK-116)
+  start: HTMLButtonElement;
+  stop: HTMLButtonElement;
   cue: HTMLElement; // the private context cue card (XERK-81), above the transcript
   empty: HTMLElement; // the empty-state block (idle / waiting for speech)
   emptyTitle: HTMLElement;
@@ -87,13 +96,28 @@ export interface SessionPageElements {
 export function querySessionPageElements(doc: Document = document): SessionPageElements | null {
   const badge = doc.getElementById("session-badge");
   const dot = doc.getElementById("session-dot");
+  const controls = doc.getElementById("session-controls");
+  const start = doc.getElementById("session-start");
+  const stop = doc.getElementById("session-stop");
   const cue = doc.getElementById("session-cue");
   const empty = doc.getElementById("session-empty");
   const emptyTitle = doc.getElementById("session-empty-title");
   const emptyHint = doc.getElementById("session-empty-hint");
   const text = doc.getElementById("session-text");
-  if (!badge || !dot || !cue || !empty || !emptyTitle || !emptyHint || !text) return null;
-  return { badge, dot, cue, empty, emptyTitle, emptyHint, text };
+  if (!badge || !dot || !controls || !start || !stop) return null;
+  if (!cue || !empty || !emptyTitle || !emptyHint || !text) return null;
+  return {
+    badge,
+    dot,
+    controls,
+    start: start as HTMLButtonElement,
+    stop: stop as HTMLButtonElement,
+    cue,
+    empty,
+    emptyTitle,
+    emptyHint,
+    text,
+  };
 }
 
 /** The in-session one-word state, honest about connectivity like the lens (XERK-82). */
@@ -112,8 +136,24 @@ export interface SessionPageCallbacks {
   onRecordingStart?: () => void;
 }
 
+/**
+ * Start/stop a session from the phone (XERK-116). The lens controller supplies
+ * these — they are the very same transitions a tap on the glasses drives, so
+ * either surface can begin or end a session and both stay in step.
+ */
+export interface SessionControls {
+  start(): void;
+  stop(): void;
+}
+
 export class SessionPage {
-  private wasRecording = false;
+  // Whether a session is running, as of the last render: the edge into it fires
+  // `onRecordingStart`, and it decides which of Start / Stop is showing.
+  private recording = false;
+  // Start/stop, once the lens controller has handed them over (XERK-116). Null
+  // until then — and forever in a browser with no glasses bridge, where the
+  // control row stays hidden because there is nothing to record with.
+  private controls: SessionControls | null = null;
   // Which reviewed cues are expanded, by cue id (XERK-108). Held on the page so
   // an expanded past cue stays open across the frequent caption redraws — the
   // transcript is rebuilt wholesale on every update, unlike React's live tree.
@@ -125,12 +165,29 @@ export class SessionPage {
   constructor(
     private readonly els: SessionPageElements,
     private readonly callbacks: SessionPageCallbacks = {},
-  ) {}
+  ) {
+    // Wired once here rather than per render: the buttons are permanent page
+    // furniture, only their visibility changes with the session (XERK-116).
+    this.els.start.addEventListener("click", () => this.controls?.start());
+    this.els.stop.addEventListener("click", () => this.controls?.stop());
+  }
+
+  /**
+   * Hand the page the session transitions (XERK-116) and reveal the Start/Stop
+   * row. Called by the lens controller once it owns a session state machine —
+   * which may be well after this page was constructed (the bridge can resolve
+   * late), so the row is revealed here rather than in the markup.
+   */
+  setControls(controls: SessionControls): void {
+    this.controls = controls;
+    this.renderControls();
+  }
 
   /** Re-render from the session state. Cheap: tens of short rows, rebuilt in one fragment. */
   update(view: LiveSessionView): void {
-    const started = view.recording && !this.wasRecording;
-    this.wasRecording = view.recording;
+    const started = view.recording && !this.recording;
+    this.recording = view.recording;
+    this.renderControls();
 
     this.els.dot.hidden = !view.recording;
     this.els.badge.textContent = view.recording ? sessionStatus(view) : "idle";
@@ -149,12 +206,15 @@ export class SessionPage {
     this.els.text.hidden = !hasText;
     this.els.empty.hidden = hasText;
     if (!hasText) {
-      // Idle explains how a session starts (on the glasses — this page has no
-      // Record button on purpose); in-session it says captions are coming.
+      // Idle explains how a session starts — from the button above once the
+      // lens is wired (XERK-116), from the glasses either way; in-session it
+      // says captions are coming.
       this.els.emptyTitle.textContent = view.recording ? "Listening for speech…" : "No session running";
       this.els.emptyHint.textContent = view.recording
         ? "Captions appear here as they are heard."
-        : "Tap your glasses to start a session.";
+        : this.controls
+          ? "Press Start, or tap your glasses, to begin a session."
+          : "Tap your glasses to start a session.";
       this.els.text.replaceChildren();
       // Nothing on screen to keep open; forget any stale expand state.
       this.expanded.clear();
@@ -193,6 +253,18 @@ export class SessionPage {
 
     // After the render, so the page is current the moment it is brought forward.
     if (started) this.callbacks.onRecordingStart?.();
+  }
+
+  /**
+   * Show exactly one of Start / Stop, matching the session state (XERK-116) —
+   * the web Live panel's Record-or-Stop row. The whole row stays hidden until a
+   * lens controller attaches its controls, so a browser-only run never offers a
+   * button that can't do anything.
+   */
+  private renderControls(): void {
+    this.els.controls.hidden = this.controls === null;
+    this.els.start.hidden = this.recording;
+    this.els.stop.hidden = !this.recording;
   }
 
   /**

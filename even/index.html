@@ -242,6 +242,13 @@
       }
 
       /* ---- Session page: the running transcript (web UI's Live panel) ---- */
+      /* The start/stop controls (XERK-116), the phone counterpart to the web
+         Live panel's Record/Stop row. Sit between the header and the transcript
+         so they never move as captions arrive. */
+      .session-controls { margin-bottom: var(--space-3); }
+      .session-controls[hidden] { display: none; }
+      .session-controls .btn[hidden] { display: none; }
+
       .live-dot {
         width: 8px; height: 8px; border-radius: 50%; flex: none;
         background: var(--accent);
@@ -465,6 +472,13 @@
             <h2 class="grow">Session</h2>
             <span class="live-dot" id="session-dot" aria-hidden="true" hidden></span>
             <span class="badge-neutral" id="session-badge">idle</span>
+          </div>
+          <!-- Start/stop from the phone (XERK-116), so a session no longer has
+               to be begun and ended on the glasses. Hidden until the lens is
+               wired (a plain browser has no glasses to drive). -->
+          <div class="row session-controls" id="session-controls" hidden>
+            <button class="btn btn-primary" id="session-start" type="button">Start</button>
+            <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
           </div>
           <!-- The private context cue (XERK-81): a bordered accent card above
                the transcript, shown while a cue is live during a session. -->

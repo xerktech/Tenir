@@ -24,7 +24,8 @@ chat, …) was stripped back to; features return one at a time, slowly.
 - **Multi-user auth** — login issues a bearer token; every session and
   conversation is scoped to the user's household
 - **Clients** — the web UI, an Even G2 glasses app (live captions on the lens,
-  with dedicated Session + History pages on the phone), and an Android app
+  with dedicated Session + History pages on the phone, either surface starting
+  and stopping a session), and an Android app
   (phone-mic capture + history)
 
 ## Quick start
