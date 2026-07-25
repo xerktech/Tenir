@@ -43,6 +43,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -69,6 +70,21 @@ app = FastAPI(title="tenir-nemotron-stt")
 _model = None
 _model_lock = threading.Lock()
 _ready = threading.Event()
+
+# ALL GPU/model work (building a decoder, reset, decode steps) runs on this single
+# dedicated worker thread — NEVER on the asyncio event loop. Two reasons:
+#   1. A GPU op on the loop thread blocks the loop; the first (cold) one blocks it long
+#      enough that concurrent/subsequent WebSocket handshakes hang — the server sends the
+#      101 status line but never completes, so /v1/audio/stream wedges and the container
+#      sits at health-starting. Keeping the loop GPU-free fixes that (verified on the GPU
+#      host: with make_decoder on the loop, handshakes hang after the first real client;
+#      off the loop, multi-session streaming is stable).
+#   2. One worker serializes access to the shared model, which NeMo requires anyway.
+# NOTE: the model is prompt-conditioned via shared state (set_inference_prompt), so
+# truly concurrent sessions in DIFFERENT languages can still clobber each other's prompt
+# between steps; serializing here keeps it crash-free, and a per-step re-prompt is the
+# follow-up for concurrent multilingual use.
+_gpu = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu")
 
 
 class NemotronStreamDecoder:  # pragma: no cover - requires NeMo + a GPU
@@ -170,7 +186,18 @@ make_decoder: Callable[..., object] = _make_decoder
 
 
 def _load_model() -> None:  # pragma: no cover - requires NeMo + a GPU
-    """Load Nemotron once at startup, off the request path, then warm the decode."""
+    """Load Nemotron into `_model` and mark ready.
+
+    MUST run on the main thread BEFORE uvicorn starts its event loop (see `main`),
+    not in a background thread while the server is already up. NeMo's cold CUDA/model
+    init, done concurrently with the asyncio loop coming up, corrupts uvicorn's
+    WebSocket accept path: afterwards new /v1/audio/stream handshakes hang (the 101 is
+    produced server-side but never completes) while HTTP and an already-open stream
+    keep working — so the container would sit at health-starting forever. Loading
+    before the loop exists sidesteps that entirely. Verified on the GPU host: multi-
+    session streaming works. (Also: NO warmup decode — a startup GPU decode poisons the
+    same accept path; the first real decode just pays a ~1 s cold cost instead.)
+    """
     global _model
     import nemo.collections.asr as nemo_asr  # noqa: PLC0415 — deferred heavy import
 
@@ -178,20 +205,8 @@ def _load_model() -> None:  # pragma: no cover - requires NeMo + a GPU
     model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME)
     model.eval()
     _model = model
-    # Warm up before going ready so the first real chunk isn't the slow one (CUDA
-    # context, cuDNN autotune, NeMo decode setup) — same rationale as parakeet-stt.
-    try:
-        dec = _make_decoder(target_lang="en-US")
-        dec.feed(np.zeros(TARGET_SR, dtype=np.float32))  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 — a failed warmup must never keep the server down
-        log.warning("warmup decode failed; serving anyway", exc_info=True)
     _ready.set()
     log.info("model ready")
-
-
-@app.on_event("startup")
-async def _startup() -> None:  # pragma: no cover - starts a background loader thread
-    threading.Thread(target=_load_model, name="model-loader", daemon=True).start()
 
 
 @app.get("/health")
@@ -212,6 +227,7 @@ def _pcm16_to_float32(pcm: bytes) -> np.ndarray:
 async def stream(ws: WebSocket) -> None:
     import asyncio  # noqa: PLC0415
 
+    loop = asyncio.get_running_loop()
     await ws.accept()
     if not _ready.is_set():
         await ws.send_json({"type": "error", "error": "model still loading"})
@@ -221,7 +237,10 @@ async def stream(ws: WebSocket) -> None:
     # First frame pins the language for this stream (a locale key or "auto").
     init = await ws.receive_json()
     target_lang = (init or {}).get("target_lang") or "auto"
-    decoder = make_decoder(target_lang=target_lang)
+    # Build the decoder on the GPU worker, never the event loop (see _gpu): building it
+    # allocates cache tensors + touches the model, and doing that on the loop wedges the
+    # WebSocket accept path for every other connection.
+    decoder = await loop.run_in_executor(_gpu, lambda: make_decoder(target_lang=target_lang))
     log.info("stream open: lang=%s", target_lang)
 
     try:
@@ -236,17 +255,18 @@ async def stream(ws: WebSocket) -> None:
 
                 ctrl = json.loads(text)
                 if ctrl.get("type") == "reset":
-                    decoder.reset()  # type: ignore[attr-defined]
+                    await loop.run_in_executor(_gpu, decoder.reset)  # type: ignore[attr-defined]
                     await ws.send_json({"type": "reset_ok"})
                 continue
             data = msg.get("bytes")
             if not data:
                 continue
             samples = _pcm16_to_float32(data)
-            # Decode off the event loop so a slow GPU step applies backpressure to
-            # this one socket without stalling other sessions' sockets.
+            # Decode on the GPU worker (off the event loop) so a slow GPU step applies
+            # backpressure to this one socket without stalling other sessions' sockets
+            # or the accept path.
             try:
-                running = await asyncio.to_thread(decoder.feed, samples)  # type: ignore[attr-defined]
+                running = await loop.run_in_executor(_gpu, decoder.feed, samples)  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001 — never kill the socket on a decode error
                 log.warning("decode step failed", exc_info=True)
                 running = ""
@@ -255,3 +275,25 @@ async def stream(ws: WebSocket) -> None:
         pass
     finally:
         log.info("stream closed")
+
+
+def main() -> None:  # pragma: no cover - process entrypoint (needs NeMo + a GPU)
+    """Load the model on the main thread, THEN start serving.
+
+    Loading before uvicorn's event loop exists is what keeps the WebSocket accept
+    path healthy (see `_load_model`). The trade is that the port only binds after the
+    model is resident (~tens of seconds) — during which health probes get
+    connection-refused, covered by the compose healthcheck's start_period — instead
+    of binding immediately and answering 503. `--ws websockets-sansio` is required
+    because the base image ships websockets>=14, which uvicorn's legacy WS impl can't
+    handshake (it 400s a valid upgrade).
+    """
+    import uvicorn  # noqa: PLC0415
+
+    port = int(os.environ.get("NEMOTRON_PORT", "8000"))
+    _load_model()
+    uvicorn.run(app, host="0.0.0.0", port=port, ws="websockets-sansio")
+
+
+if __name__ == "__main__":
+    main()
