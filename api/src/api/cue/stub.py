@@ -2,8 +2,9 @@
 
 Deterministic so tests and the model-free single-host stack exercise the whole
 cue path — session pump → WS message → persistence → history — without a GPU.
-The trigger rule is intentionally crude but level-aware, so switching the UI
-toggle visibly changes how often cues fire even against the stub.
+The trigger rule is intentionally crude but maximally aggressive (XERK-114): any
+non-empty line is cue-worthy, so cues fire on essentially every turn even against
+the stub.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from api.contract import CueLevel
 from api.cue.base import CueGenerator, GeneratedCue, normalize_cue_title
 
 # Skip these when picking a 1-3 word title from the trigger line.
@@ -69,22 +69,13 @@ class StubCueGenerator(CueGenerator):
         self,
         transcript: str,
         *,
-        level: CueLevel,
         avoid_titles: Sequence[str] = (),
     ) -> GeneratedCue | None:
         last = _last_line(transcript)
         if not last:
             return None
-        has_question = "?" in last
-        has_number = any(ch.isdigit() for ch in last)
-        if level == CueLevel.conservative:
-            trigger = has_question and has_number
-        elif level == CueLevel.aggressive:
-            trigger = len(last.split()) >= 2
-        else:  # balanced
-            trigger = has_question or has_number
-        if not trigger:
-            return None
+        # Maximally aggressive (XERK-114): any non-empty turn is cue-worthy. The
+        # old per-level trigger is gone with the aggressiveness toggle.
         title = _title_from(last)
         # Already surfaced this cue earlier in the conversation? Don't repeat it
         # (XERK-102) — the deterministic stub has no other line to draw from, so

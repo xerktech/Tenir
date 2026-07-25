@@ -8,10 +8,6 @@
  * native audio capture and the lens render loop, which differ per platform.
  */
 
-// Re-export the cue aggressiveness enum so UIs can pick a level without reaching
-// past client-core into the raw contract package (XERK-81).
-export type { CueLevel } from "@tenir/contract";
-
 export * from "./config";
 export * from "./serverUrl";
 export * from "./auth";

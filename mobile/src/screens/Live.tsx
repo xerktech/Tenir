@@ -29,7 +29,7 @@ import {
 import { useCaptureContext } from "../lib/capture";
 import type { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
-import { CueDisclosure, CueLevelToggle, LiveCueBand } from "../ui/cue";
+import { CueDisclosure, LiveCueBand } from "../ui/cue";
 import {
   Badge,
   Button,
@@ -73,9 +73,9 @@ function connectionLabel(state: ReturnType<typeof useCapture>["state"]): string 
 }
 
 export function LiveScreen(): JSX.Element {
-  // The session and cue level live in the app-level capture context so a live
-  // recording survives switching to another tab and back (XERK-111).
-  const { controller: cap, cueLevel, setCueLevel } = useCaptureContext();
+  // The session lives in the app-level capture context so a live recording
+  // survives switching to another tab and back (XERK-111).
+  const { controller: cap } = useCaptureContext();
   const notify = useNotify();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -163,7 +163,6 @@ export function LiveScreen(): JSX.Element {
           )}
         </Row>
         {!state.running && <Muted>{RECORDING_NOTICE}</Muted>}
-        <CueLevelToggle level={cueLevel} onChange={setCueLevel} />
       </Card>
 
       {/* The cue floats inside this stage, over the transcript's top edge, so it

@@ -337,25 +337,6 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   .cue-band.exiting { transform: none; }
 }
 
-/* The global "how eager are cues" toggle on the Live panel. */
-.cue-level { display: inline-flex; align-items: center; gap: var(--space-1); }
-.cue-level-caption { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; }
-.cue-level-option {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-muted);
-  border-radius: var(--radius-sm);
-  padding: 2px var(--space-2);
-  font-size: var(--text-xs); font-weight: 600;
-  cursor: pointer;
-}
-.cue-level-option:hover { color: var(--text); }
-.cue-level-option.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-}
-
 /* "Show cues" toggle above the conversation transcript (XERK-104): hides the
    inline cue blocks so the transcript reads as one uninterrupted, selectable
    run. Shown only when the conversation has cues. */

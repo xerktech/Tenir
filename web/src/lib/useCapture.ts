@@ -13,9 +13,8 @@ import {
   browserAudioSource,
   CaptureSession,
   type CaptureState,
-  type CueLevel,
 } from "@tenir/client-core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import * as store from "./captureStore";
 
@@ -26,12 +25,7 @@ export interface CaptureController {
   togglePause(): void;
 }
 
-export function useCapture(wsUrl: string, cueLevel?: CueLevel): CaptureController {
-  // Read the current cue level through a ref so changing the toggle updates what
-  // the next session.start sends, without tearing down a live session (XERK-81).
-  const cueLevelRef = useRef(cueLevel);
-  cueLevelRef.current = cueLevel;
-
+export function useCapture(wsUrl: string): CaptureController {
   const session = useMemo(
     () =>
       new CaptureSession({
@@ -41,9 +35,6 @@ export function useCapture(wsUrl: string, cueLevel?: CueLevel): CaptureControlle
         saveSessionId: (id) => store.saveSessionId(id),
         clearSessionId: () => store.clearSessionId(),
         defaultMicSource: "phone-microphone",
-        get cueLevel() {
-          return cueLevelRef.current;
-        },
       }),
     [wsUrl],
   );

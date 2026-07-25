@@ -18,10 +18,6 @@ export type MicSource = "g2-microphone" | "phone-microphone";
  * Languages the STT engine may detect/report on captions.
  */
 export type Lang = "en" | "es" | "fr" | "de" | "pt" | "it";
-/**
- * How eagerly the api surfaces private context cues, chosen by the user in the client UI: 'conservative' (only unambiguous factual references), 'balanced' (clear questions/references), 'aggressive' (anything lookup-worthy). Sent on session.start; governs cue generation for that session.
- */
-export type CueLevel = "conservative" | "balanced" | "aggressive";
 export type ServerMessage = SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage;
 
 /**
@@ -35,7 +31,6 @@ export interface SessionStart {
   sessionId?: string;
   micSource: MicSource;
   sourceLang?: Lang;
-  cueLevel?: CueLevel;
 }
 /**
  * Client -> server. Runtime microphone source change.

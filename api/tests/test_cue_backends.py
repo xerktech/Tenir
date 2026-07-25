@@ -1,46 +1,35 @@
-"""Cue generation backends: the model-free stub, the level tuning, the factory,
-and the OpenAI response parser (XERK-81)."""
+"""Cue generation backends: the model-free stub, the fixed tuning, the factory,
+and the OpenAI response parser (XERK-81, XERK-114)."""
 
 from __future__ import annotations
 
 import pytest
 
 from api.config import settings
-from api.contract import CueLevel
-from api.cue import make_cue_generator, min_interval_ms, normalize_cue_title
-from api.cue.levels import level_guidance
+from api.cue import cue_guidance, make_cue_generator, min_interval_ms, normalize_cue_title
 from api.cue.openai import OpenAICueGenerator
 from api.cue.stub import StubCueGenerator, _title_from
 
 # ---- stub generator --------------------------------------------------------
 
 
-def test_stub_balanced_triggers_on_question_or_number() -> None:
+def test_stub_triggers_on_any_non_empty_turn() -> None:
+    # XERK-114: with the aggressiveness toggle gone, the stub fires on essentially
+    # every turn — a statement, a single word, a bare number all produce a cue.
     stub = StubCueGenerator()
-    assert stub.generate("how far is the sun?", level=CueLevel.balanced) is not None
-    assert stub.generate("it is 150 million km", level=CueLevel.balanced) is not None
-    # No question, no number, just a statement -> nothing.
-    assert stub.generate("nice weather today", level=CueLevel.balanced) is None
-
-
-def test_stub_conservative_needs_question_and_number() -> None:
-    stub = StubCueGenerator()
-    assert stub.generate("how far is the sun?", level=CueLevel.conservative) is None
-    assert stub.generate("is it 133?", level=CueLevel.conservative) is not None
-
-
-def test_stub_aggressive_triggers_on_any_two_words() -> None:
-    stub = StubCueGenerator()
-    assert stub.generate("the weather", level=CueLevel.aggressive) is not None
-    # A single word is below the aggressive bar.
-    assert stub.generate("hello", level=CueLevel.aggressive) is None
+    assert stub.generate("how far is the sun?") is not None
+    assert stub.generate("it is 150 million km") is not None
+    assert stub.generate("nice weather today") is not None
+    assert stub.generate("hello") is not None
+    assert stub.generate("133") is not None
 
 
 def test_stub_uses_last_line_and_empty_transcript() -> None:
     stub = StubCueGenerator()
-    assert stub.generate("", level=CueLevel.balanced) is None
-    assert stub.generate("   \n  ", level=CueLevel.balanced) is None
-    cue = stub.generate("small talk\nfavorite pokemon is 133?", level=CueLevel.balanced)
+    # Nothing to draw from -> no cue.
+    assert stub.generate("") is None
+    assert stub.generate("   \n  ") is None
+    cue = stub.generate("small talk\nfavorite pokemon is 133?")
     assert cue is not None
     assert "133" in cue.body
 
@@ -49,12 +38,12 @@ def test_stub_skips_a_cue_it_was_told_to_avoid() -> None:
     # A cue already surfaced this conversation must not be proposed again (XERK-102);
     # the avoid list is matched on the normalized title, so casing/punctuation vary.
     stub = StubCueGenerator()
-    first = stub.generate("how far is the sun?", level=CueLevel.balanced)
+    first = stub.generate("how far is the sun?")
     assert first is not None and first.title == "Sun"
-    assert stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=["Sun"]) is None
-    assert stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=[" sun. "]) is None
+    assert stub.generate("how far is the sun?", avoid_titles=["Sun"]) is None
+    assert stub.generate("how far is the sun?", avoid_titles=[" sun. "]) is None
     # An unrelated avoid entry doesn't block a genuinely different cue.
-    other = stub.generate("how far is the sun?", level=CueLevel.balanced, avoid_titles=["Moon"])
+    other = stub.generate("how far is the sun?", avoid_titles=["Moon"])
     assert other is not None and other.title == "Sun"
 
 
@@ -74,20 +63,17 @@ def test_stub_title_is_one_to_three_significant_words() -> None:
     assert _title_from("!!!") == "Context"
 
 
-# ---- level tuning ----------------------------------------------------------
+# ---- fixed tuning (XERK-114: single aggressive setting, no per-level toggle) --
 
 
-def test_min_interval_orders_by_aggressiveness() -> None:
-    assert (
-        min_interval_ms(CueLevel.aggressive)
-        < min_interval_ms(CueLevel.balanced)
-        < min_interval_ms(CueLevel.conservative)
-    )
+def test_min_interval_is_more_aggressive_than_the_old_aggressive_level() -> None:
+    # The old "aggressive" level spaced cues 3000ms apart; the fixed setting is
+    # tighter still, so cues come at least as thick as the old top level.
+    assert 0 < min_interval_ms() < 3000
 
 
-def test_level_guidance_present_for_every_level() -> None:
-    for level in CueLevel:
-        assert level_guidance(level).strip()
+def test_cue_guidance_is_present() -> None:
+    assert cue_guidance().strip()
 
 
 # ---- factory ---------------------------------------------------------------
@@ -158,7 +144,7 @@ def test_parse_truncates_long_body() -> None:
 def test_payload_disables_thinking_by_default() -> None:
     # Qwen3 left thinking spends the whole token budget on reasoning and returns an
     # empty content, so no cue is produced. The payload must switch thinking off.
-    payload = _gen()._build_payload("how far is the sun?", CueLevel.balanced)
+    payload = _gen()._build_payload("how far is the sun?")
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["model"] == "qwen3-llm"
@@ -168,7 +154,7 @@ def test_payload_disables_thinking_by_default() -> None:
 
 def test_payload_keeps_thinking_when_disabled_off() -> None:
     gen = OpenAICueGenerator(endpoint="e", model="m", disable_thinking=False)
-    payload = gen._build_payload("hi", CueLevel.balanced)
+    payload = gen._build_payload("hi")
     assert "chat_template_kwargs" not in payload
 
 
@@ -177,7 +163,6 @@ def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
     # order-preserving and de-duplicated, so the model finds fresh context.
     payload = _gen()._build_payload(
         "how deep is the ocean?",
-        CueLevel.balanced,
         ["Sun", "Moon", "Sun"],
     )
     system = payload["messages"][0]["content"]
@@ -187,7 +172,7 @@ def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
 
 
 def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
-    system = _gen()._build_payload("hi", CueLevel.balanced)["messages"][0]["content"]
+    system = _gen()._build_payload("hi")["messages"][0]["content"]
     assert "do NOT repeat" not in system
 
 

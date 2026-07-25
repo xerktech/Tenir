@@ -57,10 +57,6 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3-llm"
     # How much recent transcript (finalized turns) to feed the cue model as context.
     cue_context_segments: int = 8
-    # Fallback aggressiveness when session.start omits cueLevel. The client normally
-    # sends the user's choice (conservative | balanced | aggressive); each level maps
-    # to a prompt strictness + a rate-limit interval (see api.cue.levels).
-    cue_default_level: str = "balanced"
     # Cap the model's cue body length (characters) so a cue fits the glasses box and
     # the live band; the generator prompt also asks for brevity.
     cue_max_body_chars: int = 240

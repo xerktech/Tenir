@@ -9,39 +9,25 @@
  * longer stops the recording; it keeps running in the background and the Live
  * panel simply re-attaches to the same session when you come back. The session is
  * only released when the whole dashboard unmounts (logout / server change).
- *
- * The chosen cue level (XERK-81) is owned here too, so it survives tab switches
- * alongside the session instead of resetting each time the panel remounts.
  */
 
-import { wsFromHttpBase, type CueLevel } from "@tenir/client-core";
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { wsFromHttpBase } from "@tenir/client-core";
+import { createContext, useContext, type ReactNode } from "react";
 
 import { getServerUrl } from "../config";
-import { loadCueLevel, saveCueLevel } from "./cueLevelStore";
 import { useCapture, type CaptureController } from "./useCapture";
 
 export interface CaptureContextValue {
   controller: CaptureController;
-  cueLevel: CueLevel;
-  setCueLevel: (l: CueLevel) => void;
 }
 
 const CaptureContext = createContext<CaptureContextValue | null>(null);
 
 export function CaptureProvider({ children }: { children: ReactNode }): JSX.Element {
-  const [cueLevel, setCueLevelState] = useState<CueLevel>(() => loadCueLevel());
-  const controller = useCapture(wsFromHttpBase(getServerUrl()), cueLevel);
-
-  const setCueLevel = (l: CueLevel) => {
-    setCueLevelState(l);
-    saveCueLevel(l);
-  };
+  const controller = useCapture(wsFromHttpBase(getServerUrl()));
 
   return (
-    <CaptureContext.Provider value={{ controller, cueLevel, setCueLevel }}>
-      {children}
-    </CaptureContext.Provider>
+    <CaptureContext.Provider value={{ controller }}>{children}</CaptureContext.Provider>
   );
 }
 

@@ -9,7 +9,7 @@ import time
 import pytest
 
 from api.config import settings
-from api.contract import CaptionFinal, Cue, CueLevel, MicSource, ServerMessage
+from api.contract import CaptionFinal, Cue, MicSource, ServerMessage
 from api.cue import GeneratedCue
 from api.persistence import get_conversation_store
 from api.session import Session
@@ -26,14 +26,12 @@ def _final(text: str, *, segment_id: str = "s1", end_ms: int = 2000) -> CaptionF
     )
 
 
-async def _fresh_session(
-    sent: list[ServerMessage], *, level: CueLevel = CueLevel.balanced
-) -> Session:
+async def _fresh_session(sent: list[ServerMessage]) -> Session:
     async def sender(m: ServerMessage) -> None:
         sent.append(m)
 
     session = Session(sender, household="default")
-    await session.start(mic_source=MicSource("phone-microphone"), source_lang=None, cue_level=level)
+    await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
     return session
 
 
@@ -89,10 +87,10 @@ def test_rate_limit_suppresses_second_cue(monkeypatch: pytest.MonkeyPatch) -> No
 
     async def run() -> None:
         sent: list[ServerMessage] = []
-        session = await _fresh_session(sent, level=CueLevel.balanced)
+        session = await _fresh_session(sent)
         session._consider_cue(_final("is it 133?", segment_id="a"))
         await _drain_cues(session)
-        # A second cue-worthy final immediately after is inside the balanced window.
+        # A second cue-worthy final immediately after is inside the rate-limit window.
         session._consider_cue(_final("how about 42?", segment_id="b"))
         await _drain_cues(session)
         await session.close()
@@ -173,7 +171,7 @@ def test_session_hands_generator_the_titles_already_surfaced(
         counter = {"n": 0}
 
         class SpyGen:
-            def generate(self, transcript, *, level, avoid_titles=()):  # type: ignore[no-untyped-def]
+            def generate(self, transcript, *, avoid_titles=()):  # type: ignore[no-untyped-def]
                 seen_avoid.append(list(avoid_titles))
                 counter["n"] += 1
                 return GeneratedCue(title=f"Cue {counter['n']}", body="body")
@@ -207,11 +205,7 @@ def test_cue_persisted_even_when_delivery_fails(monkeypatch: pytest.MonkeyPatch)
             delivered.append(m)
 
         session = Session(sender, household="default")
-        await session.start(
-            mic_source=MicSource("phone-microphone"),
-            source_lang=None,
-            cue_level=CueLevel.balanced,
-        )
+        await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
         session._consider_cue(_final("how far is the sun? 150", segment_id="a"))
         await _drain_cues(session)
         await session.close()
