@@ -100,6 +100,17 @@ def test_cue_guidance_treats_spoken_questions_as_cue_worthy() -> None:
     assert "answer" in grounded
 
 
+def test_cue_guidance_names_all_three_triggers() -> None:
+    # XERK-124 (clarified by the reporter): a question is answered, a mentioned
+    # fact gets extra context, a falsehood gets corrected. Both bars must carry
+    # all three verbs.
+    for guidance in (cue_guidance(), cue_guidance(grounded=True)):
+        low = guidance.lower()
+        assert "answer" in low
+        assert "context" in low
+        assert "correct" in low
+
+
 def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
     # XERK-120: with evidence in the prompt the bar loosens ONE-SIDEDLY — emit
     # freely for evidence-covered facts, but anything uncovered keeps the tight
@@ -306,6 +317,9 @@ def test_payload_guidance_is_grounded_only_when_evidence_arrived() -> None:
     # memory bar, never combine "prefer emitting" with guessing.
     with_evidence = _gen()._build_payload("who is the PM?", (), _evidence())
     without = _gen()._build_payload("who is the PM?")
-    assert "prefer emitting" in with_evidence["messages"][0]["content"]
-    assert "prefer emitting" not in without["messages"][0]["content"]
-    assert "prefer silence over a guess" in without["messages"][0]["content"]
+    # Pin the whole guidance string, not a phrase: since XERK-124 both bars share
+    # wording (e.g. "prefer emitting"), so only exact containment distinguishes
+    # which one rode the prompt.
+    assert cue_guidance(grounded=True) in with_evidence["messages"][0]["content"]
+    assert cue_guidance(grounded=True) not in without["messages"][0]["content"]
+    assert cue_guidance() in without["messages"][0]["content"]

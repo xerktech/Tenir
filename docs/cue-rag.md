@@ -270,15 +270,38 @@ presuppose somebody *asserted* something. A question asserts nothing, so
 neither fired. Yet asking aloud is the closest thing the product has to an
 explicit request for a cue.
 
-Both bars now name the spoken question as a trigger — the strongest one. The
-accuracy rules are unchanged and were re-verified against the deployed model:
+The reporter then clarified the intended product outright, and it settled the
+emission model as **three triggers, one per thing a conversation can bring**:
+
+* a question comes through → **answer** it
+* a fact/topic comes through → **add extra context** to it
+* a falsehood comes through → **correct** it
+
+Both bars (`tuning.py`) and the system prompt now carry all three verbs.
+XERK-118's accuracy rule stays absolute over the *content* — never state what
+you are unsure of; when sure of something modest but not the specifics, say the
+modest accurate thing — while the *posture* over the triggers is emissive
+again. The reaction-word gap this exposed in the query builder ("Nice." as a
+whole turn retrieved *Nice Côte d'Azur Airport*) is fixed with backchannel
+stopwords, run-exempt so "Great Wall" survives.
+
+Re-verified against the deployed model:
 
 | Case | Result |
 |---|---|
 | "How many rings does Saturn have?" (stable fact, memory) | emits, correct |
+| "How many Toy Story movies?" | emits, hedged correctly ("four main films, fifth scheduled for 2026") |
+| Mention: "climbing Mount Fuji" / "listening to Fleetwood Mac" | emits accurate context |
+| Mention: "flying into Reykjavik" (with retrieval) | emits sourced airport context |
 | Covered current-events Q ("who is the UK PM?") + evidence | emits, cited, corrects the stale guess |
+| False claim ("Great Wall is 500 km") | emits the correction |
 | Uncovered current-events Q + *unrelated* evidence | **silent** (the miscite trap) |
 | Uncovered current-events Q, no evidence | silent |
-| Personal / unanswerable Q ("what's for dinner?") | silent |
-| "How many Toy Story movies?" (post-cutoff count, evidence covers the 1995 film only) | silent — accuracy bar, working as designed |
-| Raspberry Pi session regression | unchanged: 1 accurate sourced cue, 0 wrong ones |
+| Personal Q / personal mention / small talk | silent |
+| Raspberry Pi session | 3 accurate sourced context cues, **0 wrong ones** (the XERK-114 wrongness stays dead) |
+
+Residual risk, stated plainly: memory answers to "stable" counts can be stale —
+the model answered the Toy Story count as "four main films, with a fifth
+scheduled for 2026", which was the truth at its cutoff and is off by the
+franchise's own release schedule. Evidence coverage (not the bar) is the lever
+for that class.
