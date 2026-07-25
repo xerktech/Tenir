@@ -99,28 +99,45 @@ export const MENU_TEXT_W = MENU_W - 2 * (MENU_PAD + MENU_BORDER) - MEASURE_SAFET
 export const MENU_ROW_FIRST = Math.max(0, Math.floor((MENU_Y - LINE_H) / LINE_H));
 export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
-// ---- the private-context cue box (XERK-112) ---------------------------------
+// ---- the private-context cue box (XERK-112, XERK-119) -----------------------
 // The cue box is the same bordered strip as the menu, but taller: a title row
-// over CUE_BODY_LINES body rows, so a cue reads at a glance instead of being
-// clipped to one line. When the wrapped body runs past those rows the controller
-// scrolls the window through it (a swipe moves it a row at a time); the box
-// height never changes, only which slice of the body it shows.
+// over up to CUE_BODY_LINES body rows, so a cue reads at a glance instead of
+// being clipped to one line. When the wrapped body runs past those rows the
+// controller scrolls the window through it (a swipe moves it a row at a time).
+// The box is sized to the cue it holds (XERK-119): a body shorter than
+// CUE_BODY_LINES makes a shorter box — blank rows would just mask live
+// transcript rows below it — while a body that fills or overflows the window
+// gets the full CUE_BODY_LINES-row box and scrolls.
 export const CUE_BODY_LINES = 3;
-// Title + body rows. The box is exactly this many rows tall, always — a short
-// cue leaves the spare rows blank rather than shrinking the box.
+// The MOST rows the box is ever tall: the title over a full CUE_BODY_LINES-row
+// body window. A shorter cue makes a shorter box (see `cueBox`/`cueRows`).
 export const CUE_ROWS = 1 + CUE_BODY_LINES;
 export const CUE_BORDER = MENU_BORDER;
 export const CUE_PAD = MENU_PAD;
 export const CUE_W = SCREEN_W;
 export const CUE_X = 0;
 export const CUE_Y = 0;
-// CUE_ROWS content rows + symmetric padding + border. With pad+border = 13 this
-// is 134px, inside the 5th transcript row's 135px boundary, so the box occupies
-// four whole caption rows and never grows a half-line the host would scroll.
-export const CUE_H = CUE_ROWS * LINE_H + 2 * (CUE_PAD + CUE_BORDER);
+// The box height for a given row count: content rows + symmetric padding +
+// border. At the CUE_ROWS max, with pad+border = 13, this is 134px — inside the
+// 5th transcript row's 135px boundary, so a full box occupies four whole caption
+// rows and never grows a half-line the host would scroll. A shorter box lands on
+// a whole-row boundary the same way (every row is LINE_H and padding is fixed).
+export function cueHeight(rows: number): number {
+  return rows * LINE_H + 2 * (CUE_PAD + CUE_BORDER);
+}
+// The MAX box height (a full CUE_ROWS-row box), kept for reference/tests.
+export const CUE_H = cueHeight(CUE_ROWS);
 export const CUE_TEXT_W = CUE_W - 2 * (CUE_PAD + CUE_BORDER) - MEASURE_SAFETY_PX;
-export const CUE_ROW_FIRST = Math.max(0, Math.floor((CUE_Y - LINE_H) / LINE_H));
-export const CUE_ROW_LAST = Math.ceil((CUE_Y + CUE_H - LINE_H) / LINE_H) - 1;
+// The caption rows a box of the given height covers: the range masked while it
+// is up (0-based within the band). first is always the top of the band; last is
+// derived from the box height, so a shorter box masks fewer rows (XERK-119).
+export function cueRowRangeFor(height: number): [number, number] {
+  const first = Math.max(0, Math.floor((CUE_Y - LINE_H) / LINE_H));
+  const last = Math.ceil((CUE_Y + height - LINE_H) / LINE_H) - 1;
+  return [first, last];
+}
+// The rows a full-height cue box covers, kept for reference/tests.
+export const [CUE_ROW_FIRST, CUE_ROW_LAST] = cueRowRangeFor(CUE_H);
 
 /** The text every base container carries when a page is (re)built. */
 export interface PageContents {
@@ -233,14 +250,44 @@ const MENU_BOX: PopupBox = {
   pad: MENU_PAD,
   border: MENU_BORDER,
 };
-const CUE_BOX: PopupBox = {
-  x: CUE_X,
-  y: CUE_Y,
-  width: CUE_W,
-  height: CUE_H,
-  pad: CUE_PAD,
-  border: CUE_BORDER,
-};
+/**
+ * The cue box sized to the cue it holds (XERK-119): a title row over just the
+ * body rows it actually renders — the whole body when it fits, else the full
+ * CUE_BODY_LINES-row scroll window. A short cue therefore makes a short box,
+ * leaving the transcript rows below it visible instead of masking them behind
+ * blank rows. Scroll position never changes the count — a body long enough to
+ * scroll always fills the whole window — so this depends on the cue alone.
+ */
+export function cueBox(cue: CueCard): PopupBox {
+  const rows = cueRows(cue);
+  return {
+    x: CUE_X,
+    y: CUE_Y,
+    width: CUE_W,
+    height: cueHeight(rows),
+    pad: CUE_PAD,
+    border: CUE_BORDER,
+  };
+}
+
+/**
+ * How many rows the cue's box renders: the title over the visible body rows —
+ * the whole body when it fits, else the CUE_BODY_LINES-row scroll window. This
+ * is the row count of `cueText`, so the box height and the masked caption range
+ * always match the text exactly (XERK-119).
+ */
+export function cueRows(cue: CueCard): number {
+  return 1 + Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
+}
+
+/**
+ * The caption rows the cue's box covers (XERK-119): sized to the cue, so a short
+ * box frees the transcript rows a full box would have masked. The controller
+ * passes this range to `occludedCaption`.
+ */
+export function cueRowRange(cue: CueCard): [number, number] {
+  return cueRowRangeFor(cueBox(cue).height);
+}
 
 /**
  * The bordered popup strip from the top of the screen — shared by the
@@ -248,7 +295,8 @@ const CUE_BOX: PopupBox = {
  * blanks everything the strip covers (status, clock, caption rows via
  * `occludedCaption`), so nothing shows through the box. `text` is the body it
  * carries (menu options, or a cue's title + detail); `box` sizes the strip —
- * the menu is two rows, the cue box CUE_ROWS (XERK-112).
+ * the menu is two rows, the cue box a title over its body rows, up to CUE_ROWS
+ * (XERK-112) and sized to the cue so a short one makes a short box (XERK-119).
  */
 function popupPage(contents: PageContents, text: string, box: PopupBox): RebuildPageContainer {
   const popup = new TextContainerProperty({
@@ -290,7 +338,7 @@ export function buildCuePage(
   secondsLeft?: number,
   scroll = 0,
 ): RebuildPageContainer {
-  return popupPage(contents, cueText(cue, secondsLeft, scroll), CUE_BOX);
+  return popupPage(contents, cueText(cue, secondsLeft, scroll), cueBox(cue));
 }
 
 /** A private context cue shown on the lens (XERK-81). */

@@ -45,8 +45,6 @@ import { SessionStore, type PersistedSession } from "../state/persist";
 import { withBleTimeout, type KeyValueStorage } from "../state/storage";
 import {
   CONTAINER,
-  CUE_ROW_FIRST,
-  CUE_ROW_LAST,
   LensTextWriter,
   MENU_ROW_FIRST,
   MENU_ROW_LAST,
@@ -55,6 +53,7 @@ import {
   buildMenuPage,
   clockText,
   cueMaxScroll,
+  cueRowRange,
   cueText,
   fitCaption,
   menuText,
@@ -198,9 +197,10 @@ export async function wireLens(
     // hides exactly those — and the rows around it keep flowing.
     const bounded = full.slice(-TRANSCRIPT_MAX_CHARS);
     if (!popupUp()) return fitCaption(bounded);
-    // Mask exactly the rows the popup that's up covers: the taller cue box
-    // (XERK-112) hides more rows than the menu.
-    const [first, last] = state.cue ? [CUE_ROW_FIRST, CUE_ROW_LAST] : [MENU_ROW_FIRST, MENU_ROW_LAST];
+    // Mask exactly the rows the popup that's up covers: the cue box (XERK-112)
+    // hides more rows than the menu, and only as many as the cue is tall
+    // (XERK-119) — a short cue frees the transcript rows below it.
+    const [first, last] = state.cue ? cueRowRange(state.cue) : [MENU_ROW_FIRST, MENU_ROW_LAST];
     return occludedCaption(bounded, first, last);
   };
   // A popup strip is up: the interactive menu, or a private-context cue box

@@ -7,7 +7,11 @@ import {
   buildMenuPage,
   buildStartupContainer,
   cueBodyLines,
+  cueBox,
+  cueHeight,
   cueMaxScroll,
+  cueRowRange,
+  cueRows,
   cueText,
   CAPTION_H,
   CAPTION_LINES,
@@ -446,16 +450,31 @@ describe("cue popup (XERK-81)", () => {
     for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
   });
 
-  it("builds the taller cue strip on the same container, carrying the cue text", () => {
+  it("builds the cue strip on the same container, sized to the cue's rows", () => {
     const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, cue, 7);
     expect(page.containerTotalNum).toBe(5);
     const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
     expect(popup.yPosition).toBe(MENU_Y); // a strip from the top of the screen
-    expect(popup.height).toBe(CUE_H); // taller than the menu — room for 3 body rows
-    expect(popup.height!).toBeGreaterThan(MENU_H);
+    // Sized to the cue it holds (XERK-119): this short body is one row, so the
+    // box is a title + one body row — never the full CUE_H.
+    expect(cueRows(cue)).toBe(2);
+    expect(popup.height).toBe(cueHeight(2));
+    expect(popup.height!).toBeLessThan(CUE_H);
     expect(popup.borderWidth).toBe(MENU_BORDER);
     expect(popup.isEventCapture).toBe(0);
     expect(popup.content).toBe(cueText(cue, 7));
+  });
+
+  it("builds the full-height cue strip for a body that fills the box (XERK-119)", () => {
+    const long = {
+      title: "History",
+      body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
+    };
+    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, long, 7);
+    const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
+    expect(cueRows(long)).toBe(CUE_ROWS); // title + a full CUE_BODY_LINES window
+    expect(popup.height).toBe(CUE_H); // taller than the menu — room for 3 body rows
+    expect(popup.height!).toBeGreaterThan(MENU_H);
   });
 
   describe("countdown to dismissal (XERK-110)", () => {
@@ -551,6 +570,74 @@ describe("cue popup (XERK-81)", () => {
       expect(rows[0]).toMatch(/^HISTORY {2,}4s$/);
       expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
       expect(rows.slice(1)).toEqual(cueBodyLines(long.body).slice(2, 2 + CUE_BODY_LINES));
+    });
+  });
+
+  describe("box shrinks to a short body (XERK-119)", () => {
+    // A short cue: title + one body row.
+    const oneLine = { title: "Sun", body: "Close star." };
+    // A body that wraps to exactly two rows — under the CUE_BODY_LINES cap.
+    const twoLine = { title: "Note", body: Array.from({ length: 12 }, (_, i) => `word${i}`).join(" ") };
+    // A body that overflows the three-row window and scrolls.
+    const long = {
+      title: "History",
+      body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
+    };
+
+    it("cueRows counts the title over the visible body rows, capped at the window", () => {
+      expect(cueBodyLines(oneLine.body)).toHaveLength(1);
+      expect(cueRows(oneLine)).toBe(2); // title + one body row
+      expect(cueBodyLines(twoLine.body)).toHaveLength(2);
+      expect(cueRows(twoLine)).toBe(3); // title + two body rows
+      expect(cueBodyLines(long.body).length).toBeGreaterThan(CUE_BODY_LINES);
+      expect(cueRows(long)).toBe(CUE_ROWS); // capped: title + the full window
+    });
+
+    it("sizes the box height to the cue's rows, whole caption rows only", () => {
+      for (const cue of [oneLine, twoLine, long]) {
+        const box = cueBox(cue);
+        const rows = cueRows(cue);
+        expect(box.height).toBe(cueHeight(rows));
+        // Ends on a whole transcript-row boundary — no half-line the host scrolls.
+        expect(box.height).toBeLessThanOrEqual((rows + 1) * LINE_H);
+        expect(box.height).toBeGreaterThan(rows * LINE_H);
+      }
+      // A shorter body makes a strictly shorter box.
+      expect(cueBox(oneLine).height).toBeLessThan(cueBox(twoLine).height);
+      expect(cueBox(twoLine).height).toBeLessThan(cueBox(long).height);
+      expect(cueBox(long).height).toBe(CUE_H);
+    });
+
+    it("masks only as many caption rows as the box is tall, freeing the rest", () => {
+      const text = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+      const plain = fitCaptionRows(text);
+      const [shortFirst, shortLast] = cueRowRange(oneLine);
+      const [, longLast] = cueRowRange(long);
+      // The short cue masks strictly fewer rows than a full-height one.
+      expect(shortLast).toBeLessThan(longLast);
+      expect(shortLast).toBe(CUE_ROW_LAST - (CUE_ROWS - cueRows(oneLine)));
+
+      const rows = occludedCaption(text, shortFirst, shortLast).split("\n");
+      for (let r = 0; r < CAPTION_LINES; r++) {
+        if (r >= shortFirst && r <= shortLast) expect(rows[r]).toBe("");
+        // The rows a full box would have masked but this short one does not: the
+        // live transcript shows through (XERK-119).
+        else expect(rows[r]).toBe(plain[r]);
+      }
+      // The rows freed relative to a full-height box carry live text.
+      for (let r = shortLast + 1; r <= CUE_ROW_LAST; r++) {
+        expect(rows[r]).toBe(plain[r]);
+        expect(rows[r]).not.toBe("");
+      }
+    });
+
+    it("still covers the whole overlap of the (shorter) box with the band", () => {
+      const [first, last] = cueRowRange(oneLine);
+      const box = cueBox(oneLine);
+      const maskTop = LINE_H + first * LINE_H;
+      const maskBottom = LINE_H + (last + 1) * LINE_H;
+      expect(maskTop).toBeLessThanOrEqual(Math.max(box.y, LINE_H));
+      expect(maskBottom).toBeGreaterThanOrEqual(box.y + box.height);
     });
   });
 });
