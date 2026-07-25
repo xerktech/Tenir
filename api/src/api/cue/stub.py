@@ -2,9 +2,11 @@
 
 Deterministic so tests and the model-free single-host stack exercise the whole
 cue path — session pump → WS message → persistence → history — without a GPU.
-The trigger rule is intentionally crude but maximally aggressive (XERK-114): any
-non-empty line is cue-worthy, so cues fire on essentially every turn even against
-the stub.
+
+The stub cannot fact-check: real accuracy (XERK-118: correct facts and
+corrections only) needs the model backend. So the stub keeps a crude, deterministic
+trigger — any non-empty line yields a cue — purely to drive the delivery pipeline
+in tests and the model-free stack, not as a statement of the product's bar.
 """
 
 from __future__ import annotations
@@ -74,8 +76,9 @@ class StubCueGenerator(CueGenerator):
         last = _last_line(transcript)
         if not last:
             return None
-        # Maximally aggressive (XERK-114): any non-empty turn is cue-worthy. The
-        # old per-level trigger is gone with the aggressiveness toggle.
+        # Deterministic pipeline exerciser: any non-empty turn yields a cue. The stub
+        # has no way to fact-check (XERK-118), so it doesn't try — it just drives the
+        # delivery path so timing/dedupe/persistence stay testable without a model.
         title = _title_from(last)
         # Already surfaced this cue earlier in the conversation? Don't repeat it
         # (XERK-102) — the deterministic stub has no other line to draw from, so
