@@ -35,8 +35,11 @@ fact). A correction is just a cue whose body states the right fact — there is 
 separate cue type; it rides the same title/body shape as any other cue. A cue
 whose fact was grounded in a live source (XERK-120, below) also carries a
 **source** — a short label like "BBC News" or "Wikipedia" rendered as a quiet
-attribution line under the body on every surface (on the lens, where a row is
-one string, it is appended to the scrollable body as " — BBC News").
+attribution line under the body on web, Android, and the glasses phone
+Session/History pages. The on-lens box deliberately omits it — a documented
+platform exception: the lens is a tiny monochrome strip where every row costs
+caption space, and the full cue with its attribution is always a glance away
+on the phone.
 
 ## How it works
 

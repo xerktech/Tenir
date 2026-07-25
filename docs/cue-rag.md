@@ -75,8 +75,10 @@ Three consequences fell straight out of these numbers:
 The model cites which evidence items it used (`"evidence": [1]` in its JSON
 reply); the backend maps the first citation to the item's source label, which
 travels the whole path — WS `cue` frame → `cues.source` column → history API →
-an attribution line on every surface (web, Android, glasses lens + phone
-pages). An uncited cue (from model knowledge, fine for stable facts) simply
+an attribution line on web, Android, and the glasses phone Session/History
+pages (the on-lens box deliberately omits it — a tiny monochrome strip where
+every row costs caption space). An uncited cue (from model knowledge, fine for
+stable facts) simply
 carries no label. Malformed or out-of-range citations are dropped rather than
 guessed: a wrong label is worse than none.
 

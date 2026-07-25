@@ -52,7 +52,6 @@ import {
   buildMainPage,
   buildMenuPage,
   clockText,
-  cueDetail,
   cueMaxScroll,
   cueRowRange,
   cueText,
@@ -634,9 +633,7 @@ export async function wireLens(
    */
   const scrollCue = (delta: number) => {
     if (!state.cue) return;
-    // The scroll range spans the body plus the appended source line (XERK-120),
-    // matching what cueText lays out.
-    const max = cueMaxScroll(cueDetail(state.cue));
+    const max = cueMaxScroll(state.cue.body);
     if (max === 0) return; // the body fits — nothing to scroll
     const next = Math.min(Math.max(0, cueScroll + delta), max);
     if (next === cueScroll) return; // already at that end of the body
