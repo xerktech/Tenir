@@ -19,7 +19,7 @@ from api.stt.engine import (
     pcm16_to_float32,
     rms,
 )
-from api.stt.streaming import StreamingTranscriber, _lang
+from api.stt.streaming import StreamingTranscriber, _lang, _ms_to_bytes
 
 
 class FakeEngine:
@@ -28,7 +28,9 @@ class FakeEngine:
     def __init__(self) -> None:
         self.calls = 0
 
-    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
         self.calls += 1
         if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
             return EngineResult(text="", words=[], language=language)
@@ -112,7 +114,9 @@ def test_partials_then_final_on_silence() -> None:
 
 def test_partial_with_empty_text_is_suppressed() -> None:
     class EmptyEngine:
-        def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+        def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
             return EngineResult(text="   ", words=[], language=language)
 
     async def run() -> None:
@@ -134,7 +138,9 @@ def test_legacy_partial_with_empty_text_is_suppressed() -> None:
     no partial."""
 
     class EmptyEngine:
-        def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+        def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
             return EngineResult(text="   ", words=[], language=language)
 
     async def run() -> None:
@@ -252,7 +258,9 @@ class RecordingEngine:
     def __init__(self) -> None:
         self.sizes: list[int] = []
 
-    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
         self.sizes.append(int(samples.size))
         return EngineResult(text="hello", words=[], language="en")
 
@@ -364,7 +372,9 @@ class ScriptedEngine:
         self.script = script
         self.calls = 0
 
-    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
         idx = min(self.calls, len(self.script) - 1)
         self.calls += 1
         return EngineResult(text=self.script[idx], words=[], language="en")
@@ -468,6 +478,207 @@ def test_local_agreement_off_emits_raw_window() -> None:
         assert t._agreement is None
         # Raw path emits exactly what the engine returned — including the full rewrite.
         assert texts == ["alpha", "alpha beta", "totally different"]
+
+    asyncio.run(run())
+
+
+# ----- word timestamps only where they're used (XERK-115) -------------------
+
+
+class WantWordsEngine:
+    """Records the want_words hint of every decode."""
+
+    def __init__(self) -> None:
+        self.wants: list[bool] = []
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        self.wants.append(want_words)
+        return EngineResult(text="hello", words=[EngineWord("hello", 0.0, 0.5)], language="en")
+
+
+def test_partials_skip_word_timestamps_finals_ask_for_them() -> None:
+    """Partials are pure text, so they tell the engine not to spend decode time on
+    word timing; only the final — which carries word timing into the transcript —
+    asks for it."""
+
+    async def run() -> None:
+        eng = WantWordsEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):  # speech -> partials
+            await t.push(_pcm(100, amplitude=4000))
+        assert eng.wants and all(w is False for w in eng.wants)
+
+        for _ in range(3):  # trailing silence -> one final
+            await t.push(_pcm(100, amplitude=0))
+        assert eng.wants[-1] is True
+
+    asyncio.run(run())
+
+
+def test_legacy_partials_also_skip_word_timestamps() -> None:
+    """Same on the LocalAgreement-off path — it emits raw text too."""
+
+    async def run() -> None:
+        eng = WantWordsEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=100000,
+            max_segment_ms=100000,
+            local_agreement=False,
+        )
+        await t.push(_pcm(200, amplitude=4000))
+        assert eng.wants == [False]
+
+    asyncio.run(run())
+
+
+# ----- adaptive VAD (XERK-115) ----------------------------------------------
+
+
+def _noisy_room(adaptive: bool) -> StreamingTranscriber:
+    """One turn in a room whose background sits well above the absolute silence_rms:
+    speech at rms ~0.244, then a pause at rms ~0.037 — quiet relative to the speaker,
+    but 7x the 0.005 fixed gate. Only a detected pause can close this turn."""
+
+    async def run() -> StreamingTranscriber:
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=100000,  # keep partials out of it
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=100000,  # no max-segment escape hatch
+            silence_rms=0.005,
+            vad_adaptive=adaptive,
+        )
+        for _ in range(10):
+            await t.push(_pcm(100, amplitude=8000))  # speech over the room
+        for _ in range(10):
+            await t.push(_pcm(100, amplitude=1200))  # the room alone — a real pause
+        return t
+
+    return asyncio.run(run())
+
+
+def test_fixed_vad_never_closes_a_turn_in_a_noisy_room() -> None:
+    """The regression this fixes: 0.037 >= 0.005, so every frame of the pause reads as
+    speech and the turn can only ever end on max_segment_ms."""
+    t = _noisy_room(adaptive=False)
+    assert not [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+    assert t._trailing_silence == 0  # not one frame counted as silence
+
+
+def test_adaptive_vad_closes_the_turn_in_the_same_noisy_room() -> None:
+    """Same audio, adaptive threshold: it rides above the measured background, so the
+    pause is found and the turn finalizes on it — on the FIRST turn, without waiting
+    for a max-segment close to teach it the room."""
+    t = _noisy_room(adaptive=True)
+    assert len([m for m in _drain(t) if isinstance(m, CaptionFinal)]) == 1
+
+
+def test_adaptive_vad_is_a_no_op_in_a_quiet_room() -> None:
+    """With a genuinely silent background the measured floor is 0, so the threshold is
+    exactly the old fixed silence_rms — existing behaviour is unchanged."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), silence_rms=0.005)
+        assert t._speech_threshold() == pytest.approx(0.005)  # no audio seen yet
+        for _ in range(5):
+            await t.push(_pcm(100, amplitude=0))
+        assert t._speech_threshold() == pytest.approx(0.005)
+        # And speech over silence still reads as speech.
+        await t.push(_pcm(100, amplitude=4000))
+        assert t._has_speech is True
+
+    asyncio.run(run())
+
+
+def test_threshold_cannot_climb_over_the_speaker() -> None:
+    """Uniformly loud speech with no gaps gives min == max, so the raw floor*ratio
+    threshold would land above the speaker's own level and read them as silent. The
+    peak-fraction ceiling keeps them detected."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(),
+            partial_interval_ms=100000,
+            silence_ms=100000,
+            max_segment_ms=100000,
+            silence_rms=0.005,
+        )
+        level = rms(pcm16_to_float32(_pcm(100, amplitude=8000)))
+        for _ in range(50):  # 5s of flat, continuous speech — no pause anywhere
+            await t.push(_pcm(100, amplitude=8000))
+        # floor*ratio would be 3x the speaker; the ceiling pins it to half of them.
+        assert t._speech_threshold() == pytest.approx(level * 0.5, rel=1e-3)
+        assert t._has_speech is True
+        assert t._trailing_silence == 0  # never mistook the speaker for silence
+
+    asyncio.run(run())
+
+
+def test_vad_level_window_is_bounded() -> None:
+    """The level history is a trailing window, so it can't grow with session length."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), vad_window_ms=500)
+        for _ in range(50):  # 5s of audio through a 500ms window
+            await t.push(_pcm(100, amplitude=4000))
+        assert t._levels_bytes <= _ms_to_bytes(500) + _ms_to_bytes(100)
+        assert len(t._levels) <= 6
+
+    asyncio.run(run())
+
+
+def test_vad_window_keeps_one_entry_for_an_oversized_chunk() -> None:
+    """A chunk longer than the whole window still has to describe the current level."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), vad_window_ms=100)
+        await t.push(_pcm(500, amplitude=4000))
+        await t.push(_pcm(500, amplitude=4000))
+        assert len(t._levels) == 1
+
+    asyncio.run(run())
+
+
+def test_vad_level_window_survives_a_turn_boundary() -> None:
+    """The window describes the room, not the turn — dropping it at each finalize
+    would put the first pause of every turn back on the fixed threshold."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(),
+            partial_interval_ms=100000,
+            silence_ms=100000,
+            max_segment_ms=300,  # force a finalize
+            silence_rms=0.005,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=8000))
+        assert not t._buf  # the turn closed
+        assert t._levels  # ...but the room estimate carried over
+        assert t._speech_threshold() > 0.005
+
+    asyncio.run(run())
+
+
+def test_adaptive_vad_can_be_turned_off() -> None:
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), silence_rms=0.005, vad_adaptive=False)
+        await t.push(_pcm(100, amplitude=8000))  # would raise an adaptive threshold
+        assert t._speech_threshold() == pytest.approx(0.005)
 
     asyncio.run(run())
 

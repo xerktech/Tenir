@@ -41,7 +41,7 @@ class VoxtralEngine:
         return float32_to_wav(samples)
 
     def transcribe(  # pragma: no cover - requires httpx + a live Voxtral endpoint
-        self, samples: np.ndarray, *, language: str | None
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
     ) -> EngineResult:
         import httpx
 
@@ -51,6 +51,12 @@ class VoxtralEngine:
         data = {"model": self._model, "response_format": "json"}
         if language is not None:
             data["language"] = language
+        if not want_words:
+            # Tenir extension (parakeet-stt/server.py): skip word-timestamp decoding
+            # for partials, which only ever use the text. A server that doesn't know
+            # the field ignores it and returns words anyway — correct, just not
+            # cheaper — so this is safe to send through the gateway too.
+            data["timestamps"] = "false"
         files = {"file": ("audio.wav", self._wav_bytes(samples), "audio/wav")}
         # The LiteLLM gateway requires a bearer token; a direct vLLM ignores it (no key
         # configured → no header sent).

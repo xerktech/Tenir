@@ -29,6 +29,11 @@ LiteLLM's OpenAI transform, which rewrites ``json`` -> ``verbose_json`` to read
 ``duration`` for cost accounting (the very rewrite vLLM-Voxtral 400'd on — this
 server supports it, so routing via the ``openai/`` provider works).
 
+A ``timestamps=false`` form field (a Tenir extension, XERK-115) skips word/segment
+timing for callers that only want text — the api's live *partials*, which are most
+of the request volume. It defaults to on, so any caller that doesn't know the field
+keeps the old response.
+
 Two things to verify on first real run against the model card (guarded here, not
 guessed): the per-hypothesis **language** field name, and the **word-timestamp**
 dict keys. Both are read defensively and degrade to ``None``/empty rather than
@@ -38,6 +43,7 @@ crashing.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import logging
 import os
@@ -55,6 +61,12 @@ log = logging.getLogger("parakeet-stt")
 MODEL_NAME = os.environ.get("PARAKEET_MODEL", "nvidia/parakeet-tdt-0.6b-v3")
 TARGET_SR = 16000  # Parakeet decodes 16 kHz mono; the api already sends exactly this.
 
+# Seconds of audio decoded once at startup to force every lazy initialisation the
+# first *real* request would otherwise pay for: CUDA context, cuDNN autotuning,
+# NeMo's decoding setup. Without it the first utterance of a session is by far the
+# slowest one (XERK-115).
+WARMUP_SECONDS = 2.0
+
 app = FastAPI(title="tenir-parakeet-stt")
 
 # One resident model on one GPU. NeMo's transcribe() isn't safe to call
@@ -65,11 +77,49 @@ _model = None
 _model_lock = threading.Lock()
 _ready = threading.Event()
 
+# Which of the optional kwargs below this NeMo build's transcribe() actually takes.
+# Resolved once at load (see _supported_kwargs) instead of discovered by catching
+# TypeError per decode: the blind retry that used to guard this dropped *every*
+# kwarg on failure, which silently un-pinned the caller's language as a side effect
+# of an unrelated signature change.
+_OPTIONAL_KWARGS = ("timestamps", "source_lang")
+_supported: frozenset[str] = frozenset(_OPTIONAL_KWARGS)
+
+
+def _supported_kwargs(model: object) -> frozenset[str]:
+    """The subset of _OPTIONAL_KWARGS this model's transcribe() accepts by name.
+
+    A signature we can't read at all is treated as accepting everything — the same
+    optimistic assumption as before, but now it degrades on introspection failure
+    rather than on the first decode.
+    """
+    try:
+        params = inspect.signature(model.transcribe).parameters  # type: ignore[attr-defined]
+    except (TypeError, ValueError):  # builtins / C-implemented callables
+        return frozenset(_OPTIONAL_KWARGS)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        # NeMo forwards **config_kwargs into the decode config, so a name that isn't
+        # an explicit parameter may still be honoured. Assume it is — _transcribe_sync
+        # narrows the set for good if a real call turns out to reject it.
+        return frozenset(_OPTIONAL_KWARGS)
+    return frozenset(name for name in _OPTIONAL_KWARGS if name in params)
+
+
+def _warmup() -> None:
+    """Decode a throwaway clip so the first real request doesn't pay for setup."""
+    t0 = time.perf_counter()
+    try:
+        _transcribe_sync(np.zeros(int(TARGET_SR * WARMUP_SECONDS), dtype=np.float32), None, True)
+    except Exception:  # noqa: BLE001 — a failed warmup must never keep the server down
+        log.warning("warmup decode failed; serving anyway", exc_info=True)
+        return
+    log.info("warmup decode in %.0fms", (time.perf_counter() - t0) * 1000)
+
 
 def _load_model() -> None:
     """Load Parakeet once at startup. Heavy import kept out of module import so the
     process can start (and answer /health with 503) while the model downloads."""
-    global _model
+    global _model, _supported
     import nemo.collections.asr as nemo_asr  # noqa: PLC0415 — deferred heavy import
 
     log.info("loading %s ...", MODEL_NAME)
@@ -77,6 +127,10 @@ def _load_model() -> None:
     model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME)
     model.eval()
     _model = model
+    _supported = _supported_kwargs(model)
+    log.info("transcribe() accepts: %s", ", ".join(sorted(_supported)) or "(none)")
+    # Warm up BEFORE going ready, so nothing is routed here until decodes are fast.
+    _warmup()
     _ready.set()
     log.info("model ready in %.1fs", time.perf_counter() - t0)
 
@@ -141,19 +195,33 @@ def _hyp_words(hyp: object) -> list[dict]:
     return words
 
 
-def _transcribe_sync(samples: np.ndarray, language: str | None) -> dict:
+def _transcribe_sync(samples: np.ndarray, language: str | None, timestamps: bool) -> dict:
     """Run one decode under the GPU lock. Returns the fields all response formats
-    are built from."""
+    are built from.
+
+    ``timestamps`` False skips word/segment timing entirely. The api's *partials* —
+    several requests a second per session, and by far the bulk of the traffic — only
+    ever use the text, so not computing timing for them takes real work off the hot
+    path. Finals still ask for it.
+    """
+    global _supported
     with _model_lock:
-        # timestamps=True yields word/segment timing; language=None lets v3 auto-detect.
-        kwargs: dict = {"timestamps": True}
-        if language:
-            kwargs["source_lang"] = language  # pin decoding when the caller knows the language
+        # language=None lets v3 auto-detect; a pinned language constrains decoding.
+        kwargs: dict = {}
+        if "timestamps" in _supported:
+            kwargs["timestamps"] = timestamps
+        if language and "source_lang" in _supported:
+            kwargs["source_lang"] = language
         try:
             out = _model.transcribe([samples], **kwargs)  # type: ignore[union-attr]
         except TypeError:
-            # Older/newer NeMo signatures differ on kwargs (e.g. no source_lang); retry lean.
-            out = _model.transcribe([samples], timestamps=True)  # type: ignore[union-attr]
+            if not kwargs:
+                raise
+            # This build really doesn't take them. Narrow the set permanently rather
+            # than paying a failed call on every decode from here on.
+            log.warning("transcribe() rejected %s; dropping them", sorted(kwargs))
+            _supported = frozenset()
+            out = _model.transcribe([samples])  # type: ignore[union-attr]
     hyp = out[0] if out else None
     if hyp is None:
         return {"text": "", "language": language, "words": [], "segments": []}
@@ -186,6 +254,11 @@ async def transcribe(
     model: str = Form(default=MODEL_NAME),  # accepted + echoed; this server serves one model
     language: str | None = Form(default=None),
     response_format: str = Form(default="json"),
+    # Tenir extension (XERK-115): "false" skips word/segment timing for callers that
+    # only want the text — the api's live *partials*, which are most of the traffic.
+    # Defaults on, so an OpenAI client that never heard of it still gets timestamps,
+    # and so does verbose_json below.
+    timestamps: bool = Form(default=True),
     # Accepted for OpenAI-client compatibility; unused by this ASR path.
     prompt: str | None = Form(default=None),
     temperature: float | None = Form(default=None),
@@ -197,14 +270,19 @@ async def transcribe(
     samples = _decode_audio(raw)
     duration = round(len(samples) / TARGET_SR, 3)
 
+    # verbose_json's contract includes segments, so never skip timing for that format
+    # however the caller set the flag.
+    want_timestamps = timestamps or (response_format or "").lower() == "verbose_json"
+
     t0 = time.perf_counter()
-    result = await asyncio.to_thread(_transcribe_sync, samples, language)
+    result = await asyncio.to_thread(_transcribe_sync, samples, language, want_timestamps)
     log.info(
-        "decoded %.2fs audio in %.0fms -> lang=%s, %d words",
+        "decoded %.2fs audio in %.0fms -> lang=%s, %d words%s",
         duration,
         (time.perf_counter() - t0) * 1000,
         result["language"],
         len(result["words"]),
+        "" if want_timestamps else " (timing skipped)",
     )
 
     fmt = (response_format or "json").lower()

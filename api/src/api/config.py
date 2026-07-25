@@ -42,6 +42,24 @@ class Settings(BaseSettings):
     # The model alias sent to the gateway (must match litellm/config.yaml).
     stt_model: str = "voxtral"
 
+    # ---- direct STT route (XERK-115) --------------------------------------------
+    # The caption hot path sends ONE transcription request per partial — several a
+    # second, per session — so every hop on it is paid over and over. Routing those
+    # through the LiteLLM gateway costs an extra proxy round trip plus the OpenAI
+    # transform's json -> verbose_json rewrite, none of which the api needs: it
+    # already knows exactly which model server it wants. Set this to the STT
+    # server's own /v1 wherever the api can genuinely open a socket to it (the
+    # single-host compose stack can) and captions skip the gateway entirely.
+    #
+    # Left empty — the default — both fall back to litellm_endpoint /
+    # litellm_api_key, so a split-host deploy that only reaches the model through
+    # the gateway keeps working untouched. Cues are unaffected either way; they
+    # always go through the gateway.
+    stt_endpoint: str = ""
+    # Bearer key for the direct route. Usually empty: a model server behind the
+    # gateway doesn't authenticate. Only read when stt_endpoint is set.
+    stt_api_key: str = ""
+
     # ---- Cues (XERK-81) ----------------------------------------------------------
     # Cues are private contextual info cards the api derives from the live
     # conversation: someone asks how far the sun is and the answer appears above the
@@ -77,6 +95,21 @@ class Settings(BaseSettings):
     stt_min_segment_ms: int = 400  # don't close a turn on silence below this length
     stt_silence_ms: int = 700  # trailing silence that closes a turn
     stt_silence_rms: float = 0.005  # energy threshold below which audio is "silent"
+    # Adaptive VAD (XERK-115). stt_silence_rms alone is an ABSOLUTE gate: in a room
+    # whose noise floor sits above it — a café, a car, a fan — no frame is ever
+    # "silent", so no turn ever closes on a pause and every caption waits the full
+    # stt_max_segment_ms. With this on, the absolute value becomes a floor and the
+    # real threshold tracks the measured background level, so pauses are found in
+    # a noisy room and behaviour in a quiet one is unchanged.
+    stt_vad_adaptive: bool = True
+    # How far above the tracked noise floor a frame must sit to count as speech.
+    # ~3x ≈ +10 dB — enough headroom that room noise doesn't read as speech, low
+    # enough that a quiet talker still does.
+    stt_vad_noise_ratio: float = 3.0
+    # Trailing audio the noise floor is measured over. Long enough to span a normal
+    # inter-word gap (so the quietest frame in it really is background, not a
+    # mid-sentence stop), short enough to follow a room that changes.
+    stt_vad_window_ms: int = 3000
     # LocalAgreement-2 (XERK-90): commit a partial's words only once two consecutive
     # window hypotheses agree, so live captions grow word by word instead of
     # rewriting the whole line each cadence. Off falls back to the raw-window partial.
@@ -151,6 +184,19 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def stt_endpoint_url(self) -> str:
+        """The OpenAI-compatible base URL the caption path posts audio to: the direct
+        STT route when one is configured, else the LiteLLM gateway."""
+        return self.stt_endpoint or self.litellm_endpoint
+
+    @property
+    def stt_key(self) -> str:
+        """The bearer key that goes with :attr:`stt_endpoint_url`. A direct route
+        carries its own (usually absent) key rather than the gateway's master key —
+        sending the gateway key to a model server would just be a stray header."""
+        return self.stt_api_key if self.stt_endpoint else self.litellm_api_key
 
     @property
     def litellm_probe_url(self) -> str:

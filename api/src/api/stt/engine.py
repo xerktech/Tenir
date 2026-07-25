@@ -41,8 +41,16 @@ class EngineResult:
 
 
 class WhisperEngine(Protocol):
-    def transcribe(self, samples: np.ndarray, *, language: str | None) -> EngineResult:
-        """Transcribe a mono float32 [-1, 1] window. Synchronous (may block on GPU)."""
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        """Transcribe a mono float32 [-1, 1] window. Synchronous (may block on GPU).
+
+        ``want_words`` asks for per-word timestamps. Only *finals* need them (they
+        carry word timing into the transcript); partials are pure text, so they pass
+        ``False`` and let an engine skip the extra decode work. An engine that can't
+        turn timing off may ignore the hint and always return words.
+        """
         ...
 
 
