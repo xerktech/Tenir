@@ -21,6 +21,14 @@ export interface PersistedSession {
   sessionId?: string;
   micSource: MicSource;
   transcript: string; // rolling caption text, trimmed to the lens window
+  // Whether this snapshot may be resumed on the next boot (XERK-117). Only a
+  // session persisted while the app was BACKGROUNDED is resumable: the app stays
+  // alive over BLE when backgrounded but the host may migrate its WebView to a
+  // headless context, and the resume brings the session back across that. A
+  // session persisted in the foreground is the remnant of a close/kill — its
+  // server session has been (or will be) finalized to history — so it must NOT
+  // resume. Absent/false ⇒ not resumable (older snapshots predate the flag).
+  resumable?: boolean;
 }
 
 export class SessionStore {

@@ -153,9 +153,15 @@ export async function wireLens(
   const createClient = deps.createClient ?? ((url, handlers) => new ApiClient(url, handlers));
   const store = new SessionStore(bridge);
 
-  // A persisted session means recording was in progress when the app was
-  // backgrounded/killed — the first enable() resumes it; otherwise idle.
-  let pendingResume: PersistedSession | null = await store.load(); // timeout-bounded (persist.ts)
+  // A persisted session means recording was in progress when the app last went
+  // away. It is resumed on the first enable() ONLY if it was backgrounded, not
+  // closed (XERK-117): a snapshot left by a close/kill is dropped — its server
+  // session has been (or, via the resume grace window, will be) finalized to
+  // history — so the app idles at "tap to start" instead of reopening it.
+  const loaded = await store.load(); // timeout-bounded (persist.ts)
+  let pendingResume: PersistedSession | null = loaded?.resumable ? loaded : null;
+  // Forget a non-resumable remnant so it can't be mistaken for live state later.
+  if (loaded && !loaded.resumable) void store.clear();
 
   const state: Mutable = {
     micSource: pendingResume?.micSource ?? config.defaultMicSource,
@@ -178,6 +184,11 @@ export async function wireLens(
   let cueScroll = 0;
   let enabled = false; // signed in — clicks act only while enabled
   let tick = 0;
+  // Whether the app is currently backgrounded (XERK-117): set on FOREGROUND_EXIT,
+  // cleared on FOREGROUND_ENTER. It tags each persisted snapshot as resumable only
+  // while backgrounded, so a session persisted in the foreground and then killed
+  // is not resumed on the next boot — it ends and saves to history instead.
+  let backgrounded = false;
   // The popup-page rebuild failed on the host: the menu renders inside the
   // caption band instead, so the wearer always has a way out of a session.
   let menuFallback = false;
@@ -300,6 +311,9 @@ export async function wireLens(
       sessionId: state.sessionId, // persisted so a resume survives the WebView migration
       micSource: state.micSource,
       transcript: transcriptText().slice(-TRANSCRIPT_MAX_CHARS),
+      // Resumable only while backgrounded (XERK-117): a snapshot written in the
+      // foreground is not restored after a close/kill.
+      resumable: backgrounded,
     });
 
   // Api client + capture, connected only while a session records.
@@ -500,13 +514,20 @@ export async function wireLens(
     handleGesture(type);
   });
 
+  // The app is closing for real (SYSTEM_EXIT/ABNORMAL_EXIT), not just
+  // backgrounding. End any running session — client.stop() sends session.end so
+  // the api finalizes and stores it to history (and even if that frame never
+  // makes it out on an abnormal exit, the dropped socket is finalized once the
+  // resume grace window lapses) — and CLEAR the persisted snapshot so the next
+  // boot does not reopen this session (XERK-117). This is why a close must be
+  // distinguished from a background flush, which keeps the session resumable.
   const cleanup = async () => {
     clearInterval(ticker);
     if (cueTimer) clearTimeout(cueTimer);
     off();
     await capture.stop();
     client?.stop();
-    await store.flush();
+    await store.clear();
   };
 
   const startCueTimer = () => {
@@ -662,6 +683,11 @@ export async function wireLens(
         else scrollCue(1);
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
+        // Back in the foreground (XERK-117): a snapshot taken from here on is a
+        // foreground one, so re-persist the running session as non-resumable —
+        // if the app is now killed it must not reopen this session on next boot.
+        backgrounded = false;
+        if (state.recording) persist();
         // The host may have redrawn while we were away: drop the writer's
         // dedupe cache and repaint everything (the popup box included, if it is
         // up) so a stale host frame can't linger. The ticker keeps the clock,
@@ -679,8 +705,13 @@ export async function wireLens(
         }
         break;
       case OsEventTypeList.FOREGROUND_EXIT_EVENT:
-        // Persist on the way out, but keep rendering: the glasses still show the
-        // lens over BLE while the phone app is backgrounded (XERK-113).
+        // Backgrounded, not closed (XERK-117): the app stays alive over BLE and
+        // may be migrated to a headless context, so mark the running session
+        // resumable and flush it now — the next boot restores it. A close fires
+        // SYSTEM_EXIT/ABNORMAL_EXIT instead, handled below. Keep rendering: the
+        // glasses still show the lens over BLE while backgrounded (XERK-113).
+        backgrounded = true;
+        if (state.recording) persist();
         void store.flush();
         break;
       case OsEventTypeList.SYSTEM_EXIT_EVENT:
