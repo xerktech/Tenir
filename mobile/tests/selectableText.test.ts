@@ -55,6 +55,6 @@ describe("selectable transcript text (XERK-104)", () => {
     expect(src).toMatch(/<Text selectable style=\{styles\.cardBody\}>\s*\{cue\.body\}/);
     // The history cue detail is an inline dropdown (XERK-105); its expanded body
     // stays selectable so it can still be copied.
-    expect(src).toMatch(/<Text selectable style=\{styles\.disclosureBody\}>\s*\{body\}/);
+    expect(src).toMatch(/<Text selectable style=\{styles\.disclosureText\}>\s*\{body\}/);
   });
 });

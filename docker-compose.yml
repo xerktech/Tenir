@@ -55,6 +55,14 @@ services:
       # brings up vllm-cue + registers the qwen3-llm alias in litellm/config.yaml.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
       API_LLM_MODEL: ${API_LLM_MODEL:-qwen3-llm}
+      # Cue evidence retrieval (XERK-120): grounds cue facts in live sources —
+      # the RSS-fed news corpus, Wikipedia, and a self-hosted SearXNG — because
+      # the cue model's weights are years stale. "off" (default) keeps cues
+      # exactly as before; set "live" (with cues on) to ground them. The SearXNG
+      # endpoint is deployment infra with no safe public default, so the web
+      # tier stays off until you point it at your instance.
+      API_CUE_RETRIEVAL_BACKEND: ${API_CUE_RETRIEVAL_BACKEND:-off}
+      API_CUE_SEARXNG_ENDPOINT: ${API_CUE_SEARXNG_ENDPOINT:-}
       API_HOUSEHOLD_ID: ${API_HOUSEHOLD_ID:-default}
       # You MUST override API_AUTH_SECRET — the api refuses to boot with the default.
       API_AUTH_SECRET: ${API_AUTH_SECRET:-dev-insecure-change-me}

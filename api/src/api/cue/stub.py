@@ -15,6 +15,7 @@ import re
 from collections.abc import Sequence
 
 from api.cue.base import CueGenerator, GeneratedCue, normalize_cue_title
+from api.cue.retrieval.base import Evidence
 
 # Skip these when picking a 1-3 word title from the trigger line.
 _STOPWORDS = {
@@ -72,6 +73,7 @@ class StubCueGenerator(CueGenerator):
         transcript: str,
         *,
         avoid_titles: Sequence[str] = (),
+        evidence: Sequence[Evidence] = (),
     ) -> GeneratedCue | None:
         last = _last_line(transcript)
         if not last:
@@ -85,4 +87,11 @@ class StubCueGenerator(CueGenerator):
         # returning None lets a later, different turn produce the next cue.
         if normalize_cue_title(title) in {normalize_cue_title(t) for t in avoid_titles}:
             return None
-        return GeneratedCue(title=title, body=f"Context for “{last}”.")
+        # With evidence present, deterministically "ground" in the first item
+        # (XERK-120) so the attribution path — source on the WS frame, in
+        # persistence, in history — is exercised without a model.
+        return GeneratedCue(
+            title=title,
+            body=f"Context for “{last}”.",
+            source=evidence[0].source if evidence else None,
+        )

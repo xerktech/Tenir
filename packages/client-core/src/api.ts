@@ -109,6 +109,8 @@ export interface CueView {
   title: string;
   body: string;
   atMs: number;
+  /** Live-source attribution (XERK-120); null for a cue from model knowledge. */
+  source?: string | null;
 }
 
 export interface Conversation extends ConversationSummary {

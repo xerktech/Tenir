@@ -216,6 +216,15 @@ describe("SessionPage", () => {
     );
   });
 
+  it("shows a grounded cue's source under the body; none when ungrounded (XERK-120)", () => {
+    const page = mount();
+    page.update(view({ cue: { title: "PM", body: "Andy Burnham took office.", source: "BBC News" } }));
+    expect(cue().querySelector(".session-cue-source")!.textContent).toBe("BBC News");
+    // Ungrounded: the attribution line isn't rendered at all.
+    page.update(view({ cue: { title: "Sun", body: "150M km away." } }));
+    expect(cue().querySelector(".session-cue-source")).toBeNull();
+  });
+
   it("renders the cue title/body as text, not markup", () => {
     mount().update(view({ cue: { title: "<i>x</i>", body: "<b>y</b>" } }));
     expect(cue().querySelector("i")).toBeNull();
@@ -330,6 +339,19 @@ describe("SessionPage", () => {
     expect(cueBody().textContent).toBe("About 150 million km away.");
     // The still-pinned live cue band is untouched by past cues.
     expect(cue().hidden).toBe(true);
+  });
+
+  it("shows a reviewed grounded cue's source with its body (XERK-120)", () => {
+    mount().update(
+      view({
+        segments: ["a"],
+        pastCues: [{ ...pastCue("c1", 0, "PM", "Andy Burnham took office."), source: "BBC News" }],
+      }),
+    );
+    expect(cueBody().querySelector(".cue-inline-text")!.textContent).toBe(
+      "Andy Burnham took office.",
+    );
+    expect(cueBody().querySelector(".cue-inline-source")!.textContent).toBe("BBC News");
   });
 
   it("expands and collapses a reviewed cue in place on click", () => {

@@ -117,6 +117,36 @@ describe("LiveView", () => {
     expect(screen.getByText("hello world")).toBeInTheDocument();
   });
 
+  it("shows a grounded cue's source under the body, live and inline (XERK-120)", () => {
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        activeCue: { id: "c1", title: "PM", body: "Andy Burnham took office.", source: "BBC News" },
+        segments: [{ id: "a", text: "hello world" }],
+        pastCues: [
+          { id: "c2", title: "Sun", body: "150M km away.", source: "Wikipedia", afterSegmentId: "a" },
+        ],
+      }),
+    );
+    // The live band carries the attribution line.
+    expect(screen.getByText("BBC News")).toBeInTheDocument();
+    // The inline disclosure reveals its own source with the body.
+    fireEvent.click(screen.getByRole("button", { name: /Sun/ }));
+    expect(screen.getByText("Wikipedia")).toBeInTheDocument();
+  });
+
+  it("renders no source line for an ungrounded cue (XERK-120)", () => {
+    const { container } = renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
+      }),
+    );
+    expect(container.querySelector(".cue-card-source")).toBeNull();
+  });
+
   it("wraps the transcript in its own scroll box, but not the empty state (XERK-103)", () => {
     const { container, rerender } = renderLive(fakeController());
     // Idle: the empty state renders directly, with no scroll box to bound.

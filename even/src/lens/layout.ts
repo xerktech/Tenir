@@ -345,6 +345,14 @@ export function buildCuePage(
 export interface CueCard {
   title: string;
   body: string;
+  /**
+   * Live-source attribution (XERK-120), e.g. "BBC News". Deliberately NOT
+   * rendered on the lens: the on-lens box is a tiny monochrome strip where
+   * every row costs caption space, so it carries the cue alone — a documented
+   * platform exception. The phone Session/History pages (and web/mobile) show
+   * the attribution; it rides the CueCard so they can.
+   */
+  source?: string;
 }
 
 /**

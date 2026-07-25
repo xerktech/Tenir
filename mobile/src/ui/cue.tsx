@@ -123,6 +123,9 @@ export function LiveCueBand({
         <Text selectable style={styles.cardBody}>
           {cue.body}
         </Text>
+        {/* Where the fact came from (XERK-120): the live source it was grounded
+            in. Absent for a cue from the model's own knowledge. */}
+        {cue.source ? <Text style={styles.cardSource}>{cue.source}</Text> : null}
       </View>
       {queuedCount > 0 && (
         <Text
@@ -142,7 +145,16 @@ export function LiveCueBand({
  * detail reads on the timeline; it defaults to minimized to keep the transcript
  * scannable.
  */
-export function CueDisclosure({ title, body }: { title: string; body: string }): JSX.Element {
+export function CueDisclosure({
+  title,
+  body,
+  source,
+}: {
+  title: string;
+  body: string;
+  /** Live-source attribution (XERK-120), shown under the body when present. */
+  source?: string | null;
+}): JSX.Element {
   const styles = useThemedStyles(makeStyles);
   const [open, setOpen] = useState(false);
   return (
@@ -160,9 +172,12 @@ export function CueDisclosure({ title, body }: { title: string; body: string }):
       </Pressable>
       {/* Cue text is selectable so it can be copied (XERK-104). */}
       {open && (
-        <Text selectable style={styles.disclosureBody}>
-          {body}
-        </Text>
+        <View style={styles.disclosureBody}>
+          <Text selectable style={styles.disclosureText}>
+            {body}
+          </Text>
+          {source ? <Text style={styles.disclosureSource}>{source}</Text> : null}
+        </View>
       )}
     </View>
   );
@@ -202,6 +217,8 @@ const makeStyles = (colors: Palette) =>
     // of the cue itself.
     cardCountdown: { color: colors.muted, fontWeight: "600", fontSize: 11, flexShrink: 0 },
     cardBody: { color: colors.text, lineHeight: 20 },
+    // Live-source attribution under the body (XERK-120): provenance, not content.
+    cardSource: { color: colors.muted, fontWeight: "600", fontSize: 11, letterSpacing: 0.2 },
     // Chipped like the card, since it now sits over the captions too.
     queued: {
       alignSelf: "flex-start",
@@ -226,9 +243,9 @@ const makeStyles = (colors: Palette) =>
       paddingVertical: 4,
     },
     inlineText: { color: colors.accentStrong, fontWeight: "600" },
+    // Container visuals on the View; text styling on disclosureText (the body
+    // became a View so the source line can sit under the text, XERK-120).
     disclosureBody: {
-      color: colors.text,
-      lineHeight: 22,
       marginTop: space.xs,
       paddingVertical: space.sm,
       paddingHorizontal: space.md,
@@ -236,5 +253,8 @@ const makeStyles = (colors: Palette) =>
       borderLeftWidth: 2,
       backgroundColor: withAlpha(colors.accent, 0.14),
       borderRadius: radius.sm,
+      gap: 2,
     },
+    disclosureText: { color: colors.text, lineHeight: 22 },
+    disclosureSource: { color: colors.muted, fontWeight: "600", fontSize: 11, letterSpacing: 0.2 },
   });

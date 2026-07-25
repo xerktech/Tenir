@@ -28,7 +28,7 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
     // The body only renders once expanded, in place (no modal/backdrop), and
     // stays selectable so it can be copied (XERK-104).
     expect(cue).toContain("{open && (");
-    expect(cue).toContain("<Text selectable style={styles.disclosureBody}>");
+    expect(cue).toContain("<Text selectable style={styles.disclosureText}>");
     expect(cue).not.toContain("styles.backdrop");
     // Expanded state is exposed to assistive tech.
     expect(cue).toContain("accessibilityState={{ expanded: open }}");
@@ -38,7 +38,10 @@ describe("history cue is an inline dropdown, not a popup (XERK-105)", () => {
     expect(history).toContain("CueDisclosure");
     // A cue ends a run of selectable turns (XERK-104), so it renders from the
     // run's `cue` rather than a raw timeline item — still the inline dropdown.
-    expect(history).toContain("<CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />");
+    // Rendered from the run's cue, carrying the live-source attribution too
+    // (XERK-120).
+    expect(history).toContain("key={run.cue.cueId}");
+    expect(history).toContain("source={run.cue.source}");
     // The modal open/close state is gone from the detail screen.
     expect(history).not.toContain("CueModal");
     expect(history).not.toContain("InlineCue");
@@ -61,7 +64,7 @@ describe("released cues are embedded inline in the live transcript (XERK-108)", 
 
   it("renders a past cue with the same inline dropdown history uses", () => {
     expect(live).toContain(
-      "<CueDisclosure key={`cue-${run.cue.id}`} title={run.cue.title} body={run.cue.body} />",
+      "key={`cue-${run.cue.id}`}",
     );
     // Past cues count as content so a transcript of only-reviewed cues still shows.
     expect(live).toContain("state.pastCues.length > 0");

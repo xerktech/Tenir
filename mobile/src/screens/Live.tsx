@@ -190,7 +190,12 @@ export function LiveScreen(): JSX.Element {
                 trailing turn run so it's selectable too. */}
             {runList.map((run, i) =>
               run.kind === "cue" ? (
-                <CueDisclosure key={`cue-${run.cue.id}`} title={run.cue.title} body={run.cue.body} />
+                <CueDisclosure
+                  key={`cue-${run.cue.id}`}
+                  title={run.cue.title}
+                  body={run.cue.body}
+                  source={run.cue.source}
+                />
               ) : (
                 <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
                   {run.segs.map((seg, j) => (

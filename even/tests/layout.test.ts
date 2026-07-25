@@ -641,3 +641,24 @@ describe("cue popup (XERK-81)", () => {
     });
   });
 });
+
+describe("cue source stays OFF the lens (XERK-120)", () => {
+  // The attribution renders on web, mobile and the phone Session/History pages;
+  // the on-lens box is a tiny monochrome strip where every row costs caption
+  // space, so it deliberately carries the cue alone (documented exception).
+  it("lays out a grounded cue identically to an ungrounded one", () => {
+    const bare = { title: "PM", body: "Andy Burnham took office." };
+    const grounded = { ...bare, source: "BBC News" };
+    expect(cueText(grounded)).toBe(cueText(bare));
+    expect(cueRows(grounded)).toBe(cueRows(bare));
+    expect(cueBox(grounded).height).toBe(cueBox(bare).height);
+    expect(cueText(grounded)).not.toContain("BBC News");
+  });
+
+  it("never shows the source at any scroll position of a long body", () => {
+    const cue = { title: "History", body: "word ".repeat(30).trim(), source: "Wikipedia" };
+    for (let scroll = 0; scroll <= cueMaxScroll(cue.body); scroll++) {
+      expect(cueText(cue, undefined, scroll)).not.toContain("Wikipedia");
+    }
+  });
+});

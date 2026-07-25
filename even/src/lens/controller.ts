@@ -362,7 +362,7 @@ export async function wireLens(
         syncPhone();
         persist();
       },
-      onCue: (m) => showCue({ id: m.cueId, title: m.title, body: m.body }),
+      onCue: (m) => showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),
       onError: (m) => {
         console.warn("api error", m.code, m.message);
         if (m.code === "unauthorized") {
@@ -551,7 +551,7 @@ export async function wireLens(
    * shared popup — is queued rather than clobbering what's there, and pops the
    * moment the box frees (dismissCue / closeMenu drain the queue).
    */
-  const showCue = (cue: { id: string; title: string; body: string }) => {
+  const showCue = (cue: { id: string; title: string; body: string; source?: string }) => {
     // Anchor the cue to the last finalized turn the moment it arrives, so once
     // it's reviewed it lands inline right after the words that triggered it
     // (XERK-108). No turns yet → -1, i.e. it leads the transcript.

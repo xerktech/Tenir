@@ -59,6 +59,12 @@ export interface LiveCue {
   title: string;
   body: string;
   /**
+   * Short label of the live source the cue's fact was grounded in (XERK-120),
+   * e.g. "BBC News" or "Wikipedia" — shown as a quiet attribution line under
+   * the body. Absent when the cue rests on the model's own knowledge.
+   */
+  source?: string;
+  /**
    * The finalized turn this cue lands after once it's reviewed inline in the
    * transcript (XERK-108) — the last segment present when the cue arrived, since
    * a cue reads as landing just after the words that triggered it. `null` (or a
@@ -365,7 +371,7 @@ export class CaptureSession {
       },
       onPartial: (m) => this.dispatch({ type: "partial", text: m.text }),
       onFinal: (m) => this.dispatch({ type: "final", segmentId: m.segmentId, text: m.text }),
-      onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body }),
+      onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),
       onError: (m) => this.dispatch({ type: "error", message: m.message }),
     });
     this.client = client;

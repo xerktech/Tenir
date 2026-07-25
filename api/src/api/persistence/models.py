@@ -60,6 +60,10 @@ class Cue:
     title: str
     body: str
     at_ms: int
+    # Short label of the live source the cue's fact was grounded in (XERK-120),
+    # e.g. "BBC News" or "Wikipedia". None when the cue rests on the model's own
+    # knowledge — the pre-grounding shape, so old rows load unchanged.
+    source: str | None = None
 
 
 @dataclass

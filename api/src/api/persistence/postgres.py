@@ -172,12 +172,13 @@ class SqlConversationStore:
             conn.execute(
                 """
                 INSERT INTO cues
-                    (cue_id, conversation_id, title, body, at_ms)
-                VALUES (%s, %s, %s, %s, %s)
+                    (cue_id, conversation_id, title, body, at_ms, source)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (cue_id) DO UPDATE SET
-                    title = EXCLUDED.title, body = EXCLUDED.body, at_ms = EXCLUDED.at_ms
+                    title = EXCLUDED.title, body = EXCLUDED.body, at_ms = EXCLUDED.at_ms,
+                    source = EXCLUDED.source
                 """,
-                (cue.cue_id, conversation_id, cue.title, cue.body, cue.at_ms),
+                (cue.cue_id, conversation_id, cue.title, cue.body, cue.at_ms, cue.source),
             )
 
     def finish(  # pragma: no cover - requires a live database
@@ -260,6 +261,7 @@ class SqlConversationStore:
             title=row["title"],
             body=row["body"],
             at_ms=row["at_ms"],
+            source=row["source"],
         )
 
     def list(  # pragma: no cover - requires a live database

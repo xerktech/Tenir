@@ -45,12 +45,13 @@ _SYMBOLS = "!@#$%^&*"
 # its entropy *inside* the string, so judge on the stem with trailing digits removed.
 _TRAILING_DIGITS = re.compile(r"\d+$")
 
-# Non-credential strings that still trip the heuristic: model names and the git
-# pretty-format specifiers used by the release scripts.
+# Non-credential strings that still trip the heuristic: model names, the git
+# pretty-format specifiers used by the release scripts, and strftime formats.
 _PASSWORD_ALLOWLIST = {
     "Qwen3-Reranker",
     "downsampleTo16k",  # digits mid-identifier, so the trailing-digit strip misses it
     "%H%x1f%P%x1f%s",
+    "%Y-%m-%d",  # strftime date format (cue evidence timestamps, XERK-120)
 }
 
 

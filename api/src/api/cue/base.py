@@ -18,6 +18,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from api.cue.retrieval.base import Evidence
+
 
 @dataclass
 class GeneratedCue:
@@ -25,6 +27,9 @@ class GeneratedCue:
 
     title: str
     body: str
+    # Short label of the evidence source the cue's fact was grounded in
+    # (XERK-120), e.g. "BBC News"; None when the cue rests on model knowledge.
+    source: str | None = None
 
 
 def normalize_cue_title(title: str) -> str:
@@ -43,6 +48,7 @@ class CueGenerator(Protocol):
         transcript: str,
         *,
         avoid_titles: Sequence[str] = (),
+        evidence: Sequence[Evidence] = (),
     ) -> GeneratedCue | None:
         """Return a cue for the given recent transcript, or ``None`` for nothing
         cue-worthy. Synchronous (may block on model I/O); the session calls it off
@@ -53,5 +59,11 @@ class CueGenerator(Protocol):
         spawns instead of an old one popping up again later. The session also
         drops any repeat post-hoc as a backstop, but honoring the list here lets
         a model-backed generator find *fresh* context rather than returning the
-        same proposal to be discarded."""
+        same proposal to be discarded.
+
+        ``evidence`` is retrieved live-source context (XERK-120), freshest first.
+        A generator that grounds its cue in an evidence item should set the
+        returned cue's ``source`` to that item's label so the listener sees the
+        attribution; with no evidence the generator falls back to model
+        knowledge, exactly the pre-grounding behaviour."""
         ...

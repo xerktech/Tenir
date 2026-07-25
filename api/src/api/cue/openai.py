@@ -26,6 +26,7 @@ import re
 from collections.abc import Sequence
 
 from api.cue.base import CueGenerator, GeneratedCue
+from api.cue.retrieval.base import Evidence
 from api.cue.tuning import cue_guidance
 
 log = logging.getLogger("api.cue.openai")
@@ -39,8 +40,28 @@ _SYSTEM = (
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true|false, "title": "1-3 word label", "body": "one or two short '
     "sentences: the correction, or the verified fact. State it plainly and only if "
-    'you are confident it is accurate"}}. '
+    'you are confident it is accurate", "evidence": [numbers of the evidence items '
+    "your fact came from, or omit if none]}}. "
     'If nothing is cue-worthy or you are not sure it is accurate, reply {{"cue": false}}.'
+)
+
+# Grounding preamble for the evidence block (XERK-120). The model's weights are
+# years stale, so for anything time-sensitive the evidence must outrank memory —
+# and the citation requirement is what lets the cue carry a source label the
+# listener can trust.
+_EVIDENCE_HEADER = (
+    "\nEVIDENCE from live sources, retrieved moments ago (numbered; freshest and "
+    "most reliable first):\n"
+)
+_EVIDENCE_RULES = (
+    "\nYour built-in knowledge has a training cutoff and may be YEARS out of date. "
+    "For anything involving recent events, current officeholders, prices, scores, "
+    "or dates, rely on the evidence above, not memory; where evidence contradicts "
+    "your memory, the evidence wins. If your cue's fact comes from the evidence, "
+    'cite the item numbers you used in "evidence" — cite only items you actually '
+    "used. A fact from your own knowledge (stable facts are fine from memory) "
+    'omits "evidence". Never present an evidence item\'s claim as your own '
+    "unverified knowledge, and never cite evidence that does not support the body."
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -64,9 +85,20 @@ class OpenAICueGenerator(CueGenerator):
         self._disable_thinking = disable_thinking
         self._timeout = timeout
 
-    def _build_payload(self, transcript: str, avoid_titles: Sequence[str] = ()) -> dict:
+    def _build_payload(
+        self,
+        transcript: str,
+        avoid_titles: Sequence[str] = (),
+        evidence: Sequence[Evidence] = (),
+    ) -> dict:
         """The /chat/completions request body. Pure (no I/O) so it's unit-tested."""
         system = _SYSTEM.format(guidance=cue_guidance())
+        if evidence:
+            lines = []
+            for i, item in enumerate(evidence, start=1):
+                dated = f", {item.published}" if item.published else ""
+                lines.append(f"[{i}] ({item.source}{dated}) {item.title}: {item.snippet}")
+            system += _EVIDENCE_HEADER + "\n".join(lines) + _EVIDENCE_RULES
         # Cues already surfaced this conversation: tell the model not to repeat
         # them (XERK-102), so it finds fresh context instead of re-proposing an
         # old cue that would only be discarded. Order-preserving de-dupe keeps the
@@ -103,11 +135,15 @@ class OpenAICueGenerator(CueGenerator):
         return message.get("content") or message.get("reasoning_content") or ""
 
     def generate(  # pragma: no cover - requires httpx + a live chat endpoint
-        self, transcript: str, *, avoid_titles: Sequence[str] = ()
+        self,
+        transcript: str,
+        *,
+        avoid_titles: Sequence[str] = (),
+        evidence: Sequence[Evidence] = (),
     ) -> GeneratedCue | None:
         import httpx
 
-        payload = self._build_payload(transcript, avoid_titles)
+        payload = self._build_payload(transcript, avoid_titles, evidence)
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         try:
             resp = httpx.post(self._url, json=payload, headers=headers, timeout=self._timeout)
@@ -118,9 +154,11 @@ class OpenAICueGenerator(CueGenerator):
             log.warning("cue generation call failed", exc_info=True)
             return None
 
-        return self._parse(content)
+        return self._parse(content, evidence)
 
-    def _parse(self, content: str) -> GeneratedCue | None:
+    def _parse(
+        self, content: str, evidence: Sequence[Evidence] = ()
+    ) -> GeneratedCue | None:
         match = _JSON_OBJECT.search(content)
         if not match:
             return None
@@ -134,4 +172,20 @@ class OpenAICueGenerator(CueGenerator):
         body = str(data.get("body") or "").strip()
         if not title or not body:
             return None
-        return GeneratedCue(title=title[:60], body=body[: self._max_body_chars])
+        return GeneratedCue(
+            title=title[:60],
+            body=body[: self._max_body_chars],
+            source=self._cited_source(data.get("evidence"), evidence),
+        )
+
+    @staticmethod
+    def _cited_source(cited: object, evidence: Sequence[Evidence]) -> str | None:
+        """The attribution label for the cue: the source of the first evidence item
+        the model cited (XERK-120). Citations are 1-based prompt numbers; anything
+        malformed or out of range is ignored — a wrong label is worse than none."""
+        if not isinstance(cited, list):
+            return None
+        for index in cited:
+            if isinstance(index, int) and 1 <= index <= len(evidence):
+                return evidence[index - 1].source
+        return None

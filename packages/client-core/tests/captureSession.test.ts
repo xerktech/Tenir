@@ -48,6 +48,18 @@ describe("reduce", () => {
   });
 
 
+  it("carries a grounded cue's source through the band into the reviewed transcript (XERK-120)", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
+    s = reduce(s, {
+      type: "cue",
+      cue: { id: "c1", title: "PM", body: "Andy Burnham took office.", source: "BBC News" },
+    });
+    expect(s.activeCue?.source).toBe("BBC News");
+    // Released into the transcript, the attribution rides along for review.
+    s = reduce(s, { type: "cueRelease", id: "c1" });
+    expect(s.pastCues[0].source).toBe("BBC News");
+  });
+
   it("drops to idle on stop but keeps the transcript and clears live cues", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
     s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });

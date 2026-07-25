@@ -73,6 +73,34 @@ CREATE TABLE IF NOT EXISTS cues (
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     title           TEXT NOT NULL,
     body            TEXT NOT NULL,
-    at_ms           INTEGER NOT NULL
+    at_ms           INTEGER NOT NULL,
+    -- Live-source attribution (XERK-120): the short label of the source the
+    -- cue's fact was grounded in ("BBC News", "Wikipedia"). NULL for a cue from
+    -- the model's own knowledge.
+    source          TEXT
 );
+-- Additive column for data dirs created before XERK-120 (this file is applied
+-- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip
+-- the new column on an existing table).
+ALTER TABLE cues ADD COLUMN IF NOT EXISTS source TEXT;
 CREATE INDEX IF NOT EXISTS cues_conversation_idx ON cues (conversation_id, at_ms);
+
+-- Recent news items ingested from the configured RSS feeds (XERK-120): the
+-- knowledge corpus the cue retrieval layer searches so cue facts about current
+-- events are grounded in fresh reporting instead of the cue model's (years-
+-- stale) training data. Searched with the same functional-GIN FTS pattern as
+-- the transcript search; rows are pruned after API_CUE_RSS_KEEP_DAYS, so the
+-- corpus stays small and every hit is recent by construction. Household-free on
+-- purpose — public news, not user data.
+CREATE TABLE IF NOT EXISTS news_items (
+    id           TEXT PRIMARY KEY,       -- feed entry GUID (or link fallback)
+    source       TEXT NOT NULL,          -- short feed label, e.g. "BBC News"
+    title        TEXT NOT NULL,
+    summary      TEXT NOT NULL,          -- entry description, tags stripped
+    link         TEXT,
+    published_at TIMESTAMPTZ NOT NULL,
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS news_items_published_idx ON news_items (published_at DESC);
+CREATE INDEX IF NOT EXISTS news_items_fts_idx
+    ON news_items USING GIN (to_tsvector('simple', title || ' ' || summary));
