@@ -1,0 +1,8 @@
+# Web layer on top of the NeMo base image (which already carries torch + NeMo ASR).
+# NeMo usually ships numpy/soundfile already; listing them is idempotent and makes
+# the server's runtime deps explicit and self-contained. websockets backs the
+# FastAPI/uvicorn WebSocket endpoint this server exposes.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+websockets>=13
+numpy

@@ -1,8 +1,10 @@
 # tenir — single-host stack: `docker compose up --build`.
 #
 # Bare minimum: one app container (api + web UI), Postgres for transcripts,
-# the LiteLLM gateway, and the Parakeet STT server (the only GPU container —
-# needs the NVIDIA Container Toolkit). Real prod values come from .env (the
+# the LiteLLM gateway, and the two GPU STT servers (need the NVIDIA Container
+# Toolkit): Parakeet for accurate finals and Nemotron for low-latency streaming
+# partials — the hybrid path XERK-115's GPU benchmark recommends (see
+# docs/stt-model-gpu-benchmark.md). Real prod values come from .env (the
 # ${VAR:-default} fallbacks are this host's defaults).
 
 name: tenir
@@ -25,20 +27,27 @@ services:
       # .env override would only desync the api. Endpoints/secrets/models come from .env.
       API_LITELLM_ENDPOINT: ${API_LITELLM_ENDPOINT:-http://litellm:4000/v1}
       API_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
-      # "voxtral" is the generic HTTP /audio/transcriptions engine (not Voxtral-
-      # specific); it POSTs each window to the LiteLLM gateway, which routes the
-      # model alias below to the Parakeet server.
-      API_STT_BACKEND: voxtral
+      # "hybrid" (XERK-115): live partials come from the Nemotron cache-aware
+      # streaming server over a WebSocket (API_STT_STREAM_ENDPOINT), while finals
+      # decode the whole turn on the offline Parakeet server (API_STT_ENDPOINT).
+      # Low-latency partials + accurate finals; if Nemotron is unreachable the api
+      # degrades to Parakeet-only partials. Set to "voxtral" for the single-model
+      # (Parakeet-only) path, which needs neither the nemotron service nor the
+      # stream endpoint below.
+      API_STT_BACKEND: ${API_STT_BACKEND:-hybrid}
       API_STT_MODEL: ${API_STT_MODEL:-parakeet}
-      # Direct route for the caption hot path (XERK-115). Live captions send one
-      # transcription request per partial — several a second, per session — so the
-      # gateway hop (an extra proxy round trip plus its json->verbose_json rewrite)
-      # is paid over and over for nothing the api needs. On this single-host stack
-      # the api shares a network with the model server, so it posts audio straight
-      # to it; cues still go through LiteLLM. Unset this in a split-host deploy that
-      # can only reach the model through the gateway — the api then falls back to
-      # API_LITELLM_ENDPOINT on its own.
+      # Direct route for the FINALS hot path (XERK-115). Live captions send one
+      # transcription request per final — so the gateway hop (an extra proxy round
+      # trip plus its json->verbose_json rewrite) is avoided. On this single-host
+      # stack the api shares a network with the model server, so it posts audio
+      # straight to it; cues still go through LiteLLM. Unset this in a split-host
+      # deploy that can only reach the model through the gateway — the api then
+      # falls back to API_LITELLM_ENDPOINT on its own.
       API_STT_ENDPOINT: ${API_STT_ENDPOINT:-http://parakeet:8000/v1}
+      # PARTIALS stream (hybrid only): WebSocket root of the Nemotron server. The
+      # api holds one persistent connection per session and is fed audio as it
+      # arrives, emitting a growing transcript for the live caption band.
+      API_STT_STREAM_ENDPOINT: ${API_STT_STREAM_ENDPOINT:-ws://nemotron:8000}
       # Cues (XERK-81): private context cards derived from the conversation. Off by
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
@@ -61,6 +70,9 @@ services:
       # in a split-host deploy — each light then follows the LiteLLM gateway probe.
       # The cue LLM only runs (and is only probed) under the "cues" profile.
       API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://parakeet:8000}
+      # Hybrid partials server — probed directly for its own status light (it serves
+      # GET /health alongside the WS endpoint). Only meaningful with the hybrid backend.
+      API_STATUS_STREAM_URL: ${API_STATUS_STREAM_URL:-http://nemotron:8000}
       API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-http://vllm-cue:8000}
     volumes:
       # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
@@ -134,6 +146,45 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       PARAKEET_MODEL: ${PARAKEET_MODEL:-nvidia/parakeet-tdt-0.6b-v3}
+    ipc: host
+    healthcheck:
+      # 503 until the model is resident (first boot downloads the weights), 200 after.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  nemotron:
+    # Live-partial STT (XERK-115): NVIDIA Nemotron (nemotron-3.5-asr-streaming-0.6b,
+    # cache-aware FastConformer-RNNT, multilingual + auto language detection) behind a
+    # WebSocket /v1/audio/stream surface. It produces the low-latency streaming
+    # partials of the hybrid path; Parakeet above keeps the accurate finals. Built
+    # from nemotron-stt/Dockerfile (same NGC NeMo base as parakeet). Same 0.6B size
+    # class as Parakeet, so the two fit together on one GPU (<5 GB, per the benchmark).
+    build:
+      context: .
+      dockerfile: nemotron-stt/Dockerfile
+    image: tenir-nemotron-stt:latest
+    ports:
+      - "9402:8000"
+    volumes:
+      # Whole /root/.cache so the HF hub cache AND NeMo's torch cache persist.
+      - "C:/docker/tenir/nemotron:/root/.cache"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      NEMOTRON_MODEL: ${NEMOTRON_MODEL:-nvidia/nemotron-3.5-asr-streaming-0.6b}
+      # Right-context lookahead in 80ms frames: 3 = 320ms, the GPU-benchmarked sweet
+      # spot (EN accuracy flat 320→560ms, ES best at 320ms). Raise to 6 (560ms) or
+      # 13 (1120ms) to trade latency for a little more accuracy.
+      NEMOTRON_ATT_CONTEXT_RIGHT: ${NEMOTRON_ATT_CONTEXT_RIGHT:-3}
     ipc: host
     healthcheck:
       # 503 until the model is resident (first boot downloads the weights), 200 after.

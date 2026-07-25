@@ -128,7 +128,8 @@ async def _gather() -> list[_RawResult]:
     # LiteLLM gateway, so the gateway is probed once whenever *either* is backed by a
     # real server (stub/off backends have nothing to reach). Each model light then
     # resolves against that single gateway probe (see _gateway_fronted_model).
-    stt_via_gateway = s.stt_backend == "voxtral"
+    # The offline model (Parakeet) backs finals under both voxtral and hybrid.
+    stt_via_gateway = s.stt_backend in ("voxtral", "hybrid")
     cue_via_gateway = s.cue_backend == "openai"
     if stt_via_gateway or cue_via_gateway:
         gw = await _http_probe(f"{s.litellm_probe_url}/health/liveliness")
@@ -137,6 +138,13 @@ async def _gather() -> list[_RawResult]:
         if stt_via_gateway:
             raw, detail = await _gateway_fronted_model(gw, s.status_stt_url)
             results.append(("stt", "Live STT (Parakeet)", "model", raw, detail))
+
+        # Hybrid adds the cache-aware streaming server that produces live partials
+        # (XERK-115). It's reached directly over a WebSocket, never the gateway, so its
+        # light follows status_stream_url (a direct /health) when one is configured.
+        if s.stt_backend == "hybrid":
+            raw, detail = await _gateway_fronted_model(gw, s.status_stream_url)
+            results.append(("stt_stream", "Live STT stream (Nemotron)", "model", raw, detail))
 
         if cue_via_gateway:
             raw, detail = await _gateway_fronted_model(gw, s.status_llm_url)

@@ -1,0 +1,64 @@
+name: Nemotron STT
+
+# PR gate for the Nemotron streaming STT image, a patch on top of the multi-GB NGC
+# NeMo base — impractical to build/scan on every PR, so the gate is a cheap
+# Dockerfile lint plus the server's own tests. Those run against a fake decoder
+# (NeMo and the GPU stay out of CI): what they cover is the transport/protocol layer
+# this repo owns — the WebSocket handshake, the per-frame partial protocol, the reset
+# control, readiness gating. Publishing is the unified release pipeline (release.yml),
+# which (re)builds and pushes tenir-nemotron-stt to GHCR on a push to main that
+# changes the component.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nemotron-stt/**'
+      - '.github/workflows/nemotron-stt.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Dockerfile lint (hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      # Only hard errors fail the gate; style/pin warnings on this thin patch
+      # Dockerfile are expected and non-blocking.
+      - name: Lint nemotron-stt/Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:latest \
+            hadolint --failure-threshold error - < nemotron-stt/Dockerfile
+
+  test:
+    name: Server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: nemotron-stt
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: nemotron-stt/requirements.txt
+
+      - name: Install dependencies
+        # The server's own runtime deps, minus NeMo/torch: the tests fake the decoder,
+        # so the multi-GB half of the image never has to exist on the runner.
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx
+
+      - name: Test
+        run: pytest tests -q
