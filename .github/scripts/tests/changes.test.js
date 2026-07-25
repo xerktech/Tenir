@@ -19,6 +19,7 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("even/src/app.ts"), ["even"]);
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
+  assert.deepEqual(C.componentsForPath("nemotron-stt/server.py"), ["nemotron-stt"]);
 });
 
 test("componentsForPath maps the root workspace manifest/lockfile to api + clients", () => {
@@ -41,6 +42,7 @@ test("detectChanges unions components across the diff", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
+    "nemotron-stt": false,
     even: true,
     mobile: false,
   });
@@ -51,6 +53,7 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
+    "nemotron-stt": false,
     even: false,
     mobile: false,
   });

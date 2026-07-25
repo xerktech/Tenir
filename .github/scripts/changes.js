@@ -23,7 +23,7 @@
 //                     (and the api image's web build stage) install from.
 // Over-building a shared change wastes runner time; under-building ships a
 // manifest that lies. We take the former.
-const COMPONENTS = ["api", "parakeet-stt", "even", "mobile"];
+const COMPONENTS = ["api", "parakeet-stt", "nemotron-stt", "even", "mobile"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
@@ -34,6 +34,7 @@ const PREFIX_MAP = [
   { prefix: "packages/", components: ["api", "even", "mobile"] },
   { prefix: "web/", components: ["api"] },
   { prefix: "parakeet-stt/", components: ["parakeet-stt"] },
+  { prefix: "nemotron-stt/", components: ["nemotron-stt"] },
   { prefix: "even/", components: ["even"] },
   { prefix: "mobile/", components: ["mobile"] },
 ];

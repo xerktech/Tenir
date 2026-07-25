@@ -43,6 +43,7 @@ on:
       - "packages/**"
       - "web/**"
       - "parakeet-stt/**"
+      - "nemotron-stt/**"
       - "even/**"
       - "mobile/**"
       - "package.json"
@@ -94,6 +95,7 @@ jobs:
       release_type: ${{ steps.plan.outputs.release_type }}
       build_api: ${{ steps.plan.outputs.build_api }}
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
+      build_nemotron_stt: ${{ steps.plan.outputs.build_nemotron_stt }}
       build_even: ${{ steps.plan.outputs.build_even }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
@@ -320,6 +322,49 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
+  # ---------------------------------------------------- build: nemotron-stt ---
+  # Self-hosted, same as parakeet-stt: the NGC NeMo base is a multi-GB image a
+  # hosted runner can't hold. Context is the repo root because the Dockerfile
+  # COPYs nemotron-stt/{requirements.txt,server.py}.
+  build-nemotron-stt:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_nemotron_stt == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - name: Lowercase owner for GHCR
+        id: owner
+        run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      # Same NGC-authenticated base as parakeet-stt — log in when a key is set, else
+      # rely on an existing nvcr.io login on this self-hosted runner.
+      - name: Log in to nvcr.io for the NeMo base
+        env:
+          NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
+        run: |
+          if [ -n "$NGC_API_KEY" ]; then
+            echo "$NGC_API_KEY" | docker login nvcr.io -u '$oauthtoken' --password-stdin
+            echo "Logged in to nvcr.io via NGC_API_KEY."
+          else
+            echo "NGC_API_KEY not set — relying on an existing nvcr.io login on this runner."
+          fi
+      - name: Build + push tenir-nemotron-stt
+        uses: ./.github/actions/build-push-image
+        with:
+          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-nemotron-stt
+          tags: |
+            latest
+            ${{ needs.plan.outputs.version }}
+            sha-${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+          context: .
+          dockerfile: nemotron-stt/Dockerfile
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push: ${{ needs.plan.outputs.dry_run != 'true' }}
+
   # ----------------------------------------------------------- build: even ----
   # GitHub-hosted: an npm build + evenhub pack, no docker cache to keep warm.
   # Packs AND publishes: the .ehpk ships straight to the Even Hub developer
@@ -458,12 +503,13 @@ jobs:
   # that was SUPPOSED to run failed (a skipped/carried component is fine).
   publish:
     needs:
-      [plan, bump, build-api, build-parakeet-stt, build-even, build-mobile]
+      [plan, bump, build-api, build-parakeet-stt, build-nemotron-stt, build-even, build-mobile]
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.bump.result != 'failure'
       && needs.build-api.result != 'failure'
       && needs.build-parakeet-stt.result != 'failure'
+      && needs.build-nemotron-stt.result != 'failure'
       && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'
     runs-on: ubuntu-latest

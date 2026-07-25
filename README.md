@@ -14,8 +14,10 @@ chat, …) was stripped back to; features return one at a time, slowly.
 ## What it does
 
 - **Streaming transcription** — phone, browser or glasses mic → real-time
-  captions, powered by a self-hosted STT model (NVIDIA Parakeet) behind a LiteLLM
-  gateway
+  captions from self-hosted STT: a cache-aware streaming model (NVIDIA Nemotron)
+  drives the low-latency live partials while an offline model (NVIDIA Parakeet)
+  decodes each finished turn for the accurate stored transcript (the *hybrid* path
+  — see `docs/stt-model-gpu-benchmark.md`)
 - **Recorded, stored sessions** — every session is persisted as a conversation:
   transcript segments in Postgres, full audio retained on disk; browse, search,
   replay, export and delete from the UI
@@ -54,27 +56,44 @@ npm run test --workspace tenir-mobile
 ## Deployment
 
 One compose file at the repo root. The GPU host needs the NVIDIA Container
-Toolkit for the STT server; everything else is CPU-only.
+Toolkit for the STT servers; everything else is CPU-only.
 
 | Service | Port | Role |
 |---|---|---|
 | `app` | 8080 | ONE container: FastAPI api (`/health`, `/ws`, auth + history REST) **and** the built web UI, served same-origin — no CORS, no separate web container. Built from `api/Dockerfile` (repo-root context) |
 | `postgres-tenir` | 5432 | plain Postgres — transcripts, users (`schema.sql` applied on first boot) |
-| `litellm` | 4000 | LiteLLM gateway — the OpenAI-compatible front door the api uses for STT; master-key auth, routing in `litellm/config.yaml` |
-| `parakeet` | 9401 | OpenAI-compatible NVIDIA Parakeet STT (multilingual + auto language detection), built from `parakeet-stt/Dockerfile`, behind the gateway |
+| `litellm` | 4000 | LiteLLM gateway — the OpenAI-compatible front door the api uses for STT finals + cues; master-key auth, routing in `litellm/config.yaml` |
+| `parakeet` | 9401 | OpenAI-compatible NVIDIA Parakeet STT — offline model for accurate **finals** (multilingual + auto language detection), built from `parakeet-stt/Dockerfile` |
+| `nemotron` | 9402 | NVIDIA Nemotron cache-aware streaming STT — WebSocket `/v1/audio/stream` for low-latency **partials**, built from `nemotron-stt/Dockerfile` (hybrid backend only) |
 
 Retained audio lives on a bind mount (`API_AUDIO_DIR`, the "disk" audio
 backend). Smoke check once up: `curl localhost:8080/health`, then open
 `http://localhost:8080`.
 
+### Hybrid STT (partials vs finals)
+
+Live captions come from two models (`API_STT_BACKEND=hybrid`, the default):
+
+- **Partials** stream from `nemotron` over a persistent WebSocket
+  (`API_STT_STREAM_ENDPOINT`). It's cache-aware, so each chunk costs ~one chunk of
+  compute regardless of turn length — the live band stays responsive.
+- **Finals** decode the whole finished turn on `parakeet`
+  (`API_STT_ENDPOINT`, else the gateway) for the accurate stored transcript.
+
+If `nemotron` is unreachable the api degrades to Parakeet-only re-decode partials
+rather than losing the live band. Set `API_STT_BACKEND=voxtral` for the single-model
+(Parakeet-only) path — then the `nemotron` service isn't needed. Rationale and the
+GPU benchmark behind the split: [`docs/stt-model-gpu-benchmark.md`](docs/stt-model-gpu-benchmark.md).
+
 ### The LiteLLM gateway
 
-The api reaches the STT server through a single **LiteLLM gateway**: one base
+Finals and cues reach their model through a single **LiteLLM gateway**: one base
 URL + one key (`API_LITELLM_ENDPOINT`, `API_LITELLM_API_KEY`) instead of a
 per-model endpoint. Routing lives in [`litellm/config.yaml`](litellm/config.yaml):
 the alias the api sends (`API_STT_MODEL`, default `parakeet`) fans out to the
-real model the parakeet server serves. To split hosts, run the gateway + STT server on the
-GPU box and point `API_LITELLM_ENDPOINT` at it — no code changes, just env.
+real model the parakeet server serves. The Nemotron partials stream bypasses the
+gateway (WebSocket, direct). To split hosts, run the gateway + model servers on the
+GPU box and point the endpoints at it — no code changes, just env.
 
 ### Configuration
 
@@ -84,9 +103,10 @@ compose. Key envs on the app container:
 ```
 API_AUTH_SECRET        bearer-token signing secret (boot refuses the default)
 API_AUTH_ADMIN_*       bootstrap admin (username / password / household)
-API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT (…/v1)
+API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT finals + cues (…/v1)
 API_LITELLM_API_KEY    gateway key
-API_STT_BACKEND        voxtral (prod) | stub (model-free dev/CI)
+API_STT_BACKEND        hybrid (prod) | voxtral (Parakeet-only) | stub (dev/CI)
+API_STT_STREAM_ENDPOINT  WebSocket root of the Nemotron partials server (hybrid)
 API_PERSISTENCE_BACKEND  postgres | memory | off
 API_AUDIO_BACKEND      disk | memory | off      (+ API_AUDIO_DIR)
 ```

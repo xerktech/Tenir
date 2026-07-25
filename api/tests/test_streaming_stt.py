@@ -698,3 +698,219 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(settings, "stt_backend", "bogus")
     with pytest.raises(ValueError, match="unknown STT backend"):
         make_transcriber()
+
+
+# ----- hybrid streaming partials (XERK-115) ---------------------------------
+
+
+class FakeStreamSession:
+    """Records how it's driven; grows a transcript token per non-silent feed, like a
+    cache-aware stream would (silence yields no update)."""
+
+    def __init__(self, *, language: str | None) -> None:
+        self.language = language
+        self.feeds = 0
+        self.resets = 0
+        self.closed = False
+        self.fail_feed = False
+        self._tokens: list[str] = []
+
+    async def feed(self, pcm: bytes) -> str | None:
+        self.feeds += 1
+        if self.fail_feed:
+            raise RuntimeError("stream feed exploded")
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        if samples.size == 0 or int(np.abs(samples).max()) == 0:
+            return None  # silence -> no partial update
+        self._tokens.append(f"p{len(self._tokens)}")
+        return " ".join(self._tokens)
+
+    async def reset(self) -> None:
+        self.resets += 1
+        self._tokens = []
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FakeStreamEngine:
+    def __init__(self, *, fail_open: bool = False) -> None:
+        self.sessions: list[FakeStreamSession] = []
+        self.fail_open = fail_open
+
+    async def open(self, *, language: str | None) -> FakeStreamSession:
+        if self.fail_open:
+            raise RuntimeError("no route to stream server")
+        s = FakeStreamSession(language=language)
+        self.sessions.append(s)
+        return s
+
+
+def test_hybrid_partials_from_stream_finals_from_offline() -> None:
+    async def run() -> None:
+        eng = FakeEngine()
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            stream_engine=se,
+        )
+        for _ in range(3):  # speech: three chunks -> three growing stream partials
+            await t.push(_pcm(100, amplitude=8000))
+        for _ in range(3):  # trailing silence closes the turn
+            await t.push(_pcm(100, amplitude=0))
+        msgs = _drain(t)
+
+        partials = [m for m in msgs if isinstance(m, CaptionPartial)]
+        finals = [m for m in msgs if isinstance(m, CaptionFinal)]
+        assert [p.text for p in partials] == ["p0", "p0 p1", "p0 p1 p2"]
+        assert len(finals) == 1
+        assert finals[0].text == "hello world"  # final came from the offline engine
+        # The offline engine decoded ONLY the final — partials never touched it.
+        assert eng.calls == 1
+        assert len(se.sessions) == 1
+        assert se.sessions[0].feeds == 6  # every chunk, speech and silence, was fed
+        assert se.sessions[0].resets == 1  # cache cleared at the turn boundary
+
+    asyncio.run(run())
+
+
+def test_hybrid_suppresses_unchanged_and_empty_partials() -> None:
+    class StickySession(FakeStreamSession):
+        async def feed(self, pcm: bytes) -> str | None:
+            self.feeds += 1
+            return "same text"  # never advances
+
+    class StickyEngine(FakeStreamEngine):
+        async def open(self, *, language: str | None) -> FakeStreamSession:
+            s = StickySession(language=language)
+            self.sessions.append(s)
+            return s
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), language="en", stream_engine=StickyEngine(), silence_ms=100000
+        )
+        await t.push(_pcm(100, amplitude=8000))
+        await t.push(_pcm(100, amplitude=8000))
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert [p.text for p in partials] == ["same text"]  # emitted once, then deduped
+
+    asyncio.run(run())
+
+
+def test_hybrid_falls_back_to_redecode_when_stream_open_fails() -> None:
+    async def run() -> None:
+        eng = FakeEngine()
+        se = FakeStreamEngine(fail_open=True)
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=100000,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        await t.push(_pcm(100, amplitude=8000))
+        await t.push(_pcm(100, amplitude=8000))  # 200ms cadence -> re-decode partial
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert t._stream_failed is True
+        assert partials and partials[0].text == "hello world"  # offline fallback
+
+    asyncio.run(run())
+
+
+def test_hybrid_falls_back_when_stream_feed_fails_midsession() -> None:
+    async def run() -> None:
+        eng = FakeEngine()
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=100000,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        await t.push(_pcm(100, amplitude=8000))  # opens + one good stream partial
+        se.sessions[0].fail_feed = True
+        await t.push(_pcm(100, amplitude=8000))  # feed raises -> drop + fall back
+        msgs = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert t._stream_failed is True
+        assert se.sessions[0].closed is True  # broken session was closed
+        assert any(p.text == "hello world" for p in msgs)  # re-decode fallback kicked in
+
+    asyncio.run(run())
+
+
+def test_hybrid_reset_failure_drops_to_redecode() -> None:
+    class BadResetSession(FakeStreamSession):
+        async def reset(self) -> None:
+            raise RuntimeError("reset failed")
+
+    class BadResetEngine(FakeStreamEngine):
+        async def open(self, *, language: str | None) -> FakeStreamSession:
+            s = BadResetSession(language=language)
+            self.sessions.append(s)
+            return s
+
+    async def run() -> None:
+        se = BadResetEngine()
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            silence_ms=300,
+            min_segment_ms=100,
+            stream_engine=se,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=8000))
+        for _ in range(3):  # close the turn -> finalize -> reset() raises
+            await t.push(_pcm(100, amplitude=0))
+        assert t._stream_failed is True
+        assert se.sessions[0].closed is True
+
+    asyncio.run(run())
+
+
+def test_hybrid_close_closes_stream_session() -> None:
+    async def run() -> None:
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(FakeEngine(), language="en", stream_engine=se)
+        await t.push(_pcm(100, amplitude=8000))
+        await t.close()
+        assert se.sessions[0].closed is True
+
+    asyncio.run(run())
+
+
+def test_stream_locale_mapping() -> None:
+    from api.stt.streaming_engine import to_locale
+
+    assert to_locale("en") == "en-US"
+    assert to_locale("es") == "es-ES"
+    assert to_locale("EN") == "en-US"  # case-insensitive
+    assert to_locale("fr") == "auto"  # unmapped -> auto-detect
+    assert to_locale(None) == "auto"
+
+
+def test_factory_hybrid_builds_stream_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "hybrid")
+    monkeypatch.setattr(settings, "stt_stream_endpoint", "ws://nemotron:8000")
+    t = make_transcriber()
+    assert isinstance(t, StreamingTranscriber)
+    assert t._stream_engine is not None  # wired, but opens no socket until first audio
+
+
+def test_factory_hybrid_requires_stream_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "hybrid")
+    monkeypatch.setattr(settings, "stt_stream_endpoint", "")
+    with pytest.raises(ValueError, match="hybrid"):
+        make_transcriber()
