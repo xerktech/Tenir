@@ -50,6 +50,7 @@ function mountDom(): void {
             <button id="history-cue-popup-close" type="button">✕</button>
           </div>
           <div id="history-cue-popup-body"></div>
+          <div id="history-cue-popup-source" hidden></div>
         </div>
       </div>
     </div>
@@ -274,6 +275,31 @@ describe("conversation detail", () => {
     expect(popup.hidden).toBe(false);
     document.getElementById("history-cue-popup-close")!.click();
     expect(popup.hidden).toBe(true);
+  });
+
+  it("shows a grounded cue's source in the popup; hides the line otherwise (XERK-120)", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () =>
+        conversation({
+          cues: [cue({ source: "BBC News" }), cue({ cueId: "cue2", atMs: 8100 })],
+        }),
+      ),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+
+    const chips = [...document.querySelectorAll<HTMLButtonElement>("#history-transcript .cue-inline")];
+    const source = () => document.getElementById("history-cue-popup-source")!;
+
+    chips[0].click(); // grounded: the attribution line shows
+    expect(source().hidden).toBe(false);
+    expect(source().textContent).toBe("BBC News");
+    document.getElementById("history-cue-popup-close")!.click();
+
+    chips[1].click(); // ungrounded: the line is hidden, not stale
+    expect(source().hidden).toBe(true);
   });
 
   it("dismisses the cue popup by clicking the backdrop", async () => {

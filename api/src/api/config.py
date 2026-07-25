@@ -98,6 +98,47 @@ class Settings(BaseSettings):
     # non-reasoning model whose chat template rejects the `enable_thinking` kwarg.
     cue_disable_thinking: bool = True
 
+    # ---- Cue evidence retrieval (XERK-120) ---------------------------------------
+    # The cue model's weights are frozen years back (the deployed Qwen3 reports an
+    # October 2023 cutoff), so cues about current events answered from memory are
+    # guesses. With retrieval on, the session gathers evidence — the RSS-fed news
+    # corpus, Wikipedia, SearXNG web search — under a hard deadline and rides it in
+    # the cue prompt; a cue whose fact came from evidence carries the source label
+    # to the clients (the attribution line under the cue body).
+    #   "off"  — no grounding (default; cues behave exactly as before XERK-120).
+    #   "stub" — deterministic evidence for CI/dev, no network.
+    #   "live" — news corpus + Wikipedia + SearXNG.
+    cue_retrieval_backend: str = "off"  # off | stub | live
+    # Hard deadline for the retrieval fan-out. Evidence that lands in time rides
+    # the prompt; slower tiers settle into a per-session cache for the next cue
+    # consideration instead of delaying this one. 800ms keeps worst-case added cue
+    # latency under one LLM-call's worth (measured: news FTS <10ms, Wikipedia
+    # ~300-400ms, SearXNG ~500-800ms with pinned engines).
+    cue_retrieval_deadline_ms: int = 800
+    # Cap on evidence snippets in the prompt. Measured on the deployed model:
+    # ~1400 evidence tokens costs ~200ms on the ~1.1s call — cheap; 4x that is not.
+    cue_retrieval_max_evidence: int = 6
+    # Wikipedia API root for the encyclopedia tier ("" disables the tier).
+    cue_wikipedia_endpoint: str = "https://en.wikipedia.org"
+    # Self-hosted SearXNG root for the web tier ("" disables the tier — there is no
+    # public default on purpose; point it at your own instance).
+    cue_searxng_endpoint: str = ""
+    # Engines pinned per request, comma-separated ("" = the instance's defaults).
+    # Pinning is the latency lever: the measured default answers in ~500-800ms
+    # where the full engine fan-out takes 1-1.5s, and it leaves the shared
+    # instance's engine config untouched for its other consumers.
+    cue_searxng_engines: str = "startpage,bing,duckduckgo news"
+    # RSS feeds ingested into the news corpus (comma-separated URLs). Fetched every
+    # cue_rss_interval_seconds while retrieval is "live"; items older than
+    # cue_rss_keep_days are pruned so every corpus hit is recent by construction.
+    cue_rss_feeds: str = (
+        "https://feeds.bbci.co.uk/news/world/rss.xml,"
+        "https://feeds.npr.org/1001/rss.xml,"
+        "https://www.theguardian.com/world/rss"
+    )
+    cue_rss_interval_seconds: int = 600
+    cue_rss_keep_days: int = 14
+
     # Realtime windowing / VAD. Tune for the latency budget.
     stt_partial_interval_ms: int = 700  # re-run the partial hypothesis this often
     # Partials decode only this trailing window of the in-flight segment so partial

@@ -49,6 +49,7 @@ export interface PhoneHistoryElements {
   cuePopupCard: HTMLElement; // the centered card (clicks inside don't dismiss)
   cuePopupTitle: HTMLElement;
   cuePopupBody: HTMLElement;
+  cuePopupSource: HTMLElement; // live-source attribution line (XERK-120)
   cuePopupClose: HTMLButtonElement;
 }
 
@@ -78,12 +79,14 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
   const cuePopupCard = byId("history-cue-popup-card");
   const cuePopupTitle = byId("history-cue-popup-title");
   const cuePopupBody = byId("history-cue-popup-body");
+  const cuePopupSource = byId("history-cue-popup-source");
   const cuePopupClose = byId("history-cue-popup-close");
   if (
     !list || !form || !query || !status || !rows || !detail ||
     !back || !del || !meta || !cueToggle || !cueToggleInput ||
     !transcript || !audio || !audioEl || !audioLink ||
-    !cuePopup || !cuePopupCard || !cuePopupTitle || !cuePopupBody || !cuePopupClose
+    !cuePopup || !cuePopupCard || !cuePopupTitle || !cuePopupBody ||
+    !cuePopupSource || !cuePopupClose
   ) {
     return null;
   }
@@ -107,6 +110,7 @@ export function queryPhoneHistoryElements(doc: Document = document): PhoneHistor
     cuePopupCard,
     cuePopupTitle,
     cuePopupBody,
+    cuePopupSource,
     cuePopupClose: cuePopupClose as HTMLButtonElement,
   };
 }
@@ -377,6 +381,9 @@ export class PhoneHistory {
   private openCue(cue: CueView): void {
     this.els.cuePopupTitle.textContent = cue.title;
     this.els.cuePopupBody.textContent = cue.body;
+    // Live-source attribution (XERK-120): shown only for a grounded cue.
+    this.els.cuePopupSource.textContent = cue.source ?? "";
+    this.els.cuePopupSource.hidden = !cue.source;
     this.els.cuePopup.hidden = false;
   }
 

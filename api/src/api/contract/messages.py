@@ -164,6 +164,10 @@ class Cue(BaseModel):
         ...,
         description='Position on the conversation timeline (ms) the cue relates to, so history can render it inline where it appeared.',
     )
+    source: str | None = Field(
+        None,
+        description='Short label of the live source the cue\'s fact was grounded in (XERK-120), e.g. "BBC News" or "Wikipedia". Absent when the cue rests on the model\'s own knowledge; clients render it as a quiet attribution line under the body.',
+    )
 
 
 class Pong(BaseModel):

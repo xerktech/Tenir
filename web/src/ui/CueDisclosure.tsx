@@ -10,7 +10,16 @@
 
 import { useId, useState } from "react";
 
-export function CueDisclosure({ title, body }: { title: string; body: string }): JSX.Element {
+export function CueDisclosure({
+  title,
+  body,
+  source,
+}: {
+  title: string;
+  body: string;
+  /** Live-source attribution (XERK-120), shown under the body when present. */
+  source?: string | null;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const bodyId = useId();
   return (
@@ -31,9 +40,10 @@ export function CueDisclosure({ title, body }: { title: string; body: string }):
         <span className="cue-inline-title">{title}</span>
       </button>
       {open && (
-        <p className="cue-inline-body" id={bodyId}>
-          {body}
-        </p>
+        <div className="cue-inline-body" id={bodyId}>
+          <p className="cue-inline-text">{body}</p>
+          {source && <p className="cue-inline-source">{source}</p>}
+        </div>
       )}
     </div>
   );

@@ -294,7 +294,15 @@ export class SessionPage {
     const body = doc.createElement("div");
     body.className = "session-cue-body";
     body.textContent = cue.body;
-    this.els.cue.replaceChildren(head, body);
+    const children: HTMLElement[] = [head, body];
+    if (cue.source) {
+      // Where the fact came from (XERK-120): the live source it was grounded in.
+      const source = doc.createElement("div");
+      source.className = "session-cue-source";
+      source.textContent = cue.source;
+      children.push(source);
+    }
+    this.els.cue.replaceChildren(...children);
     this.els.cue.hidden = false;
     this.countdown = countdown;
   }
@@ -340,7 +348,12 @@ export class SessionPage {
     const titleEl = this.make("span", "cue-inline-title", cue.title);
     button.append(caret, mark, titleEl);
 
-    const body = this.make("p", "cue-inline-body", cue.body);
+    // A container (not a bare <p>) so the source line can sit under the text
+    // (XERK-120) and hide/show with it.
+    const body = this.els.text.ownerDocument.createElement("div");
+    body.className = "cue-inline-body";
+    body.appendChild(this.make("p", "cue-inline-text", cue.body));
+    if (cue.source) body.appendChild(this.make("p", "cue-inline-source", cue.source));
     body.id = bodyId;
     body.hidden = !open;
 

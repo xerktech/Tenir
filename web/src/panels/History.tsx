@@ -263,7 +263,12 @@ function ConversationDetail({
                 <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
               </div>
             ) : (
-              <CueDisclosure key={item.cue.cueId} title={item.cue.title} body={item.cue.body} />
+              <CueDisclosure
+                key={item.cue.cueId}
+                title={item.cue.title}
+                body={item.cue.body}
+                source={item.cue.source}
+              />
             ),
           )
         )}

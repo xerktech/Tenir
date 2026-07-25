@@ -72,7 +72,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             log.exception("initial status probe failed")
         status_task = asyncio.create_task(probe_loop())
+    # RSS ingest for the cue news corpus (XERK-120): only with live retrieval on —
+    # the stripped core, and the stub path CI runs, never touch the network.
+    rss_task: asyncio.Task[None] | None = None
+    if settings.cue_backend != "off" and settings.cue_retrieval_backend == "live":
+        from api.cue.rss import ingest_loop
+
+        rss_task = asyncio.create_task(ingest_loop())
     yield
+    if rss_task is not None:
+        rss_task.cancel()
     if status_task is not None:
         status_task.cancel()
     # Finalize any still-live (incl. detached, grace-pending) sessions on shutdown so

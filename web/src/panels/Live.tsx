@@ -114,6 +114,9 @@ function LiveCueBand({
           </div>
         </div>
         <div className="cue-card-body">{cue.body}</div>
+        {/* Where the fact came from (XERK-120): the live source it was grounded
+            in. Absent for a cue from the model's own knowledge. */}
+        {cue.source && <div className="cue-card-source">{cue.source}</div>}
       </div>
       {queuedCount > 0 && (
         <div
@@ -191,7 +194,11 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
                 ) : (
                   // A released cue, embedded inline as a collapsed dropdown (XERK-108).
                   <li className="transcript-cue" key={`cue-${item.cue.id}`}>
-                    <CueDisclosure title={item.cue.title} body={item.cue.body} />
+                    <CueDisclosure
+                      title={item.cue.title}
+                      body={item.cue.body}
+                      source={item.cue.source}
+                    />
                   </li>
                 ),
               )}

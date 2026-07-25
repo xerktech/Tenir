@@ -209,3 +209,63 @@ def test_message_content_falls_back_to_reasoning_content() -> None:
     msg = {"content": None, "reasoning_content": '{"cue": true, "title": "T", "body": "B"}'}
     assert OpenAICueGenerator._message_content(msg) == '{"cue": true, "title": "T", "body": "B"}'
     assert OpenAICueGenerator._message_content({}) == ""
+
+
+# ---- evidence grounding (XERK-120) ------------------------------------------
+
+
+def _evidence() -> list:
+    from api.cue.retrieval.base import Evidence
+
+    return [
+        Evidence(source="BBC News", title="PM sworn in", snippet="A new PM took office.",
+                 published="2026-07-20"),
+        Evidence(source="Wikipedia", title="Prime Minister", snippet="The head of government."),
+    ]
+
+
+def test_payload_embeds_numbered_dated_evidence() -> None:
+    system = _gen()._build_payload("who is the PM?", (), _evidence())["messages"][0]["content"]
+    assert "[1] (BBC News, 2026-07-20) PM sworn in: A new PM took office." in system
+    assert "[2] (Wikipedia) Prime Minister: The head of government." in system
+    # The staleness rule rides with the evidence: retrieved facts outrank memory.
+    assert "out of date" in system
+    assert "evidence wins" in system
+
+
+def test_payload_omits_evidence_block_without_evidence() -> None:
+    system = _gen()._build_payload("who is the PM?")["messages"][0]["content"]
+    assert "EVIDENCE" not in system
+    assert "out of date" not in system
+
+
+def test_parse_maps_citation_to_source_label() -> None:
+    cue = _gen()._parse(
+        '{"cue": true, "title": "PM", "body": "B.", "evidence": [1, 2]}', _evidence()
+    )
+    assert cue is not None
+    assert cue.source == "BBC News"  # first cited item's label
+
+
+def test_parse_uncited_cue_has_no_source() -> None:
+    cue = _gen()._parse('{"cue": true, "title": "PM", "body": "B."}', _evidence())
+    assert cue is not None
+    assert cue.source is None
+
+
+def test_parse_ignores_malformed_or_out_of_range_citations() -> None:
+    for cited in ('"evidence": [99]', '"evidence": "1"', '"evidence": [0, -1]',
+                  '"evidence": ["one"]'):
+        cue = _gen()._parse(
+            '{"cue": true, "title": "PM", "body": "B.", %s}' % cited, _evidence()
+        )
+        assert cue is not None
+        assert cue.source is None, cited
+
+
+def test_stub_grounds_in_first_evidence_item() -> None:
+    stub = StubCueGenerator()
+    grounded = stub.generate("who is the PM?", evidence=_evidence())
+    assert grounded is not None and grounded.source == "BBC News"
+    ungrounded = stub.generate("who is the PM?")
+    assert ungrounded is not None and ungrounded.source is None

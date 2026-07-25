@@ -192,6 +192,28 @@ describe("HistoryPanel", () => {
     await waitFor(() => expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument());
   });
 
+  it("shows a grounded cue's source in the expanded dropdown (XERK-120)", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [{ segmentId: "s1", text: "who is the PM", startMs: 0, endMs: 1500, lang: "en" }],
+      cues: [
+        {
+          cueId: "cue-1",
+          title: "Prime Minister",
+          body: "Andy Burnham took office.",
+          atMs: 1500,
+          source: "BBC News",
+        },
+      ],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Prime Minister/ }));
+    expect(screen.getByText("BBC News")).toBeInTheDocument();
+  });
+
   it("hides inline cues via the Show-cues toggle, default on (XERK-104)", async () => {
     list.mockResolvedValue([summary()]);
     get.mockResolvedValue({

@@ -277,7 +277,7 @@ export function cueBox(cue: CueCard): PopupBox {
  * always match the text exactly (XERK-119).
  */
 export function cueRows(cue: CueCard): number {
-  return 1 + Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
+  return 1 + Math.min(cueBodyLines(cueDetail(cue)).length, CUE_BODY_LINES);
 }
 
 /**
@@ -345,6 +345,25 @@ export function buildCuePage(
 export interface CueCard {
   title: string;
   body: string;
+  /**
+   * Live-source attribution (XERK-120), e.g. "BBC News". On the lens — where a
+   * row is one string and there is no secondary text style — it rides the end
+   * of the scrollable body (see `cueDetail`); the phone pages give it its own
+   * quiet line like web/mobile do.
+   */
+  source?: string;
+}
+
+/**
+ * The text the cue box lays out below the title (XERK-120): the body, with the
+ * source appended as " — <source>" when the cue is grounded. Appending (rather
+ * than a dedicated row) keeps the box sizing/scroll logic working on one
+ * string, and the attribution scrolls into view with the end of the body —
+ * every layout helper below and the controller's scroll clamp use this, so the
+ * box, its masked rows, and the scroll range always agree.
+ */
+export function cueDetail(cue: CueCard): string {
+  return cue.source ? `${cue.body} — ${cue.source}` : cue.body;
 }
 
 /**
@@ -398,9 +417,9 @@ export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string 
   const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
   const upper = cue.title.toUpperCase();
   const titleLine = wrapLines(upper, CUE_TEXT_W - reserved)[0] ?? upper;
-  const body = cueBodyLines(cue.body);
+  const body = cueBodyLines(cueDetail(cue));
   // Clamp the window to the body so a stale/over-large scroll can't blank the box.
-  const start = Math.min(Math.max(0, scroll), cueMaxScroll(cue.body));
+  const start = Math.min(Math.max(0, scroll), cueMaxScroll(cueDetail(cue)));
   const visible = body.slice(start, start + CUE_BODY_LINES);
   return [rowWithRightEdge(titleLine, countdown, CUE_TEXT_W), ...visible].join("\n");
 }

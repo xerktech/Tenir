@@ -171,7 +171,7 @@ def test_session_hands_generator_the_titles_already_surfaced(
         counter = {"n": 0}
 
         class SpyGen:
-            def generate(self, transcript, *, avoid_titles=()):  # type: ignore[no-untyped-def]
+            def generate(self, transcript, *, avoid_titles=(), evidence=()):  # type: ignore[no-untyped-def]
                 seen_avoid.append(list(avoid_titles))
                 counter["n"] += 1
                 return GeneratedCue(title=f"Cue {counter['n']}", body="body")
@@ -213,5 +213,81 @@ def test_cue_persisted_even_when_delivery_fails(monkeypatch: pytest.MonkeyPatch)
         # The socket was gone, but the cue is still recorded (like captions).
         conv = get_conversation_store().get("default", session.session_id)
         assert conv is not None and len(conv.cues) == 1
+
+    asyncio.run(run())
+
+
+def test_grounded_cue_carries_source_to_frame_and_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    # XERK-120: with retrieval on (stub), the evidence source label rides the WS
+    # frame and the persisted record — the whole attribution path, no network.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    monkeypatch.setattr(settings, "cue_retrieval_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        assert session._cue_retriever is not None
+        session._consider_cue(_final("how far is the Eiffel Tower?", end_ms=2000))
+        await _drain_cues(session)
+        await session.close()
+
+        cues = _cues(sent)
+        assert len(cues) == 1
+        assert cues[0].source == "Stub Reference"
+
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None
+        assert conv.cues[0].source == "Stub Reference"
+
+    asyncio.run(run())
+
+
+def test_retrieval_off_leaves_cues_ungrounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    monkeypatch.setattr(settings, "cue_retrieval_backend", "off")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        assert session._cue_retriever is None
+        session._consider_cue(_final("how far is the sun?"))
+        await _drain_cues(session)
+        await session.close()
+        cues = _cues(sent)
+        assert len(cues) == 1
+        assert cues[0].source is None
+
+    asyncio.run(run())
+
+
+def test_retrieval_failure_still_yields_an_ungrounded_cue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Evidence is an upgrade, not a gate: a broken retriever must not cost the cue.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    monkeypatch.setattr(settings, "cue_retrieval_backend", "stub")
+
+    class ExplodingRetriever:
+        closed = False
+
+        async def retrieve(self, turns):
+            raise RuntimeError("retrieval down")
+
+        async def close(self):
+            self.closed = True
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        exploding = ExplodingRetriever()
+        session._cue_retriever = exploding
+        session._consider_cue(_final("how far is the sun?"))
+        await _drain_cues(session)
+        await session.close()
+        cues = _cues(sent)
+        assert len(cues) == 1
+        assert cues[0].source is None
+        # The session releases the retriever's resources at close.
+        assert exploding.closed
 
     asyncio.run(run())

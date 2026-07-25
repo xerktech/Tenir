@@ -8,6 +8,7 @@ import {
   buildStartupContainer,
   cueBodyLines,
   cueBox,
+  cueDetail,
   cueHeight,
   cueMaxScroll,
   cueRowRange,
@@ -639,5 +640,37 @@ describe("cue popup (XERK-81)", () => {
       expect(maskTop).toBeLessThanOrEqual(Math.max(box.y, LINE_H));
       expect(maskBottom).toBeGreaterThanOrEqual(box.y + box.height);
     });
+  });
+});
+
+describe("cue source on the lens (XERK-120)", () => {
+  it("appends a grounded cue's source to the scrollable body", () => {
+    const grounded = { title: "PM", body: "Andy Burnham took office.", source: "BBC News" };
+    expect(cueDetail(grounded)).toBe("Andy Burnham took office. — BBC News");
+    // The attribution rides the laid-out text, so it scrolls with the body end.
+    expect(cueText(grounded)).toContain("BBC News");
+  });
+
+  it("leaves an ungrounded cue's body untouched", () => {
+    const cue = { title: "Sun", body: "About 150 million km away." };
+    expect(cueDetail(cue)).toBe(cue.body);
+    expect(cueText(cue)).not.toContain("—");
+  });
+
+  it("keeps box height, masked rows and scroll range agreeing on the appended source", () => {
+    // A body sized so the appended source pushes it over a row boundary: every
+    // consumer must lay out the SAME composed string, or the box would clip or
+    // blank rows (XERK-119's invariant, now with the source appended).
+    const cue = {
+      title: "History",
+      body: "word ".repeat(30).trim(),
+      source: "Wikipedia",
+    };
+    const rows = cueText(cue).split("\n");
+    expect(rows).toHaveLength(cueRows(cue));
+    expect(cueBox(cue).height).toBe(cueHeight(cueRows(cue)));
+    // Scrolled to the end, the last visible row carries the attribution.
+    const rowsAtEnd = cueText(cue, undefined, cueMaxScroll(cueDetail(cue))).split("\n");
+    expect(rowsAtEnd[rowsAtEnd.length - 1]).toContain("Wikipedia");
   });
 });

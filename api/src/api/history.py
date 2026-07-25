@@ -51,10 +51,14 @@ class CueOut(BaseModel):
     title: str
     body: str
     atMs: int
+    # Live-source attribution (XERK-120); None for a cue from model knowledge.
+    source: str | None = None
 
     @classmethod
     def of(cls, cue: Cue) -> "CueOut":
-        return cls(cueId=cue.cue_id, title=cue.title, body=cue.body, atMs=cue.at_ms)
+        return cls(
+            cueId=cue.cue_id, title=cue.title, body=cue.body, atMs=cue.at_ms, source=cue.source
+        )
 
 
 class ConversationSummaryOut(BaseModel):

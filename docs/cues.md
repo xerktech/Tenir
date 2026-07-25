@@ -32,7 +32,11 @@ kept permanently, so there is nothing to count down to.
 
 Each cue has a **title** (1–3 words) and a **body** (the correction or verified
 fact). A correction is just a cue whose body states the right fact — there is no
-separate cue type; it rides the same title/body shape as any other cue.
+separate cue type; it rides the same title/body shape as any other cue. A cue
+whose fact was grounded in a live source (XERK-120, below) also carries a
+**source** — a short label like "BBC News" or "Wikipedia" rendered as a quiet
+attribution line under the body on every surface (on the lens, where a row is
+one string, it is appended to the scrollable body as " — BBC News").
 
 ## How it works
 
@@ -81,6 +85,30 @@ The old three-level toggle (Conservative / Balanced / Aggressive) that web + mob
 used to expose and persist per client (XERK-81) is gone; the per-client `cueLevel`
 on `session.start` is no longer sent by any client. The glasses client never had
 the toggle, so it simply matches the single fixed setting everyone else gets.
+
+## Evidence retrieval (XERK-120)
+
+The cue model's weights are frozen years back (the deployed Qwen3 reports an
+October 2023 cutoff), so a cue about anything current answered from memory is a
+guess — probed directly, the model confidently names a UK prime minister two
+governments stale. With `API_CUE_RETRIEVAL_BACKEND=live`, the session gathers
+**evidence** before the model call and rides it in the prompt: three tiers — an
+RSS-fed news corpus in Postgres (FTS, <10ms), Wikipedia (~300-400ms), and a
+self-hosted SearXNG (~500-800ms with pinned engines) — fan out concurrently
+under a hard deadline (`API_CUE_RETRIEVAL_DEADLINE_MS`, 800ms). Whatever lands
+in time is numbered into the system prompt with source + date; the prompt tells
+the model that for recent events the evidence outranks its memory, and to cite
+the items it used. The first citation becomes the cue's `source` label; tiers
+that miss the deadline settle into a per-session cache for the next cue instead
+of delaying this one. Retrieval failure of any kind degrades to an ungrounded
+cue — evidence is an upgrade, never a gate, and captions are never touched.
+
+The full research — latency measurements on the production model, the
+vector-DB-vs-FTS decision, SearXNG engine health — lives in
+`docs/cue-rag.md`. The RSS ingest loop (`api/src/api/cue/rss.py`) runs in the
+api lifespan only when retrieval is `live`, fetching `API_CUE_RSS_FEEDS` every
+10 minutes and pruning items older than 14 days, so every corpus hit is recent
+by construction.
 
 ## Backends (`API_CUE_BACKEND`)
 

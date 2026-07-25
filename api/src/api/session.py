@@ -26,6 +26,7 @@ from api.contract import (
     SessionReady,
 )
 from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize_cue_title
+from api.cue.retrieval import EvidenceRetriever, make_evidence_retriever
 from api.metrics import metrics
 from api.persistence import (
     Cue as CueRecord,
@@ -77,6 +78,9 @@ class Session:
         # path — a cue is a best-effort aside, produced in a background task so a slow
         # or failing model never stalls captions.
         self._cue_generator: CueGenerator | None = None
+        # Evidence retrieval (XERK-120): live-source grounding for cue facts. None
+        # when retrieval is off — cues then run ungrounded exactly as before.
+        self._cue_retriever: EvidenceRetriever | None = None
         self._recent_finals: deque[str] = deque(maxlen=max(1, settings.cue_context_segments))
         # De-dupe cues for the WHOLE conversation, not a short rolling window
         # (XERK-102): a cue surfaced once must not pop up again later, however far
@@ -133,6 +137,9 @@ class Session:
         # Build the cue generator (None when API_CUE_BACKEND=off — the default —
         # so the stripped core does no cue work at all).
         self._cue_generator = make_cue_generator()
+        # And its evidence retriever (XERK-120); only meaningful with cues on.
+        if self._cue_generator is not None:
+            self._cue_retriever = make_evidence_retriever()
         if self._conversations is not None:
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
@@ -305,10 +312,24 @@ class Session:
             # Only the most recent titles ride the prompt (older ones are still
             # caught by the full backstop set below), so the ask stays compact.
             avoid = list(self._surfaced_cue_titles[-_CUE_AVOID_PROMPT_LIMIT:])
+            # Gather live-source evidence first (XERK-120). The retriever bounds
+            # its own latency (deadline inside), and failure means an ungrounded
+            # cue, never a missing one — evidence is an upgrade, not a gate.
+            evidence = []
+            if self._cue_retriever is not None:
+                try:
+                    with metrics.timer("cue.retrieval_ms"):
+                        evidence = await self._cue_retriever.retrieve(list(self._recent_finals))
+                except Exception:
+                    log.warning(
+                        "session %s cue evidence retrieval failed", self.session_id, exc_info=True
+                    )
+                    metrics.incr("cue.retrieval.errors")
             generated = await asyncio.to_thread(
                 self._cue_generator.generate,
                 transcript,
                 avoid_titles=avoid,
+                evidence=evidence,
             )
             if generated is None:
                 return
@@ -328,20 +349,32 @@ class Session:
             self._surfaced_cue_titles.append(title)
             self._last_cue_monotonic = time.monotonic()
             cue_id = uuid.uuid4().hex
+            source = generated.source
             try:
-                await self._send(Cue(type="cue", cueId=cue_id, title=title, body=body, atMs=at_ms))
+                await self._send(
+                    Cue(
+                        type="cue",
+                        cueId=cue_id,
+                        title=title,
+                        body=body,
+                        atMs=at_ms,
+                        source=source,
+                    )
+                )
             except Exception:
                 # Like captions, delivery is best-effort but the record is not:
                 # persist below even if the socket is gone.
                 log.warning("session %s could not deliver a cue (client gone)", self.session_id)
                 metrics.incr("cue.send_errors")
             metrics.incr("cue.emitted")
+            if source:
+                metrics.incr("cue.grounded")
             if self._conversations is not None:
                 await asyncio.to_thread(
                     self._conversations.add_cue,
                     self._household,
                     self.session_id,
-                    CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms),
+                    CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms, source=source),
                 )
         except Exception:
             log.warning("session %s cue generation failed", self.session_id, exc_info=True)
@@ -368,6 +401,11 @@ class Session:
                 metrics.incr("stage.stt.errors")
         if self._pump is not None:
             await self._pump
+        if self._cue_retriever is not None:
+            try:
+                await self._cue_retriever.close()
+            except Exception:
+                log.warning("session %s cue retriever close failed", self.session_id)
         await self._persist()
         log.info("session %s closed", self.session_id)
 

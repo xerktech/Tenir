@@ -182,7 +182,12 @@ function Detail({
             toggle above) to drag-select the whole conversation at once. */}
         {runs(items).map((run, i) =>
           run.kind === "cue" ? (
-            <CueDisclosure key={run.cue.cueId} title={run.cue.title} body={run.cue.body} />
+            <CueDisclosure
+              key={run.cue.cueId}
+              title={run.cue.title}
+              body={run.cue.body}
+              source={run.cue.source}
+            />
           ) : (
             <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
               {run.segs.map((seg, j) => (

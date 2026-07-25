@@ -73,3 +73,19 @@ def test_live_session_pushes_cue_frame(monkeypatch: pytest.MonkeyPatch) -> None:
                 assert isinstance(msg["atMs"], int)
                 break
         assert saw_cue
+
+
+def test_history_detail_carries_cue_source() -> None:
+    # XERK-120: a grounded cue's attribution survives into history; an ungrounded
+    # one serializes with source null.
+    convs = get_conversation_store()
+    convs.create("default", "c3")
+    convs.add_segment("default", "c3", Segment("c3-s1", "who is the PM", 0, 1000))
+    convs.add_cue(
+        "default", "c3", Cue("cue-g", "PM", "Andy Burnham took office.", 900, source="BBC News")
+    )
+    convs.add_cue("default", "c3", Cue("cue-u", "Sun", "150M km away.", 950))
+    convs.finish("default", "c3", status="ready")
+    with TestClient(app) as client:
+        cues = client.get("/conversations/c3").json()["cues"]
+        assert {c["cueId"]: c["source"] for c in cues} == {"cue-g": "BBC News", "cue-u": None}
