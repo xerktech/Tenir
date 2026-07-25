@@ -249,7 +249,22 @@ class LiveEvidenceRetriever:
     async def _searxng_tier(self, query: RetrievalQuery) -> list[Evidence]:
         if not self._searxng:
             return []
-        params = {"q": query.text or " ".join(query.keywords), "format": "json"}
+        # timeout_limit bounds how long SearXNG waits on its upstream engines
+        # for THIS request (XERK-124). Without it, one slow engine holds the
+        # whole response until the instance's per-engine timeout (measured:
+        # 3.1s with a hanging engine) — past the retrieval deadline, so the
+        # tier contributed nothing even though the other engines had answered.
+        # Bounded just under the deadline (~200ms margin for LAN + JSON), a
+        # slow engine now costs its own results only: whatever arrived in time
+        # still rides the prompt on the turn it was asked for. The working
+        # engines answer in ~1.0-1.2s, comfortably inside the bound; anything
+        # slower is in practice a timeout or a suspension, not results.
+        timeout_limit = max(0.5, self._deadline_ms / 1000 - 0.2)
+        params = {
+            "q": query.text or " ".join(query.keywords),
+            "format": "json",
+            "timeout_limit": f"{timeout_limit:.1f}",
+        }
         if self._engines:
             params["engines"] = self._engines
         resp = await self._http().get(f"{self._searxng}/search", params=params)
