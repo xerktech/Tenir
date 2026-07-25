@@ -4,6 +4,9 @@
  * about connectivity inside one, newest text followed.
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -20,6 +23,10 @@ function mountDom(): void {
     <section id="page-session">
       <span id="session-dot" hidden></span>
       <span class="badge-neutral" id="session-badge">idle</span>
+      <div class="row" id="session-controls" hidden>
+        <button class="btn btn-primary" id="session-start" type="button">Start</button>
+        <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+      </div>
       <div class="session-cue" id="session-cue" hidden></div>
       <div class="empty" id="session-empty">
         <p id="session-empty-title"></p>
@@ -64,6 +71,19 @@ describe("querySessionPageElements", () => {
   it("returns null when the page has no session elements (instead of failing the app)", () => {
     document.body.innerHTML = "";
     expect(querySessionPageElements()).toBeNull();
+  });
+
+  it("finds them in the page that actually ships", () => {
+    // The test fixtures above are hand-written; this guards the real markup, so
+    // a renamed or missing id can't silently drop the whole Session page (query
+    // returns null → main.ts skips it) instead of failing here.
+    document.body.innerHTML = readFileSync(resolve(process.cwd(), "index.html")).toString("utf8");
+    const els = querySessionPageElements();
+    expect(els).not.toBeNull();
+    expect(els!.start.textContent).toBe("Start");
+    expect(els!.stop.textContent).toBe("Stop");
+    // Shipped hidden: revealed only once a lens controller attaches (XERK-116).
+    expect(els!.controls.hidden).toBe(true);
   });
 });
 
@@ -123,6 +143,62 @@ describe("SessionPage", () => {
     page.update(view({ connection: "closed" }));
     expect(badge().textContent).toBe("reconnecting…");
     expect(badge().className).toBe("badge-neutral");
+  });
+
+  describe("start/stop controls (XERK-116)", () => {
+    const controlsRow = () => document.getElementById("session-controls")!;
+    const startBtn = () => document.getElementById("session-start") as HTMLButtonElement;
+    const stopBtn = () => document.getElementById("session-stop") as HTMLButtonElement;
+
+    it("stays hidden until a lens hands over its controls", () => {
+      const page = mount();
+      page.update(view({ recording: false }));
+      // No glasses wired (a plain browser): nothing to record with, so no buttons.
+      expect(controlsRow().hidden).toBe(true);
+      expect(hint().textContent).toBe("Tap your glasses to start a session.");
+
+      page.setControls({ start: () => {}, stop: () => {} });
+      expect(controlsRow().hidden).toBe(false);
+      // The row appears immediately, without waiting for the next session update.
+      expect(startBtn().hidden).toBe(false);
+      expect(stopBtn().hidden).toBe(true);
+    });
+
+    it("offers Start when idle and Stop while recording", () => {
+      const page = mount();
+      page.setControls({ start: () => {}, stop: () => {} });
+
+      page.update(view({ recording: false }));
+      expect(startBtn().hidden).toBe(false);
+      expect(stopBtn().hidden).toBe(true);
+      // Idle now points at the button as well as the glasses.
+      expect(hint().textContent).toBe("Press Start, or tap your glasses, to begin a session.");
+
+      page.update(view({ recording: true }));
+      expect(startBtn().hidden).toBe(true);
+      expect(stopBtn().hidden).toBe(false);
+    });
+
+    it("drives the controls it was given", () => {
+      const start = vi.fn();
+      const stop = vi.fn();
+      const page = mount();
+      page.setControls({ start, stop });
+
+      page.update(view({ recording: false }));
+      startBtn().click();
+      expect(start).toHaveBeenCalledTimes(1);
+
+      page.update(view({ recording: true }));
+      stopBtn().click();
+      expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores clicks before any controls are attached", () => {
+      mount().update(view({ recording: false }));
+      expect(() => startBtn().click()).not.toThrow();
+      expect(() => stopBtn().click()).not.toThrow();
+    });
   });
 
   it("renders caption text as text, not markup", () => {

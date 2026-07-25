@@ -19,6 +19,10 @@
  * overflows, and neither the band nor the clock ever captures input, so the
  * OS scroll animation only ever targets the invisible touch overlay.
  *
+ * The glasses are not the only way in and out of a session (XERK-116): the
+ * phone Session page gets the same start/stop through `setControls`, so a
+ * wearer can begin or end a recording from whichever surface is to hand.
+ *
  * Touch gestures reach the app on two channels: `sysEvent`, and `textEvent`
  * aimed at the captured touch overlay — both are routed through one gesture
  * handler (with a short same-gesture dedupe in case a host mirrors a gesture
@@ -411,6 +415,23 @@ export async function wireLens(
     else showIdle();
     syncPhone();
   };
+
+  // Start/stop from the phone Session page (XERK-116): the same two transitions
+  // the glasses drive (a tap to start, the popup's Exit session to stop), so a
+  // session no longer has to be begun and ended on the glasses. Both are guarded
+  // by the current state — the buttons and the lens can't disagree about whether
+  // a session is running, but a queued tap racing a gesture still must not start
+  // a second one or stop a session twice.
+  sessionPage?.setControls({
+    start: () => {
+      if (!enabled || state.recording) return;
+      startSession();
+    },
+    stop: () => {
+      if (!state.recording) return;
+      stopSession();
+    },
+  });
 
   const enable = () => {
     enabled = true;

@@ -109,6 +109,10 @@ async function boot(
       <section id="page-session">
         <span id="session-dot" hidden></span>
         <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="row" id="session-controls" hidden>
+          <button class="btn btn-primary" id="session-start" type="button">Start</button>
+          <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+        </div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -483,6 +487,101 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     expect(document.getElementById("session-text")!.hidden).toBe(true);
   });
 
+  describe("start/stop from the phone (XERK-116)", () => {
+    const startBtn = () => document.getElementById("session-start") as HTMLButtonElement;
+    const stopBtn = () => document.getElementById("session-stop") as HTMLButtonElement;
+    const controlsRow = () => document.getElementById("session-controls")!;
+
+    it("starts and stops a session from the phone buttons", async () => {
+      const t = await boot({ withPhone: true });
+      t.controls.enable();
+      await settle();
+      // Wiring the lens revealed the row; idle offers Start.
+      expect(controlsRow().hidden).toBe(false);
+      expect(startBtn().hidden).toBe(false);
+      expect(stopBtn().hidden).toBe(true);
+
+      startBtn().click();
+      await settle();
+      expect(t.api.calls).toHaveLength(1); // a real session, same as a glasses tap
+      expect(t.api.calls[0].resume).toBeUndefined();
+      expect(t.text(C().status)).toBe("connecting to server…");
+      expect(t.text(C().caption)).not.toBe(controllerMod.IDLE_PROMPT);
+      // The page swapped to Stop the moment the session began.
+      expect(startBtn().hidden).toBe(true);
+      expect(stopBtn().hidden).toBe(false);
+
+      t.api.handlers().onConnectionChange?.("open");
+      await settle();
+      stopBtn().click();
+      await settle();
+      expect(t.api.stops).toHaveLength(1); // session.end sent, socket closed
+      expect(t.text(C().status)).toBe("ready");
+      expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+      expect(startBtn().hidden).toBe(false);
+      expect(stopBtn().hidden).toBe(true);
+    });
+
+    it("ends a session begun on the glasses, and vice versa", async () => {
+      const t = await boot({ withPhone: true });
+      t.controls.enable();
+      await settle();
+
+      // Started on the glasses, ended from the phone.
+      await t.click();
+      expect(t.api.calls).toHaveLength(1);
+      stopBtn().click();
+      await settle();
+      expect(t.api.stops).toHaveLength(1);
+      expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+
+      // Started from the phone, ended on the glasses.
+      startBtn().click();
+      await settle();
+      expect(t.api.calls).toHaveLength(2);
+      await t.exitViaMenu();
+      expect(t.api.stops).toHaveLength(2);
+      expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+    });
+
+    it("stops a session whose exit popup is open on the lens", async () => {
+      const t = await boot({ withPhone: true });
+      t.controls.enable();
+      await t.click();
+      await t.doubleTap(); // the wearer opened Continue / Exit session on the lens
+
+      stopBtn().click();
+      await settle();
+      expect(t.api.stops).toHaveLength(1);
+      // The popup page is torn back down rather than left over the idle lens.
+      expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+      expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+      expect(t.text(C().status)).toBe("ready");
+    });
+
+    it("cannot double-start or double-stop, and does nothing signed out", async () => {
+      const t = await boot({ withPhone: true });
+
+      // Signed out the shell hides these buttons, but a stray click must not
+      // start a session the wearer isn't authenticated for.
+      startBtn().click();
+      await settle();
+      expect(t.api.calls).toHaveLength(0);
+
+      t.controls.enable();
+      await settle();
+      startBtn().click();
+      startBtn().click();
+      await settle();
+      expect(t.api.calls).toHaveLength(1);
+
+      stopBtn().click();
+      stopBtn().click();
+      await settle();
+      expect(t.api.stops).toHaveLength(1);
+    });
+  });
+
   it("stops the session and shows the sign-in prompt on sign-out", async () => {
     const t = await boot();
     t.controls.enable();
@@ -585,6 +684,10 @@ describe("wireLens cues (XERK-81)", () => {
       <section id="page-session">
         <span id="session-dot" hidden></span>
         <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="row" id="session-controls" hidden>
+          <button class="btn btn-primary" id="session-start" type="button">Start</button>
+          <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+        </div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -664,6 +767,10 @@ describe("wireLens cues (XERK-81)", () => {
       <section id="page-session">
         <span id="session-dot" hidden></span>
         <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="row" id="session-controls" hidden>
+          <button class="btn btn-primary" id="session-start" type="button">Start</button>
+          <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+        </div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -706,6 +813,10 @@ describe("wireLens cues (XERK-81)", () => {
       <section id="page-session">
         <span id="session-dot" hidden></span>
         <span class="badge-neutral" id="session-badge">idle</span>
+        <div class="row" id="session-controls" hidden>
+          <button class="btn btn-primary" id="session-start" type="button">Start</button>
+          <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+        </div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
