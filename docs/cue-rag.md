@@ -131,13 +131,23 @@ audited rather than modified:
 > not survive contact with production. Re-measured against the same instance:
 > Startpage and Google return only CAPTCHAs, DuckDuckGo denies access, and Bing
 > was never among the instance's *enabled* engines at all — so the web tier
-> returned **zero usable results for every real query**. Two changes fixed it:
-> Mojeek (own index, tolerates self-hosted clients) was enabled on the instance
-> and is now the pinned default with Brave as backup; and the retriever stopped
-> re-querying on every finalized turn, which is what drove the engines to
-> suspend the instance in the first place. Engine reachability is a *moving*
-> property — treat a pin as perishable and re-probe it, don't trust a
-> one-off measurement.
+> returned **zero usable results for every real query**.
+>
+> Three changes fixed it. The retriever stopped re-querying on every finalized
+> turn, which is what drove the engines to suspend the instance in the first
+> place. The instance's own config was rebuilt (DockerOps `searxng/settings.yml`)
+> — it had been a stale full copy of an older release's settings, which is why
+> `google cse`, upstream's default and the best-performing engine available
+> here, was missing entirely. And the pin became **plural**.
+>
+> Redundancy, not engine choice, is what makes this work. Every one of these
+> engines rate-limits or CAPTCHA-walls a self-hosted instance eventually, so a
+> pin is only as good as its spares — measured over four consecutive queries, a
+> two-engine pin answered **1 of 4** (whichever engine gets asked twice
+> suspends), while `google cse,duckduckgo,mojeek` answered **4 of 4**, ~1.0s
+> median. Engine reachability is a *moving* property: treat a pin as perishable
+> and re-probe it rather than trusting a one-off measurement — including this
+> one.
 
 ## End-to-end proof
 
@@ -167,7 +177,7 @@ untouched until opted in (see `api/src/api/config.py` for full comments):
 | `API_CUE_RETRIEVAL_MAX_EVIDENCE` | `6` | evidence snippets in the prompt |
 | `API_CUE_WIKIPEDIA_ENDPOINT` | `https://en.wikipedia.org` | `""` disables the tier |
 | `API_CUE_SEARXNG_ENDPOINT` | `""` (off) | your SearXNG root |
-| `API_CUE_SEARXNG_ENGINES` | `mojeek,brave` | per-request engine pin |
+| `API_CUE_SEARXNG_ENGINES` | `google cse,duckduckgo,mojeek` | per-request engine pin |
 | `API_CUE_RSS_FEEDS` | BBC/NPR/Guardian world | comma-separated URLs |
 | `API_CUE_RSS_INTERVAL_SECONDS` | `600` | ingest cadence |
 | `API_CUE_RSS_KEEP_DAYS` | `14` | corpus retention |
@@ -215,7 +225,7 @@ Replaying a recorded session (34 finalized turns) through the deployed stack:
 |---|---|---|
 | Turns where retrieval returned any evidence | **0 / 34** | **29 / 34** |
 | Wikipedia queries | junk bags → 429s mid-session | on-topic, cached per topic |
-| SearXNG usable results | 0 (every engine suspended) | Mojeek answering |
+| SearXNG queries answered | 0 (every engine suspended) | 4 / 4 on a 3-engine pin |
 
 Three independent causes, all in the retrieval path:
 

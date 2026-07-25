@@ -128,16 +128,19 @@ class Settings(BaseSettings):
     # where the full engine fan-out takes 1-1.5s, and it leaves the shared
     # instance's engine config untouched for its other consumers.
     #
-    # Choose engines that tolerate a self-hosted instance (XERK-124). The
-    # previous pin was startpage + bing + duckduckgo: measured against the
-    # deployed SearXNG, startpage answers only with a CAPTCHA, duckduckgo denies
-    # access, and bing was not even among the instance's enabled engines — so the
-    # web tier returned zero usable results for every real query. Mojeek runs its
-    # own index and serves self-hosted clients; Brave backs it up. Note both still
-    # throttle a caller that hammers them, which is the other half of the fix:
-    # the retriever now serves an unchanged topic from cache instead of
-    # re-querying on every finalized turn.
-    cue_searxng_engines: str = "mojeek,brave"
+    # Pin several *working* engines, for redundancy rather than for a winner
+    # (XERK-124). The old pin was startpage + bing + duckduckgo: measured against
+    # the deployed SearXNG, startpage answers only with a CAPTCHA and bing was
+    # not even among the instance's enabled engines, so the web tier returned
+    # zero usable results for every real query.
+    #
+    # Redundancy is the point. Every one of these engines rate-limits or
+    # CAPTCHA-walls a self-hosted instance sooner or later, so a pin is only as
+    # good as its spares: measured over four consecutive queries, a two-engine
+    # pin answered 1 of 4 (whichever engine got asked twice suspended), while
+    # these three answered 4 of 4 — when one suspends the others still carry it.
+    # Engine reachability drifts, so re-probe rather than trusting this list.
+    cue_searxng_engines: str = "google cse,duckduckgo,mojeek"
     # RSS feeds ingested into the news corpus (comma-separated URLs). Fetched every
     # cue_rss_interval_seconds while retrieval is "live"; items older than
     # cue_rss_keep_days are pruned so every corpus hit is recent by construction.
