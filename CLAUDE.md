@@ -60,3 +60,20 @@ cd api && pip install -e '.[dev]' && pytest
 # Clients (TS) — type-check, test and build every workspace (even, mobile, web)
 npm install && npm run typecheck && npm run test && npm run build
 ```
+
+### Testing against the real models (bypass LiteLLM)
+
+The GPU model servers run on the host at **`10.10.10.22`** and can be hit
+**directly**, bypassing the LiteLLM gateway — useful for exercising real
+model behaviour (e.g. cue accuracy) instead of only unit tests or the stub.
+Both expose the OpenAI-compatible vLLM / server API:
+
+- **`10.10.10.22:9402`** — cue/summary LLM, `Qwen/Qwen3.6-27B-FP8`
+  (`GET /v1/models`, `POST /v1/chat/completions`). Point
+  `OpenAICueGenerator(endpoint="http://10.10.10.22:9402/v1", model="Qwen/Qwen3.6-27B-FP8", api_key="")`
+  straight at it to drive real cue generation.
+- **`10.10.10.22:9401`** — Parakeet STT (`GET /health`).
+
+These are the same containers the gateway routes to (`qwen3-llm` →
+`Qwen/Qwen3.6-27B-FP8`); talking to them directly skips the gateway alias and
+auth so you can iterate on prompts/params without the full stack.
