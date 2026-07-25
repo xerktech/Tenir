@@ -159,3 +159,33 @@ untouched until opted in (see `api/src/api/config.py` for full comments):
 | `API_CUE_RSS_FEEDS` | BBC/NPR/Guardian world | comma-separated URLs |
 | `API_CUE_RSS_INTERVAL_SECONDS` | `600` | ingest cadence |
 | `API_CUE_RSS_KEEP_DAYS` | `14` | corpus retention |
+
+## Follow-up: the asymmetric emission bar
+
+With grounding shipped, the XERK-118 emission bar was re-examined: it was
+calibrated for a model that could only guess, and measured against the live
+model it stayed silent even when the evidence fully covered the fact — a
+correct, attributable cue left on the table. Three guidance variants were
+tested on the deployed model (evidence about the new UK PM in the prompt):
+
+| Case | tight (XERK-118) | loose (naive) | loose, evidence-gated |
+|---|---|---|---|
+| Chit-chat, nothing factual | silent | silent | silent |
+| Fact covered by evidence | silent (missed) | emits, grounded | emits, grounded |
+| Current event not covered | silent | silent | silent |
+| Stale-memory trap (recent election) | silent | **emits, miscites** | silent |
+
+The naive loosening reintroduced exactly what XERK-118 killed — asked about an
+uncovered election, it answered by citing the unrelated PM evidence. The
+setting that passed every trap is **one-sided generosity**
+(`CUE_GUIDANCE_GROUNDED` in `tuning.py`): emit freely where the evidence
+supports the fact; everything else keeps the tight bar (time-sensitive facts
+only from evidence, stable facts from memory only when certain). The payload
+builder picks the bar by whether evidence actually arrived, so a retrieval
+outage degrades to the tight pre-grounding bar rather than to aggressive
+guessing.
+
+Frequency mechanics, for completeness: `MIN_INTERVAL_MS` (1500ms) is not the
+lever — one cue attempt costs ~2–2.5s (deadline-boxed retrieval + the ~1.1s
+model call, one in flight) and the clients show one cue per ~10s band slot, so
+the emission bar governs how often cues actually appear.

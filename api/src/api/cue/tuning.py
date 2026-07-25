@@ -1,4 +1,4 @@
-"""Fixed cue-generation tuning (XERK-114, XERK-118).
+"""Fixed cue-generation tuning (XERK-114, XERK-118, XERK-120).
 
 Cues used to be governed by a per-session aggressiveness *level* the user picked
 in the client UI (conservative | balanced | aggressive, XERK-81). That toggle is
@@ -13,13 +13,30 @@ now confidence, not volume: surface a fact only when it is specific and the mode
 is sure it is right, and prefer *correcting* a clear error in the conversation over
 adding tangential trivia. When unsure, emit nothing.
 
-Two things are tuned:
+XERK-120 makes the bar **asymmetric**. The tight bar was calibrated for a model
+that could only guess from stale weights; with live-source evidence in the prompt,
+an evidence-backed cue's accuracy comes from retrieval, not model confidence — so
+holding those cues to the guessing-era bar just leaves correct, attributable cues
+on the table. Measured against the deployed model, the tight bar stayed silent even
+when the evidence fully covered the fact, while a naively loosened bar answered an
+uncovered question by miscite-ing unrelated evidence. The setting that passed both
+traps is one-sided generosity: emit freely where the evidence supports the fact,
+keep the tight memory bar everywhere else. The grounded bar is used ONLY when
+evidence actually arrived (the payload builder picks per call), so a retrieval
+outage degrades to the tight bar, never to aggressive guessing.
+
+Three things are tuned:
   * ``MIN_INTERVAL_MS`` — the minimum gap the session waits between emitted cues.
     A floor, not a target: with the accuracy bar doing the gating, cues emit only
     when there's something correct to say, so this just keeps a burst of hits from
-    stacking on top of each other.
-  * ``CUE_GUIDANCE`` — the instruction handed to the chat model describing the bar
-    for emitting a cue: accurate, verifiable facts and corrections only.
+    stacking on top of each other. (Not the frequency lever: one cue attempt costs
+    ~2-2.5s of retrieval + model call serialized one-in-flight, and the clients
+    show one cue per ~10s band slot — the emission bar governs frequency.)
+  * ``CUE_GUIDANCE`` — the bar with no evidence in the prompt: accurate,
+    verifiable facts and corrections only, silence when unsure.
+  * ``CUE_GUIDANCE_GROUNDED`` — the bar when evidence rides the prompt: generous
+    emission for evidence-covered facts, the same tight bar for everything the
+    evidence does not cover.
 """
 
 from __future__ import annotations
@@ -44,10 +61,36 @@ CUE_GUIDANCE = (
     "prefer silence over a guess."
 )
 
+# The bar when live evidence rides the prompt (XERK-120). One-sided generosity:
+# an evidence-covered fact is safe to surface freely (its accuracy comes from
+# the retrieved source, and it carries that source's label to the listener), so
+# don't hold it to the guessing-era bar — but anything the evidence does NOT
+# cover keeps the tight memory bar above, verbatim in spirit: silence over a
+# guess. Chosen empirically (docs/cue-rag.md): a symmetric loosening made the
+# model answer uncovered questions by citing unrelated evidence; this wording
+# emitted on covered facts and stayed silent on every uncovered trap.
+CUE_GUIDANCE_GROUNDED = (
+    "Live evidence accompanies this conversation, so be generous with it: "
+    "whenever a name, place, number, date, or claim comes up that the evidence "
+    "covers, surface the fact — for evidence-covered facts, prefer emitting a "
+    "cue over staying silent. Accuracy is still absolute, and the generosity is "
+    "one-sided: a fact about recent events, current officeholders, prices, or "
+    "scores may come ONLY from the evidence — if the evidence does not cover "
+    "it, stay silent rather than answer from memory, and never cite evidence "
+    "that does not actually support the fact. A stable, timeless fact may come "
+    "from your own knowledge only if you are certain it is correct. A wrong or "
+    "hand-wavy cue is still worse than no cue."
+)
+
 
 def min_interval_ms() -> int:
     return MIN_INTERVAL_MS
 
 
-def cue_guidance() -> str:
-    return CUE_GUIDANCE
+def cue_guidance(*, grounded: bool = False) -> str:
+    """The emission bar for the chat prompt: the tight memory bar by default,
+    the evidence-gated generous bar when the caller actually has evidence to
+    put in the prompt (XERK-120). Callers must pass ``grounded=True`` only when
+    evidence is present — that conditionality is what keeps a retrieval outage
+    degrading to the tight bar instead of to aggressive guessing."""
+    return CUE_GUIDANCE_GROUNDED if grounded else CUE_GUIDANCE

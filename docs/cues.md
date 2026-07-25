@@ -74,15 +74,32 @@ confident, and prefers correcting a clear error over adding tangential trivia �
 when unsure, it stays silent. This reversed XERK-114's earlier "when in doubt,
 emit" tuning: the info being real is the whole point.
 
-There is still no per-client aggressiveness toggle. The one fixed setting lives in
+There is still no per-client aggressiveness toggle. The fixed settings live in
 `api/src/api/cue/tuning.py`:
 
 - **`min_interval_ms()`** — the minimum gap the session waits between cues
   (`1500ms`). A floor that stops a burst of hits from stacking, not a target; the
   accuracy bar below is what actually governs how often cues appear.
-- **`cue_guidance()`** — the bar the chat-model prompt sets for emitting a cue:
-  correct a clear factual error, or add a concrete fact the model is confident is
-  true; never pad, and stay silent when unsure it is accurate.
+- **`cue_guidance()`** — the bar the chat-model prompt sets for emitting a cue.
+  Since XERK-120 the bar is **asymmetric**, picked per call by whether live
+  evidence actually made it into the prompt:
+  - *No evidence* (retrieval off, timed out, or empty): the tight XERK-118 bar,
+    verbatim — correct a clear factual error, or add a concrete fact the model is
+    confident is true; never pad, silence over a guess.
+  - *Evidence present* (`cue_guidance(grounded=True)`): generous for
+    evidence-covered facts — the fact's accuracy comes from the retrieved source
+    (and carries its label), not model confidence, so holding it to the
+    guessing-era bar just discarded correct, attributable cues. Everything the
+    evidence does **not** cover keeps the tight bar: time-sensitive facts may
+    come only from evidence, stable facts from memory only when certain.
+
+  The asymmetry is what keeps volume from costing accuracy — measured on the
+  deployed model, a *symmetric* loosening answered an uncovered question by
+  citing unrelated evidence, while the gated bar emitted on covered facts and
+  stayed silent on every uncovered trap (the experiment is in
+  `docs/cue-rag.md`). Because the generous bar rides only alongside real
+  evidence, a retrieval outage degrades to the tight bar, never to aggressive
+  guessing.
 
 The old three-level toggle (Conservative / Balanced / Aggressive) that web + mobile
 used to expose and persist per client (XERK-81) is gone; the per-client `cueLevel`

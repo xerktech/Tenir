@@ -86,6 +86,20 @@ def test_cue_guidance_is_accuracy_first() -> None:
     assert "silent" in guidance or "silence" in guidance  # stay silent when unsure
 
 
+def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
+    # XERK-120: with evidence in the prompt the bar loosens ONE-SIDEDLY — emit
+    # freely for evidence-covered facts, but anything uncovered keeps the tight
+    # memory bar (silence over a guess), and time-sensitive facts must come only
+    # from evidence. A symmetric loosening measurably made the model miscite.
+    grounded = cue_guidance(grounded=True).lower()
+    assert "prefer emitting" in grounded  # generous where evidence covers
+    assert "only from the evidence" in grounded  # time-sensitive facts gated
+    assert "stay silent" in grounded  # uncovered topics keep the tight bar
+    assert "accura" in grounded  # accuracy stays absolute
+    # The two bars are genuinely different settings.
+    assert cue_guidance(grounded=True) != cue_guidance()
+
+
 # ---- factory ---------------------------------------------------------------
 
 
@@ -269,3 +283,14 @@ def test_stub_grounds_in_first_evidence_item() -> None:
     assert grounded is not None and grounded.source == "BBC News"
     ungrounded = stub.generate("who is the PM?")
     assert ungrounded is not None and ungrounded.source is None
+
+
+def test_payload_guidance_is_grounded_only_when_evidence_arrived() -> None:
+    # XERK-120: the generous bar may ride the prompt ONLY alongside actual
+    # evidence — a retrieval outage (empty evidence) must fall back to the tight
+    # memory bar, never combine "prefer emitting" with guessing.
+    with_evidence = _gen()._build_payload("who is the PM?", (), _evidence())
+    without = _gen()._build_payload("who is the PM?")
+    assert "prefer emitting" in with_evidence["messages"][0]["content"]
+    assert "prefer emitting" not in without["messages"][0]["content"]
+    assert "prefer silence over a guess" in without["messages"][0]["content"]
