@@ -18,6 +18,8 @@ import {
   CLOCK_W,
   clockText,
   CONTAINER,
+  CUE_BAR_THUMB,
+  CUE_BAR_TRACK,
   CUE_BODY_LINES,
   CUE_H,
   CUE_ROW_FIRST,
@@ -523,6 +525,10 @@ describe("cue popup (XERK-81)", () => {
       title: "History",
       body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
     };
+    // A scrollable body's rows end in the scroll bar column (XERK-129); strip
+    // it (and the spaces laying it to the right edge) to get the text back.
+    const stripBar = (row: string) =>
+      row.replace(new RegExp(` *[${CUE_BAR_TRACK}${CUE_BAR_THUMB}]$`), "");
 
     it("gives the cue box CUE_ROWS rows: a title over CUE_BODY_LINES body rows", () => {
       expect(CUE_ROWS).toBe(1 + CUE_BODY_LINES);
@@ -539,7 +545,7 @@ describe("cue popup (XERK-81)", () => {
       expect(rows).toHaveLength(1 + CUE_BODY_LINES); // title + three body rows
       expect(rows[0]).toBe("HISTORY");
       const body = cueBodyLines(long.body);
-      expect(rows.slice(1)).toEqual(body.slice(0, CUE_BODY_LINES));
+      expect(rows.slice(1).map(stripBar)).toEqual(body.slice(0, CUE_BODY_LINES));
       for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
     });
 
@@ -554,13 +560,13 @@ describe("cue popup (XERK-81)", () => {
       const body = cueBodyLines(long.body);
       const max = cueMaxScroll(long.body);
       // Scrolled by one: the window drops a row.
-      expect(cueText(long, undefined, 1).split("\n").slice(1)).toEqual(
+      expect(cueText(long, undefined, 1).split("\n").slice(1).map(stripBar)).toEqual(
         body.slice(1, 1 + CUE_BODY_LINES),
       );
       // Scrolled to the end: the last CUE_BODY_LINES rows, flush to the bottom.
       const end = cueText(long, undefined, max).split("\n").slice(1);
-      expect(end).toEqual(body.slice(max, max + CUE_BODY_LINES));
-      expect(end[end.length - 1]).toBe(body[body.length - 1]);
+      expect(end.map(stripBar)).toEqual(body.slice(max, max + CUE_BODY_LINES));
+      expect(stripBar(end[end.length - 1])).toBe(body[body.length - 1]);
       // An over-large scroll clamps to that same last window rather than blanking.
       expect(cueText(long, undefined, max + 99).split("\n").slice(1)).toEqual(end);
     });
@@ -569,7 +575,62 @@ describe("cue popup (XERK-81)", () => {
       const rows = cueText(long, 4, 2).split("\n");
       expect(rows[0]).toMatch(/^HISTORY {2,}4s$/);
       expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
-      expect(rows.slice(1)).toEqual(cueBodyLines(long.body).slice(2, 2 + CUE_BODY_LINES));
+      expect(rows.slice(1).map(stripBar)).toEqual(
+        cueBodyLines(long.body).slice(2, 2 + CUE_BODY_LINES),
+      );
+    });
+  });
+
+  describe("scroll bar (XERK-129)", () => {
+    // A body long enough to wrap well past the box's three visible rows.
+    const long = {
+      title: "History",
+      body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
+    };
+    /** The bar cell of each body row: its last character. */
+    const barCells = (scroll: number) =>
+      cueText(long, 10, scroll)
+        .split("\n")
+        .slice(1)
+        .map((row) => row[row.length - 1]);
+
+    it("ends every body row of a scrollable cue in a bar cell, exactly one thumb", () => {
+      expect(cueMaxScroll(long.body)).toBeGreaterThanOrEqual(2);
+      const cells = barCells(0);
+      expect(cells).toHaveLength(CUE_BODY_LINES);
+      for (const cell of cells) expect([CUE_BAR_TRACK, CUE_BAR_THUMB]).toContain(cell);
+      expect(cells.filter((cell) => cell === CUE_BAR_THUMB)).toHaveLength(1);
+    });
+
+    it("moves the thumb with the window: top at 0, middle midway, bottom at max", () => {
+      const max = cueMaxScroll(long.body);
+      expect(barCells(0)[0]).toBe(CUE_BAR_THUMB);
+      expect(barCells(Math.round(max / 2))[1]).toBe(CUE_BAR_THUMB);
+      expect(barCells(max)[CUE_BODY_LINES - 1]).toBe(CUE_BAR_THUMB);
+    });
+
+    it("stacks into a straight column: track and thumb share one real advance width", () => {
+      // Both glyphs must exist in the lens font (a missing one measures 0 and
+      // renders tofu on the device) and be equally wide, or the cells zigzag.
+      expect(getTextWidth(CUE_BAR_TRACK)).toBeGreaterThan(0);
+      expect(getTextWidth(CUE_BAR_TRACK)).toBe(getTextWidth(CUE_BAR_THUMB));
+    });
+
+    it("fits every barred row inside the box interior at any scroll position", () => {
+      const max = cueMaxScroll(long.body);
+      for (const scroll of [0, 1, max]) {
+        for (const row of cueText(long, 10, scroll).split("\n")) {
+          expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
+        }
+      }
+    });
+
+    it("leaves a body that fits bare — no bar means nothing more to see", () => {
+      const fits = { title: "Sun", body: "About 150 million km away." };
+      expect(cueMaxScroll(fits.body)).toBe(0);
+      const text = cueText(fits, 10);
+      expect(text).not.toContain(CUE_BAR_TRACK);
+      expect(text).not.toContain(CUE_BAR_THUMB);
     });
   });
 

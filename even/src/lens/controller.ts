@@ -3,7 +3,9 @@
  *
  * Sessions are explicit (XERK-85): once signed in the lens idles ("tap to
  * start"); a single tap starts a new session. While one records, a single tap
- * does NOTHING (a brushed temple must not end a recording) — a double tap
+ * does NOTHING (a brushed temple must not end a recording) — except while a
+ * cue is up, when a tap or swipe resets the cue's auto-dismiss countdown
+ * (XERK-129) without any further effect — a double tap
  * pops up a bordered full-width strip from the top of the screen (its own
  * container, added via `rebuildPageContainer`) with Continue (default, top) /
  * Exit session, padded above and below; everything the strip covers — status
@@ -626,20 +628,17 @@ export async function wireLens(
 
   /**
    * Scroll the active cue's body by `delta` rows (XERK-112): a swipe moves the
-   * box's window through a body that wraps past its visible rows. Clamped to the
-   * body, and a no-op when the body already fits. Reading restarts the
-   * auto-dismiss timer (and with it the countdown) so a long cue can't vanish
-   * mid-read.
+   * box's window through a body that wraps past its visible rows, clamped to
+   * the body. ANY swipe on a live cue restarts the auto-dismiss timer (and with
+   * it the countdown) — whether or not the window could move (XERK-129):
+   * touching the cue means it is being read, and reading buys it more time.
    */
   const scrollCue = (delta: number) => {
     if (!state.cue) return;
+    startCueTimer();
     const max = cueMaxScroll(state.cue.body);
-    if (max === 0) return; // the body fits — nothing to scroll
-    const next = Math.min(Math.max(0, cueScroll + delta), max);
-    if (next === cueScroll) return; // already at that end of the body
-    cueScroll = next;
-    startCueTimer(); // reading buys the cue more time on the lens
-    renderMenu();
+    cueScroll = Math.min(Math.max(0, cueScroll + delta), max);
+    renderMenu(); // the moved window — or, unmoved, just the reset countdown
   };
 
   function handleGesture(type: OsEventTypeList): void {
@@ -653,9 +652,16 @@ export async function wireLens(
         } else if (!state.recording) {
           // Idle: a single tap starts a new session.
           startSession();
+        } else if (state.cue) {
+          // A tap on a live cue keeps it up (XERK-129): restart the
+          // auto-dismiss (and the countdown with it) so the wearer can hold
+          // the cue open while reading. The tap does nothing else — XERK-85
+          // still stands: it must never end the recording.
+          startCueTimer();
+          renderMenu();
         }
-        // Recording without the popup: single taps do NOTHING (XERK-85 —
-        // a brushed temple must not end a recording).
+        // Recording with no menu and no cue: single taps do NOTHING (XERK-85
+        // — a brushed temple must not end a recording).
         break;
       case OsEventTypeList.DOUBLE_CLICK_EVENT:
         if (enabled && state.recording) {
