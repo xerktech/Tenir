@@ -288,6 +288,9 @@ def test_live_retriever_sends_pinned_engines_and_query_text(monkeypatch) -> None
     assert seen["sx.test"].params["engines"] == "startpage,bing"
     assert seen["sx.test"].params["format"] == "json"
     assert "eiffel" in seen["sx.test"].params["q"].casefold()
+    # The engine wait is bounded just under the retrieval deadline (XERK-124):
+    # one slow engine must cost its own results, not the whole tier's.
+    assert seen["sx.test"].params["timeout_limit"] == "1.8"  # deadline 2000ms
     assert "eiffel" in seen["wiki.test"].params["gsrsearch"]
     asyncio.run(r.close())
 
