@@ -86,6 +86,20 @@ def test_cue_guidance_is_accuracy_first() -> None:
     assert "silent" in guidance or "silence" in guidance  # stay silent when unsure
 
 
+def test_cue_guidance_treats_spoken_questions_as_cue_worthy() -> None:
+    # XERK-124: a recorded session was almost entirely direct questions to the
+    # glasses ("How many rings does Saturn have?") and produced zero cues — the
+    # original triggers (correct an error, annotate a claim) both presuppose an
+    # assertion, so a question fired neither. Asking aloud is the closest thing
+    # the product has to an explicit cue request; both bars must name it.
+    tight = cue_guidance().lower()
+    assert "question" in tight
+    assert "answer" in tight
+    grounded = cue_guidance(grounded=True).lower()
+    assert "question" in grounded
+    assert "answer" in grounded
+
+
 def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
     # XERK-120: with evidence in the prompt the bar loosens ONE-SIDEDLY — emit
     # freely for evidence-covered facts, but anything uncovered keeps the tight
@@ -208,6 +222,7 @@ def test_payload_system_prompt_is_accuracy_and_correction_framed() -> None:
     assert "fact-check" in system or "fact check" in system
     assert "correct" in system  # correcting things said that are wrong
     assert "accura" in system  # the accuracy guidance rides the system prompt
+    assert "question" in system  # answering questions asked aloud (XERK-124)
 
 
 # ---- response content extraction (regression: reasoning model empty content) --

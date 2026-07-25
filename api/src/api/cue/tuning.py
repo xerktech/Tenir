@@ -49,16 +49,29 @@ MIN_INTERVAL_MS = 1500
 # XERK-118: accuracy is the whole job. Only surface a fact the model is confident is
 # correct and verifiable; prefer correcting a clear error in the conversation; when
 # unsure whether something is right, stay silent rather than guess.
+#
+# XERK-124 added (2), the spoken question. The original two triggers — correct an
+# error, annotate a claim — both presuppose someone *asserted* something, and a
+# recorded real session showed the gap: a user spent a whole conversation asking
+# their glasses direct factual questions ("How many Toy Story movies are there?",
+# "How many rings does Saturn have?") and the model, correctly following its
+# instructions, answered {"cue": false} on every turn — a question asserts
+# nothing, so neither trigger fired. Asking aloud is the closest thing the
+# product has to an explicit request for a cue, so it now ranks as the first
+# trigger; the accuracy bar (certain, or silent) is unchanged.
 CUE_GUIDANCE = (
     "Your only job is accuracy: a cue must be correct, specific, and worth "
-    "trusting. Two things are cue-worthy. (1) A clear factual error in the "
+    "trusting. Three things are cue-worthy. (1) A clear factual error in the "
     "conversation — someone states something false or mistaken; surface the "
-    "correct fact so the listener isn't misled. (2) A concrete fact you are "
-    "confident is true and that adds real information about a name, place, "
-    "number, date, or claim just mentioned. Do NOT pad with vague, generic, or "
-    "tangential context, and do NOT surface anything you are unsure is accurate: "
-    "when in doubt, stay silent. A wrong or hand-wavy cue is worse than no cue, so "
-    "prefer silence over a guess."
+    "correct fact so the listener isn't misled. (2) A direct factual question "
+    "someone asks aloud — how many, how far, who, when, what — surface the "
+    "answer; a spoken question is the strongest signal a cue is wanted, so "
+    "prefer answering it over staying silent whenever you are certain of the "
+    "answer. (3) A concrete fact you are confident is true and that adds real "
+    "information about a name, place, number, date, or claim just mentioned. "
+    "Do NOT pad with vague, generic, or tangential context, and do NOT surface "
+    "anything you are unsure is accurate: when in doubt, stay silent. A wrong "
+    "or hand-wavy cue is worse than no cue, so prefer silence over a guess."
 )
 
 # The bar when live evidence rides the prompt (XERK-120). One-sided generosity:
@@ -73,13 +86,17 @@ CUE_GUIDANCE_GROUNDED = (
     "Live evidence accompanies this conversation, so be generous with it: "
     "whenever a name, place, number, date, or claim comes up that the evidence "
     "covers, surface the fact — for evidence-covered facts, prefer emitting a "
-    "cue over staying silent. Accuracy is still absolute, and the generosity is "
-    "one-sided: a fact about recent events, current officeholders, prices, or "
-    "scores may come ONLY from the evidence — if the evidence does not cover "
-    "it, stay silent rather than answer from memory, and never cite evidence "
-    "that does not actually support the fact. A stable, timeless fact may come "
-    "from your own knowledge only if you are certain it is correct. A wrong or "
-    "hand-wavy cue is still worse than no cue."
+    "cue over staying silent. A direct factual question someone asks aloud is "
+    "the strongest signal a cue is wanted: answer it from the evidence when the "
+    "evidence covers it, or from your own knowledge if it is a stable, "
+    "timeless fact you are certain of. Accuracy is still absolute, and the "
+    "generosity is one-sided: a fact about recent events, current "
+    "officeholders, prices, or scores may come ONLY from the evidence — if the "
+    "evidence does not cover it, stay silent rather than answer from memory, "
+    "and never cite evidence that does not actually support the fact. A "
+    "stable, timeless fact may come from your own knowledge only if you are "
+    "certain it is correct. A wrong or hand-wavy cue is still worse than no "
+    "cue."
 )
 
 

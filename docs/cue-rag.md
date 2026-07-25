@@ -256,3 +256,29 @@ that covers "1200 by 1920, 224 ppi, $80", so the grounded bar correctly says
 nothing. That is the bar working as designed — but it means cue volume tracks
 how well the corpus covers what people actually talk about, which is now the
 open tuning question rather than a bug.
+
+## XERK-124, part two: questions are cue triggers
+
+The retrieval fix shipped and the very next test session still produced zero
+cues — for a *different* reason, visible in its transcript: the session was
+almost entirely direct factual questions to the glasses ("How many Toy Story
+movies are there?", "How many rings does Saturn have?"). Replayed through the
+deployed stack, retrieval was healthy (evidence on 24/27 turns, the grounded
+bar engaged) and the model answered `{"cue": false}` on every turn — correctly,
+because both cue triggers to that point (correct an error, annotate a claim)
+presuppose somebody *asserted* something. A question asserts nothing, so
+neither fired. Yet asking aloud is the closest thing the product has to an
+explicit request for a cue.
+
+Both bars now name the spoken question as a trigger — the strongest one. The
+accuracy rules are unchanged and were re-verified against the deployed model:
+
+| Case | Result |
+|---|---|
+| "How many rings does Saturn have?" (stable fact, memory) | emits, correct |
+| Covered current-events Q ("who is the UK PM?") + evidence | emits, cited, corrects the stale guess |
+| Uncovered current-events Q + *unrelated* evidence | **silent** (the miscite trap) |
+| Uncovered current-events Q, no evidence | silent |
+| Personal / unanswerable Q ("what's for dinner?") | silent |
+| "How many Toy Story movies?" (post-cutoff count, evidence covers the 1995 film only) | silent — accuracy bar, working as designed |
+| Raspberry Pi session regression | unchanged: 1 accurate sourced cue, 0 wrong ones |

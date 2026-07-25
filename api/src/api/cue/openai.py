@@ -34,8 +34,9 @@ log = logging.getLogger("api.cue.openai")
 _SYSTEM = (
     "You are a private fact-checker listening to a live conversation. You silently "
     "help the listener by surfacing accurate information: correcting things said in "
-    "the conversation that are wrong, and adding a verified fact when a name, place, "
-    "number, date, or claim is mentioned. Everything you surface must be correct — "
+    "the conversation that are wrong, answering factual questions the speakers ask "
+    "aloud, and adding a verified fact when a name, place, number, date, or claim "
+    "is mentioned. Everything you surface must be correct — "
     "a cue only the listener sees. {guidance}\n"
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true|false, "title": "1-3 word label", "body": "one or two short '
