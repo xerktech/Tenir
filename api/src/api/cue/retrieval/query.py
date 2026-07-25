@@ -77,6 +77,12 @@ _STOPWORDS = {
     "anyone", "anything", "dude", "everyone", "everything", "folks", "guys",
     "huh", "man", "nope", "nothing", "please", "someone", "something",
     "stuff", "thank", "uh", "um", "yep",
+    # speech filler: reaction/backchannel words ("Nice.", "Cool.", "Awesome.")
+    # — as whole turns they otherwise score as content words and steer the
+    # query wildly off-topic ("Nice." retrieved Nice Côte d'Azur Airport).
+    # The capitalized-run exemption keeps them inside real names ("Great Wall").
+    "amazing", "awesome", "cool", "crazy", "fun", "funny", "great",
+    "interesting", "nice", "sweet", "weird",
     # contractions: the tokenizer keeps the apostrophe, so these never collapse
     # onto the bare forms above and have to be listed in their own right.
     "ain't", "can't", "couldn't", "didn't", "doesn't", "don't", "hasn't",

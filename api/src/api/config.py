@@ -111,10 +111,18 @@ class Settings(BaseSettings):
     cue_retrieval_backend: str = "off"  # off | stub | live
     # Hard deadline for the retrieval fan-out. Evidence that lands in time rides
     # the prompt; slower tiers settle into a per-session cache for the next cue
-    # consideration instead of delaying this one. 800ms keeps worst-case added cue
-    # latency under one LLM-call's worth (measured: news FTS <10ms, Wikipedia
-    # ~300-400ms, SearXNG ~500-800ms with pinned engines).
-    cue_retrieval_deadline_ms: int = 800
+    # consideration instead of delaying this one.
+    #
+    # 2000ms, recalibrated for XERK-124: the original 800ms was measured against
+    # an engine set that turned out to be dead, and the engines that actually
+    # answer (google cse, duckduckgo, mojeek via SearXNG) take ~1.0-1.2s — so at
+    # 800ms the web tier, the freshest general source we have, never rode the
+    # first prompt at all; its results only ever landed via the topic cache. A
+    # question gets exactly one cue attempt on the turn it is asked, so evidence
+    # arriving "next time" is evidence never seen. 2000ms lets a working web
+    # tier land; suspended engines fail in ~10ms, so a down tier still costs
+    # nothing. (News FTS <10ms and Wikipedia ~300-400ms are unaffected.)
+    cue_retrieval_deadline_ms: int = 2000
     # Cap on evidence snippets in the prompt. Measured on the deployed model:
     # ~1400 evidence tokens costs ~200ms on the ~1.1s call — cheap; 4x that is not.
     cue_retrieval_max_evidence: int = 6

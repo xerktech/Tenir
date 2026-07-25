@@ -40,10 +40,12 @@ log = logging.getLogger("api.cue.retrieval")
 # adds ~200ms to the fixed ~1.1s call; ~5400 adds ~900ms. Six 300-char snippets
 # plus framing sits comfortably under the cheap zone.
 _MAX_SNIPPET_CHARS = 300
-# Per-tier result caps: news is freshest-first, wikipedia is one solid extract,
-# web fills the rest.
+# Per-tier result caps: news is freshest-first, wikipedia leads with the top
+# hits (3 since XERK-124: on "toy story" the article that knew the fifth film
+# was already out ranked #2-#3 — a 2-cap clipped exactly the freshness the tier
+# exists to provide, for ~75 prompt tokens of savings), web fills the rest.
 _NEWS_LIMIT = 3
-_WIKI_LIMIT = 2
+_WIKI_LIMIT = 3
 _WEB_LIMIT = 3
 # How many keywords the encyclopedia tier searches with (XERK-124). Unlike the
 # news tier — whose FTS scores by how many keywords overlap, so more is better —
@@ -51,6 +53,12 @@ _WEB_LIMIT = 3
 # every extra term pulls the ranking away from the entity. Measured on a replayed
 # session: the top 3 keywords returned "Raspberry Pi" where all 8 returned
 # "Personal computer", "List of Arduino boards", or nothing at all.
+#
+# Bare numerals are excluded outright: a stray figure from the conversation
+# ("At approximately 5 45" → keyword "45") demoted "Toy Story 5" clean out of
+# the ranking that the entity alone put at #2. Numbers help the news tier's
+# FTS ("250,000" matches the headline); against an encyclopedia ranker they
+# are pure poison.
 _WIKI_KEYWORDS = 3
 # The per-session cache holds the most recent query results only; conversations
 # revisit topics, they don't archive them.
@@ -127,6 +135,9 @@ class LiveEvidenceRetriever:
     async def _wikipedia_tier(self, query: RetrievalQuery) -> list[Evidence]:
         if not self._wikipedia:
             return []
+        keywords = [k for k in query.keywords if not k[0].isdigit()][:_WIKI_KEYWORDS]
+        if not keywords:  # an all-numeral window has no entity to look up
+            return []
         # One round trip: generator=search feeds prop=extracts, so the search hits
         # come back *with* their intro text (measured ~300-400ms).
         resp = await self._http().get(
@@ -134,7 +145,7 @@ class LiveEvidenceRetriever:
             params={
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": " ".join(query.keywords[:_WIKI_KEYWORDS]),
+                "gsrsearch": " ".join(keywords),
                 "gsrlimit": str(_WIKI_LIMIT),
                 "prop": "extracts",
                 "exintro": "1",
