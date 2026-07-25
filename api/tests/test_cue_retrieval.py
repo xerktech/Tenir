@@ -73,6 +73,82 @@ def test_query_cache_key_is_stable() -> None:
     assert a.cache_key() == b.cache_key()
 
 
+# ---- query builder on real speech (XERK-124) --------------------------------
+#
+# The cases above are clean written prose. Live STT is not, and the gap between
+# the two is what made production retrieve nothing on every single cue call.
+
+
+def test_query_ignores_sentence_opening_capitals() -> None:
+    # "Right"/"Now" open sentences; only "Lisbon" is actually a name. Looking at
+    # the single preceding character finds the space after "back.", not the
+    # period, and scores every sentence opener as a proper noun.
+    q = build_query(["We got back. Right, now the topic is Lisbon. Now listen."])
+    assert "lisbon" in q.keywords
+    assert q.keywords[0] == "lisbon"
+
+
+def test_query_drops_speech_filler() -> None:
+    q = build_query(
+        [
+            "So basically the thing is, I actually thought it was gonna work.",
+            "Honestly it's kind of a pretty big deal, you know, seriously.",
+        ]
+    )
+    for filler in ("basically", "thing", "actually", "gonna", "honestly", "kinda",
+                   "pretty", "seriously", "it's", "thought"):
+        assert filler not in q.keywords, filler
+
+
+def test_query_keeps_proper_noun_runs_over_stopwords() -> None:
+    # "New" is stopworded as filler on its own; inside a capitalized run it is
+    # half of the entity and has to survive.
+    q = build_query(["I moved to New York last spring."])
+    assert "new" in q.keywords
+    assert "york" in q.keywords
+
+
+def test_query_run_outranks_lone_capital() -> None:
+    q = build_query(["We met Sarah near the Golden Gate Bridge."])
+    assert q.keywords.index("golden") < q.keywords.index("sarah")
+
+
+def test_query_keeps_subject_named_several_turns_back() -> None:
+    # A speaker names the subject once, then talks about it. Scoring only the
+    # newest turns loses the one word that makes the query answerable.
+    turns = [
+        "Have you tried the Raspberry Pi touch display yet?",
+        "It's 10.1 inches diagonal, 1200 by 1920.",
+        "224 ppi, and 400 candelas per square meter.",
+        "The driver board lives inside the enclosure now.",
+        "You can use all 10 fingers on it.",
+    ]
+    q = build_query(turns)
+    assert "raspberry" in q.keywords
+    assert "pi" in q.keywords
+
+
+def test_query_rations_bare_figures() -> None:
+    # A spec-heavy stretch must not fill every slot with numerals; some figures
+    # ride (news FTS matches them) but the subject keeps its place.
+    q = build_query(
+        [
+            "The Hubble telescope came up.",
+            "1200 by 1920, 224 ppi, 400 candelas, 85 degrees, 60 percent, 16 mm.",
+        ]
+    )
+    assert sum(k[0].isdigit() for k in q.keywords) <= 2
+    assert "hubble" in q.keywords
+
+
+def test_query_text_is_cut_at_a_word_boundary() -> None:
+    q = build_query(["No strings attached, so I can say what I want. " * 12])
+    assert len(q.text) <= 200
+    # A blind slice left the web tier searching for fragments like "trings".
+    assert not q.text.startswith("trings")
+    assert q.text.split(" ", 1)[0] in q.text
+
+
 # ---- news store (memory contract) -------------------------------------------
 
 
@@ -281,6 +357,75 @@ def test_live_retriever_deadline_miss_serves_cache_next_time() -> None:
         await r.close()
 
     asyncio.run(run())
+
+
+def test_live_retriever_wikipedia_searches_with_only_the_top_keywords() -> None:
+    # generator=search ranks against the whole string, so padding the query with
+    # low-scoring terms drags the result off the entity (XERK-124).
+    seen: dict[str, httpx.URL] = {}
+
+    def spy(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.url
+        return _dispatch(request)
+
+    r = _retriever(spy)
+    turns = ["The Eiffel Tower in Paris was finished in 1889 and stands 330 metres tall."]
+    asyncio.run(r.retrieve(turns))
+    searched = seen["wiki.test"].params["gsrsearch"].split()
+    assert len(searched) <= 3
+    # The web tier is unaffected: it queries with prose, not keywords.
+    assert len(seen["sx.test"].params["q"]) > 0
+    asyncio.run(r.close())
+
+
+def test_live_retriever_reuses_cached_network_evidence_for_an_unchanged_topic() -> None:
+    # Re-firing Wikipedia on every finalized turn is what earned production a
+    # session-long stream of 429s (XERK-124).
+    calls: list[str] = []
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        return _dispatch(request)
+
+    r = _retriever(counting)
+    turns = ["Talking about the Eiffel Tower today."]
+    first = asyncio.run(r.retrieve(turns))
+    assert first
+    after_first = list(calls)
+
+    second = asyncio.run(r.retrieve(turns))
+    assert calls == after_first  # no further network calls for the same topic
+    assert [e.source for e in second] == [e.source for e in first]
+    asyncio.run(r.close())
+
+
+def test_live_retriever_refetches_when_the_topic_moves() -> None:
+    calls: list[str] = []
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        return _dispatch(request)
+
+    r = _retriever(counting)
+    asyncio.run(r.retrieve(["Talking about the Eiffel Tower today."]))
+    before = len(calls)
+    asyncio.run(r.retrieve(["Now the subject is Iceland volcanoes instead."]))
+    assert len(calls) > before
+    asyncio.run(r.close())
+
+
+def test_live_retriever_news_tier_still_runs_on_a_cache_hit() -> None:
+    # Only the network tiers are cached; the local corpus is the one that moves
+    # during a conversation, so it is re-read every time.
+    store = InMemoryNewsStore()
+    r = _retriever(_dispatch, news_store=store)
+    turns = ["Talking about the Eiffel Tower today."]
+    asyncio.run(r.retrieve(turns))
+
+    store.upsert([_item("n1", "Eiffel Tower repainted", "The repaint began.")])
+    second = asyncio.run(r.retrieve(turns))
+    assert second[0].source == "Test Feed"  # freshly ingested item, news tier first
+    asyncio.run(r.close())
 
 
 def test_live_retriever_close_cancels_late_tasks() -> None:

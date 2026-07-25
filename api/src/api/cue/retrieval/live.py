@@ -45,9 +45,21 @@ _MAX_SNIPPET_CHARS = 300
 _NEWS_LIMIT = 3
 _WIKI_LIMIT = 2
 _WEB_LIMIT = 3
+# How many keywords the encyclopedia tier searches with (XERK-124). Unlike the
+# news tier — whose FTS scores by how many keywords overlap, so more is better —
+# Wikipedia's generator=search ranks pages against the query *as a whole*, and
+# every extra term pulls the ranking away from the entity. Measured on a replayed
+# session: the top 3 keywords returned "Raspberry Pi" where all 8 returned
+# "Personal computer", "List of Arduino boards", or nothing at all.
+_WIKI_KEYWORDS = 3
 # The per-session cache holds the most recent query results only; conversations
 # revisit topics, they don't archive them.
 _CACHE_MAX = 32
+# Wikimedia's User-Agent policy asks API clients to identify the tool and give a
+# contact, and throttles hard the ones that don't. The original bare
+# "tenir-cue-rag/1.0" was on the wrong side of that line (XERK-124).
+# https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
+_USER_AGENT = "tenir-cue-rag/1.0 (https://github.com/xerktech/tenir)"
 
 
 class LiveEvidenceRetriever:
@@ -82,7 +94,7 @@ class LiveEvidenceRetriever:
             self._client = httpx.AsyncClient(
                 timeout=10.0,
                 follow_redirects=True,
-                headers={"User-Agent": "tenir-cue-rag/1.0"},
+                headers={"User-Agent": _USER_AGENT},
             )
         return self._client
 
@@ -122,7 +134,7 @@ class LiveEvidenceRetriever:
             params={
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": " ".join(query.keywords),
+                "gsrsearch": " ".join(query.keywords[:_WIKI_KEYWORDS]),
                 "gsrlimit": str(_WIKI_LIMIT),
                 "prop": "extracts",
                 "exintro": "1",
@@ -176,24 +188,39 @@ class LiveEvidenceRetriever:
         query = build_query(turns)
         if not query:
             return []
-        cached = self._cache.get(query.cache_key())
+        key = query.cache_key()
+        cached = self._cache.get(key)
 
-        tiers = {
-            "news": asyncio.create_task(self._news_tier(query)),
-            "wikipedia": asyncio.create_task(self._wikipedia_tier(query)),
-            "searxng": asyncio.create_task(self._searxng_tier(query)),
-        }
+        # The news tier is local and single-digit ms, so it always runs — its
+        # corpus is the one that actually moves during a conversation.
+        #
+        # The two network tiers are skipped outright while the topic is one we
+        # already fetched for (XERK-124). They used to re-fire on every finalized
+        # turn, which on a steady topic is the same query several times a minute:
+        # Wikipedia answered the first few and then served 429s for the rest of
+        # the session, so the tier was dead exactly when a conversation stayed
+        # interesting long enough to be worth grounding. A conversation revisits
+        # topics rather than archiving them, so the cached answer for an
+        # unchanged query is the same answer the refetch would return.
+        tiers = {"news": asyncio.create_task(self._news_tier(query))}
+        if cached is None:
+            tiers["wikipedia"] = asyncio.create_task(self._wikipedia_tier(query))
+            tiers["searxng"] = asyncio.create_task(self._searxng_tier(query))
+        else:
+            metrics.incr("cue.retrieval.cache_hits")
+
         done, pending = await asyncio.wait(
             tiers.values(), timeout=self._deadline_ms / 1000
         )
 
-        evidence: list[Evidence] = []
         # Tier order (news → wikipedia → searxng) sets prompt order: freshest and
         # most curated first, so budget trimming drops the web tail first.
+        local: list[Evidence] = []
+        network: list[Evidence] = []
         for name, task in tiers.items():
             if task in done:
                 try:
-                    evidence.extend(task.result())
+                    (local if name == "news" else network).extend(task.result())
                 except Exception:
                     log.warning("cue retrieval tier %r failed", name, exc_info=True)
                     metrics.incr("cue.retrieval.tier_errors")
@@ -201,30 +228,42 @@ class LiveEvidenceRetriever:
                 metrics.incr("cue.retrieval.tier_deadline_misses")
 
         # Let slow tiers finish into the cache for the next consideration on this
-        # topic, instead of discarding work already in flight.
+        # topic, instead of discarding work already in flight. Only the network
+        # tiers are cached; a slow news pass is still awaited (so it is cancelled
+        # cleanly on close) but its result is re-fetched fresh next time.
         if pending:
-            late = asyncio.create_task(self._settle_late(query.cache_key(), evidence, pending))
+            late_network = {t for n, t in tiers.items() if t in pending and n != "news"}
+            late = asyncio.create_task(self._settle_late(key, network, late_network, pending))
             self._late_tasks.add(late)
             late.add_done_callback(self._late_tasks.discard)
 
-        if not evidence and cached is not None:
-            metrics.incr("cue.retrieval.cache_hits")
-            evidence = cached
-        elif evidence:
-            self._remember(query.cache_key(), evidence)
+        if network:
+            self._remember(key, network)
+        elif cached is not None:
+            network = cached
 
-        return evidence[: self._max_evidence]
+        return (local + network)[: self._max_evidence]
 
     async def _settle_late(
-        self, cache_key: str, on_time: list[Evidence], pending: set[asyncio.Task]
+        self,
+        cache_key: str,
+        on_time: list[Evidence],
+        network: set[asyncio.Task],
+        pending: set[asyncio.Task],
     ) -> None:
-        """Await past-deadline tiers and settle their results into the cache."""
-        results = await asyncio.gather(*pending, return_exceptions=True)
+        """Await past-deadline tiers and settle the network ones into the cache.
+
+        Everything in ``pending`` is awaited so no task is left dangling, but only
+        the ``network`` subset is remembered — the local news tier is cheap enough
+        to redo, and caching it would double up against the fresh pass.
+        """
+        waiting = list(pending)  # fix an order to zip results back against
+        results = await asyncio.gather(*waiting, return_exceptions=True)
         late: list[Evidence] = []
-        for result in results:
+        for task, result in zip(waiting, results):
             if isinstance(result, BaseException):
                 metrics.incr("cue.retrieval.tier_errors")
-            else:
+            elif task in network:
                 late.extend(result)
         if late:
             self._remember(cache_key, list(on_time) + late)

@@ -121,11 +121,23 @@ audited rather than modified:
   auto-suspends them. Working: Startpage (~360ms), Bing (~810ms), and the
   news engines DuckDuckGo News (~380ms), Startpage News (~470ms), Bing News
   (~510ms), Reuters (~970ms).
-- Pinning engines **per request** (`API_CUE_SEARXNG_ENGINES`, default
-  `startpage,bing,duckduckgo news`) cuts the query from ~1–1.5s to
-  ~500–800ms and leaves the shared instance's configuration untouched for
-  its other consumers. That per-request parameter is the entire performance
-  lever; no instance changes were needed.
+- Pinning engines **per request** (`API_CUE_SEARXNG_ENGINES`) cuts the query
+  from ~1–1.5s to ~500–800ms and leaves the shared instance's configuration
+  untouched for its other consumers. That per-request parameter is the entire
+  performance lever.
+
+> **Superseded by XERK-124.** The pin above (`startpage,bing,duckduckgo news`)
+> was measured once, at a moment when those engines happened to answer, and did
+> not survive contact with production. Re-measured against the same instance:
+> Startpage and Google return only CAPTCHAs, DuckDuckGo denies access, and Bing
+> was never among the instance's *enabled* engines at all — so the web tier
+> returned **zero usable results for every real query**. Two changes fixed it:
+> Mojeek (own index, tolerates self-hosted clients) was enabled on the instance
+> and is now the pinned default with Brave as backup; and the retriever stopped
+> re-querying on every finalized turn, which is what drove the engines to
+> suspend the instance in the first place. Engine reachability is a *moving*
+> property — treat a pin as perishable and re-probe it, don't trust a
+> one-off measurement.
 
 ## End-to-end proof
 
@@ -155,7 +167,7 @@ untouched until opted in (see `api/src/api/config.py` for full comments):
 | `API_CUE_RETRIEVAL_MAX_EVIDENCE` | `6` | evidence snippets in the prompt |
 | `API_CUE_WIKIPEDIA_ENDPOINT` | `https://en.wikipedia.org` | `""` disables the tier |
 | `API_CUE_SEARXNG_ENDPOINT` | `""` (off) | your SearXNG root |
-| `API_CUE_SEARXNG_ENGINES` | `startpage,bing,duckduckgo news` | per-request engine pin |
+| `API_CUE_SEARXNG_ENGINES` | `mojeek,brave` | per-request engine pin |
 | `API_CUE_RSS_FEEDS` | BBC/NPR/Guardian world | comma-separated URLs |
 | `API_CUE_RSS_INTERVAL_SECONDS` | `600` | ingest cadence |
 | `API_CUE_RSS_KEEP_DAYS` | `14` | corpus retention |
@@ -189,3 +201,48 @@ Frequency mechanics, for completeness: `MIN_INTERVAL_MS` (1500ms) is not the
 lever — one cue attempt costs ~2–2.5s (deadline-boxed retrieval + the ~1.1s
 model call, one in flight) and the clients show one cue per ~10s band slot, so
 the emission bar governs how often cues actually appear.
+
+## XERK-124: why none of the above ever ran in production
+
+Reported as "no cues are appearing". It was not the emission bar, and it was
+not design — the grounded path above had **never once executed** in production.
+Retrieval returned zero evidence on every single cue call, so
+`_build_payload` always took the ungrounded branch and applied the tight bar.
+
+Replaying a recorded session (34 finalized turns) through the deployed stack:
+
+| | before | after |
+|---|---|---|
+| Turns where retrieval returned any evidence | **0 / 34** | **29 / 34** |
+| Wikipedia queries | junk bags → 429s mid-session | on-topic, cached per topic |
+| SearXNG usable results | 0 (every engine suspended) | Mojeek answering |
+
+Three independent causes, all in the retrieval path:
+
+1. **The query builder was tuned on written prose.** On live STT it emitted
+   `also 10thinger means anti-glare 60 24-bit`. Speech filler outscored the
+   subject; worse, sentence-opening words ("So", "Now", "Right") were scored as
+   proper nouns, because the check looked at the single character before the
+   token and found the *space* after "back.", never the period. Scoring also
+   spanned only 3 turns, so the subject — named once, then discussed for
+   minutes — aged out of the query entirely.
+2. **The tiers were queried wrong and too often.** Wikipedia's
+   `generator=search` ranks against the whole string, so padding it to 8
+   keywords returned "Personal computer" where the top 3 returned "Raspberry
+   Pi". And both network tiers re-fired on *every* finalized turn (~1/s), which
+   is what earned the instance a session-long stream of 429s and left every
+   SearXNG engine suspended.
+3. **The pinned SearXNG engines did not work** — see the note above.
+
+The fix is retrieval-only; the XERK-118/120 bars are untouched. Verified
+end-to-end on a news-covered conversation: 4/4 turns emitted correctly sourced
+cues, including a genuine correction of the speaker ("more than 250,000
+evacuated, not just a few thousand", source *The Guardian*).
+
+One consequence worth stating plainly: cues stay silent when the evidence does
+not cover the specific claim. On a hardware review full of post-training-cutoff
+spec numbers, retrieval returns the right *page* ("Raspberry Pi") but nothing
+that covers "1200 by 1920, 224 ppi, $80", so the grounded bar correctly says
+nothing. That is the bar working as designed — but it means cue volume tracks
+how well the corpus covers what people actually talk about, which is now the
+open tuning question rather than a bug.
