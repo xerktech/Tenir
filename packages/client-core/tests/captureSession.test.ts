@@ -1,4 +1,4 @@
-import type { CueLevel, Lang, MicSource } from "@tenir/contract";
+import type { Lang, MicSource } from "@tenir/contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiHandlers } from "../src/ws";
@@ -249,17 +249,14 @@ describe("liveTranscript", () => {
 
 class FakeApi implements ApiLike {
   started: {
-    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel };
+    params: { micSource: MicSource; sourceLang?: Lang };
     resume?: string;
   }[] = [];
   audio: Uint8Array[] = [];
   micSwitches: MicSource[] = [];
   stopped = false;
   constructor(readonly handlers: ApiHandlers) {}
-  start(
-    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel },
-    resumeSessionId?: string,
-  ): void {
+  start(params: { micSource: MicSource; sourceLang?: Lang }, resumeSessionId?: string): void {
     this.started.push({ params, resume: resumeSessionId });
   }
   stop(): void {
@@ -292,7 +289,7 @@ class FakeAudio implements PcmAudioSource {
   }
 }
 
-function harness(resume: string | null = null, cueLevel?: CueLevel) {
+function harness(resume: string | null = null) {
   const audio = new FakeAudio();
   const refs: { client: FakeApi | null; saved: string | null; cleared: boolean } = {
     client: null,
@@ -310,7 +307,6 @@ function harness(resume: string | null = null, cueLevel?: CueLevel) {
       refs.cleared = true;
     },
     defaultMicSource: "phone-microphone",
-    cueLevel,
   };
   return { session: new CaptureSession(deps), audio, refs };
 }
@@ -403,10 +399,10 @@ describe("CaptureSession", () => {
     expect(seen[seen.length - 1]).toBe(true);
   });
 
-  it("forwards the chosen cue level to the api on start", async () => {
-    const { session, refs } = harness(null, "aggressive");
+  it("does not forward a cueLevel to the api on start (XERK-114)", async () => {
+    const { session, refs } = harness();
     await session.start();
-    expect(refs.client?.started[0].params.cueLevel).toBe("aggressive");
+    expect(refs.client?.started[0].params).not.toHaveProperty("cueLevel");
   });
 
   describe("live cues", () => {

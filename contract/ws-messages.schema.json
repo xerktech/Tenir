@@ -25,13 +25,6 @@
       "description": "Languages the STT engine may detect/report on captions."
     },
 
-    "CueLevel": {
-      "title": "CueLevel",
-      "type": "string",
-      "enum": ["conservative", "balanced", "aggressive"],
-      "description": "How eagerly the api surfaces private context cues, chosen by the user in the client UI: 'conservative' (only unambiguous factual references), 'balanced' (clear questions/references), 'aggressive' (anything lookup-worthy). Sent on session.start; governs cue generation for that session."
-    },
-
     "Word": {
       "title": "Word",
       "type": "object",
@@ -58,8 +51,7 @@
           "description": "Optional client-provided id to resume a dropped session; the server echoes the authoritative id in session.ready."
         },
         "micSource": { "$ref": "#/$defs/MicSource" },
-        "sourceLang": { "$ref": "#/$defs/Lang" },
-        "cueLevel": { "$ref": "#/$defs/CueLevel" }
+        "sourceLang": { "$ref": "#/$defs/Lang" }
       }
     },
 

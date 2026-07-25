@@ -6,10 +6,9 @@ transcript, private to the listener. Generation sits behind this narrow seam so
 the model-backed backend and the model-free stub are interchangeable, exactly
 like the STT ``Transcriber`` seam.
 
-The generator is *pure* per call: given the recent transcript and an
-aggressiveness level it returns a cue or ``None``. It knows nothing about the
-WebSocket, persistence, or rate-limiting — the session owns those (so timing and
-delivery stay testable without a model).
+The generator is *pure* per call: given the recent transcript it returns a cue or
+``None``. It knows nothing about the WebSocket, persistence, or rate-limiting —
+the session owns those (so timing and delivery stay testable without a model).
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
-
-from api.contract import CueLevel
 
 
 @dataclass
@@ -45,7 +42,6 @@ class CueGenerator(Protocol):
         self,
         transcript: str,
         *,
-        level: CueLevel,
         avoid_titles: Sequence[str] = (),
     ) -> GeneratedCue | None:
         """Return a cue for the given recent transcript, or ``None`` for nothing

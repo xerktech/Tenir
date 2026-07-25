@@ -30,13 +30,8 @@ function fakeController(overrides: Partial<CaptureController["state"]> = {}): Ca
   };
 }
 
-function renderLive(controller: CaptureController, onCueLevelChange = vi.fn()) {
-  return {
-    onCueLevelChange,
-    ...render(
-      <LiveView controller={controller} cueLevel="balanced" onCueLevelChange={onCueLevelChange} />,
-    ),
-  };
+function renderLive(controller: CaptureController) {
+  return render(<LiveView controller={controller} />);
 }
 
 describe("LiveView", () => {
@@ -134,8 +129,6 @@ describe("LiveView", () => {
           connection: "open",
           segments: [{ id: "a", text: "hello world" }],
         })}
-        cueLevel="balanced"
-        onCueLevelChange={vi.fn()}
       />,
     );
     const box = container.querySelector(".transcript-scroll");
@@ -161,8 +154,6 @@ describe("LiveView", () => {
       rerender(
         <LiveView
           controller={fakeController({ running: true, connection: "open", segments })}
-          cueLevel="balanced"
-          onCueLevelChange={vi.fn()}
         />,
       );
 
@@ -201,8 +192,6 @@ describe("LiveView", () => {
           ...running,
           activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
         })}
-        cueLevel="balanced"
-        onCueLevelChange={vi.fn()}
       />,
     );
 
@@ -229,8 +218,6 @@ describe("LiveView", () => {
       const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
         <LiveView
           controller={fakeController({ ...running, activeCue })}
-          cueLevel="balanced"
-          onCueLevelChange={vi.fn()}
         />
       );
       const cue = { id: "c1", title: "Sun", body: "About 150 million km away." };
@@ -266,8 +253,6 @@ describe("LiveView", () => {
       const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
         <LiveView
           controller={fakeController({ ...running, activeCue })}
-          cueLevel="balanced"
-          onCueLevelChange={vi.fn()}
         />
       );
       const { container, rerender } = render(
@@ -292,8 +277,6 @@ describe("LiveView", () => {
     const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
       <LiveView
         controller={fakeController({ ...running, activeCue })}
-        cueLevel="balanced"
-        onCueLevelChange={vi.fn()}
       />
     );
     const cue = { id: "c1", title: "Sun", body: "About 150 million km away." };
@@ -350,12 +333,11 @@ describe("LiveView", () => {
     });
   });
 
-  it("reflects the active cue level and reports changes", () => {
-    const { onCueLevelChange } = renderLive(fakeController());
-    const aggressive = screen.getByRole("button", { name: "Aggressive" });
-    expect(screen.getByRole("button", { name: "Balanced" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(aggressive);
-    expect(onCueLevelChange).toHaveBeenCalledWith("aggressive");
+  it("no longer renders a cue aggressiveness toggle (XERK-114)", () => {
+    renderLive(fakeController());
+    expect(screen.queryByRole("group", { name: /cue detail level/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Aggressive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Balanced" })).toBeNull();
   });
 });
 

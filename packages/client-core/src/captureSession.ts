@@ -14,7 +14,7 @@
  */
 
 import type { ApiHandlers } from "./ws";
-import type { CueLevel, Lang, MicSource } from "@tenir/contract";
+import type { Lang, MicSource } from "@tenir/contract";
 
 import type { PcmAudioSource } from "./pcmSource";
 import { decodeBase64 } from "./pcm";
@@ -279,7 +279,7 @@ export function cueCountdownLabel(secondsLeft: number): string {
 /** Minimal slice of `ApiClient` the session drives (so tests can inject a fake). */
 export interface ApiLike {
   start(
-    params: { micSource: MicSource; sourceLang?: Lang; cueLevel?: CueLevel },
+    params: { micSource: MicSource; sourceLang?: Lang },
     resumeSessionId?: string,
   ): void;
   stop(): void;
@@ -297,8 +297,6 @@ export interface CaptureSessionDeps {
   clearSessionId(): void;
   defaultMicSource: MicSource;
   sourceLang?: Lang;
-  /** The user's chosen cue aggressiveness, sent on session.start (XERK-81). */
-  cueLevel?: CueLevel;
 }
 
 /**
@@ -384,10 +382,7 @@ export class CaptureSession {
       return false;
     }
 
-    client.start(
-      { micSource, sourceLang: this.deps.sourceLang, cueLevel: this.deps.cueLevel },
-      resumeId,
-    );
+    client.start({ micSource, sourceLang: this.deps.sourceLang }, resumeId);
     return true;
   }
 

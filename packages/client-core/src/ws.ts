@@ -12,7 +12,6 @@ import type {
   CaptionPartial,
   ClientMessage,
   Cue,
-  CueLevel,
   ErrorMessage,
   Lang,
   MicSource,
@@ -26,9 +25,6 @@ import { withToken } from "./auth";
 export interface SessionParams {
   micSource: MicSource;
   sourceLang?: Lang;
-  // How eagerly the api should surface private context cues (XERK-81). Chosen by
-  // the user in the client UI and sent on session.start; omitted → server default.
-  cueLevel?: CueLevel;
 }
 
 export interface ApiHandlers {
@@ -97,7 +93,6 @@ export class ApiClient {
         type: "session.start",
         micSource: this.params!.micSource,
         sourceLang: this.params!.sourceLang,
-        cueLevel: this.params!.cueLevel,
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       });
     };

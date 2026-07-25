@@ -5,7 +5,6 @@ from api.contract.messages import (  # noqa: F401
     CaptionPartial,
     ClientMessage,
     Cue,
-    CueLevel,
     ErrorMessage,
     Lang,
     MicSource,

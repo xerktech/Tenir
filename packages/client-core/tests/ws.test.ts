@@ -129,11 +129,13 @@ describe("ApiClient", () => {
     );
   });
 
-  it("sends the chosen cue level in session.start", () => {
+  it("does not send a cueLevel in session.start (XERK-114: toggle removed)", () => {
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone", cueLevel: "conservative" });
+    client.start({ micSource: "g2-microphone" });
     instances[0].open();
-    expect(instances[0].jsonSent()[0]).toMatchObject({ cueLevel: "conservative" });
+    const start = instances[0].jsonSent()[0];
+    expect(start).toMatchObject({ type: "session.start", micSource: "g2-microphone" });
+    expect(start).not.toHaveProperty("cueLevel");
   });
 
   it("honours backpressure and socket state in sendAudio", () => {

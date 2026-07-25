@@ -31,16 +31,6 @@ class Lang(StrEnum):
     it = 'it'
 
 
-class CueLevel(StrEnum):
-    """
-    How eagerly the api surfaces private context cues, chosen by the user in the client UI: 'conservative' (only unambiguous factual references), 'balanced' (clear questions/references), 'aggressive' (anything lookup-worthy). Sent on session.start; governs cue generation for that session.
-    """
-
-    conservative = 'conservative'
-    balanced = 'balanced'
-    aggressive = 'aggressive'
-
-
 class Word(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -66,7 +56,6 @@ class SessionStart(BaseModel):
     )
     micSource: MicSource
     sourceLang: Lang | None = None
-    cueLevel: CueLevel | None = None
 
 
 class MicSwitch(BaseModel):

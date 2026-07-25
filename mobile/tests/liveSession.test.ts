@@ -19,7 +19,7 @@ describe("live session persistence across tabs (XERK-111)", () => {
     expect(app).toContain("<CaptureProvider wsUrl={wsUrl}>");
     expect(app).toContain("<DashboardShell");
     // The provider is what creates the single session (via useCapture).
-    expect(capture).toContain("useCapture(wsUrl, cueLevel)");
+    expect(capture).toContain("useCapture(wsUrl)");
   });
 
   it("renders the Live screen without re-creating its own session", () => {

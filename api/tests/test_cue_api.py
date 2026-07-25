@@ -51,17 +51,13 @@ def test_history_detail_has_empty_cues_by_default() -> None:
 
 
 def test_live_session_pushes_cue_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    # With the stub cue backend on, a finalized stub segment ("…Phase 1") is
-    # cue-worthy at the balanced level (it carries a number), so the session emits
-    # a `cue` frame alongside the captions.
+    # With the stub cue backend on, any finalized stub segment is cue-worthy
+    # (XERK-114: fixed aggressive setting, no cueLevel on session.start), so the
+    # session emits a `cue` frame alongside the captions.
     monkeypatch.setattr(settings, "cue_backend", "stub")
 
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-        ws.send_text(
-            json.dumps(
-                {"type": "session.start", "micSource": "phone-microphone", "cueLevel": "balanced"}
-            )
-        )
+        ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
         assert ws.receive_json()["type"] == "session.ready"
 
         chunk = b"\x00" * 3200  # 100ms @ 16kHz s16le mono

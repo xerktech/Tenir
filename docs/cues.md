@@ -35,7 +35,7 @@ Each cue has a **title** (1–3 words) and a **body** (the fact/context).
 1. **Generation is server-side, off the caption path.** On each finalized
    transcript turn, `api/src/api/session.py` considers a cue: cheap gating runs on
    the event loop (skip when cues are off, one is already in flight, or inside the
-   level's rate-limit window), and only past that does it spawn a background task
+   fixed rate-limit window), and only past that does it spawn a background task
    that calls the cue model off-loop. A slow or failing model never stalls
    captions — a cue is a best-effort aside.
 2. **The model call reuses the STT gateway.** The cue backend
@@ -54,24 +54,25 @@ Each cue has a **title** (1–3 words) and a **body** (the fact/context).
    renders it inline. Cues are deliberately excluded from the transcript
    full-text search corpus (they are private context, not conversation).
 
-## Aggressiveness — the global toggle
+## Aggressiveness (XERK-114)
 
-Users choose how eagerly cues appear with a global toggle in the client UI
-(Conservative / Balanced / Aggressive):
+There is no aggressiveness toggle. Cues run at a single, fixed, maximally-aggressive
+setting for every client — tuned past what the old "aggressive" level was. The
+per-client `cueLevel` on `session.start` is gone; no client sends it.
 
-- **web**: on the Live panel.
-- **mobile**: on the Live screen.
+The fixed setting lives in one place, `api/src/api/cue/tuning.py`:
 
-The choice is persisted per client and sent on `session.start` as `cueLevel`. The
-server maps the level to a prompt strictness and a minimum gap between cues
-(`api/src/api/cue/levels.py`): conservative spaces cues out and only fires on
-unambiguous facts; aggressive lets them come thick and fast.
+- **`min_interval_ms()`** — the minimum gap the session waits between cues
+  (`1500ms`, below the old "aggressive" `3000ms`, so cues come roughly twice as
+  thick).
+- **`cue_guidance()`** — the bar the chat-model prompt sets for emitting a cue:
+  surface context for essentially any fact, name, place, number, date, topic, or
+  claim, and stay silent only for pure conversational filler.
 
-The **glasses** client (the on-lens UI and its phone Session/History pages) has
-no cue-level control surface — the lens is display-only and the phone pages are a
-live mirror + a review list — so it omits `cueLevel` on `session.start` and the
-server default (`API_CUE_DEFAULT_LEVEL`, balanced) applies. A deliberate platform
-difference; the toggle lives on the web + mobile clients.
+This replaced the old three-level toggle (Conservative / Balanced / Aggressive)
+that web + mobile used to expose and persist per client (XERK-81). The glasses
+client never had the toggle, so its behaviour is unchanged — it now simply matches
+the single fixed setting everyone else gets.
 
 ## Backends (`API_CUE_BACKEND`)
 

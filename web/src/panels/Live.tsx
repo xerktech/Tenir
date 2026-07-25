@@ -15,49 +15,15 @@ import {
   DISCLOSURES,
   isPinnedToBottom,
   liveTranscript,
-  type CueLevel,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 
 import { useCaptureContext } from "../lib/capture";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
-import { CUE_LEVELS } from "../lib/cueLevelStore";
 import { type CaptureController } from "../lib/useCapture";
 import { Badge, Button, Card, CueDisclosure, EmptyState } from "../ui";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording");
-
-const CUE_LEVEL_LABEL: Record<CueLevel, string> = {
-  conservative: "Conservative",
-  balanced: "Balanced",
-  aggressive: "Aggressive",
-};
-
-/** Global toggle for how eagerly private context cues appear (XERK-81). */
-export function CueLevelToggle({
-  level,
-  onChange,
-}: {
-  level: CueLevel;
-  onChange: (l: CueLevel) => void;
-}): JSX.Element {
-  return (
-    <div className="cue-level" role="group" aria-label="Cue detail level">
-      <span className="cue-level-caption muted">Cues</span>
-      {CUE_LEVELS.map((l) => (
-        <button
-          key={l}
-          type="button"
-          className={`cue-level-option ${l === level ? "active" : ""}`.trim()}
-          aria-pressed={l === level}
-          onClick={() => onChange(l)}
-        >
-          {CUE_LEVEL_LABEL[l]}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 type ActiveCue = CaptureController["state"]["activeCue"];
 
@@ -161,15 +127,7 @@ function LiveCueBand({
   );
 }
 
-export function LiveView({
-  controller,
-  cueLevel,
-  onCueLevelChange,
-}: {
-  controller: CaptureController;
-  cueLevel: CueLevel;
-  onCueLevelChange: (l: CueLevel) => void;
-}): JSX.Element {
+export function LiveView({ controller }: { controller: CaptureController }): JSX.Element {
   const { state } = controller;
   const hasContent = state.segments.length > 0 || state.pastCues.length > 0 || Boolean(state.partial);
 
@@ -217,8 +175,6 @@ export function LiveView({
             Record
           </Button>
         )}
-        <span className="grow" />
-        <CueLevelToggle level={cueLevel} onChange={onCueLevelChange} />
       </div>
 
       {/* The cue floats inside this card, over the transcript's top edge, so it
@@ -263,9 +219,9 @@ function RecordingNotice({ onAccept }: { onAccept: () => void }): JSX.Element {
 
 export function LivePanel(): JSX.Element {
   const [accepted, setAccepted] = useState(() => recordingNoticeAccepted());
-  // The session and cue level live in the app-level capture context so a live
-  // recording survives switching to another tab and back (XERK-111).
-  const { controller, cueLevel, setCueLevel } = useCaptureContext();
+  // The session lives in the app-level capture context so a live recording
+  // survives switching to another tab and back (XERK-111).
+  const { controller } = useCaptureContext();
 
   if (!accepted) {
     return (
@@ -278,5 +234,5 @@ export function LivePanel(): JSX.Element {
     );
   }
 
-  return <LiveView controller={controller} cueLevel={cueLevel} onCueLevelChange={setCueLevel} />;
+  return <LiveView controller={controller} />;
 }

@@ -1,7 +1,7 @@
 /**
  * Cue UI for the mobile app (XERK-81) — parity with the web SPA's cue surfaces:
- * the global aggressiveness toggle + live band on the Live screen, and the inline
- * cue dropdown in history. Themed via the shared ThemeContext.
+ * the live band on the Live screen and the inline cue dropdown in history. Themed
+ * via the shared ThemeContext.
  */
 
 import {
@@ -9,54 +9,13 @@ import {
   CUE_EXIT_MS,
   cueCountdownLabel,
   cueSecondsLeft,
-  type CueLevel,
   type LiveCue,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { CUE_LEVELS } from "../storage";
 import { useThemedStyles } from "./ThemeContext";
 import { mix, radius, space, withAlpha, type Palette } from "./theme";
-
-const LEVEL_LABEL: Record<CueLevel, string> = {
-  conservative: "Conservative",
-  balanced: "Balanced",
-  aggressive: "Aggressive",
-};
-
-/** Global toggle for how eagerly private context cues appear. */
-export function CueLevelToggle({
-  level,
-  onChange,
-}: {
-  level: CueLevel;
-  onChange: (l: CueLevel) => void;
-}): JSX.Element {
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={styles.toggle} accessibilityRole="radiogroup" accessibilityLabel="Cue detail level">
-      <Text style={styles.toggleCaption}>Cues</Text>
-      {CUE_LEVELS.map((l) => {
-        const active = l === level;
-        return (
-          <Pressable
-            key={l}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: active }}
-            accessibilityLabel={LEVEL_LABEL[l]}
-            onPress={() => onChange(l)}
-            style={[styles.option, active && styles.optionActive]}
-          >
-            <Text style={[styles.optionText, active && styles.optionTextActive]}>
-              {LEVEL_LABEL[l]}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
 
 /**
  * Keep a released cue mounted for the length of its fade-out (XERK-107).
@@ -211,23 +170,6 @@ export function CueDisclosure({ title, body }: { title: string; body: string }):
 
 const makeStyles = (colors: Palette) =>
   StyleSheet.create({
-    toggle: { flexDirection: "row", alignItems: "center", gap: space.xs, flexWrap: "wrap" },
-    toggleCaption: {
-      color: colors.muted,
-      fontSize: 11,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-    },
-    option: {
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: radius.sm,
-      paddingHorizontal: space.sm,
-      paddingVertical: 4,
-    },
-    optionActive: { borderColor: colors.accent, backgroundColor: withAlpha(colors.accent, 0.14) },
-    optionText: { color: colors.muted, fontSize: 11, fontWeight: "600" },
-    optionTextActive: { color: colors.accentStrong },
     // Floats over the transcript's top edge instead of displacing it (XERK-107).
     band: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2, gap: space.sm },
     card: {

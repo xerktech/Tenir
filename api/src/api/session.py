@@ -20,7 +20,6 @@ from api.contract import (
     CaptionFinal,
     CaptionPartial,
     Cue,
-    CueLevel,
     Lang,
     MicSource,
     ServerMessage,
@@ -78,7 +77,6 @@ class Session:
         # path — a cue is a best-effort aside, produced in a background task so a slow
         # or failing model never stalls captions.
         self._cue_generator: CueGenerator | None = None
-        self._cue_level: CueLevel = CueLevel(settings.cue_default_level)
         self._recent_finals: deque[str] = deque(maxlen=max(1, settings.cue_context_segments))
         # De-dupe cues for the WHOLE conversation, not a short rolling window
         # (XERK-102): a cue surfaced once must not pop up again later, however far
@@ -127,12 +125,9 @@ class Session:
         *,
         mic_source: MicSource,
         source_lang: Lang | None,
-        cue_level: CueLevel | None = None,
     ) -> None:
         self.mic_source = mic_source
         self.source_lang = source_lang
-        if cue_level is not None:
-            self._cue_level = cue_level
         # Build the transcriber now that we know the source language.
         self._transcriber = make_transcriber(source_lang=source_lang)
         # Build the cue generator (None when API_CUE_BACKEND=off — the default —
@@ -278,7 +273,7 @@ class Session:
         """On each finalized turn, maybe kick off cue generation in the background.
 
         Cheap gating happens here on the event loop (no model call): skip when cues
-        are off, while one is already in flight, or inside the level's rate-limit
+        are off, while one is already in flight, or inside the fixed rate-limit
         window. Only past those does it spawn a task that calls the model off-loop.
         """
         if self._cue_generator is None:
@@ -289,7 +284,7 @@ class Session:
             return
         if self._last_cue_monotonic is not None:
             elapsed_ms = (time.monotonic() - self._last_cue_monotonic) * 1000
-            if elapsed_ms < min_interval_ms(self._cue_level):
+            if elapsed_ms < min_interval_ms():
                 return
         self._cue_inflight = True
         task = asyncio.create_task(self._generate_cue(result.endMs))
@@ -313,7 +308,6 @@ class Session:
             generated = await asyncio.to_thread(
                 self._cue_generator.generate,
                 transcript,
-                level=self._cue_level,
                 avoid_titles=avoid,
             )
             if generated is None:
