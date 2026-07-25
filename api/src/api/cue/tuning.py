@@ -83,8 +83,13 @@ CUE_GUIDANCE = (
     "with nothing to look up, or when anything you could say might be "
     "inaccurate. Accuracy outranks coverage: say only what you are sure of, "
     "and when you are sure of something modest but not the specifics, surface "
-    "the modest accurate thing instead of guessing at specifics. A wrong cue "
-    "is worse than no cue."
+    "the modest accurate thing instead of guessing at specifics. Facts that "
+    "grow over time are NOT safe from memory even when they feel settled — "
+    "how many entries an ongoing film series, product line, or franchise has, "
+    "its latest release, current versions, prices, scores, officeholders: "
+    "your knowledge of these ends at your training cutoff and the true answer "
+    "may have moved, so stay silent on them rather than answer from memory. A "
+    "wrong cue is worse than no cue."
 )
 
 # The bar when live evidence rides the prompt (XERK-120). One-sided generosity:
@@ -105,14 +110,17 @@ CUE_GUIDANCE_GROUNDED = (
     "it; for evidence-covered facts, prefer emitting a cue over staying "
     "silent. (3) Someone states something false or mistaken — correct it with "
     "the right fact. Accuracy is still absolute, and the generosity is "
-    "one-sided: a fact about recent events, current officeholders, prices, or "
-    "scores may come ONLY from the evidence — if the evidence does not cover "
-    "it, stay silent rather than answer from memory, and never cite evidence "
-    "that does not actually support the fact. A stable, timeless fact may "
-    "come from your own knowledge only if you are certain it is correct; when "
-    "you are sure of something modest but not the specifics, surface the "
-    "modest accurate thing instead of guessing. A wrong cue is worse than no "
-    "cue."
+    "one-sided: a fact that changes or grows over time — recent events, "
+    "current officeholders, prices, scores, and how many entries an ongoing "
+    "film series, product line, or franchise has or what its latest release "
+    "is — may come ONLY from the evidence; your memory of such facts ends at "
+    "your training cutoff and the true answer may have moved. If the "
+    "evidence does not cover it, stay silent rather than answer from memory, "
+    "and never cite evidence that does not actually support the fact. A "
+    "stable, timeless fact may come from your own knowledge only if you are "
+    "certain it is correct; when you are sure of something modest but not "
+    "the specifics, surface the modest accurate thing instead of guessing. A "
+    "wrong cue is worse than no cue."
 )
 
 

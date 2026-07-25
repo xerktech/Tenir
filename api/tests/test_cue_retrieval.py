@@ -373,8 +373,25 @@ def test_live_retriever_wikipedia_searches_with_only_the_top_keywords() -> None:
     asyncio.run(r.retrieve(turns))
     searched = seen["wiki.test"].params["gsrsearch"].split()
     assert len(searched) <= 3
+    # Bare numerals are ranking poison against the encyclopedia: a stray "45"
+    # from the conversation demoted "Toy Story 5" out of the top hits that the
+    # entity alone retrieved (XERK-124). Figures stay out of this tier entirely.
+    assert not any(k[0].isdigit() for k in searched)
     # The web tier is unaffected: it queries with prose, not keywords.
     assert len(seen["sx.test"].params["q"]) > 0
+    asyncio.run(r.close())
+
+
+def test_live_retriever_wikipedia_skips_an_all_numeral_query() -> None:
+    calls: list[str] = []
+
+    def spy(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        return _dispatch(request)
+
+    r = _retriever(spy, searxng_endpoint="")
+    asyncio.run(r.retrieve(["1200 by 1920. 224. 400. 85 60 16 10."]))
+    assert "wiki.test" not in calls  # no entity to look up, no wasted round trip
     asyncio.run(r.close())
 
 

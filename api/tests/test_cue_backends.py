@@ -100,6 +100,18 @@ def test_cue_guidance_treats_spoken_questions_as_cue_worthy() -> None:
     assert "answer" in grounded
 
 
+def test_cue_guidance_guards_growing_facts_from_stale_memory() -> None:
+    # XERK-124: the model answered "how many Toy Story movies" from memory with
+    # a count that its own training cutoff had made stale (the fifth film was
+    # already out). Facts that grow over time — franchise/series counts, latest
+    # releases — must be flagged as unsafe from memory in BOTH bars: the tight
+    # bar stays silent on them, the grounded bar takes them only from evidence.
+    for guidance in (cue_guidance(), cue_guidance(grounded=True)):
+        low = guidance.lower()
+        assert "training cutoff" in low
+        assert "franchise" in low
+
+
 def test_cue_guidance_names_all_three_triggers() -> None:
     # XERK-124 (clarified by the reporter): a question is answered, a mentioned
     # fact gets extra context, a falsehood gets corrected. Both bars must carry

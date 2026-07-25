@@ -300,8 +300,43 @@ Re-verified against the deployed model:
 | Personal Q / personal mention / small talk | silent |
 | Raspberry Pi session | 3 accurate sourced context cues, **0 wrong ones** (the XERK-114 wrongness stays dead) |
 
-Residual risk, stated plainly: memory answers to "stable" counts can be stale —
-the model answered the Toy Story count as "four main films, with a fifth
-scheduled for 2026", which was the truth at its cutoff and is off by the
-franchise's own release schedule. Evidence coverage (not the bar) is the lever
-for that class.
+## XERK-124, part three: the stale-count incident and the freshness path
+
+The three-trigger model immediately surfaced the next weakness: asked "how many
+Toy Story movies are there?", the model answered from memory with its
+truth-at-cutoff ("four main films, with a fifth scheduled for 2026") — stale,
+because the fifth film had already shipped. Root-caused end to end, this was
+three separate misses stacked:
+
+1. **The fresh fact was one rank away.** Live Wikipedia's #2 hit for
+   `toy story` is *Toy Story 5* ("a 2026 American animated comedy-drama
+   film") — but the query builder had let a stray conversational numeral in
+   ("At approximately 5 45" → keyword `45`), and `toy story 45` demotes the
+   fifth film clean out of the ranking. Numerals are now excluded from the
+   encyclopedia tier's query entirely (they still help the news tier's FTS,
+   where "250,000" matches the headline), and the tier takes the top **3**
+   hits instead of 2 — the 2-cap had clipped exactly the freshness the tier
+   exists to provide, to save ~75 prompt tokens.
+2. **The web tier could never land.** The 800ms retrieval deadline was
+   calibrated against an engine set that turned out to be dead; the engines
+   that actually answer take ~1.0–1.2s, so the freshest general source always
+   missed the deadline and only ever settled into the topic cache — useless
+   for a question, which gets exactly one cue attempt on the turn it is asked.
+   The default deadline is now **2000ms** (suspended engines fail in ~10ms, so
+   a down tier still costs nothing).
+3. **The bar treated a growing count as a stable fact.** Both bars now name
+   facts that *grow over time* — how many entries an ongoing film series,
+   product line, or franchise has; its latest release — as unsafe from
+   memory: the tight bar stays silent on them, the grounded bar takes them
+   only from evidence.
+
+Re-verified against the deployed model after all three fixes:
+
+| Case | Result |
+|---|---|
+| "How many Toy Story movies?" with retrieval | **"There are five Toy Story feature films … Toy Story 5"**, cited to Wikipedia (the cited extract literally enumerates all five) |
+| Same question, evidence withheld | **silent** — was the stale "four" |
+| "What is the newest iPhone?", no evidence | silent |
+| "How many rings does Saturn have?" / "How many US states?" (genuinely stable) | still answered, correct |
+| Miscite / small-talk / personal traps | all still silent |
+| Raspberry Pi session canary | accurate cues only, 0 wrong |
