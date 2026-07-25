@@ -6,7 +6,13 @@ Three tiers fan out **concurrently** under one hard deadline
   * **news** — the RSS-fed corpus in the news store. Local FTS, single-digit
     ms, and every hit is recent by construction (the corpus is pruned).
   * **wikipedia** — one round-trip (``generator=search`` + intro extracts,
-    ~300-400ms measured) for stable facts: entities, places, figures.
+    ~300-400ms measured) for stable facts: entities, places, figures. When the
+    live site fails (the 429 storms that opened XERK-124, an outage, no WAN),
+    the tier falls back to a local Kiwix ZIM mirror if one is configured
+    (``API_CUE_KIWIX_ENDPOINT``) — measured against live: 2-4x faster and
+    unthrottleable, but its snapshot trails by weeks and its ranking is
+    noticeably worse ("eiffel tower height" ranked Eiffel Tower (Paris, Texas)
+    first), which is why it is the fallback and not the primary.
   * **searxng** — the self-hosted metasearch instance for everything else.
     Engines are pinned per request (``API_CUE_SEARXNG_ENGINES``): the measured
     default set answers in ~500-800ms where the instance's full engine fan-out
@@ -26,7 +32,9 @@ Network calls are excluded from coverage per repo convention; the pure parts
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 from collections.abc import Sequence
 
 from api.cue.retrieval.base import Evidence
@@ -35,6 +43,10 @@ from api.metrics import metrics
 from api.persistence.news import NewsStore
 
 log = logging.getLogger("api.cue.retrieval")
+
+# Kiwix article HTML → lead paragraph (see _first_paragraph).
+_PARAGRAPH_RE = re.compile(r"<p\b[^>]*>(.*?)</p>", re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
 
 # Prompt budget. Measured on the deployed Qwen3.6-27B-FP8: ~1400 prompt tokens
 # adds ~200ms to the fixed ~1.1s call; ~5400 adds ~900ms. Six 300-char snippets
@@ -76,6 +88,8 @@ class LiveEvidenceRetriever:
         *,
         news_store: NewsStore | None,
         wikipedia_endpoint: str = "https://en.wikipedia.org",
+        kiwix_endpoint: str = "",
+        kiwix_book: str = "wikipedia_en_all",
         searxng_endpoint: str = "",
         searxng_engines: str = "",
         deadline_ms: int = 800,
@@ -84,6 +98,8 @@ class LiveEvidenceRetriever:
     ) -> None:
         self._news_store = news_store
         self._wikipedia = wikipedia_endpoint.rstrip("/")
+        self._kiwix = kiwix_endpoint.rstrip("/")
+        self._kiwix_book = kiwix_book
         self._searxng = searxng_endpoint.rstrip("/")
         self._engines = searxng_engines
         self._deadline_ms = deadline_ms
@@ -133,11 +149,26 @@ class LiveEvidenceRetriever:
         ]
 
     async def _wikipedia_tier(self, query: RetrievalQuery) -> list[Evidence]:
-        if not self._wikipedia:
+        if not self._wikipedia and not self._kiwix:
             return []
         keywords = [k for k in query.keywords if not k[0].isdigit()][:_WIKI_KEYWORDS]
         if not keywords:  # an all-numeral window has no entity to look up
             return []
+        # Live first: fresher (crowd-edited within hours vs a ZIM snapshot weeks
+        # old) and better-ranked (measured, XERK-124). The local mirror steps in
+        # only when the live site fails — which it does *fast* (429/refused), so
+        # the fallback still fits inside the retrieval deadline.
+        if self._wikipedia:
+            try:
+                return await self._wikipedia_live(keywords)
+            except Exception:
+                if not self._kiwix:
+                    raise
+                log.warning("live wikipedia failed; falling back to kiwix", exc_info=True)
+                metrics.incr("cue.retrieval.kiwix_fallbacks")
+        return await self._kiwix_search(keywords)
+
+    async def _wikipedia_live(self, keywords: list[str]) -> list[Evidence]:
         # One round trip: generator=search feeds prop=extracts, so the search hits
         # come back *with* their intro text (measured ~300-400ms).
         resp = await self._http().get(
@@ -167,6 +198,53 @@ class LiveEvidenceRetriever:
                 Evidence(source="Wikipedia", title=title, snippet=extract[:_MAX_SNIPPET_CHARS])
             )
         return results
+
+    async def _kiwix_search(self, keywords: list[str]) -> list[Evidence]:
+        """The offline mirror: kiwix-serve search, then each hit's lead paragraph.
+
+        Kiwix's own search snippets are keyword-in-context fragments of
+        navigational cruft ("'RPi' redirects here. For the dessert, see
+        Raspberry pie."), useless as evidence — so the article itself is
+        fetched and its first real paragraph used, like live Wikipedia's
+        ``exintro``. All local: search ~50-250ms + ~30-110ms per article.
+        """
+        resp = await self._http().get(
+            f"{self._kiwix}/search",
+            params={
+                "books.filter.name": self._kiwix_book,
+                "pattern": " ".join(keywords),
+                "pageLength": str(_WIKI_LIMIT),
+                "format": "xml",
+            },
+        )
+        resp.raise_for_status()
+        # De-dupe by title before fetching leads: when several ZIM books match
+        # the name filter (e.g. an old and a refreshed Wikipedia mirror side by
+        # side), each contributes the same articles.
+        hits, seen = [], set()
+        for title, link in _parse_kiwix_search(resp.text):
+            if title in seen:
+                continue
+            seen.add(title)
+            hits.append((title, link))
+            if len(hits) >= _WIKI_LIMIT:
+                break
+        leads = await asyncio.gather(
+            *(self._kiwix_lead(link) for _, link in hits), return_exceptions=True
+        )
+        results = []
+        for (title, _), lead in zip(hits, leads):
+            if isinstance(lead, BaseException) or not lead:
+                continue
+            results.append(
+                Evidence(source="Wikipedia", title=title, snippet=lead[:_MAX_SNIPPET_CHARS])
+            )
+        return results
+
+    async def _kiwix_lead(self, link: str) -> str:
+        resp = await self._http().get(f"{self._kiwix}{link}")
+        resp.raise_for_status()
+        return _first_paragraph(resp.text)
 
     async def _searxng_tier(self, query: RetrievalQuery) -> list[Evidence]:
         if not self._searxng:
@@ -283,6 +361,41 @@ class LiveEvidenceRetriever:
         self._cache[key] = evidence
         while len(self._cache) > _CACHE_MAX:
             self._cache.pop(next(iter(self._cache)))
+
+
+def _parse_kiwix_search(xml_text: str) -> list[tuple[str, str]]:
+    """(title, content link) pairs from a kiwix-serve RSS search response.
+
+    Defensive by construction: a malformed document yields [] rather than an
+    exception — the caller treats an empty fallback like any other empty tier.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    hits = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        if title and link.startswith("/"):
+            hits.append((title, link))
+    return hits
+
+
+def _first_paragraph(html_text: str, *, min_chars: int = 80) -> str:
+    """The article's first real paragraph, tags stripped.
+
+    Kiwix serves full article HTML; the opening <p> elements are hatnotes and
+    infobox scraps, so the first paragraph longer than ``min_chars`` is taken —
+    the same content live Wikipedia's ``exintro`` returns.
+    """
+    for match in _PARAGRAPH_RE.finditer(html_text):
+        text = html.unescape(_TAG_RE.sub("", match.group(1))).strip()
+        if len(text) >= min_chars:
+            return " ".join(text.split())
+    return ""
 
 
 def _domain_label(url: str) -> str:

@@ -38,6 +38,8 @@ def make_evidence_retriever() -> EvidenceRetriever | None:
         return LiveEvidenceRetriever(
             news_store=get_news_store(),
             wikipedia_endpoint=settings.cue_wikipedia_endpoint,
+            kiwix_endpoint=settings.cue_kiwix_endpoint,
+            kiwix_book=settings.cue_kiwix_book,
             searxng_endpoint=settings.cue_searxng_endpoint,
             searxng_engines=settings.cue_searxng_engines,
             deadline_ms=settings.cue_retrieval_deadline_ms,
