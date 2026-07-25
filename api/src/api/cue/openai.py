@@ -92,7 +92,11 @@ class OpenAICueGenerator(CueGenerator):
         evidence: Sequence[Evidence] = (),
     ) -> dict:
         """The /chat/completions request body. Pure (no I/O) so it's unit-tested."""
-        system = _SYSTEM.format(guidance=cue_guidance())
+        # The emission bar is picked by whether evidence actually arrived
+        # (XERK-120): generous for evidence-covered facts when it did, the tight
+        # memory bar when it didn't — so a retrieval outage degrades to the
+        # conservative pre-grounding behaviour, never to aggressive guessing.
+        system = _SYSTEM.format(guidance=cue_guidance(grounded=bool(evidence)))
         if evidence:
             lines = []
             for i, item in enumerate(evidence, start=1):
