@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     cue_retrieval_max_evidence: int = 6
     # Wikipedia API root for the encyclopedia tier ("" disables the tier).
     cue_wikipedia_endpoint: str = "https://en.wikipedia.org"
+    # Local Kiwix (kiwix-serve) root holding a Wikipedia ZIM mirror, used as the
+    # encyclopedia tier's FALLBACK when the live site fails ("" = no fallback).
+    # Compared against live Wikipedia (XERK-124): 2-4x faster and immune to rate
+    # limits, but the snapshot trails by weeks and its ranking is measurably
+    # worse — so it backs up the live tier rather than replacing it.
+    cue_kiwix_endpoint: str = ""
+    # Kiwix book filter (books.filter.name). The default matches any English
+    # Wikipedia ZIM regardless of flavour/date suffix, so a refreshed download
+    # needs no config change.
+    cue_kiwix_book: str = "wikipedia_en_all"
     # Self-hosted SearXNG root for the web tier ("" disables the tier — there is no
     # public default on purpose; point it at your own instance).
     cue_searxng_endpoint: str = ""

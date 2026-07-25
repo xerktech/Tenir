@@ -75,8 +75,8 @@ _STOPWORDS = {
     "worked", "works", "wow",
     # speech filler: all-purpose pronouns/quantifiers and interjections
     "anyone", "anything", "dude", "everyone", "everything", "folks", "guys",
-    "huh", "man", "nope", "nothing", "please", "someone", "something",
-    "stuff", "thank", "uh", "um", "yep",
+    "hm", "hmm", "huh", "man", "nope", "nothing", "please", "someone",
+    "something", "stuff", "thank", "uh", "uhh", "um", "umm", "yep",
     # speech filler: reaction/backchannel words ("Nice.", "Cool.", "Awesome.")
     # — as whole turns they otherwise score as content words and steer the
     # query wildly off-topic ("Nice." retrieved Nice Côte d'Azur Airport).

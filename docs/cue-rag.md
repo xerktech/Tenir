@@ -340,3 +340,30 @@ Re-verified against the deployed model after all three fixes:
 | "How many rings does Saturn have?" / "How many US states?" (genuinely stable) | still answered, correct |
 | Miscite / small-talk / personal traps | all still silent |
 | Raspberry Pi session canary | accurate cues only, 0 wrong |
+
+## XERK-124, part four: the Kiwix mirror as encyclopedia fallback
+
+The deployment hosts a Kiwix instance with an English Wikipedia ZIM (June 2026
+nopic, refreshed by the DockerOps updater). Compared head-to-head from the
+Tenir container on the same queries:
+
+| | Kiwix (local ZIM) | live Wikipedia |
+|---|---|---|
+| Latency | **~30–110ms** | ~220–400ms |
+| Rate limits | none | throttles (the 429s that opened XERK-124) |
+| Freshness | snapshot, trails by **weeks** (had Toy Story 5; missing the July PM change and July wildfires) | crowd-edited within **hours** |
+| Ranking | measurably worse ("eiffel tower height" → *Eiffel Tower (Paris, Texas)* first) | correct on the same probes |
+
+So the mirror does **not** replace live — freshness and ranking are the whole
+job — but it is the encyclopedia tier's fallback (`API_CUE_KIWIX_ENDPOINT`):
+when live Wikipedia fails, the tier serves ZIM article leads instead of
+contributing nothing, so cues stay grounded through an outage or throttle.
+Kiwix's own search snippets are keyword-fragment cruft, so the fallback
+fetches each hit's article and takes its first real paragraph — the same
+content live's `exintro` returns. Hits are de-duped by title because the
+instance deliberately serves two Wikipedia flavours side by side.
+
+Verified with live Wikipedia pointed at a dead host: fallback retrieval in
+~790ms, June-ZIM leads as evidence — and on a time-sensitive count that the
+stale evidence did not cover, the bar stayed silent. Degradation is to
+caution, never to stale confident answers.

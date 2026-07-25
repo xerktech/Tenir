@@ -445,6 +445,136 @@ def test_live_retriever_news_tier_still_runs_on_a_cache_hit() -> None:
     asyncio.run(r.close())
 
 
+# ---- kiwix fallback for the encyclopedia tier (XERK-124) --------------------
+
+_KIWIX_SEARCH_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Search: eiffel tower</title>
+    <item>
+      <title>Eiffel Tower</title>
+      <link>/content/wikipedia_en_all_nopic/Eiffel_Tower</link>
+      <description>...keyword fragment cruft...</description>
+    </item>
+    <item>
+      <title>Champ de Mars</title>
+      <link>/content/wikipedia_en_all_nopic/Champ_de_Mars</link>
+      <description>...more cruft...</description>
+    </item>
+  </channel>
+</rss>"""
+
+_KIWIX_ARTICLE_HTML = (
+    "<html><body>"
+    '<p class="hatnote">For other uses, see disambiguation.</p>'
+    "<p>The <b>Eiffel Tower</b> is a lattice tower on the Champ de Mars in "
+    "Paris, France, completed in 1889 and 330 metres tall.</p>"
+    "</body></html>"
+)
+
+
+def _kiwix_dispatch(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/search":
+        return httpx.Response(200, text=_KIWIX_SEARCH_XML)
+    if request.url.path.startswith("/content/"):
+        return httpx.Response(200, text=_KIWIX_ARTICLE_HTML)
+    raise AssertionError(f"unexpected kiwix path {request.url.path}")
+
+
+def test_wikipedia_tier_falls_back_to_kiwix_when_live_fails() -> None:
+    # The 429 storms that opened XERK-124: live Wikipedia errors fast, and the
+    # local ZIM mirror steps in with the article lead as the snippet.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "wiki.test":
+            return httpx.Response(429)
+        if request.url.host == "kiwix.test":
+            return _kiwix_dispatch(request)
+        return _dispatch(request)
+
+    r = _retriever(handler, searxng_endpoint="", kiwix_endpoint="https://kiwix.test")
+    evidence = asyncio.run(r.retrieve(["Talking about the Eiffel Tower today."]))
+    assert [e.title for e in evidence] == ["Eiffel Tower", "Champ de Mars"]
+    assert all(e.source == "Wikipedia" for e in evidence)
+    # The snippet is the article's first REAL paragraph — the hatnote is skipped.
+    assert "lattice tower" in evidence[0].snippet
+    assert "disambiguation" not in evidence[0].snippet
+    asyncio.run(r.close())
+
+
+def test_wikipedia_tier_prefers_live_when_it_works() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.host == "kiwix.test":
+            return _kiwix_dispatch(request)
+        return _dispatch(request)
+
+    r = _retriever(handler, searxng_endpoint="", kiwix_endpoint="https://kiwix.test")
+    evidence = asyncio.run(r.retrieve(["Talking about the Eiffel Tower today."]))
+    assert "kiwix.test" not in calls  # fresher + better-ranked live tier won
+    assert any(e.source == "Wikipedia" for e in evidence)
+    asyncio.run(r.close())
+
+
+def test_wikipedia_tier_without_kiwix_still_degrades_to_partial_evidence() -> None:
+    # No fallback configured (the default): a live failure behaves exactly as
+    # before — the tier errors, the other tiers still contribute.
+    def wiki_down(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "wiki.test":
+            return httpx.Response(429)
+        return _dispatch(request)
+
+    r = _retriever(wiki_down)
+    evidence = asyncio.run(r.retrieve(["Talking about the Eiffel Tower today."]))
+    assert evidence
+    assert all(e.source != "Wikipedia" for e in evidence)
+    asyncio.run(r.close())
+
+
+def test_kiwix_fallback_dedupes_hits_across_books() -> None:
+    # Two ZIM books matching the name filter (an old and a refreshed mirror)
+    # each contribute the same articles; only one lead per title is fetched.
+    duplicated = _KIWIX_SEARCH_XML.replace(
+        "</channel>",
+        "<item><title>Eiffel Tower</title>"
+        "<link>/content/wikipedia_en_all_maxi/Eiffel_Tower</link></item></channel>",
+    )
+    fetched: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "wiki.test":
+            return httpx.Response(429)
+        if request.url.path == "/search":
+            return httpx.Response(200, text=duplicated)
+        fetched.append(request.url.path)
+        return httpx.Response(200, text=_KIWIX_ARTICLE_HTML)
+
+    r = _retriever(handler, searxng_endpoint="", kiwix_endpoint="https://kiwix.test")
+    evidence = asyncio.run(r.retrieve(["Talking about the Eiffel Tower today."]))
+    assert [e.title for e in evidence] == ["Eiffel Tower", "Champ de Mars"]
+    assert len(fetched) == 2  # the duplicate title cost no extra article fetch
+    asyncio.run(r.close())
+
+
+def test_parse_kiwix_search_is_defensive() -> None:
+    from api.cue.retrieval.live import _parse_kiwix_search
+
+    assert _parse_kiwix_search("not xml at all") == []
+    assert _parse_kiwix_search("<rss><channel></channel></rss>") == []
+    hits = _parse_kiwix_search(_KIWIX_SEARCH_XML)
+    assert hits[0] == ("Eiffel Tower", "/content/wikipedia_en_all_nopic/Eiffel_Tower")
+
+
+def test_first_paragraph_skips_short_hatnotes_and_strips_tags() -> None:
+    from api.cue.retrieval.live import _first_paragraph
+
+    lead = _first_paragraph(_KIWIX_ARTICLE_HTML)
+    assert lead.startswith("The Eiffel Tower is a lattice tower")
+    assert "<" not in lead
+    assert _first_paragraph("<html><p>short</p></html>") == ""
+
+
 def test_live_retriever_close_cancels_late_tasks() -> None:
     async def run() -> None:
         async def hang(request: httpx.Request) -> httpx.Response:
