@@ -76,6 +76,16 @@ def test_cue_guidance_is_present() -> None:
     assert cue_guidance().strip()
 
 
+def test_cue_guidance_is_accuracy_first() -> None:
+    # XERK-118: the cue's job is accurate, fact-checked info. The guidance must steer
+    # the model to correct errors and to stay silent when it isn't sure, rather than
+    # padding with tangential context (the reverse of the old "when in doubt, emit").
+    guidance = cue_guidance().lower()
+    assert "accura" in guidance  # accuracy / accurate
+    assert "correct" in guidance  # correcting a wrong statement
+    assert "silent" in guidance or "silence" in guidance  # stay silent when unsure
+
+
 # ---- factory ---------------------------------------------------------------
 
 
@@ -174,6 +184,16 @@ def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
 def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
     system = _gen()._build_payload("hi")["messages"][0]["content"]
     assert "do NOT repeat" not in system
+
+
+def test_payload_system_prompt_is_accuracy_and_correction_framed() -> None:
+    # XERK-118: the system prompt frames the cue as a fact-checker — correct wrong
+    # statements, surface only verified facts — and embeds the accuracy guidance, so
+    # the model's whole instruction is about being right, not about volume.
+    system = _gen()._build_payload("the sun is 15 thousand km away")["messages"][0]["content"].lower()
+    assert "fact-check" in system or "fact check" in system
+    assert "correct" in system  # correcting things said that are wrong
+    assert "accura" in system  # the accuracy guidance rides the system prompt
 
 
 # ---- response content extraction (regression: reasoning model empty content) --

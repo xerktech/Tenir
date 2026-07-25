@@ -31,13 +31,16 @@ from api.cue.tuning import cue_guidance
 log = logging.getLogger("api.cue.openai")
 
 _SYSTEM = (
-    "You are a private assistant listening to a live conversation and giving the "
-    "listener silent context. When something in the conversation has a useful "
-    "fact behind it, surface it as a short cue only the listener sees. {guidance}\n"
+    "You are a private fact-checker listening to a live conversation. You silently "
+    "help the listener by surfacing accurate information: correcting things said in "
+    "the conversation that are wrong, and adding a verified fact when a name, place, "
+    "number, date, or claim is mentioned. Everything you surface must be correct — "
+    "a cue only the listener sees. {guidance}\n"
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true|false, "title": "1-3 word label", "body": "one or two short '
-    'sentences of the actual fact/context"}}. '
-    'If nothing is cue-worthy, reply {{"cue": false}}.'
+    "sentences: the correction, or the verified fact. State it plainly and only if "
+    'you are confident it is accurate"}}. '
+    'If nothing is cue-worthy or you are not sure it is accurate, reply {{"cue": false}}.'
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
