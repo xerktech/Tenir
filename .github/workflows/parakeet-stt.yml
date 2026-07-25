@@ -1,10 +1,12 @@
 name: Parakeet STT
 
 # PR gate for the Parakeet STT image, a patch on top of the multi-GB NGC NeMo
-# base — impractical to build/scan on every PR, so the PR gate is a cheap
-# Dockerfile lint. Publishing is the unified release pipeline (release.yml), which
-# (re)builds and pushes tenir-parakeet-stt to GHCR on a push to main that changes
-# the component.
+# base — impractical to build/scan on every PR, so the gate is a cheap Dockerfile
+# lint plus the server's own tests. Those run against a fake model (NeMo and the
+# GPU stay out of CI): what they cover is the transport and dispatch layer this
+# repo owns — response formats, the kwargs handed to NeMo, readiness/warmup.
+# Publishing is the unified release pipeline (release.yml), which (re)builds and
+# pushes tenir-parakeet-stt to GHCR on a push to main that changes the component.
 on:
   pull_request:
     branches: [main]
@@ -32,3 +34,30 @@ jobs:
         run: |
           docker run --rm -i hadolint/hadolint:latest \
             hadolint --failure-threshold error - < parakeet-stt/Dockerfile
+
+  test:
+    name: Server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: parakeet-stt
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: parakeet-stt/requirements.txt
+
+      - name: Install dependencies
+        # The server's own runtime deps, minus NeMo/torch: the tests fake the model,
+        # so the multi-GB half of the image never has to exist on the runner.
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx
+
+      - name: Test
+        run: pytest tests -q

@@ -108,6 +108,87 @@ def test_voxtral_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["headers"]["Authorization"] == "Bearer sk-key"
 
 
+def test_voxtral_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Partials never read the words array, so the engine tells the server not to
+    # spend decode time producing it (XERK-115).
+    import httpx
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"text": "hello", "language": "en"}
+
+    def _fake_post(url, *, data, files, headers, timeout):  # noqa: ANN001
+        captured["data"] = data
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    engine = VoxtralEngine(endpoint="http://parakeet:8000/v1", model="parakeet")
+
+    samples = np.zeros(SAMPLE_RATE // 10, dtype=np.float32)
+    engine.transcribe(samples, language=None, want_words=False)
+    assert captured["data"]["timestamps"] == "false"
+
+    # A final wants word timing, so the flag is absent and the server's default (on) wins.
+    engine.transcribe(samples, language=None, want_words=True)
+    assert "timestamps" not in captured["data"]
+
+
+# ----- direct STT route (XERK-115) ------------------------------------------
+
+
+def test_stt_route_defaults_to_the_litellm_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_endpoint", "")
+    monkeypatch.setattr(settings, "litellm_endpoint", "http://litellm:4000/v1")
+    monkeypatch.setattr(settings, "litellm_api_key", "sk-master")
+
+    assert settings.stt_endpoint_url == "http://litellm:4000/v1"
+    assert settings.stt_key == "sk-master"
+
+
+def test_stt_route_prefers_a_direct_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_endpoint", "http://parakeet:8000/v1")
+    monkeypatch.setattr(settings, "stt_api_key", "")
+    monkeypatch.setattr(settings, "litellm_endpoint", "http://litellm:4000/v1")
+    monkeypatch.setattr(settings, "litellm_api_key", "sk-master")
+
+    assert settings.stt_endpoint_url == "http://parakeet:8000/v1"
+    # The gateway's master key must NOT leak onto a direct model-server call.
+    assert settings.stt_key == ""
+
+
+def test_stt_route_carries_its_own_key_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_endpoint", "http://stt.internal/v1")
+    monkeypatch.setattr(settings, "stt_api_key", "sk-direct")
+    monkeypatch.setattr(settings, "litellm_api_key", "sk-master")
+
+    assert settings.stt_key == "sk-direct"
+
+
+def test_factory_builds_the_engine_on_the_direct_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_endpoint", "http://parakeet:8000/v1")
+    monkeypatch.setattr(settings, "stt_api_key", "")
+
+    transcriber = make_transcriber()
+    assert isinstance(transcriber, StreamingTranscriber)
+    engine = transcriber._engine
+    assert engine._url == "http://parakeet:8000/v1/audio/transcriptions"
+    assert engine._api_key == ""
+
+
 def test_voxtral_wav_encoding_clips_and_scales() -> None:
     # Out-of-range samples clip to the int16 extremes rather than wrapping.
     samples = np.array([2.0, -2.0], dtype=np.float32)

@@ -28,9 +28,11 @@ def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
 
         return StreamingTranscriber(
             VoxtralEngine(
-                endpoint=settings.litellm_endpoint,
+                # The caption hot path prefers a direct route to the model server and
+                # falls back to the LiteLLM gateway (see Settings.stt_endpoint_url).
+                endpoint=settings.stt_endpoint_url,
                 model=settings.stt_model,
-                api_key=settings.litellm_api_key,
+                api_key=settings.stt_key,
             ),
             language=source_lang.value if source_lang is not None else None,
             partial_interval_ms=settings.stt_partial_interval_ms,
@@ -40,5 +42,8 @@ def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
             silence_ms=settings.stt_silence_ms,
             silence_rms=settings.stt_silence_rms,
             local_agreement=settings.stt_local_agreement,
+            vad_adaptive=settings.stt_vad_adaptive,
+            vad_noise_ratio=settings.stt_vad_noise_ratio,
+            vad_window_ms=settings.stt_vad_window_ms,
         )
     raise ValueError(f"unknown STT backend: {backend!r} (expected 'stub' or 'voxtral')")

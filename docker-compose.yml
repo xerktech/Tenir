@@ -30,6 +30,15 @@ services:
       # model alias below to the Parakeet server.
       API_STT_BACKEND: voxtral
       API_STT_MODEL: ${API_STT_MODEL:-parakeet}
+      # Direct route for the caption hot path (XERK-115). Live captions send one
+      # transcription request per partial — several a second, per session — so the
+      # gateway hop (an extra proxy round trip plus its json->verbose_json rewrite)
+      # is paid over and over for nothing the api needs. On this single-host stack
+      # the api shares a network with the model server, so it posts audio straight
+      # to it; cues still go through LiteLLM. Unset this in a split-host deploy that
+      # can only reach the model through the gateway — the api then falls back to
+      # API_LITELLM_ENDPOINT on its own.
+      API_STT_ENDPOINT: ${API_STT_ENDPOINT:-http://parakeet:8000/v1}
       # Cues (XERK-81): private context cards derived from the conversation. Off by
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
