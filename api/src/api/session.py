@@ -26,6 +26,12 @@ from api.contract import (
     SessionReady,
 )
 from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize_cue_title
+from api.cue.base import (
+    CUE_SUBSTANCE_MIN_TOKENS,
+    GeneratedCue,
+    cue_substance_similarity,
+    cue_substance_tokens,
+)
 from api.cue.retrieval import EvidenceRetriever, make_evidence_retriever
 from api.metrics import metrics
 from api.persistence import (
@@ -54,6 +60,12 @@ _DETACHED_BUFFER_MAX = 500
 # still enforced by the post-hoc de-dupe, so nothing repeats beyond this window —
 # it only limits how many the model is explicitly reminded of.
 _CUE_AVOID_PROMPT_LIMIT = 40
+
+# A new cue whose content-word fingerprint overlaps a surfaced cue's at or above
+# this Jaccard similarity is the same fact reworded, not a new cue. On recorded
+# production sessions reworded duplicates measured 0.57-0.87 while genuinely
+# different cues about the same entity stayed below 0.5 (see cue/base.py).
+_CUE_SUBSTANCE_DUP_THRESHOLD = 0.5
 
 
 def _enum_str(value: object | None) -> str | None:
@@ -86,10 +98,14 @@ class Session:
         # De-dupe cues for the WHOLE conversation, not a short rolling window
         # (XERK-102): a cue surfaced once must not pop up again later, however far
         # apart. ``_surfaced_cue_norms`` is the normalized-title membership set;
-        # ``_surfaced_cue_titles`` keeps the original titles (order-preserving) to
-        # hand the generator so it can steer clear of them and find fresh context.
+        # ``_surfaced_cues`` keeps the surfaced title+body pairs (order-preserving)
+        # to hand the generator so it can steer clear of them and find fresh
+        # context; ``_surfaced_cue_substance`` holds their content-word
+        # fingerprints, the backstop against the same fact returning under a
+        # fresh title and reworded body.
         self._surfaced_cue_norms: set[str] = set()
-        self._surfaced_cue_titles: list[str] = []
+        self._surfaced_cues: list[GeneratedCue] = []
+        self._surfaced_cue_substance: list[frozenset[str]] = []
         self._last_cue_monotonic: float | None = None
         self._cue_inflight = False
         self._cue_tasks: set[asyncio.Task[None]] = set()
@@ -325,9 +341,9 @@ class Session:
             assert self._cue_generator is not None
             # Steer the generator away from cues already surfaced this conversation
             # (XERK-102) so it finds fresh context instead of re-proposing an old one.
-            # Only the most recent titles ride the prompt (older ones are still
-            # caught by the full backstop set below), so the ask stays compact.
-            avoid = list(self._surfaced_cue_titles[-_CUE_AVOID_PROMPT_LIMIT:])
+            # Only the most recent cues ride the prompt (older ones are still
+            # caught by the full backstop sets below), so the ask stays compact.
+            avoid = list(self._surfaced_cues[-_CUE_AVOID_PROMPT_LIMIT:])
             # Gather live-source evidence first (XERK-120). The retriever bounds
             # its own latency (deadline inside), and failure means an ungrounded
             # cue, never a missing one — evidence is an upgrade, not a gate.
@@ -344,7 +360,7 @@ class Session:
             generated = await asyncio.to_thread(
                 self._cue_generator.generate,
                 transcript,
-                avoid_titles=avoid,
+                avoid_cues=avoid,
                 evidence=evidence,
             )
             if generated is None:
@@ -355,14 +371,27 @@ class Session:
                 return
             # Backstop de-dupe: never surface the same cue twice in a conversation,
             # however far apart (XERK-102) — the report was an old cue popping up
-            # again later once it had aged out of a short rolling window. A repeat
+            # again later once it had aged out of a short rolling window. Two
+            # layers: the normalized title, and the content-word fingerprint that
+            # catches the same fact returning under a fresh title and reworded
+            # body (three "drone factory" cues in one recorded session). A repeat
             # is dropped WITHOUT resetting the rate-limit clock, so the next turn
             # can immediately try again for a genuinely new cue.
             norm = normalize_cue_title(title)
             if norm in self._surfaced_cue_norms:
+                metrics.incr("cue.dedupe_drops")
+                return
+            substance = cue_substance_tokens(title, body)
+            if len(substance) >= CUE_SUBSTANCE_MIN_TOKENS and any(
+                len(prior) >= CUE_SUBSTANCE_MIN_TOKENS
+                and cue_substance_similarity(substance, prior) >= _CUE_SUBSTANCE_DUP_THRESHOLD
+                for prior in self._surfaced_cue_substance
+            ):
+                metrics.incr("cue.dedupe_drops")
                 return
             self._surfaced_cue_norms.add(norm)
-            self._surfaced_cue_titles.append(title)
+            self._surfaced_cues.append(GeneratedCue(title=title, body=body))
+            self._surfaced_cue_substance.append(substance)
             self._last_cue_monotonic = time.monotonic()
             cue_id = uuid.uuid4().hex
             source = generated.source

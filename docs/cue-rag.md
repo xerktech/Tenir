@@ -367,3 +367,59 @@ Verified with live Wikipedia pointed at a dead host: fallback retrieval in
 ~790ms, June-ZIM leads as evidence — and on a time-sensitive count that the
 stale evidence did not cover, the bar stayed silent. Degradation is to
 caution, never to stale confident answers.
+
+## The enrichment calibration: cues must add, not echo
+
+The first sustained real-world deployment (July 2026: 87 conversations, 1,966
+transcript turns, 148 cues) surfaced the next round of problems, measured by
+exporting every conversation and judging every cue (harness:
+`scripts/cue_eval/`):
+
+* **Restatement.** ~13% of production cues merely repeated what the speaker had
+  just said ("Drone Payload: the drone can carry 1 kg of explosives" — the
+  speaker's own sentence, re-worded). Zero information added.
+* **Rephrased duplicates.** ~13% re-surfaced an earlier cue's fact under a
+  fresh title ("Charlotte Drone Facility" / "US Drone Production Scale" /
+  "Charlotte Drone Production" — one fact, three cues). The title-normalized
+  dedupe cannot see these.
+* **Wrong-cue classes.** ~10% judged wrong, in three recurring shapes: facts
+  invented for misheard STT names ("PowerUs", "Grantham Show"), contradictions
+  of what the speaker said firsthand (cue says 120 g right after the speaker
+  read 201 g off the box), and "corrections" of the world from a stale training
+  cutoff.
+* **Muteness.** Replayed through the then-current ungrounded prompt, the same
+  conversations yielded **8 cues in 566 attempts (1.4%)** — engineering
+  discussions, plans, and how-to conversations got nothing at all, because the
+  triggers keyed on named entities and the accuracy language read as
+  "when in doubt, say nothing".
+
+The fix reframed the prompt end to end (`openai.py _SYSTEM`): the model is a
+research assistant whose cue must **enrich** — add a fact, definition, number,
+comparison, or piece of background that was *not* said aloud — with restatement
+banned outright, five triggers (answer questions; concrete facts about named
+entities; define terms/jargon; inform the decision being worked through;
+correct falsehoods), per-failure-class accuracy rules (no speculation, skip
+garbled names, never contradict firsthand details, never fight the speakers
+about post-cutoff changes), candidate discipline (if the best candidate is
+unsafe or already surfaced, take the next-best instead of declining), and three
+worked examples. The avoid-list now carries **title and body** so the model can
+steer clear of substance, not just titles, and the session grew a second
+dedupe backstop: a content-word fingerprint (Jaccard ≥ 0.5) that catches the
+same fact returning re-worded. Decoding went greedy (temperature 0.2 → 0.0):
+A/B on the same 675 replayed attempts, greedy cut judged-wrong cues 5 → 1 at
+equal volume.
+
+Replayed on the same 12-conversation set (LLM-judged, 0–2 scales):
+
+| | cues | novelty | relevance | accuracy | restates | wrong | dups |
+|---|---|---|---|---|---|---|---|
+| production cues (old prompts + grounding) | 61 | 1.49 | 1.90 | 1.74 | 8 | 6 | 8 |
+| old prompt, replayed ungrounded | 8 | 1.88 | 2.00 | 2.00 | 0 | 0 | 0 |
+| shipped (enrichment + t=0.0), ungrounded | 27 | 1.78 | 1.93 | 1.93 | 2 | 1 | 0 |
+
+Volume is ~3.5x the honest baseline before grounding adds coverage, quality is
+at production level or above on every axis, and the conversations that used to
+get zero cues (an engineering release discussion, a Raspberry Pi video, a
+firearms lecture) now get genuinely additive ones (cherry-pick semantics, SemVer
+patch conventions, cd/m² brightness context). The low-signal controls (movie
+audio, a garbled-STT session) stay near-silent, as they should.

@@ -1,12 +1,15 @@
 # Cues (XERK-81)
 
-A **cue** is a private, fact-checked note the api derives from the live
-conversation. Its one job is accuracy (XERK-118): correct something said in the
-conversation that is wrong, or add a fact the model is confident is true — someone
-says the Great Wall is visible from space and a correction appears; someone asks
-how far away the sun is and the verified distance appears. Cues are *private to the
-listener* — they are not part of the conversation, and never sent to anyone else in
-the session.
+A **cue** is a private note the api derives from the live conversation. Its job
+is to **enrich** the conversation with accurate information it did not already
+contain: someone asks how far away the sun is and the verified distance
+appears; someone names a technique and a one-line definition appears; someone
+says the Great Wall is visible from space and a correction appears. A cue that
+merely repeats what a speaker said is worthless and the prompt bans it
+outright — the added fact, number, definition, comparison, or correction is the
+whole product. Accuracy stays absolute underneath (XERK-118): a wrong cue is
+worse than no cue. Cues are *private to the listener* — they are not part of
+the conversation, and never sent to anyone else in the session.
 
 Where they appear:
 
@@ -69,14 +72,31 @@ on the phone.
    renders it inline. Cues are deliberately excluded from the transcript
    full-text search corpus (they are private context, not conversation).
 
-## Accuracy over volume (XERK-118)
+## Enrichment over echo, accuracy over volume
 
-The cue's bar is **accuracy, not volume**. A cue only earns its place if it is
-correct and worth trusting; padding the transcript with vague or possibly-wrong
-"context" is worse than silence. So the model surfaces a cue only when it is
-confident, and prefers correcting a clear error over adding tangential trivia —
-when unsure, it stays silent. This reversed XERK-114's earlier "when in doubt,
-emit" tuning: the info being real is the whole point.
+A cue earns its place by **adding** something true. The prompt
+(`api/src/api/cue/openai.py`) frames the model as a research assistant with
+five triggers — answer a question asked aloud; add a concrete fact about a
+named person/place/product; define a term or piece of jargon; contribute a
+relevant number, precedent, or trade-off to a decision being worked through;
+correct a falsehood — and bans restating the transcript. In substantive talk
+the posture is emissive (silence is the exception, and if the best candidate
+fact is unsafe or already surfaced the model takes the next-best instead of
+declining); accuracy rules stay absolute over the content: no speculation, no
+facts about garbled/misheard names, never contradict what a speaker stated
+firsthand, never "correct" the speakers from a stale training cutoff on things
+that change, and stay silent rather than guess. Decoding is greedy
+(temperature 0) — measured on replayed deployment sessions it produced the
+same volume with materially fewer wrong cues than sampled decoding. The
+calibration history and replay measurements live in `docs/cue-rag.md`; the
+harness is `scripts/cue_eval/`.
+
+Repeats are blocked in three layers: the prompt carries the recent surfaced
+cues (title *and* body) as a do-not-repeat list, the session drops exact title
+matches (normalized), and a content-word fingerprint drops the same fact
+returning under a fresh title in new words (Jaccard ≥ 0.5 on content tokens —
+the recorded failure was one factory-production fact surfacing as three
+differently-titled cues).
 
 There is still no per-client aggressiveness toggle. The fixed settings live in
 `api/src/api/cue/tuning.py`:
@@ -84,12 +104,14 @@ There is still no per-client aggressiveness toggle. The fixed settings live in
 - **`min_interval_ms()`** — the minimum gap the session waits between cues
   (`1500ms`). A floor that stops a burst of hits from stacking, not a target; the
   accuracy bar below is what actually governs how often cues appear.
-- **`cue_guidance()`** — the bar the chat-model prompt sets for emitting a cue.
-  Since XERK-120 the bar is **asymmetric**, picked per call by whether live
-  evidence actually made it into the prompt:
-  - *No evidence* (retrieval off, timed out, or empty): the tight XERK-118 bar,
-    verbatim — correct a clear factual error, or add a concrete fact the model is
-    confident is true; never pad, silence over a guess.
+- **`cue_guidance()`** — the source-of-truth bar slotted into the prompt's
+  accuracy rules (the enrichment frame, triggers, and worked examples are
+  shared and live in `openai.py`'s `_SYSTEM`). Since XERK-120 the bar is
+  **asymmetric**, picked per call by whether live evidence actually made it
+  into the prompt:
+  - *No evidence* (retrieval off, timed out, or empty): facts that change or
+    grow over time (releases, versions, prices, scores, officeholders,
+    franchise counts) are off-limits from memory — silence over a stale answer.
   - *Evidence present* (`cue_guidance(grounded=True)`): generous for
     evidence-covered facts — the fact's accuracy comes from the retrieved source
     (and carries its label), not model confidence, so holding it to the

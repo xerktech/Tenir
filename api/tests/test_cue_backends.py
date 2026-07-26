@@ -7,8 +7,13 @@ import pytest
 
 from api.config import settings
 from api.cue import cue_guidance, make_cue_generator, min_interval_ms, normalize_cue_title
+from api.cue.base import GeneratedCue, cue_substance_similarity, cue_substance_tokens
 from api.cue.openai import OpenAICueGenerator
 from api.cue.stub import StubCueGenerator, _title_from
+
+
+def _avoid(*titles: str) -> list[GeneratedCue]:
+    return [GeneratedCue(title=t, body=f"Body for {t}.") for t in titles]
 
 # ---- stub generator --------------------------------------------------------
 
@@ -40,10 +45,10 @@ def test_stub_skips_a_cue_it_was_told_to_avoid() -> None:
     stub = StubCueGenerator()
     first = stub.generate("how far is the sun?")
     assert first is not None and first.title == "Sun"
-    assert stub.generate("how far is the sun?", avoid_titles=["Sun"]) is None
-    assert stub.generate("how far is the sun?", avoid_titles=[" sun. "]) is None
+    assert stub.generate("how far is the sun?", avoid_cues=_avoid("Sun")) is None
+    assert stub.generate("how far is the sun?", avoid_cues=_avoid(" sun. ")) is None
     # An unrelated avoid entry doesn't block a genuinely different cue.
-    other = stub.generate("how far is the sun?", avoid_titles=["Moon"])
+    other = stub.generate("how far is the sun?", avoid_cues=_avoid("Moon"))
     assert other is not None and other.title == "Sun"
 
 
@@ -76,30 +81,6 @@ def test_cue_guidance_is_present() -> None:
     assert cue_guidance().strip()
 
 
-def test_cue_guidance_is_accuracy_first() -> None:
-    # XERK-118: the cue's job is accurate, fact-checked info. The guidance must steer
-    # the model to correct errors and to stay silent when it isn't sure, rather than
-    # padding with tangential context (the reverse of the old "when in doubt, emit").
-    guidance = cue_guidance().lower()
-    assert "accura" in guidance  # accuracy / accurate
-    assert "correct" in guidance  # correcting a wrong statement
-    assert "silent" in guidance or "silence" in guidance  # stay silent when unsure
-
-
-def test_cue_guidance_treats_spoken_questions_as_cue_worthy() -> None:
-    # XERK-124: a recorded session was almost entirely direct questions to the
-    # glasses ("How many rings does Saturn have?") and produced zero cues — the
-    # original triggers (correct an error, annotate a claim) both presuppose an
-    # assertion, so a question fired neither. Asking aloud is the closest thing
-    # the product has to an explicit cue request; both bars must name it.
-    tight = cue_guidance().lower()
-    assert "question" in tight
-    assert "answer" in tight
-    grounded = cue_guidance(grounded=True).lower()
-    assert "question" in grounded
-    assert "answer" in grounded
-
-
 def test_cue_guidance_guards_growing_facts_from_stale_memory() -> None:
     # XERK-124: the model answered "how many Toy Story movies" from memory with
     # a count that its own training cutoff had made stale (the fifth film was
@@ -110,17 +91,7 @@ def test_cue_guidance_guards_growing_facts_from_stale_memory() -> None:
         low = guidance.lower()
         assert "training cutoff" in low
         assert "franchise" in low
-
-
-def test_cue_guidance_names_all_three_triggers() -> None:
-    # XERK-124 (clarified by the reporter): a question is answered, a mentioned
-    # fact gets extra context, a falsehood gets corrected. Both bars must carry
-    # all three verbs.
-    for guidance in (cue_guidance(), cue_guidance(grounded=True)):
-        low = guidance.lower()
-        assert "answer" in low
-        assert "context" in low
-        assert "correct" in low
+        assert "silent" in low  # silence over a stale-memory answer
 
 
 def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
@@ -130,11 +101,45 @@ def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
     # from evidence. A symmetric loosening measurably made the model miscite.
     grounded = cue_guidance(grounded=True).lower()
     assert "prefer emitting" in grounded  # generous where evidence covers
-    assert "only from the evidence" in grounded  # time-sensitive facts gated
+    assert "only from" in grounded and "evidence" in grounded  # time-gated
     assert "stay silent" in grounded  # uncovered topics keep the tight bar
     assert "accura" in grounded  # accuracy stays absolute
     # The two bars are genuinely different settings.
     assert cue_guidance(grounded=True) != cue_guidance()
+
+
+# ---- substance fingerprints (rephrased-duplicate backstop) -------------------
+
+
+def test_substance_tokens_keep_content_words_only() -> None:
+    tokens = cue_substance_tokens("Drone Factory", "The factory makes a drone every 90 seconds.")
+    assert "drone" in tokens and "factory" in tokens and "seconds" in tokens
+    assert "90" in tokens  # numbers are substance, whatever their length
+    assert "the" not in tokens and "a" not in tokens  # stopwords dropped
+    assert not cue_substance_tokens("", "")
+
+
+def test_substance_similarity_flags_reworded_duplicates() -> None:
+    # The recorded-production failure mode: one fact, three titles. Rewordings
+    # of the same fact land well above 0.5; different facts about the same
+    # entity land below it; unrelated cues near zero.
+    a = cue_substance_tokens(
+        "Charlotte Drone Facility",
+        "The speaker claims their US facility in Charlotte can produce a drone every ninety seconds.",
+    )
+    b = cue_substance_tokens(
+        "Charlotte Drone Production",
+        "The speaker claims their Charlotte facility can produce a drone every 90 seconds, aiming to match overseas manufacturing scales.",
+    )
+    assert cue_substance_similarity(a, b) >= 0.5
+    c = cue_substance_tokens(
+        "Drone Payload",
+        "A 7-inch drone in this class can carry roughly one kilogram of payload.",
+    )
+    assert cue_substance_similarity(a, c) < 0.5
+    d = cue_substance_tokens("Feature Flags", "Feature flags let you ship code dark.")
+    assert cue_substance_similarity(a, d) < 0.1
+    assert cue_substance_similarity(frozenset(), a) == 0.0
 
 
 # ---- factory ---------------------------------------------------------------
@@ -208,6 +213,8 @@ def test_payload_disables_thinking_by_default() -> None:
     payload = _gen()._build_payload("how far is the sun?")
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["response_format"] == {"type": "json_object"}
+    # Greedy decoding: sampled decoding measurably produced more wrong cues.
+    assert payload["temperature"] == 0.0
     assert payload["model"] == "qwen3-llm"
     assert [m["role"] for m in payload["messages"]] == ["system", "user"]
     assert payload["messages"][1]["content"] == "how far is the sun?"
@@ -220,16 +227,20 @@ def test_payload_keeps_thinking_when_disabled_off() -> None:
 
 
 def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
-    # XERK-102: already-surfaced titles ride the system prompt as "don't repeat",
-    # order-preserving and de-duplicated, so the model finds fresh context.
+    # XERK-102: already-surfaced cues ride the system prompt as "don't repeat".
+    # Bodies ride along too — production replays showed the same fact returning
+    # under a fresh title, which a bare title list can't warn the model off.
     payload = _gen()._build_payload(
         "how deep is the ocean?",
-        ["Sun", "Moon", "Sun"],
+        _avoid("Sun", "Moon", "Sun"),
     )
     system = payload["messages"][0]["content"]
     assert "do NOT repeat" in system
-    assert "Sun, Moon" in system  # de-duped, order preserved
-    assert system.count("Sun") == 1
+    assert "- Sun: Body for Sun." in system  # title AND body
+    assert "- Moon: Body for Moon." in system
+    assert system.count("- Sun:") == 1  # de-duped by title, order preserved
+    assert system.find("- Sun:") < system.find("- Moon:")
+    assert "substance" in system  # rephrasing the same fact is banned too
 
 
 def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
@@ -237,15 +248,29 @@ def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
     assert "do NOT repeat" not in system
 
 
-def test_payload_system_prompt_is_accuracy_and_correction_framed() -> None:
-    # XERK-118: the system prompt frames the cue as a fact-checker — correct wrong
-    # statements, surface only verified facts — and embeds the accuracy guidance, so
-    # the model's whole instruction is about being right, not about volume.
+def test_payload_system_prompt_is_enrichment_framed() -> None:
+    # The enrichment calibration: a cue must ADD information — the system prompt
+    # bans restating the transcript, names all five triggers, and keeps the
+    # accuracy rules absolute.
     system = _gen()._build_payload("the sun is 15 thousand km away")["messages"][0]["content"].lower()
-    assert "fact-check" in system or "fact check" in system
-    assert "correct" in system  # correcting things said that are wrong
-    assert "accura" in system  # the accuracy guidance rides the system prompt
-    assert "question" in system  # answering questions asked aloud (XERK-124)
+    assert "enrich" in system  # the defining property
+    assert "restat" in system  # restatement banned
+    assert "question" in system and "answer" in system  # trigger 1 (XERK-124)
+    assert "jargon" in system  # trigger 3: define terms
+    assert "decision" in system  # trigger 4: inform the work being discussed
+    assert "correct" in system  # trigger 5: fix falsehoods
+    assert "accura" in system  # accuracy rules ride every call
+
+
+def test_payload_system_prompt_guards_against_stt_and_stale_memory_traps() -> None:
+    # The three wrong-cue classes production replays surfaced: invented facts
+    # about misheard names, contradicting what a speaker said firsthand, and
+    # "correcting" the world from a stale training cutoff. Each gets a rule.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "speech recognition" in system and "garbled" in system
+    assert "firsthand" in system
+    assert "training cutoff" in system
+    assert "wrong cue is worse than no cue" in system
 
 
 # ---- response content extraction (regression: reasoning model empty content) --
