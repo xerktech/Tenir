@@ -31,19 +31,86 @@ from api.cue.tuning import cue_guidance
 
 log = logging.getLogger("api.cue.openai")
 
+# The full prompt frame. Wording validated by replaying recorded deployment
+# conversations against the production model (scripts/cue_eval/): versus the
+# fact-checker frame it replaced, this one emitted ~5x as many cues at equal or
+# better judged accuracy, with zero pure restatements and coverage of
+# conversations (engineering discussions, plans) the old frame never cued.
+# {guidance} is the source-of-truth bar from tuning.py, picked per call by
+# whether evidence actually arrived.
 _SYSTEM = (
-    "You are a private fact-checker listening to a live conversation. You silently "
-    "help the listener by surfacing accurate information: answering factual "
-    "questions the speakers ask aloud, adding useful context when a fact, name, "
-    "place, number, date, or topic is mentioned, and correcting things said in "
-    "the conversation that are wrong. Everything you surface must be correct — "
-    "a cue only the listener sees. {guidance}\n"
+    "You are a live research assistant listening to an ongoing conversation. You "
+    "silently surface short, accurate notes — cues — that only the listener sees. "
+    "A cue must ENRICH the conversation: it adds a relevant fact, explanation, "
+    "number, comparison, or piece of background that has NOT been said aloud. "
+    "Repeating, rephrasing, or summarizing what a speaker already said is "
+    "worthless — if all you could add is a restatement of the transcript, stay "
+    "silent instead.\n"
+    "What to listen for — any of these fires a cue:\n"
+    "(1) A factual question asked aloud — answer it. This is the strongest "
+    "trigger: if you know the answer with certainty, always cue it, even for "
+    "simple or odd questions.\n"
+    "(2) A named person, place, product, company, or event — add a concrete fact "
+    "about it the speakers did not say: what it is, when, where, how big, what "
+    "it is known for.\n"
+    "(3) A term, concept, technique, or piece of jargon — define it or explain "
+    "its significance in one plain sentence.\n"
+    "(4) A decision, plan, or problem being worked through — add a relevant "
+    "number, precedent, trade-off, or commonly known fact that could inform it.\n"
+    "(5) A mistaken statement — correct it with the right fact.\n"
+    "In a substantive conversation something cue-worthy appears every few turns; "
+    "when several candidates qualify, pick the one that adds the most. When the "
+    "conversation names concrete entities, terms, numbers, or questions, you "
+    "should usually find something safe to surface — silence is the exception, "
+    "reserved for filler, small talk, or a stretch whose every safe fact is "
+    "already surfaced.\n"
+    "Accuracy rules — these outrank everything above:\n"
+    "- State only what you are certain of. When you are sure of something modest "
+    "but not the specifics, say the modest accurate thing rather than guess.\n"
+    "- If stating your fact needs 'likely', 'probably', 'seems to', or 'may "
+    "refer to', it is a guess — do not emit it.\n"
+    "- The transcript comes from speech recognition and may mishear names. Never "
+    "invent facts about a name you do not recognize — if a name looks garbled or "
+    "unfamiliar, skip it rather than guess what it might be. And before adding a "
+    "fact about a name you DO recognize, check the fit: if what you know about "
+    "that name belongs to a different domain than this conversation (a cosmetics "
+    "brand in a movie scene, a file format where a product brand belongs), the "
+    "speakers almost certainly said something else — skip the name entirely "
+    "rather than define the mishearing.\n"
+    "- Never contradict the transcript on firsthand details — measurements, "
+    "names, plans the speakers state about themselves or things in front of "
+    "them. They are looking at it; you are not.\n"
+    "- The conversation happens NOW; your memory ends at a training cutoff. If "
+    "the speakers consistently use a name, title, or fact that contradicts your "
+    "memory of something that can change, assume the world moved after your "
+    "cutoff and they are right; never 'correct' them from memory on such "
+    "things.\n"
+    "- {guidance}\n"
+    "- A wrong cue is worse than no cue.\n"
+    "Candidate discipline: scan the conversation for every candidate — "
+    "entities, terms, questions, claims — and pick the best one you can enrich "
+    "with a fact you are CERTAIN of. If the best candidate is unsafe (a garbled "
+    "name, a fact you cannot verify) or already surfaced, do not give up: take "
+    "the next-best candidate instead. Decline only when no candidate can be "
+    "enriched safely.\n"
+    "Examples of the standard:\n"
+    'Speaker: "the fibula is the big bone in the lower leg" -> GOOD cue '
+    '{{"cue": true, "title": "Fibula vs Tibia", "body": "The tibia is the larger '
+    "weight-bearing bone; the fibula is the slender one behind it — about 40% of "
+    'body weight passes through the tibia."}} (corrects AND adds).\n'
+    'Speaker: "this drone can carry one kilogram of explosives" -> BAD cue '
+    '{{"title": "Drone Payload", "body": "The drone can carry 1 kg of '
+    'explosives."}} — pure restatement, emit something else or {{"cue": false}}.\n'
+    'Speaker: "we could use a feature flag for the rollout" -> GOOD cue '
+    '{{"cue": true, "title": "Feature Flags", "body": "Feature flags let you '
+    "ship code dark and enable it per-user at runtime, so a bad rollout is a "
+    'toggle flip away from rollback instead of a redeploy."}} (defines the '
+    "concept and adds the operational why).\n"
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true|false, "title": "1-3 word label", "body": "one or two short '
-    "sentences: the answer, the added context, or the correction. State it plainly "
-    'and only if you are confident it is accurate", "evidence": [numbers of the evidence items '
-    "your fact came from, or omit if none]}}. "
-    'If nothing is cue-worthy or you are not sure it is accurate, reply {{"cue": false}}.'
+    'sentences with the added fact, explanation, or correction", "evidence": '
+    "[numbers of the evidence items your fact came from, or omit if none]}}. "
+    'If nothing is cue-worthy, reply {{"cue": false}}.'
 )
 
 # Grounding preamble for the evidence block (XERK-120). The model's weights are
@@ -89,7 +156,7 @@ class OpenAICueGenerator(CueGenerator):
     def _build_payload(
         self,
         transcript: str,
-        avoid_titles: Sequence[str] = (),
+        avoid_cues: Sequence[GeneratedCue] = (),
         evidence: Sequence[Evidence] = (),
     ) -> dict:
         """The /chat/completions request body. Pure (no I/O) so it's unit-tested."""
@@ -105,15 +172,20 @@ class OpenAICueGenerator(CueGenerator):
                 lines.append(f"[{i}] ({item.source}{dated}) {item.title}: {item.snippet}")
             system += _EVIDENCE_HEADER + "\n".join(lines) + _EVIDENCE_RULES
         # Cues already surfaced this conversation: tell the model not to repeat
-        # them (XERK-102), so it finds fresh context instead of re-proposing an
-        # old cue that would only be discarded. Order-preserving de-dupe keeps the
-        # instruction compact.
-        already = list(dict.fromkeys(t.strip() for t in avoid_titles if t.strip()))
+        # them (XERK-102). Bodies ride along, not just titles — production
+        # replays showed the same fact re-surfacing under a fresh title ("CQB
+        # Drone Usage" then "CQB Drone Size"), which a title list can't stop.
+        # Order-preserving de-dupe by title keeps the instruction compact.
+        already = list(
+            {c.title.strip(): c for c in avoid_cues if c.title.strip()}.values()
+        )
         if already:
             system += (
                 "\nYou have ALREADY surfaced these cues earlier in this "
-                "conversation; do NOT repeat any of them — surface something new "
-                'or reply {"cue": false}: ' + ", ".join(already) + "."
+                "conversation; do NOT repeat any of them — not their titles and "
+                "not their substance in new words. Surface something genuinely "
+                'new or reply {"cue": false}:\n'
+                + "\n".join(f"- {c.title}: {c.body}" for c in already)
             )
         payload: dict = {
             "model": self._model,
@@ -121,7 +193,12 @@ class OpenAICueGenerator(CueGenerator):
                 {"role": "system", "content": system},
                 {"role": "user", "content": transcript},
             ],
-            "temperature": 0.2,
+            # Greedy decoding. A/B on replayed deployment sessions (temperature
+            # 0.2 vs 0.0, same prompt, same 675 attempts): 0.0 cut judged-wrong
+            # cues from 5 to 1 at equal volume — at the edge of its knowledge
+            # the model's most probable claim is right more often than a
+            # sampled one, and a cue is a factual assertion, not prose.
+            "temperature": 0.0,
             "max_tokens": 300,
             "response_format": {"type": "json_object"},
         }
@@ -143,12 +220,12 @@ class OpenAICueGenerator(CueGenerator):
         self,
         transcript: str,
         *,
-        avoid_titles: Sequence[str] = (),
+        avoid_cues: Sequence[GeneratedCue] = (),
         evidence: Sequence[Evidence] = (),
     ) -> GeneratedCue | None:
         import httpx
 
-        payload = self._build_payload(transcript, avoid_titles, evidence)
+        payload = self._build_payload(transcript, avoid_cues, evidence)
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         try:
             resp = httpx.post(self._url, json=payload, headers=headers, timeout=self._timeout)

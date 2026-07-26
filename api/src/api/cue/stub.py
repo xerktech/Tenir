@@ -72,7 +72,7 @@ class StubCueGenerator(CueGenerator):
         self,
         transcript: str,
         *,
-        avoid_titles: Sequence[str] = (),
+        avoid_cues: Sequence[GeneratedCue] = (),
         evidence: Sequence[Evidence] = (),
     ) -> GeneratedCue | None:
         last = _last_line(transcript)
@@ -85,7 +85,7 @@ class StubCueGenerator(CueGenerator):
         # Already surfaced this cue earlier in the conversation? Don't repeat it
         # (XERK-102) — the deterministic stub has no other line to draw from, so
         # returning None lets a later, different turn produce the next cue.
-        if normalize_cue_title(title) in {normalize_cue_title(t) for t in avoid_titles}:
+        if normalize_cue_title(title) in {normalize_cue_title(c.title) for c in avoid_cues}:
             return None
         # With evidence present, deterministically "ground" in the first item
         # (XERK-120) so the attribution path — source on the WS frame, in

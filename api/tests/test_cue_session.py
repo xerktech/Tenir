@@ -156,25 +156,26 @@ def test_dedupe_spans_the_whole_conversation_not_a_short_window(
     asyncio.run(run())
 
 
-def test_session_hands_generator_the_titles_already_surfaced(
+def test_session_hands_generator_the_cues_already_surfaced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """XERK-102: each generation is told which cues already appeared, in order, so
-    a model-backed generator can produce a genuinely new cue rather than repeat."""
+    """XERK-102: each generation is told which cues already appeared — title AND
+    body, in order — so a model-backed generator can steer clear of their
+    substance, not just their titles, and produce a genuinely new cue."""
     monkeypatch.setattr(settings, "cue_backend", "stub")
 
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
 
-        seen_avoid: list[list[str]] = []
+        seen_avoid: list[list[tuple[str, str]]] = []
         counter = {"n": 0}
 
         class SpyGen:
-            def generate(self, transcript, *, avoid_titles=(), evidence=()):  # type: ignore[no-untyped-def]
-                seen_avoid.append(list(avoid_titles))
+            def generate(self, transcript, *, avoid_cues=(), evidence=()):  # type: ignore[no-untyped-def]
+                seen_avoid.append([(c.title, c.body) for c in avoid_cues])
                 counter["n"] += 1
-                return GeneratedCue(title=f"Cue {counter['n']}", body="body")
+                return GeneratedCue(title=f"Cue {counter['n']}", body=f"Body {counter['n']}")
 
         session._cue_generator = SpyGen()
 
@@ -186,9 +187,67 @@ def test_session_hands_generator_the_titles_already_surfaced(
         await session.close()
 
         # First call had nothing to avoid; each later call receives every cue
-        # surfaced so far, in order.
-        assert seen_avoid == [[], ["Cue 1"], ["Cue 1", "Cue 2"]]
+        # surfaced so far, in order, with its body.
+        assert seen_avoid == [
+            [],
+            [("Cue 1", "Body 1")],
+            [("Cue 1", "Body 1"), ("Cue 2", "Body 2")],
+        ]
         assert [c.title for c in _cues(sent)] == ["Cue 1", "Cue 2", "Cue 3"]
+
+    asyncio.run(run())
+
+
+def test_session_drops_a_rephrased_duplicate_of_a_surfaced_cue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recorded-production failure the title dedupe can't catch: the same
+    fact re-proposed under a fresh title with a reworded body ("Charlotte Drone
+    Facility" then "Charlotte Drone Production"). The substance fingerprint must
+    drop it, without blocking a genuinely different fact about the same topic."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    proposals = [
+        GeneratedCue(
+            title="Charlotte Drone Facility",
+            body="The speaker claims their US facility in Charlotte can produce "
+            "a drone every ninety seconds.",
+        ),
+        # Same fact, new title, reworded body — must be dropped.
+        GeneratedCue(
+            title="US Drone Production Scale",
+            body="The speaker claims their Charlotte facility can produce a "
+            "drone every 90 seconds, matching overseas production scale.",
+        ),
+        # Different fact about the same topic — must surface.
+        GeneratedCue(
+            title="Drone Payload",
+            body="A 7-inch drone in this class can typically carry roughly one "
+            "kilogram of payload over several kilometers.",
+        ),
+    ]
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+
+        class ScriptedGen:
+            def generate(self, transcript, *, avoid_cues=(), evidence=()):  # type: ignore[no-untyped-def]
+                return proposals.pop(0)
+
+        session._cue_generator = ScriptedGen()
+
+        for i, seg in enumerate(("a", "b", "c")):
+            if i:
+                session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
+            session._consider_cue(_final(f"trigger {i}?", segment_id=seg))
+            await _drain_cues(session)
+        await session.close()
+
+        assert [c.title for c in _cues(sent)] == [
+            "Charlotte Drone Facility",
+            "Drone Payload",
+        ]
 
     asyncio.run(run())
 
