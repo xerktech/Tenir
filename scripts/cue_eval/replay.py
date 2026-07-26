@@ -15,6 +15,7 @@ import argparse
 import collections
 import json
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -61,6 +62,7 @@ def replay_conversation(
         "declines": 0,
         "dedup_drops": 0,
         "errors": 0,
+        "call_ms_total": 0,
         "cues": [],
     }
     next_free_ms = 0
@@ -76,6 +78,7 @@ def replay_conversation(
         out["attempts"] += 1
         next_free_ms = at + ATTEMPT_MS
         payload = gen._build_payload("\n".join(recent), surfaced[-AVOID_LIMIT:])
+        started = time.monotonic()
         try:
             resp = client.post(url, json=payload, timeout=60)
             resp.raise_for_status()
@@ -83,6 +86,10 @@ def replay_conversation(
         except Exception:
             out["errors"] += 1
             continue
+        finally:
+            # Mean call latency bounds cue frequency directly (attempts are
+            # serialized one-in-flight live), so the replay records it.
+            out["call_ms_total"] += int((time.monotonic() - started) * 1000)
         cue = gen._parse(content)
         if cue is None:
             out["declines"] += 1
@@ -153,7 +160,9 @@ def main() -> None:
     args.out.write_text(json.dumps(out, indent=2))
     total = sum(len(c["cues"]) for c in out["conversations"])
     attempts = sum(c["attempts"] for c in out["conversations"])
-    print(f"total: {total} cues / {attempts} attempts -> {args.out}")
+    call_ms = sum(c["call_ms_total"] for c in out["conversations"])
+    mean = f", mean call {call_ms / attempts / 1000:.2f}s" if attempts else ""
+    print(f"total: {total} cues / {attempts} attempts{mean} -> {args.out}")
 
 
 if __name__ == "__main__":
