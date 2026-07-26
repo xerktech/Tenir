@@ -188,3 +188,31 @@ Open items for productionizing (not part of this eval):
    harness.
 4. **VRAM**: 120b (~65 GB) + both STT models (~5 GB) fit the 96 GB card with
    room to spare once the eval services are torn down; Qwen would retire.
+
+## Deployment verification & final tuning (2026-07-26, post-promotion)
+
+gpt-oss-120b was promoted (DockerOps #110) and wired through LiteLLM. Final
+verification against the deployed layout:
+
+- **Gateway overhead is negligible.** Identical cue-style calls, 12 each,
+  warm: direct Ollama **1.440 s**, LiteLLM via LAN **1.424 s**, LiteLLM via
+  the Cloudflare tunnel (the api's actual path) **1.460 s**. Routing through
+  the gateway — even the tunnel — costs ~1–2%. No endpoint change needed.
+- **Gateway entry must use OpenAI-compat passthrough.** A LiteLLM entry using
+  the native `ollama` provider returns EMPTY content whenever the request
+  carries `response_format: {"type": "json_object"}` — which the api sends on
+  every cue call. Isolated by ablation: same payload works with
+  response_format removed, and works with response_format against Ollama's
+  own /v1. The entry must be `model: openai/gpt-oss:120b` with
+  `api_base: http://GPU_HOST:9402/v1` (the surface this whole eval
+  validated), plus `reasoning_effort: medium` pinned.
+- **Also fixed**: the api's `API_LLM_MODEL` default now names the gateway
+  entry directly (`gpt-oss:120b`, DockerOps #111) — the retired `qwen3-llm`
+  alias 403s.
+- **Prompt v6 (shipped in this PR)**: the misheard-name rule now includes a
+  domain-fit check (a famous meaning from the wrong domain = a mishearing —
+  skip the name). Full replay at medium effort: garbled-name cues **5 → 3**
+  with volume **up** (234 → 243) and controls unchanged. The residual ~1% is
+  boundary noise — single-window A/Bs flip run to run — and is best cleaned
+  up by the live retrieval evidence in production (a misheard name retrieves
+  nothing that supports the wrong definition), not by more prompt text.
