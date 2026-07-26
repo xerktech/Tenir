@@ -123,6 +123,19 @@ def test_cue_guidance_names_all_three_triggers() -> None:
         assert "correct" in low
 
 
+def test_cue_guidance_forbids_restating_an_accurate_fact() -> None:
+    # XERK-131: the "add context" trigger kept producing cues that just repeated
+    # an accurate statement instead of adding anything. Both bars must require the
+    # added context to be NEW — not a repeat/rephrase of what was said — and must
+    # tell the model to stay silent when all it could offer is a restatement.
+    for guidance in (cue_guidance(), cue_guidance(grounded=True)):
+        low = guidance.lower()
+        assert "not already said" in low  # the added context must be new
+        assert "repeat" in low or "rephrase" in low  # don't echo the statement
+        # A stated-and-accurate fact still gates on adding something new.
+        assert "accurate" in low
+
+
 def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
     # XERK-120: with evidence in the prompt the bar loosens ONE-SIDEDLY — emit
     # freely for evidence-covered facts, but anything uncovered keeps the tight
@@ -246,6 +259,17 @@ def test_payload_system_prompt_is_accuracy_and_correction_framed() -> None:
     assert "correct" in system  # correcting things said that are wrong
     assert "accura" in system  # the accuracy guidance rides the system prompt
     assert "question" in system  # answering questions asked aloud (XERK-124)
+
+
+def test_payload_system_prompt_forbids_restating_an_accurate_fact() -> None:
+    # XERK-131: when an accurate fact is stated the cue must add something new, not
+    # echo it back. The system prompt itself must carry the "not already said" /
+    # "never repeat" instruction, independent of the guidance block.
+    system = _gen()._build_payload("the Eiffel Tower is in Paris")["messages"][0][
+        "content"
+    ].lower()
+    assert "not already said" in system
+    assert "repeat" in system or "rephrase" in system
 
 
 # ---- response content extraction (regression: reasoning model empty content) --

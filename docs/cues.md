@@ -105,6 +105,14 @@ There is still no per-client aggressiveness toggle. The fixed settings live in
   evidence, a retrieval outage degrades to the tight bar, never to aggressive
   guessing.
 
+  Both bars — and the system prompt itself — carry the XERK-131 rule for the
+  "add context" trigger: when a stated fact is **accurate**, the cue has to add
+  information that was *not already said*. A cue that merely repeats, confirms,
+  or rephrases the accurate statement contributes nothing, so the model stays
+  silent unless it has something genuinely new to add. (Answering a question
+  and correcting a falsehood are new information by construction, so only the
+  middle trigger needed the guard.)
+
 The old three-level toggle (Conservative / Balanced / Aggressive) that web + mobile
 used to expose and persist per client (XERK-81) is gone; the per-client `cueLevel`
 on `session.start` is no longer sent by any client. The glasses client never had

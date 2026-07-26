@@ -1,4 +1,4 @@
-"""Fixed cue-generation tuning (XERK-114, XERK-118, XERK-120, XERK-124).
+"""Fixed cue-generation tuning (XERK-114, XERK-118, XERK-120, XERK-124, XERK-131).
 
 Cues used to be governed by a per-session aggressiveness *level* the user picked
 in the client UI (conservative | balanced | aggressive, XERK-81). That toggle is
@@ -12,6 +12,15 @@ triggers, one per thing a conversation can bring:
   * a question comes through   → **answer** it
   * a fact/topic comes through → **add extra context** to it
   * a falsehood comes through  → **correct** it
+
+XERK-131 sharpens the middle trigger. Left as "add extra context", the model
+kept emitting cues that simply restated an accurate statement ("the Eiffel
+Tower is in Paris" → a cue saying it is in Paris) — a confirmation, not a
+contribution. The added context now has to be information the speakers did
+*not* already say: if a stated fact is accurate and all the model can offer is
+a repeat or rephrase of it, that is silence, not a cue. Both bars carry the
+"don't restate what was said" rule; the correcting trigger is untouched (a
+correction is by definition new information).
 
 The calibration underneath swung twice before landing here. XERK-114 ran "when
 in doubt, emit", which on a replayed real session produced confidently *wrong*
@@ -39,10 +48,12 @@ Three things are tuned:
     band slot — the emission bar governs frequency.)
   * ``CUE_GUIDANCE`` — the bar with no evidence in the prompt: answer,
     contextualize, and correct from the model's own knowledge, with accuracy
-    outranking coverage.
+    outranking coverage. The contextualize trigger requires *new* information,
+    not a restatement of an accurate claim (XERK-131).
   * ``CUE_GUIDANCE_GROUNDED`` — the bar when evidence rides the prompt: the same
     three triggers, generous for evidence-covered facts, time-sensitive facts
-    only from evidence.
+    only from evidence — but still no cue that merely echoes what was said
+    (XERK-131).
 """
 
 from __future__ import annotations
@@ -74,14 +85,19 @@ CUE_GUIDANCE = (
     "forthcoming. Three triggers, one per thing the conversation brings: "
     "(1) Someone asks a factual question aloud — how many, how far, who, when, "
     "what — answer it. (2) A fact, name, place, number, date, or topic is "
-    "mentioned — add a short piece of useful extra context about it: a stable "
-    "fact about it you are certain of (what it is, where it is, when it "
-    "happened, how big it is, what it is known for). When something concrete "
-    "has been mentioned and you know such a fact, prefer emitting it over "
-    "staying silent. (3) Someone states something false or mistaken — correct "
-    "it with the right fact. Stay silent only for pure filler or small talk "
-    "with nothing to look up, or when anything you could say might be "
-    "inaccurate. Accuracy outranks coverage: say only what you are sure of, "
+    "mentioned and is accurate — add a short piece of useful extra context "
+    "that was NOT already said: a stable fact about it you are certain of "
+    "(what it is, where it is, when it happened, how big it is, what it is "
+    "known for) that goes beyond what the speaker just stated. Do NOT repeat, "
+    "confirm, or merely rephrase an accurate statement — a cue that only "
+    "echoes what was just said adds nothing and must not be emitted; if the "
+    "only thing you could say is already in what was said, stay silent. When "
+    "something concrete has been mentioned and you know a genuinely new fact "
+    "about it, prefer emitting that over staying silent. (3) Someone states "
+    "something false or mistaken — correct it with the right fact. Stay silent "
+    "only for pure filler or small talk with nothing to look up, when anything "
+    "you could say might be inaccurate, or when you would only be restating "
+    "what was said. Accuracy outranks coverage: say only what you are sure of, "
     "and when you are sure of something modest but not the specifics, surface "
     "the modest accurate thing instead of guessing at specifics. Facts that "
     "grow over time are NOT safe from memory even when they feel settled — "
@@ -106,9 +122,12 @@ CUE_GUIDANCE_GROUNDED = (
     "a factual question aloud — answer it, from the evidence when the evidence "
     "covers it, or from your own knowledge if it is a stable, timeless fact "
     "you are certain of. (2) A fact, name, place, number, date, or topic is "
-    "mentioned — add a short piece of genuinely useful extra context about "
-    "it; for evidence-covered facts, prefer emitting a cue over staying "
-    "silent. (3) Someone states something false or mistaken — correct it with "
+    "mentioned and is accurate — add a short piece of genuinely useful extra "
+    "context that was NOT already said; do NOT repeat, confirm, or merely "
+    "rephrase an accurate statement — the cue must add something new beyond "
+    "it, or stay silent. For evidence-covered facts, prefer emitting such a "
+    "new fact over staying silent. (3) Someone states something false or "
+    "mistaken — correct it with "
     "the right fact. Accuracy is still absolute, and the generosity is "
     "one-sided: a fact that changes or grows over time — recent events, "
     "current officeholders, prices, scores, and how many entries an ongoing "
