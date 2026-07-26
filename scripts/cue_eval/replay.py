@@ -127,11 +127,29 @@ def main() -> None:
         "--conversations", default="", help="comma-separated conversation ids (default: all)"
     )
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument(
+        "--reasoning-effort",
+        default="",
+        choices=["", "low", "medium", "high"],
+        help="for gpt-oss models: sets reasoning_effort on every request and strips "
+        "the Qwen-specific chat_template_kwargs (vLLM and Ollama both accept the "
+        "OpenAI-style field; the dial is gpt-oss's selectivity/speed trade)",
+    )
     args = ap.parse_args()
 
     by_conv = load_conversations(args.segments)
     conv_ids = [c for c in args.conversations.split(",") if c] or list(by_conv)
     gen = OpenAICueGenerator(endpoint=args.endpoint, model=args.model, api_key=args.api_key)
+    if args.reasoning_effort:
+
+        class _EffortGen(OpenAICueGenerator):
+            def _build_payload(self, transcript, avoid_cues=(), evidence=()):
+                payload = super()._build_payload(transcript, avoid_cues, evidence)
+                payload.pop("chat_template_kwargs", None)
+                payload["reasoning_effort"] = args.reasoning_effort
+                return payload
+
+        gen = _EffortGen(endpoint=args.endpoint, model=args.model, api_key=args.api_key)
     url = args.endpoint.rstrip("/") + "/chat/completions"
 
     results: list[dict | None] = [None] * len(conv_ids)
