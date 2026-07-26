@@ -135,21 +135,29 @@ def main() -> None:
         "the Qwen-specific chat_template_kwargs (vLLM and Ollama both accept the "
         "OpenAI-style field; the dial is gpt-oss's selectivity/speed trade)",
     )
+    ap.add_argument(
+        "--no-template-kwargs",
+        action="store_true",
+        help="strip the Qwen-specific chat_template_kwargs without setting a "
+        "reasoning effort — required for Mistral models, whose vLLM tokenizer "
+        "mode rejects chat_template_kwargs with a 400",
+    )
     args = ap.parse_args()
 
     by_conv = load_conversations(args.segments)
     conv_ids = [c for c in args.conversations.split(",") if c] or list(by_conv)
     gen = OpenAICueGenerator(endpoint=args.endpoint, model=args.model, api_key=args.api_key)
-    if args.reasoning_effort:
+    if args.reasoning_effort or args.no_template_kwargs:
 
-        class _EffortGen(OpenAICueGenerator):
+        class _AdaptedGen(OpenAICueGenerator):
             def _build_payload(self, transcript, avoid_cues=(), evidence=()):
                 payload = super()._build_payload(transcript, avoid_cues, evidence)
                 payload.pop("chat_template_kwargs", None)
-                payload["reasoning_effort"] = args.reasoning_effort
+                if args.reasoning_effort:
+                    payload["reasoning_effort"] = args.reasoning_effort
                 return payload
 
-        gen = _EffortGen(endpoint=args.endpoint, model=args.model, api_key=args.api_key)
+        gen = _AdaptedGen(endpoint=args.endpoint, model=args.model, api_key=args.api_key)
     url = args.endpoint.rstrip("/") + "/chat/completions"
 
     results: list[dict | None] = [None] * len(conv_ids)

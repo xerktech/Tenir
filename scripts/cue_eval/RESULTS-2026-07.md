@@ -110,18 +110,81 @@ hypothesis that remains untested is that a *stronger* model can hold Qwen-like
 discipline at a higher emit rate — exactly the iteration-2 gpt-oss-120b test
 (~4x knowledge, ~5B active params). **Proceed to iteration 2.**
 
-## Iteration 2 — gpt-oss-120b
+## Iteration 2 — gpt-oss-120b (run 2026-07-26, via Ollama)
 
-_Pending iteration-1 results and the compose swap (uncomment eval-c,
-comment out eval-a/b and tenir-vllm-cue)._
+**Serving note**: vLLM cannot load gpt-oss-120b on this host — SM120 gets the
+Marlin MXFP4 fallback and its load-time repack transient OOMs the 96 GB card
+every time (four attempts across shares 0.70/0.85, `--enforce-eager`, and
+allocator tuning; WSL2 rules out the VMM-based mitigations — DockerOps
+#104-#108). It runs cleanly on **Ollama/llama.cpp** (`gpt-oss:120b`, ~65 GB
+GGUF, streams with no repack), which the eval used. Ollama latency is NOT
+runtime-comparable to the vLLM rows (single-request stream; replayed with
+`--workers 1`). Judged cross-family by Qwen.
 
-| model | cues | attempts | emit% | novelty | relevance | accuracy | restates | wrong | dups | ctrl cues | mean call s |
+| model | cues | emit% | novelty | relevance | accuracy | perfect | restates | wrong | dups | ctrl cues | mean call s |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| gpt-oss-120b | | | | | | | | | | | |
+| gpt-oss-120b, reasoning medium | 234 | 35% | 1.81 | 1.71 | **1.96** | **152** | 12 | **4** | 14 | 43 | 1.98 |
+| gpt-oss-120b, reasoning low | 362 | 54% | 1.59 | 1.73 | 1.92 | 189 | 48 | 10 | 69 | 50 | 1.12 |
 
-Notes:
+**The scale hypothesis held.** At medium effort the 120b emits 10x the current
+model's volume at HALF its wrong-rate (1.7% vs 4.5%) — 152 judged-perfect cues
+vs Qwen's 14 on the same replay. Hand review of all four wrong cues shows a
+single failure class: confidently defining a misheard STT token ("GPX",
+"CQV", "Yonka") instead of skipping it — the garbled-name rule holds less
+firmly at this emit rate, a future prompt-tuning target. Its 43
+control-conversation cues are mostly accurate definitions (carapace, Dolly the
+sheep, SCNT) the judge docked on relevance, same pattern as the 20b in round
+1. Low effort adds volume but degrades novelty (48 restates) and duplicates
+(69 caught by the substance backstop) — medium is the shipping setting.
+
+## Round 3 — Mistral Small 3.2 24B FP8 (run 2026-07-26)
+
+vLLM note: Mistral's tokenizer mode rejects `chat_template_kwargs` with a 400
+— replayed with `--no-template-kwargs` (harness flag added for this).
+
+| model | cues | emit% | novelty | relevance | accuracy | perfect | restates | wrong | dups | ctrl cues | mean call s |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| mistral-small-3.2-24b FP8 | 207 | 31% | 1.36 | 1.79 | 1.61 | 73 | 33 | **30** | 35 | 18 | **0.71** |
+
+Fastest runtime of any candidate (0.71 s/call) and an emissive posture, but
+the worst calibrated-run precision: 14.5% of its cues are judged wrong and 16%
+restate the transcript. Same knowledge-frontier confabulation class as the
+other small models, at higher volume. Eliminated.
 
 ## Decision
 
-_To be written when testing concludes: which model takes the `qwen3-llm`
-alias (or keeps it), and why._
+**Recommend gpt-oss-120b at reasoning-effort medium as the cue model.** Final
+standings across every calibrated run (frozen 12-conversation replay, shipped
+enrichment prompt, cross-family judged):
+
+| model | perfect cues | wrong rate | emit% | runtime |
+|---|---|---|---|---|
+| **gpt-oss-120b, medium** | **152** | **1.7%** | 35% | Ollama, 1.98 s/call |
+| gpt-oss-120b, low | 189 | 2.8% | 54% | Ollama, 1.12 s/call |
+| gemma-3-27b | 179 | ~9% | 66% | vLLM, 1.66 s/call |
+| gpt-oss-20b, low | 125 | 8.8% | 37% | vLLM, 0.83 s/call |
+| mistral-small-3.2 | 73 | 14.5% | 31% | vLLM, 0.71 s/call |
+| gpt-oss-20b, medium | 20 | 3.1% | 5% | vLLM, 1.98 s/call |
+| **Qwen3.6-27B (current)** | 14 | 4.5% | 3% | vLLM, 1.30 s/call |
+
+The 120b at medium is the only candidate that delivers the product goal —
+substantially more cues at maintained-or-better accuracy. It is also the only
+one whose volume comes from knowledge depth rather than loosened discipline:
+every other high-volume run paid 9-15% wrong cues.
+
+Open items for productionizing (not part of this eval):
+
+1. **Serving**: production cues would ride Ollama (:9406) until vLLM's SM120
+   MXFP4 path can load the model (upstream work exists). LiteLLM can alias an
+   Ollama endpoint, so the api needs no change beyond the alias target and
+   `reasoning_effort: medium` on the request (a small `api` config addition).
+2. **Concurrency**: Ollama serves the eval fine single-stream; cue attempts
+   are serialized per session anyway. Multi-session households should verify
+   `OLLAMA_NUM_PARALLEL` covers their session count.
+3. **Prompt fine-tune**: the misheard-name failure class (4 cues) suggests
+   strengthening the garbled-name rule for this model; the relevance dings on
+   ambient-media definitions may also warrant a "only cue what the LISTENER
+   is engaged with" nudge. Both are small calibration passes with this same
+   harness.
+4. **VRAM**: 120b (~65 GB) + both STT models (~5 GB) fit the 96 GB card with
+   room to spare once the eval services are torn down; Qwen would retire.
