@@ -56,18 +56,59 @@ under ~4 cues as noise. Residual wrong-cue class to watch: confident
 specifics at the knowledge frontier (niche chemistry, hardware pinouts,
 Docker internals) — the main thing a stronger model should fix.
 
-## Iteration 1 — Qwen3.6-27B vs gpt-oss-20b vs Gemma 3 27B
+## Iteration 1 — Qwen3.6-27B vs gpt-oss-20b vs Gemma 3 27B (run 2026-07-26)
 
-_Pending deployment (DockerOps PR #99). To be filled in by the replay +
-cross-family judge runs once :9404 and :9405 are healthy._
+All replays on the frozen 12-conversation set (675 attempts each), shipped
+enrichment prompt, t=0.0, ungrounded. Cross-family judging: the Qwen run was
+judged by gpt-oss-20b; the gpt-oss runs by Qwen; Gemma by **both** (the two
+judges agreed closely — wrong 40 vs 38, dups 87 vs 74 — which validates the
+judge protocol). "perfect" = novelty 2 + relevance 2 + accuracy 2 + not a
+duplicate. gpt-oss was run at two reasoning efforts since that dial sets its
+speed/selectivity trade.
 
-| model | cues | attempts | emit% | novelty | relevance | accuracy | restates | wrong | dups | ctrl cues | mean call s |
+| model | cues | emit% | novelty | relevance | accuracy | perfect | restates | wrong | dups | ctrl cues | mean call s |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Qwen3.6-27B-FP8 (current) | | | | | | | | | | | |
-| gpt-oss-20b | | | | | | | | | | | |
-| gemma-3-27b-it-FP8 | | | | | | | | | | | |
+| Qwen3.6-27B-FP8 (current) | 22 | 3% | 1.59 | 1.95 | 1.86 | 14 | 3 | 1 | 1 | 0 | 1.30 |
+| gpt-oss-20b, reasoning medium | 32 | 5% | 1.97 | 1.62 | 1.88 | 20 | 0 | 1 | 0 | 6 | 1.98 |
+| gpt-oss-20b, reasoning low | 251 | 37% | 1.76 | 1.65 | 1.76 | 125 | 20 | 22 | 23 | 36 | 0.83 |
+| gemma-3-27b-it-FP8 (qwen judge) | 448 | 66% | 1.57 | 1.58 | 1.77 | 179 | 55 | 40 | 87 | 95 | 1.66 |
+| gemma-3-27b-it-FP8 (gpt-oss judge) | 448 | 66% | 1.62 | 1.71 | 1.68 | — | 70 | 38 | 74 | 95 | 1.66 |
 
-Notes:
+### Findings (with hand review of flagged cues)
+
+- **The prompt's emission calibration is model-specific.** It was tuned on
+  Qwen and holds there (3% emit, controls silent). Gemma ignores it almost
+  completely (66% emit, 28 cues on the garbled-STT control, 87 rephrased
+  duplicates) — disqualified as a generator without its own calibration
+  round. gpt-oss respects it at medium reasoning and abandons it at low.
+- **The dataset holds far more good cues than the current model surfaces.**
+  gpt-oss-low found ~125 judged-perfect cues (9x Qwen's 14) — volume is
+  limited by the emission bar, not by available material. But it paid with
+  22 confidently-wrong cues (invented display specs, wrong Pi 5 core count,
+  wrong drone prices) — the exact failure class the accuracy rules exist for,
+  at ~9% of output. Not shippable as-is.
+- **gpt-oss-20b at medium is the honest challenger**: 20 perfect cues vs
+  Qwen's 14 at the same wrong-cue count (1 each). Its 6 "control" cues are
+  mostly *legitimate on hand review* (accurate definitions — carapace, Dolly
+  the sheep, Red Skull — during a movie the household was watching; the judge
+  docked relevance, a listener might not). Two real downsides: judged
+  relevance 1.62 (it enriches tangentially more often) and 1.98 s/call vs
+  Qwen's 1.30 s — the "frequency lever" thesis FAILS at medium effort because
+  the reasoning tokens eat the speed advantage; the lever only exists at low
+  effort, where accuracy collapses.
+- **Judge-harshness caveat**: the gpt-oss judge marked Qwen's "32+32=64" cue
+  novelty-0 ("restates the answer") — but the transcript *asked* the
+  question aloud; answering is the product working. A couple of per-model
+  points in the novelty/restate columns are judge artifacts of this shape.
+
+### Iteration-1 verdict
+
+Qwen stays ahead on precision-per-cue; gpt-oss-20b-medium edges it on good-cue
+yield at equal accuracy but is no faster and noisier on relevance; neither
+candidate delivers "more volume at maintained accuracy" cleanly. The
+hypothesis that remains untested is that a *stronger* model can hold Qwen-like
+discipline at a higher emit rate — exactly the iteration-2 gpt-oss-120b test
+(~4x knowledge, ~5B active params). **Proceed to iteration 2.**
 
 ## Iteration 2 — gpt-oss-120b
 

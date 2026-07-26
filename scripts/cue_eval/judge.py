@@ -50,6 +50,19 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--api-key", default="")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--reasoning-effort",
+        default="",
+        help="for gpt-oss judges: cap the analysis channel (low|medium|high); "
+        "without it, analysis can eat the whole token budget and leave no verdict",
+    )
+    ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=500,
+        help="response budget; reasoning models spend part of it on analysis "
+        "before the JSON verdict, so keep this comfortably above 200",
+    )
     args = ap.parse_args()
 
     by_conv: dict[str, list[dict]] = collections.defaultdict(list)
@@ -93,10 +106,12 @@ def main() -> None:
                         {"role": "user", "content": user},
                     ],
                     "temperature": 0.0,
-                    "max_tokens": 200,
+                    "max_tokens": args.max_tokens,
                     "response_format": {"type": "json_object"},
                     "chat_template_kwargs": {"enable_thinking": False},
                 }
+                if args.reasoning_effort:
+                    payload["reasoning_effort"] = args.reasoning_effort
                 verdict = None
                 try:
                     resp = client.post(url, json=payload, headers=headers, timeout=60)
