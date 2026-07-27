@@ -6,20 +6,19 @@ import {
   buildMainPage,
   buildMenuPage,
   buildStartupContainer,
+  cueBodyBox,
   cueBodyLines,
+  cueBodyText,
   cueBox,
   cueHeight,
-  cueMaxScroll,
   cueRowRange,
   cueRows,
-  cueText,
+  cueTitleLine,
   CAPTION_H,
   CAPTION_LINES,
   CLOCK_W,
   clockText,
   CONTAINER,
-  CUE_BAR_THUMB,
-  CUE_BAR_TRACK,
   CUE_BODY_LINES,
   CUE_H,
   CUE_ROW_FIRST,
@@ -440,31 +439,68 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
   });
 });
 
-describe("cue popup (XERK-81)", () => {
+describe("cue popup (XERK-81, XERK-133)", () => {
   const cue = { title: "Sun", body: "About 150 million km away." };
+  const CONTENTS = { status: "listening", caption: "hi", clock: "2:05 PM" };
+  const frameOf = (page: ReturnType<typeof buildCuePage>) =>
+    page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
+  const bodyOf = (page: ReturnType<typeof buildCuePage>) =>
+    page.textObject!.find((t) => t.containerName === CONTAINER.cueBody.name)!;
 
-  it("fits a cue into the title, in its own capitalization, over its body (XERK-134)", () => {
-    const rows = cueText(cue).split("\n");
-    expect(rows).toHaveLength(2); // title + the single body row this body wraps to
-    expect(rows[0]).toBe("Sun");
-    expect(rows[1].length).toBeGreaterThan(0);
-    // Each row fits the popup's interior width (never wider than the box).
+  it("fits a cue into a pinned title in its own case, over its body text (XERK-134)", () => {
+    expect(cueTitleLine(cue)).toBe("Sun"); // own capitalization, not upper-cased
+    // Each body row fits the popup's interior width (never wider than the box).
+    const rows = cueBodyText(cue).split("\n");
+    expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
   });
 
-  it("builds the cue strip on the same container, sized to the cue's rows", () => {
-    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, cue, 7);
-    expect(page.containerTotalNum).toBe(5);
-    const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
-    expect(popup.yPosition).toBe(MENU_Y); // a strip from the top of the screen
+  it("builds the cue as a pinned title frame plus a scrolling body container", () => {
+    const page = buildCuePage(CONTENTS, cue, 7);
+    // Base 4 + the title frame + the body container.
+    expect(page.containerTotalNum).toBe(6);
+
+    const frame = frameOf(page);
+    expect(frame.yPosition).toBe(MENU_Y); // a strip from the top of the screen
     // Sized to the cue it holds (XERK-119): this short body is one row, so the
     // box is a title + one body row — never the full CUE_H.
     expect(cueRows(cue)).toBe(2);
-    expect(popup.height).toBe(cueHeight(2));
-    expect(popup.height!).toBeLessThan(CUE_H);
-    expect(popup.borderWidth).toBe(MENU_BORDER);
-    expect(popup.isEventCapture).toBe(0);
-    expect(popup.content).toBe(cueText(cue, 7));
+    expect(frame.height).toBe(cueHeight(2));
+    expect(frame.height!).toBeLessThan(CUE_H);
+    expect(frame.borderWidth).toBe(MENU_BORDER);
+    expect(frame.isEventCapture).toBe(0); // the frame never captures — the body does
+    expect(frame.content).toBe(cueTitleLine(cue, 7)); // just the title + countdown
+
+    const body = bodyOf(page);
+    expect(body.content).toBe(cueBodyText(cue)); // the whole body, no glyph bar
+    expect(body.borderWidth ?? 0).toBe(0); // borderless — it sits inside the frame
+    expect(body.paddingLength ?? 0).toBe(0);
+  });
+
+  it("hands scroll capture to the body container, not the touch overlay (XERK-133)", () => {
+    const page = buildCuePage(CONTENTS, cue, 7);
+    // Exactly one container captures per page (XERK-85): while a cue is up it is
+    // the body container, so the host scrolls the visible body a wearer can see.
+    const captures = page.textObject!.filter((c) => c.isEventCapture === 1);
+    expect(captures.map((c) => c.containerName)).toEqual([CONTAINER.cueBody.name]);
+    expect(bodyOf(page).isEventCapture).toBe(1);
+  });
+
+  it("nests the body container inside the frame, below the pinned title row", () => {
+    const page = buildCuePage(CONTENTS, cue, 7);
+    const body = bodyOf(page);
+    const bb = cueBodyBox(cue);
+    expect(body.xPosition).toBe(bb.x);
+    expect(body.yPosition).toBe(bb.y);
+    expect(body.width).toBe(bb.width);
+    expect(body.height).toBe(bb.height);
+    // Inside the frame's interior: right of its left border+padding, one line
+    // below the title row.
+    expect(bb.x).toBe(MENU_BORDER + MENU_PAD);
+    expect(bb.y).toBe(MENU_BORDER + MENU_PAD + LINE_H);
+    // The body wraps a touch narrower than the container so the host's native
+    // scroll bar has room down the right edge.
+    expect(CUE_TEXT_W).toBeLessThan(bb.width);
   });
 
   it("builds the full-height cue strip for a body that fills the box (XERK-119)", () => {
@@ -472,31 +508,35 @@ describe("cue popup (XERK-81)", () => {
       title: "History",
       body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
     };
-    const page = buildCuePage({ status: "listening", caption: "hi", clock: "2:05 PM" }, long, 7);
-    const popup = page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
+    const page = buildCuePage(CONTENTS, long, 7);
     expect(cueRows(long)).toBe(CUE_ROWS); // title + a full CUE_BODY_LINES window
-    expect(popup.height).toBe(CUE_H); // taller than the menu — room for 3 body rows
-    expect(popup.height!).toBeGreaterThan(MENU_H);
+    expect(frameOf(page).height).toBe(CUE_H); // taller than the menu
+    expect(frameOf(page).height!).toBeGreaterThan(MENU_H);
+    // The body container is exactly the window; its content is the WHOLE body,
+    // which overflows that height so the host scrolls it (XERK-133).
+    const body = bodyOf(page);
+    expect(body.height).toBe(CUE_BODY_LINES * LINE_H);
+    const bodyRows = cueBodyText(long).split("\n").length;
+    expect(bodyRows).toBeGreaterThan(CUE_BODY_LINES);
+    expect(bodyRows * LINE_H).toBeGreaterThan(body.height!); // content overflows → scrolls
   });
 
   describe("countdown to dismissal (XERK-110)", () => {
     it("ends the title row with the seconds left, flush to the right edge", () => {
-      const rows = cueText(cue, 7).split("\n");
-      expect(rows).toHaveLength(2); // title + the one body row this short body wraps to
-      expect(rows[0]).toMatch(/^Sun {2,}7s$/); // title left, count right, gap between
+      const title = cueTitleLine(cue, 7);
+      expect(title).toMatch(/^Sun {2,}7s$/); // title (own case) left, count right
       // The count sits as far right as whole spaces reach: one more space would
       // push it past the row.
       const spaceWidth = getTextWidth(" ");
-      expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
-      expect(getTextWidth(rows[0]) + spaceWidth).toBeGreaterThan(CUE_TEXT_W);
+      expect(getTextWidth(title)).toBeLessThanOrEqual(CUE_TEXT_W);
+      expect(getTextWidth(title) + spaceWidth).toBeGreaterThan(CUE_TEXT_W);
     });
 
-    it("keeps every count from 10s down to 0s inside the box", () => {
+    it("keeps every count from 10s down to 0s inside the row", () => {
       for (let s = 10; s >= 0; s--) {
-        const rows = cueText(cue, s).split("\n");
-        expect(rows).toHaveLength(2);
-        expect(rows[0].endsWith(`${s}s`)).toBe(true);
-        for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
+        const title = cueTitleLine(cue, s);
+        expect(title.endsWith(`${s}s`)).toBe(true);
+        expect(getTextWidth(title)).toBeLessThanOrEqual(CUE_TEXT_W);
       }
     });
 
@@ -506,132 +546,77 @@ describe("cue popup (XERK-81)", () => {
           "A ludicrously, preposterously long cue title that could never ever fit on one lens row",
         body: "Body.",
       };
-      const rows = cueText(long, 3).split("\n");
-      expect(rows).toHaveLength(2);
-      expect(rows[0].endsWith("3s")).toBe(true);
-      expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
+      const title = cueTitleLine(long, 3);
+      expect(title.endsWith("3s")).toBe(true);
+      expect(getTextWidth(title)).toBeLessThanOrEqual(CUE_TEXT_W);
       // The title lost its tail to make room; what remains is its own start.
-      expect(long.title.startsWith(rows[0].split("  ")[0])).toBe(true);
+      expect(long.title.startsWith(title.split("  ")[0])).toBe(true);
     });
 
     it("leaves the row as the bare title when no countdown is given", () => {
-      expect(cueText(cue)).toBe(`Sun\n${cueText(cue).split("\n")[1]}`);
-      expect(cueText(cue).split("\n")[0]).toBe("Sun");
+      expect(cueTitleLine(cue)).toBe("Sun");
     });
   });
 
-  describe("three body rows, scrollable (XERK-112)", () => {
-    // A body long enough to wrap well past the box's three visible rows.
+  describe("four body rows, host-native scroll (XERK-112, XERK-133)", () => {
+    // A body long enough to wrap well past the box's visible rows.
     const long = {
       title: "History",
       body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
     };
-    // A scrollable body's rows end in the scroll bar column (XERK-129); strip
-    // it (and the spaces laying it to the right edge) to get the text back.
-    const stripBar = (row: string) =>
-      row.replace(new RegExp(` *[${CUE_BAR_TRACK}${CUE_BAR_THUMB}]$`), "");
+    const CONTENTS = { status: "listening", caption: "hi", clock: "2:05 PM" };
+    const bodyOf = (page: ReturnType<typeof buildCuePage>) =>
+      page.textObject!.find((t) => t.containerName === CONTAINER.cueBody.name)!;
 
     it("gives the cue box CUE_ROWS rows: a title over CUE_BODY_LINES body rows", () => {
       expect(CUE_ROWS).toBe(1 + CUE_BODY_LINES);
-      expect(CUE_BODY_LINES).toBe(3);
+      expect(CUE_BODY_LINES).toBe(4); // XERK-133: the body expands to four lines
       // The box height is exactly CUE_ROWS whole lines plus padding + border.
       expect(CUE_H).toBe(CUE_ROWS * LINE_H + 2 * (MENU_PAD + MENU_BORDER));
       // …and it stays within a whole number of transcript rows (no half-line the
-      // host would grow a scroll bar to reach).
+      // host would grow a stray scroll bar to reach).
       expect(CUE_H).toBeLessThanOrEqual((CUE_ROWS + 1) * LINE_H);
     });
 
-    it("shows the title over the first CUE_BODY_LINES body rows, each fitting the box", () => {
-      const rows = cueText(long).split("\n");
-      expect(rows).toHaveLength(1 + CUE_BODY_LINES); // title + three body rows
-      expect(rows[0]).toBe("History");
-      const body = cueBodyLines(long.body);
-      expect(rows.slice(1).map(stripBar)).toEqual(body.slice(0, CUE_BODY_LINES));
+    it("pins the title (own case) and puts the WHOLE body in the scrolling container", () => {
+      expect(cueTitleLine(long)).toBe("History"); // own case, not upper-cased (XERK-134)
+      const rows = cueBodyText(long).split("\n");
+      // Every wrapped row is present — nothing is windowed away; the host owns
+      // which rows are on screen (XERK-133).
+      expect(rows).toEqual(cueBodyLines(long.body));
+      expect(rows.length).toBeGreaterThan(CUE_BODY_LINES);
       for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
     });
 
-    it("reports how far a long body can scroll, and zero for one that fits", () => {
-      const body = cueBodyLines(long.body);
-      expect(body.length).toBeGreaterThan(CUE_BODY_LINES);
-      expect(cueMaxScroll(long.body)).toBe(body.length - CUE_BODY_LINES);
-      expect(cueMaxScroll(cue.body)).toBe(0); // the short body fits — nothing to scroll
+    it("overflows the body container for a long body so the host scrolls it", () => {
+      const body = bodyOf(buildCuePage(CONTENTS, long, 10));
+      expect(body.height).toBe(CUE_BODY_LINES * LINE_H); // the visible window
+      const contentRows = cueBodyText(long).split("\n").length;
+      expect(contentRows * LINE_H).toBeGreaterThan(body.height!); // taller → scrolls
     });
 
-    it("windows the body down as it scrolls, never past the last rows", () => {
-      const body = cueBodyLines(long.body);
-      const max = cueMaxScroll(long.body);
-      // Scrolled by one: the window drops a row.
-      expect(cueText(long, undefined, 1).split("\n").slice(1).map(stripBar)).toEqual(
-        body.slice(1, 1 + CUE_BODY_LINES),
-      );
-      // Scrolled to the end: the last CUE_BODY_LINES rows, flush to the bottom.
-      const end = cueText(long, undefined, max).split("\n").slice(1);
-      expect(end.map(stripBar)).toEqual(body.slice(max, max + CUE_BODY_LINES));
-      expect(stripBar(end[end.length - 1])).toBe(body[body.length - 1]);
-      // An over-large scroll clamps to that same last window rather than blanking.
-      expect(cueText(long, undefined, max + 99).split("\n").slice(1)).toEqual(end);
+    it("carries no hand-drawn scroll-bar glyphs — the bar is the host's now", () => {
+      // The old blocky │/█ bar (XERK-129) is gone; the body is plain text and
+      // the host draws its own native scroll bar (XERK-133).
+      const body = cueBodyText(long);
+      expect(body).not.toContain("│");
+      expect(body).not.toContain("█");
     });
 
-    it("keeps the countdown on the title row while the body scrolls", () => {
-      const rows = cueText(long, 4, 2).split("\n");
-      expect(rows[0]).toMatch(/^History {2,}4s$/);
-      expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
-      expect(rows.slice(1).map(stripBar)).toEqual(
-        cueBodyLines(long.body).slice(2, 2 + CUE_BODY_LINES),
-      );
-    });
-  });
-
-  describe("scroll bar (XERK-129)", () => {
-    // A body long enough to wrap well past the box's three visible rows.
-    const long = {
-      title: "History",
-      body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
-    };
-    /** The bar cell of each body row: its last character. */
-    const barCells = (scroll: number) =>
-      cueText(long, 10, scroll)
-        .split("\n")
-        .slice(1)
-        .map((row) => row[row.length - 1]);
-
-    it("ends every body row of a scrollable cue in a bar cell, exactly one thumb", () => {
-      expect(cueMaxScroll(long.body)).toBeGreaterThanOrEqual(2);
-      const cells = barCells(0);
-      expect(cells).toHaveLength(CUE_BODY_LINES);
-      for (const cell of cells) expect([CUE_BAR_TRACK, CUE_BAR_THUMB]).toContain(cell);
-      expect(cells.filter((cell) => cell === CUE_BAR_THUMB)).toHaveLength(1);
+    it("keeps the countdown on the pinned title, independent of the body", () => {
+      const title = cueTitleLine(long, 4);
+      expect(title).toMatch(/^History {2,}4s$/);
+      expect(getTextWidth(title)).toBeLessThanOrEqual(CUE_TEXT_W);
+      // The body carries no countdown — it is a separate container (XERK-133).
+      expect(cueBodyText(long)).not.toContain("4s");
     });
 
-    it("moves the thumb with the window: top at 0, middle midway, bottom at max", () => {
-      const max = cueMaxScroll(long.body);
-      expect(barCells(0)[0]).toBe(CUE_BAR_THUMB);
-      expect(barCells(Math.round(max / 2))[1]).toBe(CUE_BAR_THUMB);
-      expect(barCells(max)[CUE_BODY_LINES - 1]).toBe(CUE_BAR_THUMB);
-    });
-
-    it("stacks into a straight column: track and thumb share one real advance width", () => {
-      // Both glyphs must exist in the lens font (a missing one measures 0 and
-      // renders tofu on the device) and be equally wide, or the cells zigzag.
-      expect(getTextWidth(CUE_BAR_TRACK)).toBeGreaterThan(0);
-      expect(getTextWidth(CUE_BAR_TRACK)).toBe(getTextWidth(CUE_BAR_THUMB));
-    });
-
-    it("fits every barred row inside the box interior at any scroll position", () => {
-      const max = cueMaxScroll(long.body);
-      for (const scroll of [0, 1, max]) {
-        for (const row of cueText(long, 10, scroll).split("\n")) {
-          expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
-        }
-      }
-    });
-
-    it("leaves a body that fits bare — no bar means nothing more to see", () => {
+    it("leaves a body that fits within its container — nothing to scroll", () => {
       const fits = { title: "Sun", body: "About 150 million km away." };
-      expect(cueMaxScroll(fits.body)).toBe(0);
-      const text = cueText(fits, 10);
-      expect(text).not.toContain(CUE_BAR_TRACK);
-      expect(text).not.toContain(CUE_BAR_THUMB);
+      const rows = cueBodyText(fits).split("\n");
+      expect(rows.length).toBeLessThanOrEqual(CUE_BODY_LINES);
+      const body = bodyOf(buildCuePage(CONTENTS, fits, 10));
+      expect(body.height).toBe(rows.length * LINE_H); // sized exactly — no overflow
     });
   });
 
@@ -640,7 +625,7 @@ describe("cue popup (XERK-81)", () => {
     const oneLine = { title: "Sun", body: "Close star." };
     // A body that wraps to exactly two rows — under the CUE_BODY_LINES cap.
     const twoLine = { title: "Note", body: Array.from({ length: 12 }, (_, i) => `word${i}`).join(" ") };
-    // A body that overflows the three-row window and scrolls.
+    // A body that overflows the CUE_BODY_LINES-row window and scrolls (XERK-133).
     const long = {
       title: "History",
       body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
@@ -668,6 +653,14 @@ describe("cue popup (XERK-81)", () => {
       expect(cueBox(oneLine).height).toBeLessThan(cueBox(twoLine).height);
       expect(cueBox(twoLine).height).toBeLessThan(cueBox(long).height);
       expect(cueBox(long).height).toBe(CUE_H);
+    });
+
+    it("shrinks the scrolling body container to a short body too (XERK-133)", () => {
+      // The body container is the visible window: shorter for a shorter body,
+      // capped at CUE_BODY_LINES for one that overflows and scrolls.
+      expect(cueBodyBox(oneLine).height).toBe(1 * LINE_H);
+      expect(cueBodyBox(twoLine).height).toBe(2 * LINE_H);
+      expect(cueBodyBox(long).height).toBe(CUE_BODY_LINES * LINE_H);
     });
 
     it("masks only as many caption rows as the box is tall, freeing the rest", () => {
@@ -711,16 +704,17 @@ describe("cue source stays OFF the lens (XERK-120)", () => {
   it("lays out a grounded cue identically to an ungrounded one", () => {
     const bare = { title: "PM", body: "Andy Burnham took office." };
     const grounded = { ...bare, source: "BBC News" };
-    expect(cueText(grounded)).toBe(cueText(bare));
+    expect(cueTitleLine(grounded)).toBe(cueTitleLine(bare));
+    expect(cueBodyText(grounded)).toBe(cueBodyText(bare));
     expect(cueRows(grounded)).toBe(cueRows(bare));
     expect(cueBox(grounded).height).toBe(cueBox(bare).height);
-    expect(cueText(grounded)).not.toContain("BBC News");
+    expect(cueTitleLine(grounded)).not.toContain("BBC News");
+    expect(cueBodyText(grounded)).not.toContain("BBC News");
   });
 
-  it("never shows the source at any scroll position of a long body", () => {
+  it("never shows the source anywhere in a long body", () => {
     const cue = { title: "History", body: "word ".repeat(30).trim(), source: "Wikipedia" };
-    for (let scroll = 0; scroll <= cueMaxScroll(cue.body); scroll++) {
-      expect(cueText(cue, undefined, scroll)).not.toContain("Wikipedia");
-    }
+    expect(cueTitleLine(cue)).not.toContain("Wikipedia");
+    expect(cueBodyText(cue)).not.toContain("Wikipedia");
   });
 });
