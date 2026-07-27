@@ -369,7 +369,11 @@ function rowWithRightEdge(left: string, right: string, width: number): string {
   const spaceWidth = getTextWidth(" ");
   if (spaceWidth <= 0) return `${left} ${right}`;
   const slack = width - getTextWidth(left) - getTextWidth(right);
-  const spaces = Math.max(1, Math.floor(slack / spaceWidth));
+  let spaces = Math.max(1, Math.floor(slack / spaceWidth));
+  // Kerning can make the assembled row measure a hair wider than its parts
+  // summed, so check the row itself and give back spaces until it fits (the
+  // one-space floor still wins over fitting).
+  while (spaces > 1 && getTextWidth(`${left}${" ".repeat(spaces)}${right}`) > width) spaces--;
   return `${left}${" ".repeat(spaces)}${right}`;
 }
 
@@ -422,7 +426,7 @@ export function cueMaxScroll(body: string): number {
 }
 
 /**
- * Fit a cue into the popup box: the title (upper-cased) over up to
+ * Fit a cue into the popup box: the title over up to
  * CUE_BODY_LINES rows of the body (XERK-112). A body that wraps past those rows
  * is scrolled through `scroll` rows at a time (the controller drives it from
  * swipes); the box clips whatever's outside the window, and the full cue always
@@ -443,8 +447,7 @@ export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string 
   const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
   // Reserve the countdown plus one space of separation out of the title's row.
   const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
-  const upper = cue.title.toUpperCase();
-  const titleLine = wrapLines(upper, CUE_TEXT_W - reserved)[0] ?? upper;
+  const titleLine = wrapLines(cue.title, CUE_TEXT_W - reserved)[0] ?? cue.title;
   const body = cueBodyLines(cue.body);
   const max = cueMaxScroll(cue.body);
   // Clamp the window to the body so a stale/over-large scroll can't blank the box.

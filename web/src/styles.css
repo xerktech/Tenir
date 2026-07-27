@@ -306,7 +306,6 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   font-family: var(--font-display, inherit);
   font-weight: 700; font-size: var(--text-sm);
   color: var(--accent-strong);
-  text-transform: uppercase; letter-spacing: .04em;
 }
 /* Seconds until the cue auto-dismisses (XERK-110). Quieter than the title —
    it's a hint about how long the card will linger, not part of the cue — and

@@ -443,10 +443,10 @@ describe("popup pages (XERK-85: a bordered box over the live conversation)", () 
 describe("cue popup (XERK-81)", () => {
   const cue = { title: "Sun", body: "About 150 million km away." };
 
-  it("fits a cue into the upper-cased title over its body (short body: one row)", () => {
+  it("fits a cue into the title, in its own capitalization, over its body (XERK-134)", () => {
     const rows = cueText(cue).split("\n");
     expect(rows).toHaveLength(2); // title + the single body row this body wraps to
-    expect(rows[0]).toBe("SUN");
+    expect(rows[0]).toBe("Sun");
     expect(rows[1].length).toBeGreaterThan(0);
     // Each row fits the popup's interior width (never wider than the box).
     for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
@@ -483,7 +483,7 @@ describe("cue popup (XERK-81)", () => {
     it("ends the title row with the seconds left, flush to the right edge", () => {
       const rows = cueText(cue, 7).split("\n");
       expect(rows).toHaveLength(2); // title + the one body row this short body wraps to
-      expect(rows[0]).toMatch(/^SUN {2,}7s$/); // title left, count right, gap between
+      expect(rows[0]).toMatch(/^Sun {2,}7s$/); // title left, count right, gap between
       // The count sits as far right as whole spaces reach: one more space would
       // push it past the row.
       const spaceWidth = getTextWidth(" ");
@@ -502,7 +502,8 @@ describe("cue popup (XERK-81)", () => {
 
     it("trims a long title rather than letting it push the count off the row", () => {
       const long = {
-        title: "A ludicrously long cue title that could never fit one lens row",
+        title:
+          "A ludicrously, preposterously long cue title that could never ever fit on one lens row",
         body: "Body.",
       };
       const rows = cueText(long, 3).split("\n");
@@ -510,12 +511,12 @@ describe("cue popup (XERK-81)", () => {
       expect(rows[0].endsWith("3s")).toBe(true);
       expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
       // The title lost its tail to make room; what remains is its own start.
-      expect(long.title.toUpperCase().startsWith(rows[0].split("  ")[0])).toBe(true);
+      expect(long.title.startsWith(rows[0].split("  ")[0])).toBe(true);
     });
 
     it("leaves the row as the bare title when no countdown is given", () => {
-      expect(cueText(cue)).toBe(`SUN\n${cueText(cue).split("\n")[1]}`);
-      expect(cueText(cue).split("\n")[0]).toBe("SUN");
+      expect(cueText(cue)).toBe(`Sun\n${cueText(cue).split("\n")[1]}`);
+      expect(cueText(cue).split("\n")[0]).toBe("Sun");
     });
   });
 
@@ -543,7 +544,7 @@ describe("cue popup (XERK-81)", () => {
     it("shows the title over the first CUE_BODY_LINES body rows, each fitting the box", () => {
       const rows = cueText(long).split("\n");
       expect(rows).toHaveLength(1 + CUE_BODY_LINES); // title + three body rows
-      expect(rows[0]).toBe("HISTORY");
+      expect(rows[0]).toBe("History");
       const body = cueBodyLines(long.body);
       expect(rows.slice(1).map(stripBar)).toEqual(body.slice(0, CUE_BODY_LINES));
       for (const row of rows) expect(getTextWidth(row)).toBeLessThanOrEqual(CUE_TEXT_W);
@@ -573,7 +574,7 @@ describe("cue popup (XERK-81)", () => {
 
     it("keeps the countdown on the title row while the body scrolls", () => {
       const rows = cueText(long, 4, 2).split("\n");
-      expect(rows[0]).toMatch(/^HISTORY {2,}4s$/);
+      expect(rows[0]).toMatch(/^History {2,}4s$/);
       expect(getTextWidth(rows[0])).toBeLessThanOrEqual(CUE_TEXT_W);
       expect(rows.slice(1).map(stripBar)).toEqual(
         cueBodyLines(long.body).slice(2, 2 + CUE_BODY_LINES),
