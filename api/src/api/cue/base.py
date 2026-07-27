@@ -81,9 +81,11 @@ def cue_substance_tokens(title: str, body: str) -> frozenset[str]:
 def cue_substance_similarity(a: frozenset[str], b: frozenset[str]) -> float:
     """Jaccard similarity of two cue fingerprints, in [0, 1].
 
-    On the recorded production cues, reworded duplicates of the same fact score
-    0.57-0.87 while genuinely different cues about the same entity stay below
-    0.5 — so 0.5 separates the two populations.
+    On the recorded production cues, near-verbatim rewords of the same fact
+    score 0.57-0.87, retitled same-fact paraphrases 0.30-0.38, and the closest
+    genuinely distinct pairs (different facts about the same entity) 0.26-0.27
+    — the drop threshold callers apply sits above that last band (see
+    session._CUE_SUBSTANCE_DUP_THRESHOLD).
     """
     if not a or not b:
         return 0.0

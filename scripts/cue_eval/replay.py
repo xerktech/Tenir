@@ -33,7 +33,7 @@ from api.cue.tuning import MIN_INTERVAL_MS
 CONTEXT_SEGMENTS = 8  # settings.cue_context_segments default
 ATTEMPT_MS = 2500  # transcript time one serialized attempt occupies
 AVOID_LIMIT = 40  # session._CUE_AVOID_PROMPT_LIMIT
-DUP_THRESHOLD = 0.5  # session._CUE_SUBSTANCE_DUP_THRESHOLD
+DUP_THRESHOLD = 0.35  # session._CUE_SUBSTANCE_DUP_THRESHOLD
 
 
 def load_conversations(path: Path) -> dict[str, list[dict]]:

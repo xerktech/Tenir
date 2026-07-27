@@ -260,3 +260,105 @@ verification against the deployed layout:
   boundary noise — single-window A/Bs flip run to run — and is best cleaned
   up by the live retrieval evidence in production (a misheard name retrieves
   nothing that supports the wrong definition), not by more prompt text.
+
+## The session-2 precision pass (2026-07-27, from the second real session)
+
+The second real-world recording (21 minutes of entity-dense YouTube tech
+audio, conversation `7ca38157`, now a fixture alongside `dbc3080e` and the
+original 12) confirmed the audience model held — good frequency, zero
+restatements, corrections and specialist enrichment landing — and exposed
+five precision classes the family session couldn't:
+
+1. **Cross-generation confabulation** (worst): a model number newer than the
+   weights gets a sibling's specs pasted under its name ("Galaxy Z Fold 8 …
+   launched August 2023, Snapdragon 8+ Gen 1"), including via retrieval
+   miscite (a `[Wikipedia]`-labeled launch date lifted from the predecessor's
+   article).
+2. **False corrections**: "there is no official version called Jet Grind
+   Radio" — there is; it was the US title. The correction trigger inverted
+   truth for the first time.
+3. **Paraphrase duplicates**: the same fact re-surfacing retitled and
+   reworded ("God of War 4 naming" → "Official title", 50 s apart). Measured
+   substance-Jaccard of the pairs: 0.18–0.38 — all under the 0.5 backstop.
+4. **Mid-word truncation**: 8 of 51 bodies chopped by the hard
+   `body[:240]` slice ("…vascular trend monito").
+5. **Stale-topic cues**: with fast topic switches, the 8-turn window kept
+   cueing topics the audio had left 60+ s earlier (a sleep-apnea cue
+   mid-emulator-talk).
+
+### Code fixes (measured, not prompted)
+
+- **Word-boundary clip**: `_clip_at_word` clips at the last full word + "…".
+  With the new "under 200 characters" nudge in the output format, overruns
+  nearly vanished (v10 full replay: 0 of 363 bodies clipped; v12 final: 2 of
+  401, both ending on a clean word + ellipsis instead of mid-word).
+- **Substance-dup threshold 0.5 → 0.35**: calibrated on both real sessions'
+  90 production cues — near-verbatim rewords 0.57–0.87, retitled paraphrases
+  0.30–0.38, closest genuinely-distinct pairs 0.26–0.27. The two classes
+  overlap below 0.30, so 0.35 is the safe floor; deeper paraphrases are the
+  prompt's job (below).
+
+### Prompt iterations (v10 → v12, replayed on both real sessions per step)
+
+- **v10** — generation-mismatch rule (memory and evidence side), correction
+  caution (never cue that a name the speakers used "does not exist"),
+  same-subject-different-angle ban on the avoid list, newest-turns recency
+  rule. Session-2 replay: 88 → 53 cues with the cuts landing on the failure
+  classes (backstop drops 9 → 24); Jet Grind Radio now *correctly*
+  attributed; stale and dictionary cues mostly gone. But it introduced
+  **date-arithmetic false corrections** ("…so its 20th anniversary occurred
+  in 2021-23 — not a 25th" — the model doesn't know the current year), and
+  cross-generation confabulation survived.
+- **v11** — "you do not know today's date" rule, lifestyle-advice ban, and a
+  negative worked example for newer-product specs. Date corrections fixed
+  (LOTR 25th now correctly 2026), advice cues gone from the family session.
+  Confabulation *still* survived: the model doesn't experience "Z Fold 8" as
+  post-cutoff — it pattern-matches the family and confidently retrieves
+  sibling facts, so a "newer than you know" test never fires.
+- **v12 (shipped)** — reformulated as a **specific-memory test** the model
+  can actually run: "family resemblance is not knowledge — before stating a
+  spec, check you specifically remember THAT model's release; no specific
+  memory, no cue", extended to vaguely-recognized names and acronyms, plus a
+  bilingual mishear rule (a stray foreign-looking word is the speakers'
+  other language, not Dutch). Result: the invention class collapsed — the
+  invented "ALOP = Advanced Lens Optimization Process" expansion, "Eden is a
+  PS2 emulator", and a fabricated "RingCon is Oura's annual conference" all
+  gone, replaced by silence or hedged class-level statements (the ideal: "an
+  S26 Ultra would be expected around 2026" instead of invented specs). The
+  effect is real but stochastic: the final full run re-produced a couple
+  (Eden-as-PS2 returned; Jet Grind Radio kept the right name but moved to
+  the wrong platform), so the class is roughly halved per run, not
+  eliminated — see Residuals.
+
+### Final numbers (full 14-conversation replay, gpt-oss-120b @ medium)
+
+All three runs replay the same 14-conversation export (985 attempts:
+the frozen 12 + both real sessions), self-judged by the same model at low
+effort — treat scores comparatively, not absolutely.
+
+| run | cues | novelty | relevance | accuracy | judge dups | garbled ctrl `ed1d330d` | question conv `1cf67366` |
+|---|---|---|---|---|---|---|---|
+| v9 (shipped baseline) | 461 | 1.87 | 1.93 | 1.92 | 28 | 10 | 1 |
+| v10 | 363 | 1.85 | 1.91 | 1.92 | 19 | 6 | 5 |
+| **v12 (shipped)** | **401** | **1.88** | 1.90 | **1.94** | **17** | **5** | **5** |
+
+Hand-bucketed on session 2 (the entity-dense one), the wrong/confabulated
+class runs ~15 (v9 replay) → ~10 (v10) → ~5±2 (v12); paraphrase-duplicate
+pairs 6+ → ~1-2; stale-topic and dictionary cues near zero from v10 on.
+Volume lands at 87% of baseline with the cuts concentrated in the failure
+classes, while the direct-question conversation goes from near-mute (1 cue)
+to properly answered (5). The ambient-movie control (`87e2acbe`, 40 → 44)
+is unmoved — ambient media stays the audience-model's known weak spot.
+
+### Residuals
+
+- **First-party sibling-spec transfer** (the Z Fold 8 case) survives every
+  prompt formulation tried — four variants plus production — because the
+  model genuinely believes it knows the product. Prompt-side mitigation has
+  hit its ceiling; the fix is the already-planned **retrieval cross-check of
+  entity cues** (a cue asserting specs for a named model must be covered by
+  evidence about that exact model).
+- Casual-register replay variance: the family session fluctuates ±6 cues and
+  ~1/3 marginal-quality run-to-run at temperature 0 (avoid-list path
+  dependence); the wins that persist across all runs are the structural ones
+  (clusters collapsed, advice and date-corrections gone).

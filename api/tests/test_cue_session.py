@@ -252,6 +252,65 @@ def test_session_drops_a_rephrased_duplicate_of_a_surfaced_cue(
     asyncio.run(run())
 
 
+def test_session_drops_a_retitled_paraphrase_of_a_surfaced_cue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the session-2 review (RESULTS-2026-07.md): the same fact
+    re-surfaced under a fresh title with a paraphrased body ("Under-Display
+    Ultrasonic Sensor" then "Ultrasonic scanner", substance similarity 0.38) —
+    under the old 0.5 threshold both were delivered. The 0.35 threshold must
+    drop the paraphrase while a genuinely different fact still surfaces."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    proposals = [
+        GeneratedCue(
+            title="Under-Display Ultrasonic Sensor",
+            body="An under-display ultrasonic fingerprint scanner uses "
+            "high-frequency sound waves that pass through the screen to map "
+            "the ridges of a finger, reading prints even through glass or "
+            "wet skin.",
+        ),
+        # The measured paraphrase pair: same fact, new title, reworded body.
+        GeneratedCue(
+            title="Ultrasonic scanner",
+            body="In smartphones, an ultrasonic fingerprint sensor projects "
+            "high-frequency sound waves onto the finger and measures the echo "
+            "to build a map of the ridges, so it reads prints through water "
+            "or oil.",
+        ),
+        # Different fact about the same phone — must surface.
+        GeneratedCue(
+            title="IP68 rating",
+            body="An IP68 rating means the phone is dust-tight and survives "
+            "immersion in about 1.5 m of fresh water for roughly 30 minutes.",
+        ),
+    ]
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+
+        class ScriptedGen:
+            def generate(self, transcript, *, avoid_cues=(), evidence=()):  # type: ignore[no-untyped-def]
+                return proposals.pop(0)
+
+        session._cue_generator = ScriptedGen()
+
+        for i, seg in enumerate(("a", "b", "c")):
+            if i:
+                session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
+            session._consider_cue(_final(f"trigger {i}?", segment_id=seg))
+            await _drain_cues(session)
+        await session.close()
+
+        assert [c.title for c in _cues(sent)] == [
+            "Under-Display Ultrasonic Sensor",
+            "IP68 rating",
+        ]
+
+    asyncio.run(run())
+
+
 def test_cue_persisted_even_when_delivery_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "cue_backend", "stub")
 

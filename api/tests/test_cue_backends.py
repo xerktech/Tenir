@@ -198,10 +198,28 @@ def test_parse_garbage_returns_none() -> None:
     assert _gen()._parse("{broken json") is None
 
 
-def test_parse_truncates_long_body() -> None:
+def test_parse_truncates_long_body_at_word_boundary() -> None:
+    # An overlong body is clipped back to the last FULL word plus an ellipsis —
+    # a reviewed production session had 8/51 cues chopped mid-word by the old
+    # hard slice ("…vascular trend monito").
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=20)
+    cue = gen._parse('{"cue": true, "title": "T", "body": "alpha beta gamma delta epsilon"}')
+    assert cue is not None and cue.body == "alpha beta gamma…"
+
+
+def test_parse_truncation_without_spaces_still_bounds_length() -> None:
+    # A single unbroken token can't clip at a word boundary; it hard-clips but
+    # never exceeds the limit.
     gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=10)
     cue = gen._parse('{"cue": true, "title": "T", "body": "0123456789ABCDEF"}')
-    assert cue is not None and cue.body == "0123456789"
+    assert cue is not None and cue.body == "012345678…"
+    assert len(cue.body) <= 10
+
+
+def test_parse_short_body_unchanged() -> None:
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=240)
+    cue = gen._parse('{"cue": true, "title": "T", "body": "short and sweet."}')
+    assert cue is not None and cue.body == "short and sweet."
 
 
 # ---- request payload (regression: reasoning model must not think) -----------
@@ -241,6 +259,10 @@ def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
     assert system.count("- Sun:") == 1  # de-duped by title, order preserved
     assert system.find("- Sun:") < system.find("- Moon:")
     assert "substance" in system  # rephrasing the same fact is banned too
+    # ... and so is re-approaching a surfaced subject from a different angle
+    # (definition, then mechanism, then history — measured as the paraphrase
+    # class the Jaccard backstop can't reach, 0.18-0.30 similarity).
+    assert "different angle" in system
 
 
 def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
@@ -271,6 +293,24 @@ def test_payload_system_prompt_guards_against_stt_and_stale_memory_traps() -> No
     assert "firsthand" in system
     assert "training cutoff" in system
     assert "wrong cue is worse than no cue" in system
+
+
+def test_payload_system_prompt_blocks_cross_generation_and_false_corrections() -> None:
+    # Session-2 review (RESULTS-2026-07.md): the model adapted a KNOWN older
+    # product's specs to a newer model number it had never seen ("Galaxy Z
+    # Fold 8 ... launched August 2023"), and "corrected" a true regional title
+    # as nonexistent (Jet Grind Radio). Each failure class gets a rule.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "product generations" in system  # specs don't transfer across models
+    assert "regional titles" in system  # stale memory isn't grounds to correct
+    assert "does not exist" in system  # never cue that a used name isn't real
+
+
+def test_payload_system_prompt_cues_only_the_live_topic() -> None:
+    # Fast topic-switching audio produced cues about topics the conversation
+    # had left a minute earlier; candidates must come from the newest turns.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "newest turns" in system
 
 
 # ---- response content extraction (regression: reasoning model empty content) --
@@ -308,6 +348,10 @@ def test_payload_embeds_numbered_dated_evidence() -> None:
     # The staleness rule rides with the evidence: retrieved facts outrank memory.
     assert "out of date" in system
     assert "evidence wins" in system
+    # Session-2 review: a [Wikipedia]-labeled cue gave a NEWER phone the launch
+    # date of its predecessor — retrieval had returned the predecessor's
+    # article. Evidence about a different generation covers nothing.
+    assert "DIFFERENT model, generation, or version" in system
 
 
 def test_payload_omits_evidence_block_without_evidence() -> None:

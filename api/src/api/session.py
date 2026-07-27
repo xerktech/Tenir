@@ -62,10 +62,14 @@ _DETACHED_BUFFER_MAX = 500
 _CUE_AVOID_PROMPT_LIMIT = 40
 
 # A new cue whose content-word fingerprint overlaps a surfaced cue's at or above
-# this Jaccard similarity is the same fact reworded, not a new cue. On recorded
-# production sessions reworded duplicates measured 0.57-0.87 while genuinely
-# different cues about the same entity stayed below 0.5 (see cue/base.py).
-_CUE_SUBSTANCE_DUP_THRESHOLD = 0.5
+# this Jaccard similarity is the same fact reworded, not a new cue. Calibrated
+# on recorded production sessions: near-verbatim rewords measure 0.57-0.87 and
+# retitled same-fact paraphrases 0.30-0.38, while the closest genuinely distinct
+# pairs (different facts about the same entity) top out at 0.26-0.27 — the two
+# classes overlap below 0.30, so 0.35 is as low as the hard drop can safely go.
+# Paraphrases that share fewer content words than that are the prompt
+# avoid-list's job, not this backstop's (see cue/base.py).
+_CUE_SUBSTANCE_DUP_THRESHOLD = 0.35
 
 
 def _enum_str(value: object | None) -> str | None:
