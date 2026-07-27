@@ -64,8 +64,9 @@ export const CONTAINER = {
   status: { id: 1, name: "status" },
   caption: { id: 2, name: "caption" },
   clock: { id: 3, name: "clock" },
-  menu: { id: 4, name: "menu" }, // the double-tap popup box (only on the menu page)
+  menu: { id: 4, name: "menu" }, // the double-tap popup box, and a cue's pinned title row
   touch: { id: 5, name: "touch" }, // invisible full-band gesture-capture overlay
+  cueBody: { id: 6, name: "cueBody" }, // a cue's scrolling body (host-native scroll, XERK-133)
 } as const;
 
 // ---- the double-tap popup box (XERK-85) -------------------------------------
@@ -99,16 +100,21 @@ export const MENU_TEXT_W = MENU_W - 2 * (MENU_PAD + MENU_BORDER) - MEASURE_SAFET
 export const MENU_ROW_FIRST = Math.max(0, Math.floor((MENU_Y - LINE_H) / LINE_H));
 export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 
-// ---- the private-context cue box (XERK-112, XERK-119) -----------------------
-// The cue box is the same bordered strip as the menu, but taller: a title row
+// ---- the private-context cue box (XERK-112, XERK-119, XERK-133) -------------
+// The cue box is a bordered strip like the menu, but taller: a pinned title row
 // over up to CUE_BODY_LINES body rows, so a cue reads at a glance instead of
-// being clipped to one line. When the wrapped body runs past those rows the
-// controller scrolls the window through it (a swipe moves it a row at a time).
-// The box is sized to the cue it holds (XERK-119): a body shorter than
-// CUE_BODY_LINES makes a shorter box — blank rows would just mask live
-// transcript rows below it — while a body that fills or overflows the window
-// gets the full CUE_BODY_LINES-row box and scrolls.
-export const CUE_BODY_LINES = 3;
+// being clipped to one line. The body lives in its OWN container inside the box
+// (`cueBodyBox`): when the wrapped body runs past CUE_BODY_LINES rows that
+// container's content overflows it and the HOST scrolls it with its own native
+// scroll bar (XERK-133) — the body container is the one event-capture container
+// while a cue is up, so a swipe drives the host's scroll directly. Splitting the
+// body out this way keeps the title (and its live countdown) pinned: the ticker
+// repaints only the title, never the body, so a countdown tick can't yank the
+// host's scroll position back to the top. The box is sized to the cue it holds
+// (XERK-119): a body shorter than CUE_BODY_LINES makes a shorter box — blank
+// rows would just mask live transcript rows below it — while a body that fills
+// or overflows gets the full CUE_BODY_LINES-row box.
+export const CUE_BODY_LINES = 4;
 // The MOST rows the box is ever tall: the title over a full CUE_BODY_LINES-row
 // body window. A shorter cue makes a shorter box (see `cueBox`/`cueRows`).
 export const CUE_ROWS = 1 + CUE_BODY_LINES;
@@ -118,10 +124,11 @@ export const CUE_W = SCREEN_W;
 export const CUE_X = 0;
 export const CUE_Y = 0;
 // The box height for a given row count: content rows + symmetric padding +
-// border. At the CUE_ROWS max, with pad+border = 13, this is 134px — inside the
-// 5th transcript row's 135px boundary, so a full box occupies four whole caption
-// rows and never grows a half-line the host would scroll. A shorter box lands on
-// a whole-row boundary the same way (every row is LINE_H and padding is fixed).
+// border. At the CUE_ROWS max (5 rows), with pad+border = 13, this is 161px —
+// within the 6th transcript row's 162px boundary, so a full box occupies five
+// whole caption rows and never grows a half-line the host would scroll. A
+// shorter box lands on a whole-row boundary the same way (every row is LINE_H
+// and padding is fixed).
 export function cueHeight(rows: number): number {
   return rows * LINE_H + 2 * (CUE_PAD + CUE_BORDER);
 }
@@ -153,14 +160,20 @@ export interface PageContents {
  * measures at — an unnoticed host default padding would wrap earlier than
  * measured and overflow the band.
  *
- * The touch overlay is the ONLY event-capture container on every page
- * (XERK-85): the OS plays its scroll animation on whatever container captures
- * a scroll gesture, so the captured one must render nothing anybody can see.
- * The overlay shares the caption band's exact geometry (the capture target
+ * The touch overlay is the event-capture container on every page EXCEPT while
+ * a cue is up (XERK-85): the OS plays its scroll animation on whatever container
+ * captures a scroll gesture, so the captured one must render nothing anybody can
+ * see. The overlay shares the caption band's exact geometry (the capture target
  * every device-validated build used) but its content is a single space —
- * gestures land on it, and the bounce animation moves invisible content.
+ * gestures land on it, and the bounce animation moves invisible content. A cue
+ * page passes `captureTouch: false` and hands capture to the scrolling cue-body
+ * container instead (XERK-133), so the host scrolls the body a wearer can see —
+ * exactly one container still captures per page.
  */
-function baseContainers(contents: PageContents): TextContainerProperty[] {
+function baseContainers(
+  contents: PageContents,
+  captureTouch = true,
+): TextContainerProperty[] {
   const status = new TextContainerProperty({
     containerID: CONTAINER.status.id,
     containerName: CONTAINER.status.name,
@@ -209,7 +222,9 @@ function baseContainers(contents: PageContents): TextContainerProperty[] {
     height: CAPTION_H, // same geometry as the caption band
     paddingLength: 0,
     borderWidth: 0,
-    isEventCapture: 1, // the single event-capture container, on every page
+    // The sole event-capture container on every page — except a cue page, which
+    // hands capture to its scrolling body so the host scrolls it (XERK-133).
+    isEventCapture: captureTouch ? 1 : 0,
     content: " ", // renders nothing — the OS bounce moves invisible content
   });
 
@@ -253,10 +268,10 @@ const MENU_BOX: PopupBox = {
 /**
  * The cue box sized to the cue it holds (XERK-119): a title row over just the
  * body rows it actually renders — the whole body when it fits, else the full
- * CUE_BODY_LINES-row scroll window. A short cue therefore makes a short box,
- * leaving the transcript rows below it visible instead of masking them behind
- * blank rows. Scroll position never changes the count — a body long enough to
- * scroll always fills the whole window — so this depends on the cue alone.
+ * CUE_BODY_LINES-row window the host scrolls (XERK-133). A short cue therefore
+ * makes a short box, leaving the transcript rows below it visible instead of
+ * masking them behind blank rows. A body long enough to scroll always fills the
+ * whole window, so this depends on the cue alone, not on the scroll position.
  */
 export function cueBox(cue: CueCard): PopupBox {
   const rows = cueRows(cue);
@@ -272,9 +287,9 @@ export function cueBox(cue: CueCard): PopupBox {
 
 /**
  * How many rows the cue's box renders: the title over the visible body rows —
- * the whole body when it fits, else the CUE_BODY_LINES-row scroll window. This
- * is the row count of `cueText`, so the box height and the masked caption range
- * always match the text exactly (XERK-119).
+ * the whole body when it fits, else the CUE_BODY_LINES-row window. This drives
+ * the box height and `cueBodyBox`'s height, so the box, the scrolling body
+ * container, and the masked caption range always match (XERK-119).
  */
 export function cueRows(cue: CueCard): number {
   return 1 + Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
@@ -290,18 +305,32 @@ export function cueRowRange(cue: CueCard): [number, number] {
 }
 
 /**
- * The bordered popup strip from the top of the screen — shared by the
- * double-tap menu and the private-context cue box (XERK-81). The controller
- * blanks everything the strip covers (status, clock, caption rows via
- * `occludedCaption`), so nothing shows through the box. `text` is the body it
- * carries (menu options, or a cue's title + detail); `box` sizes the strip —
- * the menu is two rows, the cue box a title over its body rows, up to CUE_ROWS
- * (XERK-112) and sized to the cue so a short one makes a short box (XERK-119).
+ * The scrolling body container's geometry (XERK-133): it sits inside the cue
+ * box's interior, below the pinned title row. Its height is exactly the visible
+ * body rows (the whole body when it fits, else the CUE_BODY_LINES-row window);
+ * a longer body's full text overflows that height, so the HOST scrolls it with
+ * its own native scroll bar. Width is the box interior — the body text wraps a
+ * touch narrower (CUE_TEXT_W) so the host's scroll bar has room down the right.
  */
-function popupPage(contents: PageContents, text: string, box: PopupBox): RebuildPageContainer {
-  const popup = new TextContainerProperty({
-    containerID: CONTAINER.menu.id,
-    containerName: CONTAINER.menu.name,
+export function cueBodyBox(cue: CueCard): { x: number; y: number; width: number; height: number } {
+  const visibleRows = Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
+  return {
+    x: CUE_X + CUE_BORDER + CUE_PAD,
+    y: CUE_Y + CUE_BORDER + CUE_PAD + LINE_H, // below the pinned title row
+    width: CUE_W - 2 * (CUE_BORDER + CUE_PAD),
+    height: visibleRows * LINE_H,
+  };
+}
+
+/** A bordered popup strip container (the menu box, or a cue's title frame). */
+function borderedBox(
+  container: { id: number; name: string },
+  box: PopupBox,
+  content: string,
+): TextContainerProperty {
+  return new TextContainerProperty({
+    containerID: container.id,
+    containerName: container.name,
     xPosition: box.x,
     yPosition: box.y,
     width: box.width,
@@ -312,33 +341,67 @@ function popupPage(contents: PageContents, text: string, box: PopupBox): Rebuild
     borderColor: 0xffffff,
     borderRadius: 10,
     isEventCapture: 0,
-    content: text,
+    content,
   });
+}
+
+/**
+ * A popup page: the base containers plus one or more popup containers drawn on
+ * top (XERK-81). The controller blanks everything the strip covers (status,
+ * clock, caption rows via `occludedCaption`), so nothing shows through the box.
+ * `captureTouch` stays true for the menu (the invisible overlay keeps capturing
+ * swipes to move the highlight); a cue page passes false and lets its scrolling
+ * body container capture instead, so the host scrolls it (XERK-133).
+ */
+function popupPage(
+  contents: PageContents,
+  popups: TextContainerProperty[],
+  captureTouch: boolean,
+): RebuildPageContainer {
   return new RebuildPageContainer({
-    containerTotalNum: 5,
-    textObject: [...baseContainers(contents), popup],
+    containerTotalNum: 4 + popups.length,
+    textObject: [...baseContainers(contents, captureTouch), ...popups],
   });
 }
 
 /** The page with the double-tap menu popup up (Continue / Exit session). */
 export function buildMenuPage(contents: PageContents, selected: MenuChoice): RebuildPageContainer {
-  return popupPage(contents, menuText(selected), MENU_BOX);
+  return popupPage(contents, [borderedBox(CONTAINER.menu, MENU_BOX, menuText(selected))], true);
 }
 
 /**
- * The page with a cue popup up (XERK-81): the same bordered strip, showing a
- * private context card's title over up to CUE_BODY_LINES rows of its body — a
- * bordered box above the live transcript, private to the wearer, auto-dismissed
- * by the controller after ~10s. `scroll` (XERK-112) is the body row the window
- * starts at, so a long body can be read a swipe at a time.
+ * The page with a cue popup up (XERK-81, XERK-133): a bordered box above the
+ * live transcript, private to the wearer, auto-dismissed by the controller after
+ * ~10s. Two containers make it up: a pinned title row (the bordered frame, with
+ * its live countdown) and a scrolling body container inside it. A body that
+ * wraps past CUE_BODY_LINES rows overflows the body container, and the host
+ * scrolls it with its own native scroll bar — the body container captures the
+ * scroll gesture, so a swipe drives that scroll directly. The full cue always
+ * lives on the phone Session/History pages regardless.
  */
 export function buildCuePage(
   contents: PageContents,
   cue: CueCard,
   secondsLeft?: number,
-  scroll = 0,
 ): RebuildPageContainer {
-  return popupPage(contents, cueText(cue, secondsLeft, scroll), cueBox(cue));
+  const frame = borderedBox(CONTAINER.menu, cueBox(cue), cueTitleLine(cue, secondsLeft));
+  const bb = cueBodyBox(cue);
+  const body = new TextContainerProperty({
+    containerID: CONTAINER.cueBody.id,
+    containerName: CONTAINER.cueBody.name,
+    xPosition: bb.x,
+    yPosition: bb.y,
+    width: bb.width,
+    height: bb.height,
+    paddingLength: 0,
+    borderWidth: 0,
+    // The sole event-capture container while a cue is up (XERK-133): the OS
+    // plays its scroll animation on whatever captures the gesture, so making
+    // THIS the captor is what scrolls the visible body under a native scroll bar.
+    isEventCapture: 1,
+    content: cueBodyText(cue),
+  });
+  return popupPage(contents, [frame, body], false);
 }
 
 /** A private context cue shown on the lens (XERK-81). */
@@ -360,7 +423,7 @@ export interface CueCard {
  * the row's right edge (XERK-110). The lens has no alignment control — a row
  * is one string — so the gap is spelled out in spaces, sized by measuring them
  * against the slack the two labels leave. `left` must already be narrow enough
- * to leave room for `right`, which `cueText` guarantees by wrapping to the
+ * to leave room for `right`, which `cueTitleLine` guarantees by wrapping to the
  * reduced width; the single-space floor is a belt-and-braces guard so the two
  * can never run together even if a font measures unexpectedly.
  */
@@ -377,86 +440,38 @@ function rowWithRightEdge(left: string, right: string, width: number): string {
   return `${left}${" ".repeat(spaces)}${right}`;
 }
 
-// ---- the cue scroll bar (XERK-129) ------------------------------------------
-// A body that runs past the box's visible rows gets a scroll bar down the right
-// edge to say so: a track cell on every body row, with the thumb on the row
-// nearest how far the window has moved through the body. The lens has no
-// graphics primitives — the bar is one glyph per row, laid to the right edge
-// the same way the countdown is. Both glyphs carry the SAME advance width in
-// the lens font (checked in tests), so the cells stack into a straight column.
-export const CUE_BAR_TRACK = "│";
-export const CUE_BAR_THUMB = "█";
-// The room the bar takes out of a body row: the bar cell plus a space of
-// separation — mirroring how the title row reserves for the countdown.
-const CUE_BAR_RESERVED = getTextWidth(CUE_BAR_THUMB) + getTextWidth(" ");
-
-/** The cue body wrapped into the rows the box renders (XERK-112). */
+/** The cue body wrapped into physical rows at the box's interior width. */
 export function cueBodyLines(body: string): string[] {
-  const full = wrapLines(body, CUE_TEXT_W);
-  if (full.length <= CUE_BODY_LINES) return full;
-  // The body overflows the window, so its rows share their right edge with the
-  // scroll bar (XERK-129) and wrap to the width the bar leaves. Rewrapping
-  // narrower can only add rows, so the two widths can never disagree about
-  // whether the body scrolls.
-  return wrapLines(body, CUE_TEXT_W - CUE_BAR_RESERVED);
+  return wrapLines(body, CUE_TEXT_W);
 }
 
 /**
- * The scroll bar cells for the window starting at `scroll` (XERK-129): one per
- * body row, the thumb on the row nearest the window's position through the
- * body — top row at the start, bottom row at the end. Only a scrollable body
- * gets a bar (`cueText` skips it when `maxScroll` is 0): its presence is the
- * affordance that there is more to see.
+ * The pinned title row of a cue box (XERK-112): the title, in its own case
+ * (XERK-134), wrapped to a single row. `secondsLeft` (XERK-110) paints the
+ * countdown to auto-dismissal flush to the right edge — the lens counterpart to
+ * the countdown in the top-right corner of the web/mobile cue cards. The title
+ * is wrapped to whatever width the countdown leaves, so a long one is trimmed
+ * instead of pushing the row over the edge. Omitted (no countdown) the row is
+ * the title alone. This is the only part of the box the ticker repaints, so a
+ * countdown tick never disturbs the host's scroll of the body (XERK-133).
  */
-export function cueScrollBar(scroll: number, maxScroll: number): string[] {
-  const at = Math.min(Math.max(0, scroll), maxScroll);
-  const thumb = maxScroll > 0 ? Math.round((at / maxScroll) * (CUE_BODY_LINES - 1)) : 0;
-  return Array.from({ length: CUE_BODY_LINES }, (_, i) =>
-    i === thumb ? CUE_BAR_THUMB : CUE_BAR_TRACK,
-  );
-}
-
-/**
- * How far the body can scroll: 0 when it fits the visible rows, otherwise the
- * number of rows hidden below the window (XERK-112). The controller clamps a
- * swipe to this so scrolling can't run off the end of the body.
- */
-export function cueMaxScroll(body: string): number {
-  return Math.max(0, cueBodyLines(body).length - CUE_BODY_LINES);
-}
-
-/**
- * Fit a cue into the popup box: the title over up to
- * CUE_BODY_LINES rows of the body (XERK-112). A body that wraps past those rows
- * is scrolled through `scroll` rows at a time (the controller drives it from
- * swipes); the box clips whatever's outside the window, and the full cue always
- * lives on the phone Session/History pages.
- *
- * `secondsLeft` (XERK-110) paints the countdown to auto-dismissal at the right
- * end of the title row — the lens counterpart to the countdown in the top-right
- * corner of the web/mobile cue cards. The title is wrapped to whatever width
- * the countdown leaves, so a long one is trimmed instead of pushing the row
- * over the edge. Omitted (no countdown) the row is the title alone.
- *
- * A body that scrolls carries the scroll bar down the box's right edge
- * (XERK-129): a bar cell on every body row, the thumb marking where the window
- * sits in the body. A body that fits gets bare rows — no bar means nothing
- * more to see.
- */
-export function cueText(cue: CueCard, secondsLeft?: number, scroll = 0): string {
+export function cueTitleLine(cue: CueCard, secondsLeft?: number): string {
   const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
   // Reserve the countdown plus one space of separation out of the title's row.
   const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
   const titleLine = wrapLines(cue.title, CUE_TEXT_W - reserved)[0] ?? cue.title;
-  const body = cueBodyLines(cue.body);
-  const max = cueMaxScroll(cue.body);
-  // Clamp the window to the body so a stale/over-large scroll can't blank the box.
-  const start = Math.min(Math.max(0, scroll), max);
-  const visible = body.slice(start, start + CUE_BODY_LINES);
-  const bar = cueScrollBar(start, max);
-  const rows =
-    max > 0 ? visible.map((row, i) => rowWithRightEdge(row, bar[i], CUE_TEXT_W)) : visible;
-  return [rowWithRightEdge(titleLine, countdown, CUE_TEXT_W), ...rows].join("\n");
+  return rowWithRightEdge(titleLine, countdown, CUE_TEXT_W);
+}
+
+/**
+ * The cue body as the scrolling body container's content (XERK-133): every
+ * wrapped row, joined. A body that fits the box's CUE_BODY_LINES rows renders
+ * whole; a longer one overflows the container's fixed height and the host
+ * scrolls it with its own native scroll bar. Written once when the cue goes up
+ * (never on a countdown tick), so the host's scroll position is left alone.
+ */
+export function cueBodyText(cue: CueCard): string {
+  return cueBodyLines(cue.body).join("\n");
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */

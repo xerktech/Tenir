@@ -676,9 +676,10 @@ describe("wireLens cues (XERK-81)", () => {
     const t = await record();
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    // The cue rides the shared popup strip, rebuilt on top of the base page.
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+    // The cue rides the shared popup strip, rebuilt on top of the base page:
+    // base 4 + the pinned title frame + the scrolling body container (XERK-133).
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
 
     // Auto-dismissed after ~10s: the page rebuilds back to the plain layout.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
@@ -689,7 +690,7 @@ describe("wireLens cues (XERK-81)", () => {
     const t = await record();
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
 
     await t.doubleTap(); // open the menu — it owns the shared popup
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
@@ -706,7 +707,7 @@ describe("wireLens cues (XERK-81)", () => {
 
     await t.doubleTap(); // dismiss the menu — the queued cue now gets the popup
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
   });
 
   it("queues a cue that arrives while another is up and pops it after the first's TTL (XERK-102)", async () => {
@@ -714,17 +715,17 @@ describe("wireLens cues (XERK-81)", () => {
     const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
 
     // Second cue arrives while the first is still up: it must not clobber it.
     t.api.handlers().onCue?.(CUE2);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
 
     // When the first is released at its TTL, the second pops immediately.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10));
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE2, 10));
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
 
     // And the second runs its own full TTL before the box frees.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
@@ -777,19 +778,19 @@ describe("wireLens cues (XERK-81)", () => {
     const t = await record();
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 10));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
 
     // The activity ticker advances the count. It repaints on TICK_MS, so the
     // lens can trail the true count by up to one tick — each checkpoint below
     // is therefore read at least TICK_MS into the second it asserts.
     await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 9));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 9));
     await vi.advanceTimersByTimeAsync(3000); // ~4.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 6));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 6));
     // Still 1s through the final second, and the box is gone by the time the
     // count would read 0.
     await vi.advanceTimersByTimeAsync(5000); // ~9.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 1));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 1));
     await vi.advanceTimersByTimeAsync(300 + controllerMod.TICK_MS);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
@@ -799,7 +800,7 @@ describe("wireLens cues (XERK-81)", () => {
     // A first cue counts down normally while foregrounded, then dismisses.
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE, 9));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 9));
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
 
     // The wearer pockets the phone: the app backgrounds, but the glasses keep
@@ -809,13 +810,13 @@ describe("wireLens cues (XERK-81)", () => {
     const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
     t.api.handlers().onCue?.(CUE2);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10)); // shows on the lens
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE2, 10)); // shows on the lens
 
     // Before XERK-113 the count froze here at 10s until the cue vanished.
     await vi.advanceTimersByTimeAsync(1650); // ~1.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 9));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE2, 9));
     await vi.advanceTimersByTimeAsync(3000); // ~4.7s in
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 6));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE2, 6));
   });
 
   it("counts down on the phone Session page too (XERK-110)", async () => {
@@ -922,20 +923,13 @@ describe("wireLens cues (XERK-81)", () => {
   });
 });
 
-describe("wireLens cue scrolling (XERK-112)", () => {
-  // A body that wraps well past the box's three visible rows.
+describe("wireLens cue body scrolls under the host (XERK-133)", () => {
+  // A body that wraps well past the box's visible rows.
   const LONG = {
     type: "cue" as const,
     cueId: "long1",
     title: "History",
     body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
-    atMs: 1000,
-  };
-  const SHORT = {
-    type: "cue" as const,
-    cueId: "short1",
-    title: "Sun",
-    body: "About 150 million km away.",
     atMs: 1000,
   };
   const record = async () => {
@@ -946,40 +940,39 @@ describe("wireLens cue scrolling (XERK-112)", () => {
     await settle();
     return t;
   };
+  /** The scrolling body container from the last rebuilt page. */
+  const bodyContainer = (t: Awaited<ReturnType<typeof record>>) => {
+    const page = t.rebuilds[t.rebuilds.length - 1] as
+      | { textObject?: Array<{ containerName?: string; content?: string; isEventCapture?: number }> }
+      | undefined;
+    return page?.textObject?.find((c) => c.containerName === C().cueBody.name);
+  };
 
-  it("scrolls a long cue's body a row at a time, both ways, clamped to the body", async () => {
+  it("pins the title and puts the whole body in a host-scrolled, capturing container", async () => {
     const t = await record();
-    // Sanity: this body really does overflow the box (so there is something to scroll).
-    expect(layout.cueMaxScroll(LONG.body)).toBeGreaterThanOrEqual(2);
-
     t.api.handlers().onCue?.(LONG);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 0)); // starts at the top
-
-    // Swipe down walks the window toward the end; each swipe resets the count.
-    await t.swipeDown();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 1));
-    await t.swipeDown();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2));
-
-    // Swipe up walks it back toward the start, and never past the top.
-    await t.swipeUp();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 1));
-    await t.swipeUp();
-    await t.swipeUp();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 0)); // clamped at 0
+    // The pinned title rides the menu container; the WHOLE body rides its own
+    // container, which the host scrolls with its native scroll bar (XERK-133).
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(LONG, 10));
+    const body = bodyContainer(t);
+    expect(body?.content).toBe(layout.cueBodyText(LONG));
+    expect(body?.isEventCapture).toBe(1); // it captures the scroll gesture itself
   });
 
-  it("never scrolls a cue whose body already fits", async () => {
+  it("does not rebuild or repaint the body on a swipe — the host owns the scroll", async () => {
     const t = await record();
-    expect(layout.cueMaxScroll(SHORT.body)).toBe(0);
-
-    t.api.handlers().onCue?.(SHORT);
+    t.api.handlers().onCue?.(LONG);
     await vi.advanceTimersByTimeAsync(50);
-    const before = t.text(C().menu);
+    const rebuildsBefore = t.rebuilds.length;
+    const bodyBefore = bodyContainer(t)?.content;
+
     await t.swipeDown();
     await t.swipeUp();
-    expect(t.text(C().menu)).toBe(before); // nothing scrolled
+    // A swipe drives the host's native scroll, not an app rebuild: no new page,
+    // and the body container's content is left exactly as it was.
+    expect(t.rebuilds.length).toBe(rebuildsBefore);
+    expect(bodyContainer(t)?.content).toBe(bodyBefore);
   });
 
   it("a swipe resets the auto-dismiss so a long cue can be read past its TTL", async () => {
@@ -993,27 +986,25 @@ describe("wireLens cue scrolling (XERK-112)", () => {
 
     // Past the ORIGINAL TTL, the box is still up — the swipe bought it more time.
     await vi.advanceTimersByTimeAsync(3000);
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
 
     // A full fresh TTL after the swipe, it finally auto-dismisses.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
-  it("each freshly-surfaced cue starts at the top of its own body", async () => {
+  it("gives each surfacing cue its own whole body", async () => {
     const t = await record();
-    const CUE2 = { ...LONG, cueId: "long2", title: "Geography" };
+    const CUE2 = { ...LONG, cueId: "long2", title: "Geography", body: "Alpha beta gamma delta." };
     t.api.handlers().onCue?.(LONG);
     await vi.advanceTimersByTimeAsync(50);
-    // Queue a second cue behind the first, then scroll the first down.
-    t.api.handlers().onCue?.(CUE2);
-    await t.swipeDown();
-    await t.swipeDown();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2));
+    t.api.handlers().onCue?.(CUE2); // queued behind the first
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(LONG));
 
-    // When the first releases at its TTL, the second pops at the top, not at 2.
+    // When the first releases at its TTL, the second surfaces with ITS own body.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
-    expect(t.text(C().menu)).toBe(layout.cueText(CUE2, 10, 0));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE2, 10));
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(CUE2));
   });
 });
 
@@ -1043,7 +1034,7 @@ describe("wireLens cue interaction resets the countdown (XERK-129)", () => {
   /** The box outlives its original TTL, then releases a fresh TTL after the touch. */
   const expectFreshTtl = async (t: Awaited<ReturnType<typeof record>>) => {
     await vi.advanceTimersByTimeAsync(3000); // past the ORIGINAL dismiss instant
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(5); // still up
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6); // still up
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS); // a fresh TTL later…
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4); // …it releases
   };
@@ -1052,50 +1043,50 @@ describe("wireLens cue interaction resets the countdown (XERK-129)", () => {
     const t = await record();
     t.api.handlers().onCue?.(SHORT);
     await vi.advanceTimersByTimeAsync(2650); // ~2.7s in — the count reads 8s
-    expect(t.text(C().menu)).toBe(layout.cueText(SHORT, 8));
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(SHORT, 8));
 
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 4650); // ~8s in
     await t.click(); // the wearer taps the cue they're reading
-    expect(t.text(C().menu)).toBe(layout.cueText(SHORT, 10)); // count back at 10s
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(SHORT, 10)); // count back at 10s
     // A tap while recording still confirms nothing and stops nothing (XERK-85).
     expect(t.api.stops).toHaveLength(0);
     await expectFreshTtl(t);
   });
 
-  it("a tap keeps a scrolled cue's window where it was — it only buys time", async () => {
+  it("a tap on a long cue buys time without disturbing the host's scroll", async () => {
     const t = await record();
     t.api.handlers().onCue?.(LONG);
     await vi.advanceTimersByTimeAsync(50);
-    await t.swipeDown();
-    await t.swipeDown();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2));
+    const rebuildsBefore = t.rebuilds.length;
 
-    await vi.advanceTimersByTimeAsync(2650);
+    await vi.advanceTimersByTimeAsync(2650); // ~2.7s in — the count reads 8s
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(LONG, 8));
     await t.click();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 2)); // same window, fresh count
+    // The tap resets the countdown (repaints the pinned title) but never
+    // rebuilds the page, so the host keeps whatever it had scrolled to (XERK-133).
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(LONG, 10)); // count back at 10s
+    expect(t.rebuilds.length).toBe(rebuildsBefore);
   });
 
   it("a swipe on a cue whose body fits still resets the auto-dismiss", async () => {
     const t = await record();
-    expect(layout.cueMaxScroll(SHORT.body)).toBe(0);
     t.api.handlers().onCue?.(SHORT);
     await vi.advanceTimersByTimeAsync(50);
 
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000); // ~8s in
     await t.swipeDown(); // nothing to scroll — but the wearer touched the cue
-    expect(t.text(C().menu)).toBe(layout.cueText(SHORT, 10)); // count back at 10s
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(SHORT, 10)); // count back at 10s
     await expectFreshTtl(t);
   });
 
-  it("a swipe that runs into the end of the body still resets the auto-dismiss", async () => {
+  it("a swipe on a long cue resets the auto-dismiss", async () => {
     const t = await record();
     t.api.handlers().onCue?.(LONG);
     await vi.advanceTimersByTimeAsync(50);
 
-    // ~8s in, a swipe UP with the window already at the top: it can't move.
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000);
-    await t.swipeUp();
-    expect(t.text(C().menu)).toBe(layout.cueText(LONG, 10, 0)); // unmoved, count reset
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000); // ~8s in
+    await t.swipeUp(); // the host scrolls the body; the app just buys time
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(LONG, 10)); // count reset
     await expectFreshTtl(t);
   });
 });

@@ -19,10 +19,11 @@ Where they appear:
   full-width popup strip the double-tap menu uses (XERK-85), showing the cue's
   title over its detail, auto-dismissed after 10s. The interactive menu takes
   precedence: a cue arriving while the menu is open is queued behind it
-  (XERK-102). A body longer than the box's three visible rows scrolls a row
-  per swipe (XERK-112) and carries a scroll bar down the box's right edge to
-  say so (XERK-129); tapping or swiping a live cue resets its auto-dismiss
-  countdown, so an engaged reader is never cut off mid-read.
+  (XERK-102). The title stays pinned; a body longer than the box's four visible
+  rows (XERK-112, XERK-133) lives in its own scrolling container inside the box,
+  which the host scrolls with its native scroll bar as the wearer swipes.
+  Tapping or swiping a live cue resets its auto-dismiss countdown, so an engaged
+  reader is never cut off mid-read.
 
 Every live surface counts that dismissal down (XERK-110): across from the title,
 in the cue's top-right corner, `10s` → `9s` → … → `0s`. The count is derived from

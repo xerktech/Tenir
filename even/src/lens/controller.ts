@@ -54,9 +54,8 @@ import {
   buildMainPage,
   buildMenuPage,
   clockText,
-  cueMaxScroll,
   cueRowRange,
-  cueText,
+  cueTitleLine,
   fitCaption,
   menuText,
   occludedCaption,
@@ -181,9 +180,6 @@ export async function wireLens(
   // be derived on every tick rather than decremented — the ticker idles while
   // the lens is backgrounded, and a derived count comes back correct.
   let cueShownAt: number | null = null;
-  // Which body row the cue box's window starts at (XERK-112): 0 when a cue goes
-  // up, advanced a row at a time by a swipe while the body runs past the box.
-  let cueScroll = 0;
   let enabled = false; // signed in — clicks act only while enabled
   let tick = 0;
   // Whether the app is currently backgrounded (XERK-117): set on FOREGROUND_EXIT,
@@ -235,13 +231,15 @@ export async function wireLens(
   // Seconds left before the cue in the box is auto-dismissed (XERK-110), for
   // the countdown at the right end of its title row.
   const cueCountdown = () => cueSecondsLeft(cueShownAt == null ? 0 : Date.now() - cueShownAt);
-  // Repaint the shared popup box: the menu highlight, or the cue's text (which
-  // carries its countdown, so this is also how the countdown advances — the
-  // writer drops the frame whenever the second hasn't turned over).
+  // Repaint the shared popup box: the menu highlight, or the cue's pinned title
+  // row (which carries its countdown, so this is also how the countdown advances
+  // — the writer drops the frame whenever the second hasn't turned over). Only
+  // the title is repainted for a cue; its body sits in its own container the
+  // host scrolls (XERK-133), left untouched so a countdown tick can't reset it.
   const renderMenu = () => {
     if (menuFallback) return;
     if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
-    else if (state.cue) writer.set(CONTAINER.menu, cueText(state.cue, cueCountdown(), cueScroll));
+    else if (state.cue) writer.set(CONTAINER.menu, cueTitleLine(state.cue, cueCountdown()));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
   // The clock shows whenever signed in — on the idle "ready" page and while
@@ -269,7 +267,7 @@ export async function wireLens(
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
       : state.cue
-        ? buildCuePage(contents, state.cue, cueCountdown(), cueScroll)
+        ? buildCuePage(contents, state.cue, cueCountdown())
         : buildMainPage(contents);
     const openingMenu = state.menu !== null;
     const openingCue = state.menu === null && state.cue !== null;
@@ -565,7 +563,6 @@ export async function wireLens(
       return;
     }
     state.cue = anchored;
-    cueScroll = 0; // a freshly-shown cue starts at the top of its body (XERK-112)
     startCueTimer();
     rebuildPage();
     syncPhone();
@@ -587,7 +584,6 @@ export async function wireLens(
     // so there's no menu to guard against here.
     embedPastCue(state.cue);
     state.cue = state.cueQueue.shift() ?? null;
-    cueScroll = 0; // the next cue starts at the top of its own body (XERK-112)
     if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
@@ -612,7 +608,6 @@ export async function wireLens(
     menuFallback = false;
     // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).
     state.cue = state.cueQueue.shift() ?? null;
-    cueScroll = 0; // the surfacing cue starts at the top of its body (XERK-112)
     if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
@@ -627,18 +622,17 @@ export async function wireLens(
   };
 
   /**
-   * Scroll the active cue's body by `delta` rows (XERK-112): a swipe moves the
-   * box's window through a body that wraps past its visible rows, clamped to
-   * the body. ANY swipe on a live cue restarts the auto-dismiss timer (and with
-   * it the countdown) — whether or not the window could move (XERK-129):
-   * touching the cue means it is being read, and reading buys it more time.
+   * A touch on the active cue (XERK-129, XERK-133): ANY tap or swipe restarts
+   * the auto-dismiss timer (and with it the countdown) — touching the cue means
+   * it is being read, and reading buys it more time. The body scrolls under the
+   * host's own native scroll (XERK-133), so the app moves nothing itself; it
+   * just repaints the title row with the reset countdown, leaving the host's
+   * scroll of the body alone.
    */
-  const scrollCue = (delta: number) => {
+  const touchCue = () => {
     if (!state.cue) return;
     startCueTimer();
-    const max = cueMaxScroll(state.cue.body);
-    cueScroll = Math.min(Math.max(0, cueScroll + delta), max);
-    renderMenu(); // the moved window — or, unmoved, just the reset countdown
+    renderMenu(); // repaint the title's reset countdown; the host owns the body scroll
   };
 
   function handleGesture(type: OsEventTypeList): void {
@@ -657,8 +651,7 @@ export async function wireLens(
           // auto-dismiss (and the countdown with it) so the wearer can hold
           // the cue open while reading. The tap does nothing else — XERK-85
           // still stands: it must never end the recording.
-          startCueTimer();
-          renderMenu();
+          touchCue();
         }
         // Recording with no menu and no cue: single taps do NOTHING (XERK-85
         // — a brushed temple must not end a recording).
@@ -676,17 +669,19 @@ export async function wireLens(
         void bridge.shutDownPageContainer(1);
         break;
       case OsEventTypeList.SCROLL_TOP_EVENT:
-        // Swipe up: highlight the menu's top row (Continue), or scroll a cue's
-        // body toward its start (XERK-112). Anywhere else the gesture lands on
-        // the invisible overlay and does nothing.
+        // Swipe up: highlight the menu's top row (Continue). On a cue the host
+        // itself scrolls the body toward its start (XERK-133); the app just
+        // resets the countdown. Anywhere else the gesture lands on the invisible
+        // overlay and does nothing.
         if (state.menu) moveMenuHighlight("continue");
-        else scrollCue(-1);
+        else touchCue();
         break;
       case OsEventTypeList.SCROLL_BOTTOM_EVENT:
-        // Swipe down: highlight the menu's bottom row (Exit session), or scroll
-        // a cue's body toward its end (XERK-112).
+        // Swipe down: highlight the menu's bottom row (Exit session). On a cue
+        // the host scrolls the body toward its end (XERK-133); the app just
+        // resets the countdown.
         if (state.menu) moveMenuHighlight("exit");
-        else scrollCue(1);
+        else touchCue();
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
         // Back in the foreground (XERK-117): a snapshot taken from here on is a
