@@ -758,6 +758,7 @@ def test_hybrid_partials_from_stream_finals_from_offline() -> None:
             min_segment_ms=100,
             stream_engine=se,
         )
+        await t.warmup()  # open the stream off the caption path, as the session does
         for _ in range(3):  # speech: three chunks -> three growing stream partials
             await t.push(_pcm(100, amplitude=8000))
         for _ in range(3):  # trailing silence closes the turn
@@ -772,7 +773,7 @@ def test_hybrid_partials_from_stream_finals_from_offline() -> None:
         # The offline engine decoded ONLY the final — partials never touched it.
         assert eng.calls == 1
         assert len(se.sessions) == 1
-        assert se.sessions[0].feeds == 6  # every chunk, speech and silence, was fed
+        assert se.sessions[0].feeds == 7  # 1 warmup prime + 3 speech + 3 silence
         assert se.sessions[0].resets == 1  # cache cleared at the turn boundary
 
     asyncio.run(run())
@@ -794,6 +795,7 @@ def test_hybrid_suppresses_unchanged_and_empty_partials() -> None:
         t = StreamingTranscriber(
             FakeEngine(), language="en", stream_engine=StickyEngine(), silence_ms=100000
         )
+        await t.warmup()
         await t.push(_pcm(100, amplitude=8000))
         await t.push(_pcm(100, amplitude=8000))
         partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
@@ -814,6 +816,7 @@ def test_hybrid_falls_back_to_redecode_when_stream_open_fails() -> None:
             local_agreement=False,
             stream_engine=se,
         )
+        await t.warmup()  # open fails here, off the caption path
         await t.push(_pcm(100, amplitude=8000))
         await t.push(_pcm(100, amplitude=8000))  # 200ms cadence -> re-decode partial
         partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
@@ -835,13 +838,14 @@ def test_hybrid_falls_back_when_stream_feed_fails_midsession() -> None:
             local_agreement=False,
             stream_engine=se,
         )
-        await t.push(_pcm(100, amplitude=8000))  # opens + one good stream partial
+        await t.warmup()  # opens the stream off the caption path
+        await t.push(_pcm(100, amplitude=8000))  # one good stream partial
         se.sessions[0].fail_feed = True
         await t.push(_pcm(100, amplitude=8000))  # feed raises -> drop + fall back
         msgs = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
         assert t._stream_failed is True
         assert se.sessions[0].closed is True  # broken session was closed
-        assert any(p.text == "hello world" for p in msgs)  # re-decode fallback kicked in
+        assert any(p.text == "hello world" for p in msgs)  # re-decode fallback kicked in mid-turn
 
     asyncio.run(run())
 
@@ -866,6 +870,7 @@ def test_hybrid_reset_failure_drops_to_redecode() -> None:
             min_segment_ms=100,
             stream_engine=se,
         )
+        await t.warmup()  # opens the stream (prime is a feed only, no reset)
         for _ in range(3):
             await t.push(_pcm(100, amplitude=8000))
         for _ in range(3):  # close the turn -> finalize -> reset() raises
@@ -880,6 +885,7 @@ def test_hybrid_close_closes_stream_session() -> None:
     async def run() -> None:
         se = FakeStreamEngine()
         t = StreamingTranscriber(FakeEngine(), language="en", stream_engine=se)
+        await t.warmup()  # opens the stream off the caption path
         await t.push(_pcm(100, amplitude=8000))
         await t.close()
         assert se.sessions[0].closed is True
@@ -896,21 +902,88 @@ def test_warmup_opens_stream_ahead_of_audio() -> None:
         t = StreamingTranscriber(FakeEngine(), language="en", stream_engine=se)
 
         await t.warmup()
-        # The socket is open and primed before a single audio frame arrived: one
-        # silent feed paid the cold-decode cost, one reset cleared it.
+        # The socket is open and primed before a single audio frame arrived: one silent
+        # feed paid the cold-decode cost (silence yields no partial, so nothing shows).
         assert len(se.sessions) == 1
         assert se.sessions[0].language == "en"
         assert se.sessions[0].feeds == 1
-        assert se.sessions[0].resets == 1
-        # Priming emitted no caption — silence yields no partial, and the reset wipes it.
         assert _drain(t) == []
 
-        # First real speech reuses the warmed session instead of opening a second one.
+        # First real speech reuses the warmed session instead of opening a second one,
+        # and drives partials straight from the stream (the turn started ready).
         await t.push(_pcm(100, amplitude=8000))
         assert len(se.sessions) == 1
         assert se.sessions[0].feeds == 2
         partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
-        assert [p.text for p in partials] == ["p0"]  # numbering restarted after reset
+        assert [p.text for p in partials] == ["p0"]
+
+    asyncio.run(run())
+
+
+def test_stream_open_never_blocks_the_caption_path() -> None:
+    """The core XERK-128 fix: even a slow-opening stream must not delay captions —
+    partials come from the re-decode path until the stream is confirmed up."""
+
+    class SlowOpenEngine(FakeStreamEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = asyncio.Event()
+
+        async def open(self, *, language: str | None) -> FakeStreamSession:
+            await self.gate.wait()  # stays "connecting" until the test releases it
+            return await super().open(language=language)
+
+    async def run() -> None:
+        se = SlowOpenEngine()
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=100000,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        # No warmup await: the open is still blocked on the gate. Captions must flow
+        # anyway, from the re-decode path — the first turn does not wait on the stream.
+        await t.push(_pcm(100, amplitude=8000))
+        await t.push(_pcm(100, amplitude=8000))  # 200ms cadence -> re-decode partial
+        partials = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert partials and partials[0].text == "hello world"
+        assert len(se.sessions) == 0  # the stream never opened, yet captions flowed
+
+        await t.close()  # cancels the still-pending open cleanly
+
+    asyncio.run(run())
+
+
+def test_stream_upgrades_at_next_turn_once_open() -> None:
+    """A stream that finishes opening mid-turn drives partials from the NEXT turn, not
+    the current one — so it never rewrites a caption already on screen."""
+
+    async def run() -> None:
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            local_agreement=False,
+            stream_engine=se,
+        )
+        # Turn 1: stream not open yet -> re-decode drives it.
+        await t.push(_pcm(100, amplitude=8000))
+        turn1 = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert turn1 and turn1[0].text == "hello world"  # from the offline engine
+        # Let the background open finish, then close turn 1 on silence.
+        await t.warmup()
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        _drain(t)
+        # Turn 2: stream is ready at the turn's first chunk -> it drives partials now.
+        await t.push(_pcm(100, amplitude=8000))
+        turn2 = [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+        assert turn2 and turn2[0].text == "p0"  # from the stream
 
     asyncio.run(run())
 
@@ -932,12 +1005,12 @@ def test_warmup_is_idempotent() -> None:
         await t.warmup()
         await t.warmup()  # already open -> does nothing more
         assert len(se.sessions) == 1
-        assert se.sessions[0].feeds == 1
+        assert se.sessions[0].feeds == 1  # just the one prime feed
 
     asyncio.run(run())
 
 
-def test_warmup_open_failure_falls_back_to_lazy() -> None:
+def test_warmup_open_failure_falls_back_to_redecode() -> None:
     async def run() -> None:
         se = FakeStreamEngine(fail_open=True)
         t = StreamingTranscriber(
@@ -959,7 +1032,7 @@ def test_warmup_open_failure_falls_back_to_lazy() -> None:
     asyncio.run(run())
 
 
-def test_warmup_feed_failure_falls_back_to_lazy() -> None:
+def test_warmup_prime_failure_falls_back_to_redecode() -> None:
     class BadFeedSession(FakeStreamSession):
         async def feed(self, pcm: bytes) -> str | None:
             raise RuntimeError("warm feed exploded")

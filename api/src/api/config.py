@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # to ws(s)://. Empty with backend "hybrid" is a misconfiguration (no partials);
     # the factory raises rather than silently dropping the live caption band.
     stt_stream_endpoint: str = ""
+    # How long to wait for the streaming socket to connect before giving up on it for
+    # the session and staying on the re-decode partial path (XERK-128). The open runs
+    # off the caption path, so this only bounds how long a wedged/misconfigured stream
+    # server keeps us trying before we settle on Parakeet-only partials — captions
+    # themselves never wait on it. Kept short: on the single-host stack the stream
+    # server shares the api's network, so a healthy one connects in well under this.
+    stt_stream_open_timeout_ms: int = 4000
 
     # ---- Cues (XERK-81) ----------------------------------------------------------
     # Cues are private contextual info cards the api derives from the live

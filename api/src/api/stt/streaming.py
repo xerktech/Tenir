@@ -128,6 +128,19 @@ class StreamingTranscriber:
         self._stream_session = None
         self._stream_failed = False
         self._last_partial = ""
+        # The stream is opened OFF the caption path (a background task, kicked off by
+        # warmup() and/or the first push), never inline — connecting it, and the
+        # server building this connection's decoder, can take a moment or hang on an
+        # unhealthy/misconfigured stream server, and the api reads audio frames
+        # serially, so an inline open stalls every caption behind it (XERK-128). Until
+        # the open completes, partials come from the fast re-decode path; captions
+        # never wait on the stream.
+        self._open_task: asyncio.Task[bool] | None = None
+        # Latched at each turn boundary: does THIS turn's partials come from the stream?
+        # Fixing the source for a whole turn avoids a visible rewrite when the stream
+        # finishes opening mid-turn (its transcript starts empty and would briefly be
+        # shorter than the re-decode caption already on screen).
+        self._stream_turn = False
 
         self._buf = bytearray()
         self._since_partial = 0
@@ -139,46 +152,50 @@ class StreamingTranscriber:
         self._closed = False
 
     async def warmup(self) -> None:
-        """Open the live stream ahead of the first audio so its per-session setup
-        doesn't land on the first-caption path (XERK-128).
+        """Start opening the live stream ahead of the first audio, off the caption
+        path (XERK-128).
 
-        On the hybrid path the first spoken chunk otherwise pays, inline, the cost of
-        connecting the streaming socket AND the server building this connection's
-        decoder — and because the api reads audio frames serially, that stall holds up
-        every frame behind it, so captions appear late and then in a burst carrying the
-        whole backlog. Opening the stream here (plus a scrap of silence to pay the
-        one-time cold-decode cost, then a reset so it never colours the first real
-        partial) moves all of that off the hot path.
+        On the hybrid path the stream's per-session setup — connecting the socket and
+        the server building this connection's decoder — used to be paid inline on the
+        first spoken chunk. Because the api reads audio frames serially, that stall
+        held up every frame behind it, so captions appeared late and then in a burst
+        carrying the whole backlog. Worse, while the stream was still "coming up" the
+        re-decode fallback was suppressed, so an unhealthy or misconfigured stream
+        server stalled captions for its whole connect timeout.
 
-        No-op when there's no streaming engine (the offline model is resident and
-        shared across sessions, so it has no per-session cold cost) or it already
-        failed. Best-effort: any failure just drops back to the lazy open on the first
-        chunk, exactly as before."""
-        if not self._streaming_active() or self._stream_session is not None:
-            return
-        if not await self._ensure_stream():
-            return
-        try:
-            # ~100 ms of silence: enough to trigger one decode step (paying the cold
-            # cost) without the reset that follows leaving any primed text behind.
-            await self._stream_session.feed(bytes(_ms_to_bytes(100)))
-            await self._stream_session.reset()
-        except Exception:  # noqa: BLE001 — a failed warm just falls back to lazy open
-            log.warning("stream warmup failed; using lazy open", exc_info=True)
-            await self._drop_stream()
-            self._stream_failed = True
+        Opening from here (in the background) means the first spoken words are captioned
+        from the fast re-decode path immediately and only switch to the stream once it
+        is confirmed up — so a slow or dead stream never delays the first caption. This
+        just kicks the open off and waits for it; a no-op without a streaming engine."""
+        self._ensure_open_started()
+        if self._open_task is not None:
+            await self._open_task
 
     async def push(self, pcm: bytes) -> None:
         if not pcm:
             return
+        # Latch the partial source for this turn at its first chunk (buffer empty),
+        # so a stream that finishes opening mid-turn doesn't rewrite the caption.
+        if not self._buf:
+            self._stream_turn = self._stream_ready()
         self._buf.extend(pcm)
         self._since_partial += len(pcm)
         self._update_vad(pcm)
 
+        # Make sure the stream is opening (off the caption path); harmless once open or
+        # once it has failed. Never awaited here — captions must not wait on it.
+        self._ensure_open_started()
+
         # Live partials from the cache-aware stream are driven by the audio itself
-        # (fed every chunk), not by the re-decode cadence timer below.
-        if self._streaming_active():
+        # (fed every chunk), not by the re-decode cadence timer below — but only for a
+        # turn that started with the stream ready.
+        if self._stream_turn and self._stream_ready():
             await self._feed_stream(pcm)
+
+        # Re-checked AFTER the feed: a feed that failed mid-turn drops the stream, and
+        # the rest of this turn must fall straight back to re-decode partials rather
+        # than go silent until the turn ends.
+        stream_driving = self._stream_turn and self._stream_ready()
 
         if len(self._buf) >= self._max_segment_bytes:
             await self._finalize()
@@ -188,13 +205,10 @@ class StreamingTranscriber:
             and len(self._buf) >= self._min_segment_bytes
         ):
             await self._finalize()
-        elif (
-            self._has_speech
-            and self._since_partial >= self._partial_bytes
-            and not self._streaming_active()
-        ):
-            # Re-decode cadence partial: only when there's no live stream (legacy
-            # single-model backend) or the stream failed and we fell back to it.
+        elif self._has_speech and self._since_partial >= self._partial_bytes and not stream_driving:
+            # Re-decode cadence partial: whenever the stream isn't driving — no stream
+            # configured, it hasn't finished opening, or it failed (before this turn or
+            # part-way through it) and we fell back.
             await self._emit_partial()
 
     def _speech_threshold(self) -> float:
@@ -251,22 +265,51 @@ class StreamingTranscriber:
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         return result
 
-    def _streaming_active(self) -> bool:
-        """Whether live partials should come from the streaming engine right now."""
-        return self._stream_engine is not None and not self._stream_failed
+    def _stream_ready(self) -> bool:
+        """Whether the stream is open and healthy, i.e. it can drive partials right
+        now. False keeps captions on the re-decode path — before the stream has
+        finished opening as well as after it has failed."""
+        return (
+            self._stream_engine is not None
+            and not self._stream_failed
+            and self._stream_session is not None
+        )
 
-    async def _ensure_stream(self) -> bool:
-        """Open the streaming session lazily on first audio. False = unusable (then
-        the caller falls back to the re-decode partial path)."""
+    def _ensure_open_started(self) -> None:
+        """Kick off opening the stream in the background, at most once at a time.
+
+        Never blocks the caller: the caption path keeps serving re-decode partials
+        until the open completes (see `push`). Called from both `warmup` and every
+        `push`, so the stream still opens even if `warmup` was never called."""
+        if self._stream_engine is None or self._stream_failed:
+            return
         if self._stream_session is not None:
-            return True
+            return
+        if self._open_task is not None and not self._open_task.done():
+            return
+        self._open_task = asyncio.create_task(self._open_and_prime())
+
+    async def _open_and_prime(self) -> bool:
+        """Open the streaming session and prime it, off the caption path. False =
+        unusable (the caption path then just stays on re-decode partials)."""
         try:
             self._stream_session = await self._stream_engine.open(language=self._language)
-            return True
         except Exception:  # noqa: BLE001 — a dead stream must never stop captions
             log.warning("stream open failed; using re-decode partials", exc_info=True)
             self._stream_failed = True
             return False
+        try:
+            # A scrap of silence pays the stream's one-time cold-decode cost now, off
+            # the caption path, so the first spoken chunk gets a fast partial. No reset
+            # afterward: leading silence is benign to a cache-aware model (a real turn
+            # opens with some too) and the turn-boundary reset clears it regardless.
+            await self._stream_session.feed(bytes(_ms_to_bytes(100)))
+        except Exception:  # noqa: BLE001 — a failed prime drops us to re-decode partials
+            log.warning("stream prime failed; using re-decode partials", exc_info=True)
+            await self._drop_stream()
+            self._stream_failed = True
+            return False
+        return True
 
     async def _drop_stream(self) -> None:
         session, self._stream_session = self._stream_session, None
@@ -277,9 +320,9 @@ class StreamingTranscriber:
                 pass
 
     async def _feed_stream(self, pcm: bytes) -> None:
-        """Feed one chunk to the live stream and emit a partial if the turn grew."""
-        if not await self._ensure_stream():
-            return
+        """Feed one chunk to the already-open live stream and emit a partial if the
+        turn grew. The caller only invokes this once the stream is confirmed open
+        (`_stream_ready`); opening happens off the caption path in `_open_and_prime`."""
         try:
             text = await self._stream_session.feed(pcm)
         except Exception:  # noqa: BLE001 — fall back to re-decode partials on any error
@@ -395,6 +438,17 @@ class StreamingTranscriber:
 
     async def close(self) -> None:
         self._closed = True
+        # A still-running background open would race close()/drop below (both touch the
+        # stream session): cancel it and let it settle before dropping the session.
+        if self._open_task is not None and not self._open_task.done():
+            self._open_task.cancel()
+            try:
+                await self._open_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 — teardown swallows a late open error
+                pass
+        self._open_task = None
         await self._drop_stream()
         # Unblock a pending results() get with a skipped (empty) sentinel.
         await self._queue.put(CaptionPartial(type="caption.partial", text="", lang=None))

@@ -49,7 +49,10 @@ def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
                     "(API_STT_STREAM_ENDPOINT) — the WebSocket root of the "
                     "nemotron-stt server, e.g. ws://nemotron:8000"
                 )
-            stream_engine = NemotronWsEngine(endpoint=settings.stt_stream_endpoint)
+            stream_engine = NemotronWsEngine(
+                endpoint=settings.stt_stream_endpoint,
+                timeout=settings.stt_stream_open_timeout_ms / 1000,
+            )
 
         return StreamingTranscriber(
             offline,
