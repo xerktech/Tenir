@@ -48,9 +48,10 @@ ENV NEMOTRON_MODEL=nvidia/nemotron-3.5-asr-streaming-0.6b \
 EXPOSE 8000
 
 # server.py's main() loads the model on the main thread BEFORE starting uvicorn, then
-# serves with the websockets-sansio WS impl. Both are required for the WebSocket accept
-# path to survive NeMo's cold CUDA init (loading in a background thread while the loop
-# comes up wedges new handshakes) and modern websockets (the legacy uvicorn WS impl
-# 400s a valid upgrade against websockets>=14). See _load_model / main() for the full
-# rationale. One worker: a single resident model on one GPU.
+# serves the WebSocket with wsproto (server.py WS_IMPL). Loading before the loop keeps
+# the accept path healthy through NeMo's cold CUDA init; wsproto keeps the handshake
+# off the `websockets` library, whose version churn broke it twice (a 400 on uvicorn's
+# legacy impl, then a silent hang on websockets-sansio in production). See _load_model
+# / main() / WS_IMPL for the full rationale. One worker: a single resident model on one
+# GPU.
 CMD ["python", "server.py"]
