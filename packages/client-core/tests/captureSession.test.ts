@@ -32,12 +32,34 @@ describe("reduce", () => {
 
 
 
-  it("caps retained segments at the memory bound", () => {
+  it("retains the whole live transcript so it never vanishes mid-session (XERK-135)", () => {
     let s = base();
-    for (let i = 0; i < 70; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
-    expect(s.segments.length).toBe(60);
-    expect(s.segments[0].id).toBe("s10"); // oldest dropped
-    expect(s.segments[s.segments.length - 1].id).toBe("s69");
+    for (let i = 0; i < 500; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
+    // Every finalized turn is kept — the oldest is not dropped as the session
+    // runs on, matching the history view. Previously a 60-turn cap silently
+    // shifted off the earliest turns, so scrolling up in a long session showed
+    // the lingering cues but no transcript.
+    expect(s.segments.length).toBe(500);
+    expect(s.segments[0].id).toBe("s0"); // oldest still present
+    expect(s.segments[s.segments.length - 1].id).toBe("s499");
+  });
+
+  it("keeps every past cue anchored to its turn in a long transcript (XERK-135)", () => {
+    // The symptom was cues surviving while their anchor turns were dropped, so
+    // they floated to the top as leading cues. With the full transcript retained,
+    // a cue released after the 100th turn still sits right after that turn.
+    let s = base();
+    for (let i = 0; i < 100; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    s = reduce(s, { type: "cueRelease", id: "c1" });
+    for (let i = 100; i < 200; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
+
+    const items = liveTranscript(s.segments, s.pastCues);
+    const cueIdx = items.findIndex((it) => it.kind === "cue");
+    // The cue is inline after its anchor turn, not a leading cue at the very top.
+    expect(cueIdx).toBeGreaterThan(0);
+    const before = items[cueIdx - 1];
+    expect(before.kind === "segment" && before.segment.id).toBe("s99");
   });
 
   it("toggles pause and drops the stale partial", () => {

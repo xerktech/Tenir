@@ -19,8 +19,6 @@ import type { Lang, MicSource } from "@tenir/contract";
 import type { PcmAudioSource } from "./pcmSource";
 import { decodeBase64 } from "./pcm";
 
-// Cap how many finalized turns we keep on screen; this just bounds memory.
-const MAX_SEGMENTS = 60;
 // The active cue is shown above the transcript for this long, then released
 // (XERK-81). The history view keeps cues permanently; this is the live surface only.
 export const CUE_TTL_MS = 10000;
@@ -146,8 +144,16 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "partial":
       return { ...state, partial: action.text };
     case "final": {
+      // Keep every finalized turn for the whole live session — the transcript
+      // scrolls in its own box (XERK-103) and is meant to be scrolled back and
+      // re-read (XERK-108), exactly like the history view, which retains the full
+      // transcript. An earlier "memory bound" dropped the oldest turns mid-session
+      // (XERK-135): because past cues are bounded separately and a conversation
+      // yields far more turns than cues, segments rolled off while the cues
+      // anchored to them lingered and floated to the top — so scrolling up showed
+      // all the cue data but no transcript. Caption text is tiny, so retaining it
+      // costs nothing next to the audio being streamed; correctness wins.
       const segments = [...state.segments, { id: action.segmentId, text: action.text }];
-      if (segments.length > MAX_SEGMENTS) segments.shift();
       return { ...state, segments, partial: "" };
     }
     case "cue": {
