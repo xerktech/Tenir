@@ -12,16 +12,20 @@ from api.stt.stub import StubTranscriber
 __all__ = ["Transcriber", "make_transcriber"]
 
 
-def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
+def make_transcriber(
+    source_lang: Lang | None = None, *, start_offset_ms: int = 0
+) -> Transcriber:
     """Factory selected by API_STT_BACKEND.
 
     `source_lang` (when known from session.start) constrains decoding for faster,
-    more reliable recognition.
+    more reliable recognition. `start_offset_ms` is where this transcriber's
+    segment timeline begins — nonzero for a resumed conversation, so its segments
+    continue the existing transcript/audio timeline instead of restarting at 0.
     """
     backend = settings.stt_backend
 
     if backend == "stub":
-        return StubTranscriber()
+        return StubTranscriber(start_offset_ms=start_offset_ms)
 
     if backend in ("voxtral", "hybrid"):
         # Imported lazily so the networked deps load only when actually selected.
@@ -68,6 +72,8 @@ def make_transcriber(source_lang: Lang | None = None) -> Transcriber:
             vad_noise_ratio=settings.stt_vad_noise_ratio,
             vad_window_ms=settings.stt_vad_window_ms,
             stream_engine=stream_engine,
+            start_offset_ms=start_offset_ms,
+            final_words=settings.stt_final_word_timestamps,
         )
     raise ValueError(
         f"unknown STT backend: {backend!r} (expected 'stub', 'voxtral' or 'hybrid')"

@@ -112,6 +112,98 @@ def test_resumed_session_extends_retained_audio_across_the_grace_window() -> Non
     asyncio.run(run())
 
 
+def test_resumed_session_continues_the_segment_timeline() -> None:
+    """Regression: the second leg of a resumed conversation used to restart its
+    segment timeline at 0 while its audio was appended *after* the first leg's in
+    the retained WAV. The merged transcript then interleaved the two sittings
+    when ordered by start_ms, and History playback (and the STT eval replay) read
+    the wrong audio for every second-leg segment — the damage documented in
+    scripts/stt_eval/RESULTS-2026-07.md. Second-leg segments must continue from
+    the retained duration."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-timeline")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(30):  # ~3s of audio -> stub finals at [0,2000] + flush tail
+            await leg1.on_audio(_voice_chunk())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await leg1.close()
+
+        convs = get_conversation_store()
+        # Snapshot, not the store's live list — leg2 appends into that same list.
+        first_leg = list(convs.get("default", "conv-timeline").segments)
+        assert first_leg, "expected first-leg segments"
+        first_end = max(s.end_ms for s in first_leg)
+        retained_ms = (
+            len(wav_to_pcm16(get_audio_store().get(audio_key("default", "conv-timeline"))))
+            * 1000
+            // 32000
+        )
+
+        leg2 = Session(send, session_id="conv-timeline")
+        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(30):
+            await leg2.on_audio(_voice_chunk())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await leg2.close()
+
+        segments = convs.get("default", "conv-timeline").segments
+        second_leg = segments[len(first_leg) :]
+        assert second_leg, "expected second-leg segments"
+        # Every second-leg segment sits after the whole retained first leg on the
+        # conversation timeline — audio-aligned, not restarted at 0.
+        assert min(s.start_ms for s in second_leg) == retained_ms
+        assert retained_ms >= first_end
+        # And the merged transcript is ordered without interleaving: sorting by
+        # start_ms keeps the persisted (chronological) order.
+        starts = [s.start_ms for s in segments]
+        assert starts == sorted(starts)
+        # The full timeline spans the whole retained recording.
+        total_ms = (
+            len(wav_to_pcm16(get_audio_store().get(audio_key("default", "conv-timeline"))))
+            * 1000
+            // 32000
+        )
+        assert max(s.end_ms for s in segments) == total_ms
+
+    asyncio.run(run())
+
+
+def test_resume_offset_falls_back_to_segment_end_without_retained_audio() -> None:
+    """With no retained audio (audio backend off, or a memory backend emptied by
+    a restart) the resumed timeline continues from the last persisted segment's
+    end — the transcript stays monotonic even though audio alignment is gone."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-no-audio")
+        leg1._audio_store = None
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(30):
+            await leg1.on_audio(_voice_chunk())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await leg1.close()
+
+        first_end = max(
+            s.end_ms for s in get_conversation_store().get("default", "conv-no-audio").segments
+        )
+        assert first_end > 0
+
+        leg2 = Session(send, session_id="conv-no-audio")
+        leg2._audio_store = None
+        assert await leg2._resume_offset_ms() == first_end
+
+    asyncio.run(run())
+
+
 def test_session_without_persistence_does_not_retain() -> None:
     # Disable persistence on an already-constructed session by clearing its seams.
     async def run() -> None:

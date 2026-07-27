@@ -112,6 +112,82 @@ def test_partials_then_final_on_silence() -> None:
     asyncio.run(run())
 
 
+def test_final_words_off_skips_word_timing() -> None:
+    """With final_words=False the final decode itself asks the engine for no word
+    timing (want_words=False — measured ~5.5x cheaper on the deployed server) and
+    the emitted CaptionFinal carries words=None."""
+
+    class RecordingEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.want_words_seen: list[bool] = []
+
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            self.want_words_seen.append(want_words)
+            result = super().transcribe(samples, language=language, want_words=want_words)
+            if not want_words:
+                result.words = []
+            return result
+
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+            final_words=False,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):  # trailing silence -> finalize
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 1
+        assert finals[0].text == "hello world"
+        assert finals[0].words is None
+        # Segment timing is byte-derived, not word-derived — unaffected.
+        assert finals[0].startMs == 0 and finals[0].endMs == 600
+        assert not any(eng.want_words_seen), "no decode should have computed word timing"
+
+    asyncio.run(run())
+
+
+def test_start_offset_continues_segment_timeline() -> None:
+    """A resumed conversation's transcriber starts its timeline at the duration
+    already retained: segment and word times continue from there instead of
+    restarting at 0 (the restart interleaved sittings in the merged transcript
+    and desynced History playback from the stored audio)."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+            start_offset_ms=60_000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 1
+        f = finals[0]
+        assert f.startMs == 60_000
+        assert f.endMs == 60_600
+        assert f.words is not None and f.words[0].startMs == 60_000
+        assert f.words[1].startMs == 60_500
+
+    asyncio.run(run())
+
+
 def test_partial_with_empty_text_is_suppressed() -> None:
     class EmptyEngine:
         def transcribe(

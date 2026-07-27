@@ -44,6 +44,7 @@ from api.persistence import (
     wav_to_pcm16,
 )
 from api.stt import Transcriber, make_transcriber
+from api.stt.engine import BYTES_PER_SEC
 
 log = logging.getLogger("api.session")
 
@@ -153,8 +154,17 @@ class Session:
     ) -> None:
         self.mic_source = mic_source
         self.source_lang = source_lang
-        # Build the transcriber now that we know the source language.
-        self._transcriber = make_transcriber(source_lang=source_lang)
+        # Build the transcriber now that we know the source language. A resumed
+        # conversation seeds the segment timeline with the duration already
+        # retained: this Session's transcriber starts a fresh byte count, but the
+        # conversation's transcript and audio don't — _persist appends this
+        # sitting's audio after the existing recording, so segments must continue
+        # that timeline too or the merged transcript interleaves sittings and
+        # History playback desyncs from the audio.
+        start_offset_ms = await self._resume_offset_ms() if self.resumed else 0
+        self._transcriber = make_transcriber(
+            source_lang=source_lang, start_offset_ms=start_offset_ms
+        )
         # Build the cue generator (None when API_CUE_BACKEND=off — the default —
         # so the stripped core does no cue work at all).
         self._cue_generator = make_cue_generator()
@@ -184,6 +194,31 @@ class Session:
             SessionReady(type="session.ready", sessionId=self.session_id, resumed=self.resumed)
         )
         log.info("session %s ready (mic=%s)", self.session_id, mic_source)
+
+    async def _resume_offset_ms(self) -> int:
+        """Where a resumed conversation's timeline stands, in ms.
+
+        The retained audio is authoritative when it exists — _persist prepends it
+        before this sitting's audio, so its duration is exactly where the new
+        audio (and therefore the new segments) begins. Without retained audio
+        (audio backend off, or a memory backend emptied by a restart) fall back to
+        the last persisted segment's end so the transcript at least stays
+        monotonic. Store reads are offloaded: both backends block, and this runs
+        on the connect path.
+        """
+        if self._audio_store is not None:
+            existing = await asyncio.to_thread(
+                self._audio_store.get, audio_key(self._household, self.session_id)
+            )
+            if existing:
+                return len(wav_to_pcm16(existing)) * 1000 // BYTES_PER_SEC
+        if self._conversations is not None:
+            conv = await asyncio.to_thread(
+                self._conversations.get, self._household, self.session_id
+            )
+            if conv is not None and conv.segments:
+                return max(s.end_ms for s in conv.segments)
+        return 0
 
     def _on_warmup_done(self, task: asyncio.Task[None]) -> None:
         # warmup() swallows its own errors, but retrieve any exception (incl. a
