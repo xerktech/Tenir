@@ -100,6 +100,11 @@ CUE_GUIDANCE = (
 CUE_GUIDANCE_GROUNDED = (
     "Live evidence accompanies this conversation — be generous with it: for "
     "facts the evidence covers, prefer emitting a cue over staying silent. "
+    "Generosity applies only to topics that are cue-worthy in the first "
+    "place: evidence exists for every mundane noun (a dessert, a pocket, a "
+    "playground game), and covering one with a citation does not make it "
+    "worth the listener's attention — the everyday-knowledge and "
+    "casual-register rules above outrank evidence coverage. "
     "Facts that change or grow over time — recent events, latest releases, "
     "current versions, prices, scores, officeholders, how many entries an "
     "ongoing film series, product line, or franchise has — may come ONLY from "

@@ -189,6 +189,50 @@ Open items for productionizing (not part of this eval):
 4. **VRAM**: 120b (~65 GB) + both STT models (~5 GB) fit the 96 GB card with
    room to spare once the eval services are torn down; Qwen would retire.
 
+## The audience-model calibration (2026-07-26, from the first real session)
+
+The first real-world session on the deployed stack (a 21-minute family outing,
+conversation `dbc3080e`, now a harness fixture alongside the original 12) was
+factual and well-paced but ~60% irrelevant, in two patterns the entity-dense
+eval set never exposed: **dictionary cues** (defining everyday things — foods,
+pockets, playground games — to an adult, made worse by the grounded bar, since
+Wikipedia has evidence for every mundane noun) and **famous-entity misfires**
+(casual words, kid-talk, and slang resolved to brands/celebrities/works).
+
+Fixes, calibrated over four replay iterations against that session plus the
+regression set:
+
+- **Audience model in the prompt**: a cue must carry something an adult
+  listener plausibly does not know; everyday things are never cue-worthy as
+  topics (trivia about a mundane thing is still a cue about a mundane thing);
+  casual-register conversations get the interest bar (questions, guesses,
+  disputes, plus ES⇄EN translations — which measured as some of the most
+  valuable cues) rather than every-noun coverage; short bare names in casual
+  talk are people present, not celebrities. Negative worked examples for the
+  two failure classes; evidence-coverage generosity in the grounded bar now
+  explicitly subordinate to these rules.
+- **max_tokens 300 → 600**: the reasoning model's analysis channel measurably
+  starved the answer at 300 (finish_reason=length with empty content —
+  silently dropped cues on exactly the highest-context turns). This was
+  suppressing volume across all v7/v8 iterations and in production.
+
+Family-session scorecard (hand-bucketed against the categorized production
+run; GOOD = expressed-interest answers, engaged-entity facts, translations):
+
+| run | cues | good | dictionary | misfires |
+|---|---|---|---|---|
+| production (v6 prompt @300 tokens, grounded) | 39 | ~15 | 12 | 12 |
+| v6 replayed ungrounded | 42 | 12 | 9 | ~8 |
+| **v9 + 600 tokens (this change)** | **48** | **23** | 5 | 6 |
+
+Regression set holds volume (330 cues at 600 tokens vs 243 at starved 300)
+with the same shape. Known residuals, deliberately not chased further with
+prompt text: brand tokens inside coherent-looking garbled windows (the
+"Audi" cluster — an ASR-confidence problem; retrieval cross-checking of
+entity cues is the likely future fix), kids-media trivia on ambient
+conversations, and a compound edge case where a thrice-repeated question in
+one window can still exhaust the reasoning budget.
+
 ## Deployment verification & final tuning (2026-07-26, post-promotion)
 
 gpt-oss-120b was promoted (DockerOps #110) and wired through LiteLLM. Final
