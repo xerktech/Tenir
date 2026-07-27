@@ -98,6 +98,11 @@ describe("live cue counts down to its dismissal (XERK-110)", () => {
     expect(cue).toContain('importantForAccessibility="no-hide-descendants"');
     expect(cue).toContain("accessibilityElementsHidden");
   });
+
+  it("keeps the title's own capitalization — no forced all-caps (XERK-134)", () => {
+    expect(cue).toContain("<Text style={styles.cardTitle}>{cue.title}</Text>");
+    expect(cue).not.toContain("toUpperCase");
+  });
 });
 
 describe("live cue floats over the transcript (XERK-107)", () => {

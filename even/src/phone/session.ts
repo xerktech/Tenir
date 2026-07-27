@@ -268,7 +268,7 @@ export class SessionPage {
   }
 
   /**
-   * Render (or hide) the live cue card: the title (uppercased, accent) with the
+   * Render (or hide) the live cue card: the title (accent) with the
    * countdown to its dismissal across from it (XERK-110), over its body.
    */
   private renderCue(cue: CueCard | null, secondsLeft?: number): void {

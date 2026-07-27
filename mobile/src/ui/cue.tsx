@@ -107,7 +107,7 @@ export function LiveCueBand({
     >
       <View style={styles.card}>
         <View style={styles.cardHead}>
-          <Text style={styles.cardTitle}>{cue.title.toUpperCase()}</Text>
+          <Text style={styles.cardTitle}>{cue.title}</Text>
           {/* Seconds until the cue auto-dismisses (XERK-110), across from the
               title. Kept out of the accessibility tree: a number that changes
               every second would otherwise be read out over the cue itself. */}
@@ -209,7 +209,6 @@ const makeStyles = (colors: Palette) =>
       color: colors.accentStrong,
       fontWeight: "700",
       fontSize: 12,
-      letterSpacing: 0.5,
       // A long title wraps rather than shoving the countdown off the card.
       flexShrink: 1,
     },
