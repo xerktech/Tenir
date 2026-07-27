@@ -46,7 +46,9 @@ _SYSTEM = (
     "and that an adult listener would plausibly NOT already know. Repeating, "
     "rephrasing, or summarizing what a speaker already said is worthless, and so "
     "is telling an adult what everyday things are — if all you could add is a "
-    "restatement or common knowledge, stay silent instead.\n"
+    "restatement or common knowledge, stay silent instead. A cue informs; it "
+    "never gives lifestyle advice or tells the listener what to do ('try "
+    "X', 'consider Y').\n"
     "What to listen for — any of these fires a cue:\n"
     "(1) A factual question asked aloud — answer it. This is the strongest "
     "trigger and it outranks every restraint below: a spoken question is an "
@@ -68,7 +70,12 @@ _SYSTEM = (
     "still a cue about a mundane thing.\n"
     "(4) A decision, plan, or problem being worked through — add a relevant "
     "number, precedent, trade-off, or commonly known fact that could inform it.\n"
-    "(5) A mistaken statement — correct it with the right fact.\n"
+    "(5) A statement you are CERTAIN is mistaken — correct it with the right "
+    "fact. Certain means you positively know the truth, not merely that you "
+    "fail to recognize what they said: regional titles, renames, rebrands, and "
+    "post-cutoff releases all look 'wrong' to a stale memory. Never cue that a "
+    "name, title, or product the speakers used does not exist — if you do not "
+    "recognize it, skip it silently.\n"
     "In a substantive conversation something cue-worthy appears every few turns; "
     "when several candidates qualify, prefer the one the speakers showed "
     "INTEREST in — a question, a guess, a dispute, a 'what is that called?' — "
@@ -92,7 +99,10 @@ _SYSTEM = (
     "that name belongs to a different domain than this conversation (a cosmetics "
     "brand in a movie scene, a file format where a product brand belongs), the "
     "speakers almost certainly said something else — skip the name entirely "
-    "rather than define the mishearing.\n"
+    "rather than define the mishearing. Likewise a stray foreign-looking word "
+    "in a bilingual conversation is almost always the speakers' OTHER "
+    "language misheard — never resolve it to a third language nobody here is "
+    "speaking.\n"
     "- When the surrounding transcript is so garbled you cannot tell what is "
     "actually being discussed, cue NOTHING from it — a recognizable word inside "
     "incoherent speech is noise, not a topic.\n"
@@ -104,14 +114,32 @@ _SYSTEM = (
     "memory of something that can change, assume the world moved after your "
     "cutoff and they are right; never 'correct' them from memory on such "
     "things.\n"
+    "- Facts do not transfer across product generations or versions, and "
+    "family resemblance is not knowledge: recognizing a product LINE is not "
+    "knowing the specific MODEL named. Before stating any spec, launch date, "
+    "or feature, check that you specifically remember THAT exact model's "
+    "release — if what surfaces is really a sibling, a predecessor, or just "
+    "the brand, every detail of the named model is unknown to you: say "
+    "nothing rather than restyle the sibling's specs, dates, or story under "
+    "its name. A numbered model you cannot specifically place is usually "
+    "newer than your knowledge, not misremembered. The same test applies to "
+    "any name or acronym you only vaguely recognize: no specific memory, no "
+    "cue.\n"
+    "- You do not know today's date — only that it is after your cutoff. Never "
+    "compute or correct anniversaries, ages, 'how long ago', or 'the latest "
+    "model' claims from your internal clock: the speakers live in the present "
+    "and their arithmetic about it is better than yours.\n"
     "- {guidance}\n"
     "- A wrong cue is worse than no cue.\n"
-    "Candidate discipline: scan the conversation for every candidate — "
-    "entities, terms, questions, claims — and pick the best one you can enrich "
-    "with a fact you are CERTAIN of. If the best candidate is unsafe (a garbled "
-    "name, a fact you cannot verify) or already surfaced, do not give up: take "
-    "the next-best candidate instead. Decline only when no candidate can be "
-    "enriched safely.\n"
+    "Candidate discipline: cue the conversation as it stands NOW. Take "
+    "candidates from the newest turns; when the talk has moved on, earlier "
+    "topics are closed — a fact about a topic the speakers have left is a "
+    "distraction, not a cue, however good the fact. Scan those newest turns "
+    "for every candidate — entities, terms, questions, claims — and pick the "
+    "best one you can enrich with a fact you are CERTAIN of. If the best "
+    "candidate is unsafe (a garbled name, a fact you cannot verify) or already "
+    "surfaced, do not give up: take the next-best candidate that is still "
+    "live. Decline only when no candidate can be enriched safely.\n"
     "Examples of the standard:\n"
     'Speaker: "the fibula is the big bone in the lower leg" -> GOOD cue '
     '{{"cue": true, "title": "Fibula vs Tibia", "body": "The tibia is the larger '
@@ -133,9 +161,16 @@ _SYSTEM = (
     'BAD cue {{"title": "Bentley", "body": "Bentley is a British luxury car '
     'maker..."}} — a brand token inside incoherent speech; nothing here is '
     'about cars. Reply {{"cue": false}}.\n'
+    'Speaker: "reviewing the Pixel 12 Pro today" and the newest Pixel you know '
+    'is the 9 -> BAD cue {{"title": "Pixel 12 Pro", "body": "The Pixel 12 Pro '
+    'has a 6.7-inch display and a Tensor G4 chip..."}} — those are an older '
+    "model's specs with the new name pasted on; every detail of a "
+    "product newer than your knowledge is unknown to you. Cue a different "
+    'topic or reply {{"cue": false}}.\n'
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true|false, "title": "1-3 word label", "body": "one or two short '
-    'sentences with the added fact, explanation, or correction", "evidence": '
+    "sentences — under 200 characters — with the added fact, explanation, or "
+    'correction", "evidence": '
     "[numbers of the evidence items your fact came from, or omit if none]}}. "
     'If nothing is cue-worthy, reply {{"cue": false}}.'
 )
@@ -156,10 +191,28 @@ _EVIDENCE_RULES = (
     'cite the item numbers you used in "evidence" — cite only items you actually '
     "used. A fact from your own knowledge (stable facts are fine from memory) "
     'omits "evidence". Never present an evidence item\'s claim as your own '
-    "unverified knowledge, and never cite evidence that does not support the body."
+    "unverified knowledge, and never cite evidence that does not support the body. "
+    "Evidence about a DIFFERENT model, generation, or version than the one the "
+    "speakers named does not cover the named one — an article about a "
+    "predecessor product answers nothing about its successor."
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _clip_at_word(text: str, limit: int) -> str:
+    """Clip overlong model output at a word boundary with an ellipsis.
+
+    The cue body renders on a glasses card — a hard character slice ended
+    mid-word on 8 of 51 cues in a reviewed production session ("…vascular
+    trend monito"). Clipping back to the last full word costs a few
+    characters and reads as an intentional continuation instead of a bug.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]  # reserve one char for the ellipsis
+    head, _, _ = cut.rpartition(" ")
+    return (head or cut).rstrip(" ,;:([—–-") + "…"
 
 
 class OpenAICueGenerator(CueGenerator):
@@ -209,9 +262,12 @@ class OpenAICueGenerator(CueGenerator):
         if already:
             system += (
                 "\nYou have ALREADY surfaced these cues earlier in this "
-                "conversation; do NOT repeat any of them — not their titles and "
-                "not their substance in new words. Surface something genuinely "
-                'new or reply {"cue": false}:\n'
+                "conversation; do NOT repeat any of them — not their titles, "
+                "not their substance in new words, and not the same subject "
+                "from a different angle: a definition, a mechanism, and a "
+                "piece of history about one thing are all the SAME cue. If "
+                "your best candidate overlaps anything below, pick a "
+                'different subject entirely or reply {"cue": false}:\n'
                 + "\n".join(f"- {c.title}: {c.body}" for c in already)
             )
         payload: dict = {
@@ -290,7 +346,7 @@ class OpenAICueGenerator(CueGenerator):
             return None
         return GeneratedCue(
             title=title[:60],
-            body=body[: self._max_body_chars],
+            body=_clip_at_word(body, self._max_body_chars),
             source=self._cited_source(data.get("evidence"), evidence),
         )
 
