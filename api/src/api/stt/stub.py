@@ -19,10 +19,13 @@ _FINAL_EVERY = _BYTES_PER_SEC * 2
 
 
 class StubTranscriber:
-    def __init__(self) -> None:
+    def __init__(self, start_offset_ms: int = 0) -> None:
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._bytes_since_final = 0
         self._total_bytes = 0
+        # Same contract as StreamingTranscriber: a resumed conversation continues
+        # its timeline from the duration already retained instead of restarting at 0.
+        self._start_offset_ms = start_offset_ms
         self._closed = False
 
     async def warmup(self) -> None:
@@ -40,8 +43,11 @@ class StubTranscriber:
             await self._emit_final()
 
     async def _emit_final(self) -> None:
-        start = (self._total_bytes - self._bytes_since_final) * 1000 // _BYTES_PER_SEC
-        end = self._total_bytes * 1000 // _BYTES_PER_SEC
+        start = (
+            self._start_offset_ms
+            + (self._total_bytes - self._bytes_since_final) * 1000 // _BYTES_PER_SEC
+        )
+        end = self._start_offset_ms + self._total_bytes * 1000 // _BYTES_PER_SEC
         self._bytes_since_final = 0
         await self._queue.put(
             CaptionFinal(

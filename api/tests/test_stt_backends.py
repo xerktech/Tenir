@@ -31,6 +31,33 @@ def test_factory_voxtral_builds_streaming_transcriber(monkeypatch: pytest.Monkey
     assert isinstance(make_transcriber(), StreamingTranscriber)
 
 
+def test_factory_threads_start_offset_through_both_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.config import settings
+
+    stub = make_transcriber(start_offset_ms=1234)
+    assert isinstance(stub, StubTranscriber)
+    assert stub._start_offset_ms == 1234
+
+    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    streaming = make_transcriber(start_offset_ms=1234)
+    assert isinstance(streaming, StreamingTranscriber)
+    assert streaming._segment_start_ms == 1234
+
+
+def test_factory_final_word_timestamps_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production finals skip per-word timing (~5.5x faster on the deployed
+    server, nothing consumes the words); the settings flag restores it."""
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    assert make_transcriber()._final_words is False
+
+    monkeypatch.setattr(settings, "stt_final_word_timestamps", True)
+    assert make_transcriber()._final_words is True
+
+
 def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.config import settings
 

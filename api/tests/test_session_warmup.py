@@ -62,7 +62,7 @@ async def _start(sent: list[ServerMessage], fake: RecordingTranscriber) -> Sessi
 def test_start_warms_transcriber_off_the_ready_path(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run() -> None:
         fake = RecordingTranscriber()
-        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None: fake)
+        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None, **kw: fake)
 
         sent: list[ServerMessage] = []
         session = await _start(sent, fake)
@@ -87,7 +87,7 @@ def test_close_cancels_a_pending_warmup(monkeypatch: pytest.MonkeyPatch) -> None
 
     async def run() -> None:
         fake = SlowWarmup()
-        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None: fake)
+        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None, **kw: fake)
 
         sent: list[ServerMessage] = []
         session = await _start(sent, fake)
@@ -110,7 +110,7 @@ def test_warmup_error_is_retrieved_not_raised(monkeypatch: pytest.MonkeyPatch) -
 
     async def run() -> None:
         fake = ExplodingWarmup()
-        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None: fake)
+        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None, **kw: fake)
 
         sent: list[ServerMessage] = []
         session = await _start(sent, fake)

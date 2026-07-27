@@ -81,9 +81,16 @@ class StreamingTranscriber:
         vad_noise_ratio: float = 3.0,
         vad_window_ms: int = 3000,
         stream_engine: StreamingSttEngine | None = None,
+        start_offset_ms: int = 0,
+        final_words: bool = True,
     ) -> None:
         self._engine = engine
         self._language = language
+        # Whether final decodes ask the engine for per-word timestamps. Computing
+        # them dominates final-decode latency on the deployed server (~5.5x, see
+        # Settings.stt_final_word_timestamps), so production runs with this off and
+        # CaptionFinal.words stays None.
+        self._final_words = final_words
         self._partial_bytes = _ms_to_bytes(partial_interval_ms)
         # Partials decode only this trailing window so their latency stays bounded
         # regardless of how long the in-flight turn has grown (master plan §10);
@@ -146,7 +153,13 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
-        self._segment_start_ms = 0
+        # Segment times count audio bytes from here on. A resumed conversation
+        # (a new Session on an existing conversation id) seeds this with the
+        # duration already retained, so its segments continue the conversation's
+        # timeline instead of restarting at 0 — restarting made the merged
+        # transcript interleave sittings and desynced it from the stored audio,
+        # which appends across sittings (see Session._persist).
+        self._segment_start_ms = start_offset_ms
 
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._closed = False
@@ -381,7 +394,7 @@ class StreamingTranscriber:
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
     async def _finalize(self) -> None:
-        result = await self._run_engine(stage="final")
+        result = await self._run_engine(stage="final", want_words=self._final_words)
         start = self._segment_start_ms
         end = start + _bytes_to_ms(len(self._buf))
 

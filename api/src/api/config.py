@@ -206,6 +206,15 @@ class Settings(BaseSettings):
     # window hypotheses agree, so live captions grow word by word instead of
     # rewriting the whole line each cadence. Off falls back to the raw-window partial.
     stt_local_agreement: bool = True
+    # Ask the offline engine for per-word timestamps on FINAL decodes. Off by
+    # default: measured on the deployed Parakeet server, word-timestamp computation
+    # is ~550 ms of an ~675 ms final decode (~5.5x; 122 ms without — see
+    # scripts/stt_eval/RESULTS-2026-07.md), it delays every final caption a user
+    # sees, and nothing consumes the words today: no client reads
+    # CaptionFinal.words, and stored segment timing (start/end_ms) is derived from
+    # the audio byte count, not from word timestamps. Flip on only if a consumer
+    # of per-word timing ships.
+    stt_final_word_timestamps: bool = False
 
     # Fallback household scope. The household normally comes from the authenticated
     # principal's token (auth is always on, see auth_* below); this is only the
