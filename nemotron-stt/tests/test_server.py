@@ -10,9 +10,16 @@ replaced by a fake decoder that records how it was driven.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import socket
+import threading
+import time
+
 import numpy as np
 import pytest
 import server
+import uvicorn
 from fastapi.testclient import TestClient
 
 
@@ -130,3 +137,77 @@ def test_stream_refused_while_loading() -> None:
     with client.websocket_connect("/v1/audio/stream") as ws:
         msg = ws.receive_json()
     assert msg["type"] == "error"
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _wait_listening(port: int, timeout: float = 15.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise AssertionError("uvicorn did not start listening in time")
+
+
+def test_real_uvicorn_ws_handshake_and_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive a REAL uvicorn server over its configured WS impl (server.WS_IMPL).
+
+    This is the regression guard for XERK-128: the handshake wedged in production —
+    uvicorn accepted the socket and served /health but never completed the
+    /v1/audio/stream upgrade — and TestClient's in-memory WebSocket transport can't
+    see that, because it bypasses uvicorn's WS adapter entirely. Only a real server
+    exercises the layer that broke. A wedged handshake fails this test (open_timeout)
+    rather than hanging it.
+    """
+    import websockets  # noqa: PLC0415 — only needed for this real-network test
+
+    made: list[FakeDecoder] = []
+
+    def factory(*, target_lang: str) -> FakeDecoder:
+        d = FakeDecoder(target_lang=target_lang)
+        made.append(d)
+        return d
+
+    monkeypatch.setattr(server, "make_decoder", factory)
+    server._ready.set()
+
+    port = _free_port()
+    config = uvicorn.Config(
+        server.app, host="127.0.0.1", port=port, ws=server.WS_IMPL, log_level="error"
+    )
+    srv = uvicorn.Server(config)
+    thread = threading.Thread(target=srv.run, daemon=True)
+    thread.start()
+    try:
+        _wait_listening(port)
+
+        async def drive() -> tuple[dict, dict, dict]:
+            url = f"ws://127.0.0.1:{port}/v1/audio/stream"
+            async with websockets.connect(url, open_timeout=5) as ws:
+                await ws.send(json.dumps({"target_lang": "en-US"}))
+                await ws.send(_pcm())
+                m1 = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                await ws.send(_pcm())
+                m2 = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                await ws.send(json.dumps({"type": "reset"}))
+                m3 = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                return m1, m2, m3
+
+        m1, m2, m3 = asyncio.run(drive())
+        assert m1 == {"type": "partial", "text": "w0"}  # handshake completed; partials flow
+        assert m2 == {"type": "partial", "text": "w0 w1"}
+        assert m3 == {"type": "reset_ok"}
+        assert made and made[0].target_lang == "en-US"
+    finally:
+        srv.should_exit = True
+        thread.join(timeout=5)
+        server._ready.clear()

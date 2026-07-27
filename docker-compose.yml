@@ -182,7 +182,11 @@ services:
       dockerfile: nemotron-stt/Dockerfile
     image: tenir-nemotron-stt:latest
     ports:
-      - "9402:8000"
+      # 9403 to match the GPU deployment (DockerOps tenir-gpu.yaml): there 9401 is
+      # Parakeet and 9402 is the cue LLM, so Nemotron gets 9403. The api reaches this
+      # service by DNS (ws://nemotron:8000); this published port is only for ad-hoc
+      # external access, kept on the same number as prod to avoid confusion.
+      - "9403:8000"
     volumes:
       # Whole /root/.cache so the HF hub cache AND NeMo's torch cache persist.
       - "C:/docker/tenir/nemotron:/root/.cache"

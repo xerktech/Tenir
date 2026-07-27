@@ -64,6 +64,19 @@ ATT_CONTEXT_RIGHT = int(os.environ.get("NEMOTRON_ATT_CONTEXT_RIGHT", "3"))
 
 app = FastAPI(title="tenir-nemotron-stt")
 
+# WebSocket implementation uvicorn serves /v1/audio/stream with. `wsproto`, NOT the
+# `websockets` library (XERK-128). The handshake has broken twice riding `websockets`:
+# uvicorn's legacy `websockets` impl 400s a valid upgrade against websockets>=14, and
+# its `websockets-sansio` impl — the previous workaround — was found in production to
+# accept the TCP connection and answer /health but NEVER complete the /v1/audio/stream
+# handshake (the 101 is never sent), so the api's stream open hangs for its whole
+# timeout every session. wsproto is a self-contained sans-I/O WebSocket implementation
+# that doesn't depend on the fast-moving `websockets` library at all, so it sidesteps
+# that version churn; verified to complete the handshake and the full partial/reset
+# protocol. (`websockets` stays installed — uvicorn[standard] pulls it — but is unused
+# for serving; the api's own client still uses it independently.)
+WS_IMPL = "wsproto"
+
 # One resident model on one GPU. Each WebSocket owns its own encoder-cache state
 # (per-connection, cheap) but shares the model weights; NeMo decode steps aren't
 # safe to run concurrently on the same model, so every step runs under this lock.
@@ -284,15 +297,15 @@ def main() -> None:  # pragma: no cover - process entrypoint (needs NeMo + a GPU
     path healthy (see `_load_model`). The trade is that the port only binds after the
     model is resident (~tens of seconds) — during which health probes get
     connection-refused, covered by the compose healthcheck's start_period — instead
-    of binding immediately and answering 503. `--ws websockets-sansio` is required
-    because the base image ships websockets>=14, which uvicorn's legacy WS impl can't
-    handshake (it 400s a valid upgrade).
+    of binding immediately and answering 503. `ws=WS_IMPL` ("wsproto") serves the
+    WebSocket independently of the `websockets` library, whose churn broke this
+    handshake twice — see WS_IMPL for the full rationale.
     """
     import uvicorn  # noqa: PLC0415
 
     port = int(os.environ.get("NEMOTRON_PORT", "8000"))
     _load_model()
-    uvicorn.run(app, host="0.0.0.0", port=port, ws="websockets-sansio")
+    uvicorn.run(app, host="0.0.0.0", port=port, ws=WS_IMPL)
 
 
 if __name__ == "__main__":
