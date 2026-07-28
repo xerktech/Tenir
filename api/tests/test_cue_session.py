@@ -129,22 +129,30 @@ def test_dedupe_spans_the_whole_conversation_not_a_short_window(
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
 
+        # Fifteen cues on genuinely DISTINCT subjects (distinct words, so the
+        # same-subject layer sees them as unrelated) — well past any short
+        # rolling window.
+        topics = (
+            "granite basalt quartz feldspar mica gypsum marble slate shale "
+            "obsidian pumice limestone dolomite flint chalk"
+        ).split()
+        assert len(topics) == 15
+
         # The first cue of the conversation.
-        session._consider_cue(_final("pokemon number 1?", segment_id="s1"))
+        session._consider_cue(_final("granite?", segment_id="s1"))
         await _drain_cues(session)
         assert len(_cues(sent)) == 1
         first_title = _cues(sent)[0].title
 
-        # Fourteen more DISTINCT cues follow — well past any short rolling window.
-        for i in range(2, 16):
+        for i, topic in enumerate(topics[1:], start=2):
             session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
-            session._consider_cue(_final(f"pokemon number {i}?", segment_id=f"s{i}"))
+            session._consider_cue(_final(f"{topic}?", segment_id=f"s{i}"))
             await _drain_cues(session)
         assert len(_cues(sent)) == 15
 
         # The very first cue's topic recurs much later.
         session._last_cue_monotonic = time.monotonic() - 3600
-        session._consider_cue(_final("pokemon number 1?", segment_id="again"))
+        session._consider_cue(_final("granite?", segment_id="again"))
         await _drain_cues(session)
         await session.close()
 
@@ -171,11 +179,15 @@ def test_session_hands_generator_the_cues_already_surfaced(
         seen_avoid: list[list[tuple[str, str]]] = []
         counter = {"n": 0}
 
+        # Distinct subjects per cue — shared filler like "Cue N" would trip
+        # the same-subject layer, which is not what this test exercises.
+        names = ["Amethyst", "Basalt", "Citrine"]
+
         class SpyGen:
             def generate(self, transcript, *, avoid_cues=(), evidence=()):  # type: ignore[no-untyped-def]
                 seen_avoid.append([(c.title, c.body) for c in avoid_cues])
                 counter["n"] += 1
-                return GeneratedCue(title=f"Cue {counter['n']}", body=f"Body {counter['n']}")
+                return GeneratedCue(title=names[counter["n"] - 1], body=f"Body {counter['n']}")
 
         session._cue_generator = SpyGen()
 
@@ -190,10 +202,10 @@ def test_session_hands_generator_the_cues_already_surfaced(
         # surfaced so far, in order, with its body.
         assert seen_avoid == [
             [],
-            [("Cue 1", "Body 1")],
-            [("Cue 1", "Body 1"), ("Cue 2", "Body 2")],
+            [("Amethyst", "Body 1")],
+            [("Amethyst", "Body 1"), ("Basalt", "Body 2")],
         ]
-        assert [c.title for c in _cues(sent)] == ["Cue 1", "Cue 2", "Cue 3"]
+        assert [c.title for c in _cues(sent)] == ["Amethyst", "Basalt", "Citrine"]
 
     asyncio.run(run())
 
@@ -204,7 +216,9 @@ def test_session_drops_a_rephrased_duplicate_of_a_surfaced_cue(
     """The recorded-production failure the title dedupe can't catch: the same
     fact re-proposed under a fresh title with a reworded body ("Charlotte Drone
     Facility" then "Charlotte Drone Production"). The substance fingerprint must
-    drop it, without blocking a genuinely different fact about the same topic."""
+    drop it, without blocking a genuinely different fact from the same
+    conversation. (Since the subject layer, a different fact must also carry a
+    different subject in its title — one subject gets one cue.)"""
     monkeypatch.setattr(settings, "cue_backend", "stub")
 
     proposals = [
@@ -219,11 +233,11 @@ def test_session_drops_a_rephrased_duplicate_of_a_surfaced_cue(
             body="The speaker claims their Charlotte facility can produce a "
             "drone every 90 seconds, matching overseas production scale.",
         ),
-        # Different fact about the same topic — must surface.
+        # Different fact under a distinct subject — must surface.
         GeneratedCue(
-            title="Drone Payload",
-            body="A 7-inch drone in this class can typically carry roughly one "
-            "kilogram of payload over several kilometers.",
+            title="Payload capacity",
+            body="A 7-inch quadcopter in this class can typically carry roughly "
+            "one kilogram over several kilometers.",
         ),
     ]
 
@@ -246,7 +260,7 @@ def test_session_drops_a_rephrased_duplicate_of_a_surfaced_cue(
 
         assert [c.title for c in _cues(sent)] == [
             "Charlotte Drone Facility",
-            "Drone Payload",
+            "Payload capacity",
         ]
 
     asyncio.run(run())

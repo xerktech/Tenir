@@ -24,10 +24,9 @@ import httpx
 from api.cue.base import (
     CUE_SUBSTANCE_MIN_TOKENS,
     GeneratedCue,
-    cue_subjects_overlap,
+    cue_subject_tokens,
     cue_substance_similarity,
     cue_substance_tokens,
-    cue_title_subject,
     normalize_cue_title,
 )
 from api.cue.openai import OpenAICueGenerator
@@ -59,7 +58,7 @@ def replay_conversation(
     surfaced: list[GeneratedCue] = []
     norms: set[str] = set()
     substance: list[frozenset[str]] = []
-    subjects: list[frozenset[str]] = []
+    subjects: set[str] = set()
     out = {
         "conversation_id": conv_id,
         "attempts": 0,
@@ -100,7 +99,7 @@ def replay_conversation(
             continue
         norm = normalize_cue_title(cue.title)
         tokens = cue_substance_tokens(cue.title, cue.body)
-        subject = cue_title_subject(cue.title)
+        subject = cue_subject_tokens(cue.title)
         if (
             norm in norms
             or (
@@ -111,14 +110,14 @@ def replay_conversation(
                     for p in substance
                 )
             )
-            or any(cue_subjects_overlap(subject, p) for p in subjects)
+            or bool(subject & subjects)
         ):
             out["dedup_drops"] += 1
             continue
         norms.add(norm)
         surfaced.append(cue)
         substance.append(tokens)
-        subjects.append(subject)
+        subjects |= subject
         last_emit_ms = at
         out["cues"].append(
             {"title": cue.title, "body": cue.body, "at_ms": at, "seg_index": i}

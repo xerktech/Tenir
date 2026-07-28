@@ -78,42 +78,66 @@ def cue_substance_tokens(title: str, body: str) -> frozenset[str]:
     )
 
 
-def cue_title_subject(title: str) -> frozenset[str]:
-    """The distinctive subject tokens of a cue title, for same-subject dedupe.
+# Words that name a cue's ANGLE or a broad category rather than its subject —
+# sharing one of these between two titles says nothing about the cues being
+# about the same thing ("Release Management" / "RabbitMQ Management API";
+# "Save Failure" / "Pipeline Failure"). Grown by simulating the subject gate
+# over recorded production cues and hand-classifying every collision — first
+# the 316-cue/8-session 2026-07-27 calibration, then the 396-cue/7-session
+# 2026-07-28 one, which contributed the tokens from "platform" on. Includes
+# the common nouns ("ring", "sky") and brand-family tokens ("galaxy",
+# "amazon") whose collisions in that data were between genuinely distinct
+# cues. Entries are in normalized (plural-stripped) form.
+_SUBJECT_GENERIC = frozenset(
+    "origin history meaning definition overview basic launch size scale level "
+    "type cause rule mode series system device company feature process "
+    "management length software user service failure name language computing "
+    "link testing emulator ring sky galaxy amazon "
+    "platform code number resolution trend environment kubernete development "
+    "database test design ai eastern".split()
+)
+# Unlike the ASCII substance regex, subject tokens keep unicode word chars so
+# an accented name ("Pokémon") stays one token instead of splitting into
+# meaningless fragments that collide with everything.
+_SUBJECT_WORD = re.compile(r"[\w']+", re.UNICODE)
 
-    The prompt's avoid-list bans re-cueing a subject from a new angle ("a
-    definition, a mechanism, and a piece of history about one thing are all the
-    SAME cue"), but production sessions from 2026-07-27/28 showed the model
-    violating it in clusters — "Grafana" then "Grafana origin", "BBS" then
-    "First BBS", "AWS Cognito User Pools" then "AWS Cognito User Pool" (which
-    slipped the substance backstop at Jaccard 0.348 vs the 0.35 threshold).
-    This fingerprints what a title is ABOUT so the session can enforce the ban.
 
-    Tokens keep original-casing signals before folding: a short word survives
-    only when it carries a digit ("8K", "A1") or is an all-caps name ("VS",
-    "MCP") — otherwise "C language" collapses to {"language"} and falsely
-    matches "Ruby language". Trailing plural 's' is folded so "User Pools"
-    meets "User Pool". Simulated over the 396 production cues of those
-    sessions, subject-containment dropped 27 — hand-classified, every one a
-    duplicate or a same-subject re-angle, none a genuinely new subject.
+def _normalize_subject_word(word: str) -> str:
+    """Fold possessives and trivial plurals so "Instances"/"Instance's" match."""
+    word = word.rstrip("'")
+    if word.endswith("'s"):
+        word = word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+    return word
+
+
+def cue_subject_tokens(title: str) -> frozenset[str]:
+    """The distinctive subject words of a cue title, for same-subject suppression.
+
+    Reviewed production sessions surfaced ten SAML cues, three Kibana cues,
+    and near-identical pairs ("ADP Scale"/"ADP", "Spot Instances"/"Spot
+    Instance termination", "AWS Cognito User Pools"/"...User Pool" at Jaccard
+    0.348 vs the 0.35 threshold) seconds to minutes apart: same subject, fresh
+    angle each time. Those pairs measure 0.04-0.33 substance Jaccard —
+    overlapping the genuinely-distinct band — so no substance threshold can
+    catch them; what the repeats share is the distinctive words of their
+    TITLES. Bare digits are excluded (a "3" in two titles relates nothing)
+    along with stopwords and the angle/category words above.
     """
-    tokens = set()
-    for word in re.findall(r"[\w']+", title):
-        if len(word) <= 2 and not any(ch.isdigit() for ch in word) and not word.isupper():
-            continue
-        folded = word.casefold()
-        if len(folded) > 3 and folded.endswith("s") and not folded.endswith("ss"):
-            folded = folded[:-1]
-        if folded not in _SUBSTANCE_STOPWORDS:
-            tokens.add(folded)
-    return frozenset(tokens)
-
-
-def cue_subjects_overlap(a: frozenset[str], b: frozenset[str]) -> bool:
-    """True when one cue title's subject contains the other's — the narrower
-    title is the same subject at a different angle ("Grafana" ⊆ "Grafana
-    origin"), which the cue policy treats as the same cue."""
-    return bool(a) and bool(b) and (a <= b or b <= a)
+    # Two-character tokens stay: they are acronyms and model names in this
+    # domain ("A1", "S3", "CI"), and dropping them let a replayed "Go/No-Go"
+    # title (all short tokens) slip past the gate entirely. Simulated over the
+    # 316-cue calibration set, admitting them added exactly one drop — a true
+    # duplicate ("A1 Weight" after "Antigravity A1") — and no false ones.
+    return frozenset(
+        w
+        for w in (_normalize_subject_word(x) for x in _SUBJECT_WORD.findall(title.casefold()))
+        if len(w) > 1
+        and not w.isdigit()
+        and w not in _SUBSTANCE_STOPWORDS
+        and w not in _SUBJECT_GENERIC
+    )
 
 
 def cue_substance_similarity(a: frozenset[str], b: frozenset[str]) -> float:
