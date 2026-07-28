@@ -362,3 +362,138 @@ is unmoved — ambient media stays the audience-model's known weak spot.
   ~1/3 marginal-quality run-to-run at temperature 0 (avoid-list path
   dependence); the wins that persist across all runs are the structural ones
   (clusters collapsed, advice and date-corrections gone).
+
+## The professional-audience pass (2026-07-28, from seven post-v12 sessions)
+
+v12 shipped the morning of 07-27 (v0.3.13). Seven real sessions ran on it
+over the next two days — and three of them were a register no prior review
+had covered end to end: professional working conversations (a DevOps
+onboarding call, its screen-share continuation, and a team standup). Hand
+review of all 396 production cues found v12's replay wins did not carry
+into that register. Failure classes, by size:
+
+- **Professional-vocabulary dictionary flood** (~120 cues, the dominant
+  class): the audience model banned everyday things but not the speakers'
+  OWN working vocabulary — a standup of engineers was told what a pull
+  request, TLS, a backlog, and CI are; a DevOps onboarding call got
+  "DevOps", "Semantic Versioning", and — the emblem of the class —
+  "Monday (ISO): Monday is officially the first day of the week" and
+  "Link sharing: sending a URL to someone is called 'sharing a link'".
+  Root causes: rule (3) invited definitions of "specialist terms" with no
+  audience test, the worked GOOD example (feature flags, at engineers)
+  legitimized exactly this, and the "do not give up — take the next-best
+  candidate" escalation forced emission when nothing qualified.
+- **Wrong-referent names and acronyms** (~25): coworkers resolved to
+  celebrities and products (Jonathan → the actor Jonathan Roumie mid-
+  standup; Archie → Archie Moore the boxer, the Archie FTP index, AND a
+  name-origin cue; a kid's friend Ezra → the biblical scribe), internal
+  names to public things (their Tesoro brand → the oil refiner; "D scope"
+  (Descope) → programming scope), and acronyms across domains (MCP →
+  Minecraft Coder Pack in a Model Context Protocol discussion; their RPM
+  app → Red Hat Package Manager AND Release Planning Meeting; VBS misheard
+  as BBS → two dial-up bulletin-board cues).
+- **Same-subject fan-out below the Jaccard floor** (~30 pairs/clusters):
+  eight SAML cues, three Kibana, three Atom, "AWS Cognito User Pools" then
+  "...User Pool" (0.348 vs the 0.35 threshold), "Pressure Cooker" then
+  "Pressure Cooking". Measured pair similarity 0.04–0.33 — overlapping the
+  genuinely-distinct band, unreachable by any substance threshold.
+- **Garbled-audio firehose**: once a screen-share degenerated into
+  fumbling ("Open lid", "free center", mumbled "cat"/"less"), every
+  recognizable token got a cue — Freeway Lid, BYU Testing Center, the Unix
+  commands, Kevin Sorbo from "Hercules road", plus homophones of live
+  topics (Kibana → Kiva microfinance, SAML → the biblical Samuel).
+- **Retrieval keyword-matches** (~6): evidence sharing only a phrase with
+  the talk produced cues about the wrong subject — two Australian
+  cost-of-living-poll cues during talk about the West — and one
+  retrieval-powered FALSE correction ("the price increase starts 5 October,
+  not September 1" — a Royal Mail article, against speakers discussing
+  Xbox prices).
+- **Smaller classes**: calendar/duration trivia ("Friday is the fifth
+  day", "planning meetings run 30-60 minutes"), invented glosses of
+  garbled foreign fragments ("Vivía de centro" as a Spanish "idiom", a
+  wrong Russian imperative), invented generic definitions of internal
+  service names, restatements with silently altered numbers (spoken 24/39
+  min → cue 25/40), and one first-person frame-break ("Link Access — I
+  can't open or view external URLs").
+
+### The fix (v14 = the audience pass + the absorbed v13.3 iteration)
+
+A parallel iteration on branch `fix/cue-mishear-dedup-audience` had
+independently reviewed the 07-27 work calls and replay-validated fixes for
+the same classes (work-call volume 142→83 and 54→38 with movie/family
+controls healthy); its refinements are merged here rather than re-derived.
+
+Prompt: novelty is judged against THESE listeners — fluent use is proof of
+knowledge, jargon fires only on a shown knowledge gap, and for
+practitioners the bar is a certain, specific fact ("news to a
+practitioner"), never an invented statistic substituted for a banned
+definition. Bare names default to coworkers/friends/internal systems;
+acronyms resolve in-domain or not at all; entities need conversational
+support plus a second signal; sound-alikes of in-conversation things ARE
+those things; a bare mumbled word is not a topic; answered questions are
+closed; translations require recognizing the whole phrase; the everyday
+ban covers calendar facts, units, well-known sites/formats, and typical
+durations; evidence must match the conversation's subject, never powers a
+correction, and cannot rescue a mishearing; the observer stance is
+explicit. The "take the next-best candidate" escalation is replaced by
+"declining is a normal outcome".
+
+Code: a third dedupe layer — intersection over distinctive title-subject
+tokens, one subject one cue per conversation — with an angle/category/
+brand-family exclusion list grown by hand-classifying every collision
+across both calibrations (316-cue/8-session, then 396-cue/7-session: 97
+collisions classified, 7 generic tokens added, 90 drops all
+same-subject repeats, zero distinct-subject losses).
+
+### Final numbers (full 10-conversation replay, gpt-oss-120b @ medium)
+
+Frozen set: the seven post-v12 sessions plus three controls (ambient-movie
+`87e2acbe`, ambient-TV `1cf67366`, garbled `ed1d330d`). Both runs on the
+same 2026-07-28 export (1326 attempts), self-judged by the same model at
+low effort — comparative, not absolute. The v12 baseline reuses the 07-27
+iteration's four per-conversation checkpoints (prompt-identical) and
+replays the other six.
+
+| run | cues | emit% | novelty | relevance | accuracy | restates | wrong | judge dups |
+|---|---|---|---|---|---|---|---|---|
+| v12 (shipped baseline) | 522 | 39% | 1.89 | 1.92 | 1.98 | 16 | 1 | 21 |
+| **v14 (this branch)** | **179** | 13% | **1.94** | **1.94** | 1.98 | **3** | **0** | **4** |
+
+Where the volume went, hand-read per conversation: the onboarding call
+63→15 (survivors include CREATE INDEX CONCURRENTLY for their failing
+index and RabbitMQ binding-deletion mechanics for their manual-unbinding
+problem — the "news to a practitioner" bar working), its screen-share
+165→51 (the eight-SAML fan-out replaced by "Azure AD mail vs
+userPrincipalName", directly on the bug being debugged; the mumble-driven
+Unix-command cues 10→3), the standup 158→56 (96 same-subject repeats
+absorbed by the new gate; Twilio Lookup pricing and CSP frame-ancestors
+survive), the podcast+family session 47→22, and the garbled control 7→1.
+Spoken questions still get answered (the euros-vs-pounds and did-the-UK-
+rejoin questions both cue correctly). The ambient-movie control 40→16
+with every survivor but one a genuine companion cue (Dolly, Highlander,
+LGM-1, Kessler, SETI) — same junk-removal shape the 07-27 subset run
+measured (its 19-cue movie result), not a suppression of the register.
+`1cf67366` turns out on transcript reading to be ambient sitcom audio,
+not the direct-question session earlier notes assumed: its v12 cues were
+four wrong-referent/trivia cues plus one genuine companion cue, and v14
+keeps exactly the companion cue.
+
+### Residuals
+
+- **Wrong-referent and invented cues survive stochastically** at roughly
+  10-15% of the (much smaller) volume: "Grunt the JS task-runner" for
+  grunt work, "RPM package format" for their RPM app, an "Opus codec" cue
+  for their Opus integration, one invented "Global Instruction File"
+  definition, and one invented "follow-up within 24 hours" statistic
+  despite the new guard. Same shape as v12's confabulation class: prompt
+  rules halve it per run, never eliminate it. The planned retrieval
+  cross-check of entity cues remains the structural fix.
+- **The 13% emit rate is a deliberate floor-setting** — if deployment
+  feels too quiet in casual registers, tune the register paragraph, not
+  the accuracy rules.
+- **The grounded-path rules ship replay-untested**: evidence
+  subject-match, no-corrections-from-evidence, and
+  evidence-cannot-rescue-a-mishearing only fire with live retrieval,
+  which the harness cannot replay. The next deployment review must check
+  the Guardian-keyword-match and Royal-Mail-style false-correction
+  classes specifically.

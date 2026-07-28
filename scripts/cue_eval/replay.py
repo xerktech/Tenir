@@ -3,8 +3,9 @@
 Builds each request with ``api.cue.openai.OpenAICueGenerator._build_payload``
 from the installed ``api`` package — so what this measures is always the prompt
 that ships — and emulates the session's gating: an 8-turn rolling context, one
-attempt in flight at a time, the min interval between emitted cues, and both
-dedupe backstops (normalized title + substance fingerprint). Ungrounded only.
+attempt in flight at a time, the min interval between emitted cues, and all
+three dedupe backstops (normalized title + substance fingerprint +
+title-subject containment). Ungrounded only.
 
 Usage: see scripts/cue_eval/README.md.
 """
@@ -23,6 +24,7 @@ import httpx
 from api.cue.base import (
     CUE_SUBSTANCE_MIN_TOKENS,
     GeneratedCue,
+    cue_subject_tokens,
     cue_substance_similarity,
     cue_substance_tokens,
     normalize_cue_title,
@@ -56,6 +58,7 @@ def replay_conversation(
     surfaced: list[GeneratedCue] = []
     norms: set[str] = set()
     substance: list[frozenset[str]] = []
+    subjects: set[str] = set()
     out = {
         "conversation_id": conv_id,
         "attempts": 0,
@@ -96,19 +99,25 @@ def replay_conversation(
             continue
         norm = normalize_cue_title(cue.title)
         tokens = cue_substance_tokens(cue.title, cue.body)
-        if norm in norms or (
-            len(tokens) >= CUE_SUBSTANCE_MIN_TOKENS
-            and any(
-                len(p) >= CUE_SUBSTANCE_MIN_TOKENS
-                and cue_substance_similarity(tokens, p) >= DUP_THRESHOLD
-                for p in substance
+        subject = cue_subject_tokens(cue.title)
+        if (
+            norm in norms
+            or (
+                len(tokens) >= CUE_SUBSTANCE_MIN_TOKENS
+                and any(
+                    len(p) >= CUE_SUBSTANCE_MIN_TOKENS
+                    and cue_substance_similarity(tokens, p) >= DUP_THRESHOLD
+                    for p in substance
+                )
             )
+            or bool(subject & subjects)
         ):
             out["dedup_drops"] += 1
             continue
         norms.add(norm)
         surfaced.append(cue)
         substance.append(tokens)
+        subjects |= subject
         last_emit_ms = at
         out["cues"].append(
             {"title": cue.title, "body": cue.body, "at_ms": at, "seg_index": i}
