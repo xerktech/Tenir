@@ -58,6 +58,36 @@ def test_session_persists_transcript_and_audio() -> None:
     asyncio.run(run())
 
 
+def test_close_persists_finals_still_queued_in_the_result_pump() -> None:
+    """Regression (flaky CI on test_resumed_session_continues_the_segment_timeline):
+    close() flushes the tail final into the transcriber's result queue and then
+    flips its closed flag, but results() used to stop at the flag alone — a
+    session closed while the pump was still catching up dropped every result
+    left in the queue, losing finalized turns (the flush tail first) from the
+    persisted transcript. Closing with the queue completely unpumped must still
+    persist every final."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, session_id="conv-drain")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+        for _ in range(30):  # ~3s -> stub finals at [0,2000] + flush tail [2000,3000]
+            await session.on_audio(_voice_chunk())
+        # No drain sleeps: close immediately, with the whole result queue still
+        # sitting unpumped. close() must drain it, not drop it.
+        await session.close()
+
+        conv = get_conversation_store().get("default", "conv-drain")
+        assert conv is not None
+        assert conv.segments, "finals queued at close() were dropped, not persisted"
+        assert max(s.end_ms for s in conv.segments) == 3000
+        assert [s.start_ms for s in conv.segments] == [0, 2000]
+
+    asyncio.run(run())
+
+
 def test_resumed_session_extends_retained_audio_across_the_grace_window() -> None:
     """A session that resumes *after* the resume grace window has expired reaches
     the api as a brand-new ``Session`` object bound to the *same* conversation id
