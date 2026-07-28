@@ -7,7 +7,13 @@ import pytest
 
 from api.config import settings
 from api.cue import cue_guidance, make_cue_generator, min_interval_ms, normalize_cue_title
-from api.cue.base import GeneratedCue, cue_substance_similarity, cue_substance_tokens
+from api.cue.base import (
+    GeneratedCue,
+    cue_subjects_overlap,
+    cue_substance_similarity,
+    cue_substance_tokens,
+    cue_title_subject,
+)
 from api.cue.openai import OpenAICueGenerator
 from api.cue.stub import StubCueGenerator, _title_from
 
@@ -140,6 +146,50 @@ def test_substance_similarity_flags_reworded_duplicates() -> None:
     d = cue_substance_tokens("Feature Flags", "Feature flags let you ship code dark.")
     assert cue_substance_similarity(a, d) < 0.1
     assert cue_substance_similarity(frozenset(), a) == 0.0
+
+
+# ---- title subjects (same-subject-different-angle backstop) ------------------
+
+
+def test_title_subject_keeps_short_names_with_caps_or_digits() -> None:
+    # "C language" must not collapse to {"language"} and falsely match
+    # "Ruby language" — measured false positive in the 2026-07 calibration.
+    assert cue_title_subject("C language") == frozenset({"c", "language"})
+    assert cue_title_subject("8K Resolution") == frozenset({"8k", "resolution"})
+    assert not cue_title_subject("")
+
+
+def test_title_subject_folds_plurals() -> None:
+    # The production pair that slipped the substance backstop at 0.348.
+    assert cue_title_subject("AWS Cognito User Pools") == cue_title_subject(
+        "AWS Cognito User Pool"
+    )
+
+
+def test_subjects_overlap_flags_same_subject_new_angle() -> None:
+    # Measured production repeats from the 2026-07-27/28 sessions: the model
+    # re-cued a surfaced subject at a new angle, which the policy calls the
+    # same cue.
+    for earlier, later in [
+        ("Grafana", "Grafana origin"),
+        ("BBS", "First BBS"),
+        ("Spot Instances", "Spot Instance termination"),
+        ("Auto-Impersonation", "Impersonation"),
+    ]:
+        assert cue_subjects_overlap(cue_title_subject(earlier), cue_title_subject(later))
+
+
+def test_subjects_overlap_keeps_distinct_subjects_sharing_a_word() -> None:
+    # Different subjects that share one generic word must NOT collapse.
+    for a, b in [
+        ("C language", "Ruby language"),
+        ("8K Resolution", "Goggles Resolution"),
+        ("User Flow", "User Story"),
+        ("Xbox 360", "Xbox Series S/X"),
+        ("Roblox platform", "Impact platform"),
+    ]:
+        assert not cue_subjects_overlap(cue_title_subject(a), cue_title_subject(b))
+    assert not cue_subjects_overlap(frozenset(), cue_title_subject("Grafana"))
 
 
 # ---- factory ---------------------------------------------------------------
@@ -311,6 +361,67 @@ def test_payload_system_prompt_cues_only_the_live_topic() -> None:
     # had left a minute earlier; candidates must come from the newest turns.
     system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
     assert "newest turns" in system
+
+
+def test_payload_system_prompt_respects_the_speakers_own_vocabulary() -> None:
+    # 2026-07-27/28 production review: work sessions were flooded with
+    # dictionary cues defining the speakers' own professional vocabulary to
+    # them ("Pull Request" to a standup of engineers, "DevOps" on a DevOps
+    # onboarding call — ~120 of 396 cues). The audience model must judge
+    # "already known" against THESE listeners, and treat declining as normal
+    # rather than escalating to filler.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "working vocabulary" in system  # fluent use is proof of knowledge
+    assert "professional vocabulary" in system  # never defined back at them
+    assert "knowledge gap" in system  # jargon fires only where one shows
+    assert "declining is a normal outcome" in system  # no filler escalation
+    assert "lower the bar" in system  # a quiet run never loosens it
+
+
+def test_payload_system_prompt_defaults_bare_names_to_people_present() -> None:
+    # Same review: coworkers' and friends' names were resolved to celebrities
+    # and products (Archie -> Archie Moore / the FTP index, Jonathan -> a TV
+    # actor, Ezra -> the biblical scribe), team acronyms to famous expansions
+    # from other domains (MCP -> Minecraft Coder Pack in a Model Context
+    # Protocol chat, RPM -> Red Hat Package Manager for an internal app), and
+    # internal service names were given invented generic definitions.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "coworker" in system  # bare names default to people they know
+    assert "wrong by construction" in system  # their X is not the public X
+    assert "you know nothing about it" in system  # internal names undefined
+    assert "acronym resolves within" in system  # no cross-domain expansions
+
+
+def test_payload_system_prompt_extends_everyday_ban_to_calendar_trivia() -> None:
+    # Same review: "Monday is the first day of the week (ISO 8601)", "Friday
+    # is the fifth day", "sending a URL is called link sharing", "planning
+    # meetings run 30-60 minutes" — everyday-knowledge cues past the old ban's
+    # food/objects wording. Days, calendar facts, units, well-known sites and
+    # formats, and typical durations of everyday activities join the ban.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "days of the week" in system
+    assert "calendar facts" in system
+    assert "typical durations" in system
+
+
+def test_payload_system_prompt_requires_certain_translations_only() -> None:
+    # Same review: garbled STT fragments were glossed as foreign idioms with
+    # invented meanings ("Vivía de centro" -> a made-up Spanish idiom; a
+    # Russian fragment mistranslated). Translation now requires recognizing
+    # the whole phrase with certainty.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "garbled fragment has no translation" in system
+
+
+def test_payload_evidence_rules_require_subject_match() -> None:
+    # Same review, grounded path: retrieval keyword-matches produced cues
+    # about a DIFFERENT subject sharing a phrase with the conversation — an
+    # Australian cost-of-living poll during talk about the West, and a Royal
+    # Mail price rise used to "correct" speakers discussing Xbox prices.
+    system = _gen()._build_payload("hi", (), _evidence())["messages"][0]["content"].lower()
+    assert "shares a word, phrase, figure, or date" in system
+    assert "about something else" in system
+    assert "never use such evidence to 'correct'" in system
 
 
 # ---- response content extraction (regression: reasoning model empty content) --

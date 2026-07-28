@@ -311,6 +311,69 @@ def test_session_drops_a_retitled_paraphrase_of_a_surfaced_cue(
     asyncio.run(run())
 
 
+def test_session_drops_same_subject_at_a_new_angle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the 2026-07-27/28 production sessions: a surfaced subject
+    re-cued at a new angle slipped both old backstops ("Grafana" then "Grafana
+    origin" at substance similarity 0.18; "AWS Cognito User Pools" then "...User
+    Pool" at 0.348 vs the 0.35 threshold). The title-subject containment layer
+    must drop those, while a different subject sharing a generic title word
+    ("C language" then "Ruby language") still surfaces."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    proposals = [
+        GeneratedCue(
+            title="Grafana",
+            body="Grafana is an open-source analytics and monitoring platform "
+            "popular for building dashboards over time-series data.",
+        ),
+        # Same subject, new angle — must be dropped by subject containment.
+        GeneratedCue(
+            title="Grafana origin",
+            body="Grafana was launched in 2014 by Swedish developer Torkel "
+            "Odegaard as an internal monitoring tool before going open source.",
+        ),
+        # Different subject sharing a generic title word — must surface.
+        GeneratedCue(
+            title="C language",
+            body="The C programming language was developed at Bell Labs in the "
+            "early 1970s and underpins many modern operating systems.",
+        ),
+        # Distinct subject sharing that generic word — must also surface.
+        GeneratedCue(
+            title="Ruby language",
+            body="Ruby was created by Yukihiro Matsumoto and released in 1995, "
+            "with a focus on programmer happiness and expressiveness.",
+        ),
+    ]
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+
+        class ScriptedGen:
+            def generate(self, transcript, *, avoid_cues=(), evidence=()):  # type: ignore[no-untyped-def]
+                return proposals.pop(0)
+
+        session._cue_generator = ScriptedGen()
+
+        for i, seg in enumerate(("a", "b", "c", "d")):
+            if i:
+                session._last_cue_monotonic = time.monotonic() - 3600  # bypass rate limit
+            session._consider_cue(_final(f"trigger {i}?", segment_id=seg))
+            await _drain_cues(session)
+        await session.close()
+
+        assert [c.title for c in _cues(sent)] == [
+            "Grafana",
+            "C language",
+            "Ruby language",
+        ]
+
+    asyncio.run(run())
+
+
 def test_cue_persisted_even_when_delivery_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "cue_backend", "stub")
 

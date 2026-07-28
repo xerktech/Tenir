@@ -29,8 +29,10 @@ from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize
 from api.cue.base import (
     CUE_SUBSTANCE_MIN_TOKENS,
     GeneratedCue,
+    cue_subjects_overlap,
     cue_substance_similarity,
     cue_substance_tokens,
+    cue_title_subject,
 )
 from api.cue.retrieval import EvidenceRetriever, make_evidence_retriever
 from api.metrics import metrics
@@ -107,10 +109,13 @@ class Session:
         # to hand the generator so it can steer clear of them and find fresh
         # context; ``_surfaced_cue_substance`` holds their content-word
         # fingerprints, the backstop against the same fact returning under a
-        # fresh title and reworded body.
+        # fresh title and reworded body; ``_surfaced_cue_subjects`` holds the
+        # title-subject fingerprints, the backstop against the same SUBJECT
+        # returning at a new angle ("Grafana" then "Grafana origin").
         self._surfaced_cue_norms: set[str] = set()
         self._surfaced_cues: list[GeneratedCue] = []
         self._surfaced_cue_substance: list[frozenset[str]] = []
+        self._surfaced_cue_subjects: list[frozenset[str]] = []
         self._last_cue_monotonic: float | None = None
         self._cue_inflight = False
         self._cue_tasks: set[asyncio.Task[None]] = set()
@@ -428,9 +433,22 @@ class Session:
             ):
                 metrics.incr("cue.dedupe_drops")
                 return
+            # Third layer: same subject at a new angle ("Grafana" after
+            # "Grafana origin"). The prompt already bans this ("a definition, a
+            # mechanism, and a piece of history about one thing are all the
+            # SAME cue"); this enforces it when the model ignores the ban —
+            # 27 of 396 cues in the 2026-07-27/28 production sessions, all
+            # hand-classified as same-subject repeats (see cue_title_subject).
+            subject = cue_title_subject(title)
+            if any(
+                cue_subjects_overlap(subject, prior) for prior in self._surfaced_cue_subjects
+            ):
+                metrics.incr("cue.subject_drops")
+                return
             self._surfaced_cue_norms.add(norm)
             self._surfaced_cues.append(GeneratedCue(title=title, body=body))
             self._surfaced_cue_substance.append(substance)
+            self._surfaced_cue_subjects.append(subject)
             self._last_cue_monotonic = time.monotonic()
             cue_id = uuid.uuid4().hex
             source = generated.source

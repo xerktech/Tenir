@@ -78,6 +78,44 @@ def cue_substance_tokens(title: str, body: str) -> frozenset[str]:
     )
 
 
+def cue_title_subject(title: str) -> frozenset[str]:
+    """The distinctive subject tokens of a cue title, for same-subject dedupe.
+
+    The prompt's avoid-list bans re-cueing a subject from a new angle ("a
+    definition, a mechanism, and a piece of history about one thing are all the
+    SAME cue"), but production sessions from 2026-07-27/28 showed the model
+    violating it in clusters — "Grafana" then "Grafana origin", "BBS" then
+    "First BBS", "AWS Cognito User Pools" then "AWS Cognito User Pool" (which
+    slipped the substance backstop at Jaccard 0.348 vs the 0.35 threshold).
+    This fingerprints what a title is ABOUT so the session can enforce the ban.
+
+    Tokens keep original-casing signals before folding: a short word survives
+    only when it carries a digit ("8K", "A1") or is an all-caps name ("VS",
+    "MCP") — otherwise "C language" collapses to {"language"} and falsely
+    matches "Ruby language". Trailing plural 's' is folded so "User Pools"
+    meets "User Pool". Simulated over the 396 production cues of those
+    sessions, subject-containment dropped 27 — hand-classified, every one a
+    duplicate or a same-subject re-angle, none a genuinely new subject.
+    """
+    tokens = set()
+    for word in re.findall(r"[\w']+", title):
+        if len(word) <= 2 and not any(ch.isdigit() for ch in word) and not word.isupper():
+            continue
+        folded = word.casefold()
+        if len(folded) > 3 and folded.endswith("s") and not folded.endswith("ss"):
+            folded = folded[:-1]
+        if folded not in _SUBSTANCE_STOPWORDS:
+            tokens.add(folded)
+    return frozenset(tokens)
+
+
+def cue_subjects_overlap(a: frozenset[str], b: frozenset[str]) -> bool:
+    """True when one cue title's subject contains the other's — the narrower
+    title is the same subject at a different angle ("Grafana" ⊆ "Grafana
+    origin"), which the cue policy treats as the same cue."""
+    return bool(a) and bool(b) and (a <= b or b <= a)
+
+
 def cue_substance_similarity(a: frozenset[str], b: frozenset[str]) -> float:
     """Jaccard similarity of two cue fingerprints, in [0, 1].
 
