@@ -8,6 +8,8 @@ reset the user-store singleton around each so seeding is clean.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -461,16 +463,42 @@ def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
         Principal("u", "acme", "member"), secret="test-secret", ttl_seconds=60
     )
     with TestClient(app) as client:
-        # No token -> the socket is closed (1008) before it can be used.
-        with pytest.raises(WebSocketDisconnect):
+        # No token -> the socket is accepted, then closed with 1008. The code must
+        # actually REACH the client: closing before accept presents as an opaque
+        # failed handshake (browsers see 1006), which clients can't tell from a
+        # network blip — they reconnect forever instead of prompting a re-login
+        # (the 2026-07-28 "stuck reconnecting" outage).
+        with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect("/ws") as ws:
                 ws.receive_json()
+        assert excinfo.value.code == 1008
         # A valid token in the query param connects and the session is scoped to it.
         with client.websocket_connect(f"/ws?token={token}") as ws:
             import json as _json
 
             ws.send_text(_json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             assert ws.receive_json()["type"] == "session.ready"
+
+
+@pytest.mark.real_auth
+def test_ws_expired_token_closes_1008(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: an EXPIRED token (tokens live 24h) must be rejected with a close
+    code the client can see (1008 → its fatal re-login path), not an opaque failed
+    handshake it retries forever."""
+    from starlette.websockets import WebSocketDisconnect
+
+    _enable_auth(monkeypatch)
+    expired = issue_token(
+        Principal("u", "acme", "member"),
+        secret="test-secret",
+        ttl_seconds=60,
+        now=time.time() - 3600,  # minted an hour ago, 60s TTL -> long expired
+    )
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(f"/ws?token={expired}") as ws:
+                ws.receive_json()
+        assert excinfo.value.code == 1008
 
 
 
