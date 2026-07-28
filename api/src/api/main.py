@@ -172,12 +172,37 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
         return None
 
 
+def _ws_reject_reason(ws: WebSocket) -> str:
+    """Why ``_ws_principal`` returned None, for the rejection log line."""
+    auth_header = ws.headers.get("authorization", "")
+    token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+    token = token or ws.query_params.get("token")
+    if not token:
+        return "missing token"
+    try:
+        principal_from_token(token)
+    except AuthError as exc:
+        return str(exc)
+    return "unknown"
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     principal = _ws_principal(ws)
     if principal is None:
+        # Reject AFTER accepting, and log it. Closing before accept surfaces to
+        # browser/RN clients as an opaque failed handshake (HTTP 403 → close code
+        # 1006), indistinguishable from a network blip — so a client whose token
+        # had merely expired reconnected forever ("stuck reconnecting" across
+        # every component, 2026-07-28) instead of seeing the 1008 its close
+        # handler treats as fatal-please-re-login. And nothing was logged, so the
+        # loop was invisible server-side. Accepting first costs one round-trip
+        # and delivers a close frame the client actually receives.
+        log.warning("ws rejected: %s", _ws_reject_reason(ws))
+        metrics.incr("ws.unauthorized")
+        await ws.accept()
         # 1008 = policy violation; the client must present a valid token first.
-        await ws.close(code=1008)
+        await ws.close(code=1008, reason="invalid or expired token")
         return
     await ws.accept()
     session: Session | None = None
