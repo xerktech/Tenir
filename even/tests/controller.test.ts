@@ -303,7 +303,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "under the popup" });
     await settle();
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
-    expect(t.text(C().caption)).toBe(layout.occludedCaption("before the popup\n› under the popup"));
+    expect(t.text(C().caption)).toBe(layout.occludedCaption("before the popup\nunder the popup"));
 
     // Swiping down and back up re-highlights Continue; a tap confirms it.
     await t.swipeDown();
@@ -315,7 +315,7 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     const caption = t.text(C().caption)!;
     expect(caption).toContain("before the popup"); // the full-band live view is back
     expect(caption).toContain("under the popup");
-    expect(caption).toBe(layout.fitCaption("before the popup\n› under the popup"));
+    expect(caption).toBe(layout.fitCaption("before the popup\nunder the popup"));
   });
 
   it("a second double tap dismisses the popup, same as Continue", async () => {
@@ -396,7 +396,9 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
 
     t.api.handlers().onPartial?.({ type: "caption.partial", text: "hey th" });
     await settle();
-    expect(t.text(C().caption)).toBe("\n".repeat(layout.CAPTION_LINES - 1) + "› hey th");
+    // The live partial renders bare — no "›" current-turn marker (XERK-143):
+    // text arriving at the bottom of the band already signals the live turn.
+    expect(t.text(C().caption)).toBe("\n".repeat(layout.CAPTION_LINES - 1) + "hey th");
 
     for (let i = 0; i < 30; i++) {
       t.api.handlers().onFinal?.({

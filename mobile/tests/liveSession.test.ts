@@ -38,6 +38,17 @@ describe("live session persistence across tabs (XERK-111)", () => {
   });
 });
 
+describe("live partial rendering (XERK-143)", () => {
+  const live = readText("src/screens/Live.tsx");
+
+  it("renders the live partial without a current-turn marker", () => {
+    // The partial is the newest text at the bottom of the transcript (and muted),
+    // which already signals the live turn — no "›" prefix (matches web and lens).
+    expect(live).not.toContain("›");
+    expect(live).toContain("{state.partial}");
+  });
+});
+
 describe("background-recording affordance (XERK-111)", () => {
   const app = readText("src/App.tsx");
 

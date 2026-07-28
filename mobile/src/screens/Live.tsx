@@ -207,7 +207,7 @@ export function LiveScreen(): JSX.Element {
                   {state.partial && i === runList.length - 1 ? (
                     <Text style={{ color: colors.muted }}>
                       {run.segs.length > 0 ? "\n" : null}
-                      {`› ${state.partial}`}
+                      {state.partial}
                     </Text>
                   ) : null}
                 </Text>
@@ -216,7 +216,7 @@ export function LiveScreen(): JSX.Element {
             {/* A partial with no trailing turn run to ride (a cue is last, or no
                 turns yet) gets its own selectable line. */}
             {state.partial && !lastIsSegments ? (
-              <Text selectable style={{ color: colors.muted, lineHeight: 22 }}>{`› ${state.partial}`}</Text>
+              <Text selectable style={{ color: colors.muted, lineHeight: 22 }}>{state.partial}</Text>
             ) : null}
           </ScrollView>
         ) : null}
