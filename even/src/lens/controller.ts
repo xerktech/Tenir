@@ -199,7 +199,7 @@ export async function wireLens(
     // wearer can still exit the session.
     if (state.menu && menuFallback) return menuText(state.menu);
     const body = transcriptText();
-    const full = state.partial ? `${body}${body ? "\n" : ""}› ${state.partial}` : body;
+    const full = state.partial ? `${body}${body ? "\n" : ""}${state.partial}` : body;
     // Only the rows that FIT (XERK-85): nothing overflows, so the host has
     // nothing to scroll; old text simply falls off the top. While the popup is
     // up (menu or cue), the rows its box covers are masked — an opaque popup

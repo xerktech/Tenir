@@ -442,7 +442,11 @@ class StreamingTranscriber:
         )
 
     async def results(self) -> AsyncIterator[CaptionPartial | CaptionFinal]:
-        while not self._closed:
+        # Keep draining after close: flush() queues the tail final right before
+        # close() flips the flag (and puts the sentinel), and a consumer that is
+        # still catching up must not drop them — stopping at the flag alone
+        # lost the final turns of a session closed mid-drain.
+        while not (self._closed and self._queue.empty()):
             yield await self._queue.get()
 
     async def flush(self) -> None:
