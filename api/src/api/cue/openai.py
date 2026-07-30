@@ -42,6 +42,15 @@ log = logging.getLogger("api.cue.openai")
 # resolve in-domain or not at all, translations require certainty, and
 # declining is framed as the normal outcome — the prior "take the next-best
 # candidate" escalation measurably manufactured filler on real work calls.
+# The 2026-07-30 post-deploy pass added four rules from the first sessions
+# recorded under v14 (an accented engineering meeting + an ambient tech
+# video): garbled variants of an acronym the speakers own are that acronym
+# (not fresh terms to define), a rival product doing the same job as the one
+# the speakers named is the wrong subject, typical/common/default figures
+# count as invented statistics, and the avoid-list treats different names
+# for one idea as one subject. Replay-measured: the meeting's cross-domain
+# acronym-expansion cluster (~8 cues/run) drops to ~2, wrong-vendor swaps
+# roughly halve, controls unchanged (RESULTS-2026-07.md).
 # {guidance} is the source-of-truth bar from tuning.py, picked per call by
 # whether evidence actually arrived.
 _SYSTEM = (
@@ -84,7 +93,12 @@ _SYSTEM = (
     "('our X', releasing X, a ticket in X), facts about a public product or "
     "person that happens to share the name are wrong by construction — and an "
     "internal name is not yours to define either: if it is theirs, you know "
-    "nothing about it. An acronym resolves within the conversation's own "
+    "nothing about it. Likewise, when the speakers have named the product "
+    "they use for a job, facts about a DIFFERENT product that merely does "
+    "the same job — a rival queue, cloud, scheduler, or service — are about "
+    "the wrong thing: describe the one they use or stay silent, and never "
+    "present another vendor's defaults, limits, or behavior as if it "
+    "applied to theirs. An acronym resolves within the conversation's own "
     "domain or not at all — if the only expansion you know belongs to a "
     "different field than the one being discussed, you do not know this "
     "acronym; skip it. And the conversation must actually SUPPORT an entity "
@@ -104,6 +118,10 @@ _SYSTEM = (
     "accuracy rules still gate it: such a fact must be one you are CERTAIN "
     "of, never a plausible-sounding statistic or benchmark reached for "
     "because a definition was banned; silence beats an invented number. "
+    "'Typical', 'common', 'default', and round-number figures ('about 1 ms', "
+    "'usually three retries', 'over 200 rules') are invented statistics "
+    "unless you specifically remember that documented figure for that exact "
+    "product. "
     "Everyday "
     "words and common things — foods, drinks, clothing, household objects, "
     "games, casual phrases, days of the week and other calendar facts, common "
@@ -143,6 +161,11 @@ _SYSTEM = (
     "but not the specifics, say the modest accurate thing rather than guess.\n"
     "- If stating your fact needs 'likely', 'probably', 'seems to', or 'may "
     "refer to', it is a guess — do not emit it.\n"
+    "- A number qualified only by 'typical', 'usual', 'common', 'often', "
+    "'many', 'default', or 'industry average' is a guess wearing a number: "
+    "emit a figure only when you specifically remember it as the documented "
+    "value for the exact named thing; otherwise make the point without a "
+    "number, or stay silent.\n"
     "- The transcript comes from speech recognition and may mishear names. Never "
     "invent facts about a name you do not recognize — if a name looks garbled or "
     "unfamiliar, skip it rather than guess what it might be. And before adding a "
@@ -159,14 +182,21 @@ _SYSTEM = (
     "When a word merely SOUNDS like a name, tool, or product already in the "
     "conversation, it is that thing misheard — read it as the "
     "in-conversation thing or skip it; never cue the unrelated famous entity "
-    "it resembles. The same discipline applies to names you DO recognize: "
+    "it resembles. Acronyms are the extreme case: speech recognition garbles "
+    "them freely, so a short acronym a letter or two off from one already in "
+    "this conversation is that acronym misheard — and once the speakers "
+    "treat an acronym as their own (defining it, debating what it stands "
+    "for), every later variant of it is that same internal term: it has no "
+    "public expansion in any field, and each new garbled spelling of it is "
+    "not a fresh term to define. "
+    "The same discipline applies to names you DO recognize: "
     "one mention inside fragmented speech, with nothing about it before or "
     "after, is a transcription accident however famous the match — cue an "
     "entity only when a second signal backs it (the speakers return to it, "
     "ask about it, or it belongs to their working domain). A topic needs a "
     "sentence engaging it: a bare word alone on a line, even one you "
-    "recognize as a command, tool, or brand, is someone mumbling while they "
-    "work, not a subject to explain.\n"
+    "recognize as a command, tool, brand, or concept, is someone mumbling "
+    "while they work, not a subject to explain.\n"
     "- When the surrounding transcript is so garbled you cannot tell what is "
     "actually being discussed, cue NOTHING from it — a recognizable word inside "
     "incoherent speech is noise, not a topic.\n"
@@ -363,7 +393,9 @@ class OpenAICueGenerator(CueGenerator):
                 "conversation; do NOT repeat any of them — not their titles, "
                 "not their substance in new words, and not the same subject "
                 "from a different angle: a definition, a mechanism, and a "
-                "piece of history about one thing are all the SAME cue. If "
+                "piece of history about one thing are all the SAME cue, and "
+                "so are different names for one idea — a pattern, its "
+                "synonym, and a protocol or product embodying it. If "
                 "your best candidate overlaps anything below, pick a "
                 'different subject entirely or reply {"cue": false}:\n'
                 + "\n".join(f"- {c.title}: {c.body}" for c in already)
