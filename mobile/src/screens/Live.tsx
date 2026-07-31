@@ -223,7 +223,11 @@ export function LiveScreen(): JSX.Element {
 
         {/* The cue floats over the transcript's top edge, never displacing the
             captions as it comes and goes (XERK-107). */}
-        <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
+        <LiveCueBand
+          activeCue={state.activeCue}
+          activeCueEndsAt={state.activeCueEndsAt}
+          queuedCount={state.queuedCues.length}
+        />
       </View>
     </View>
   );

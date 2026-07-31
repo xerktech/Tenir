@@ -43,8 +43,17 @@ export function useCapture(wsUrl: string): CaptureController {
 
   useEffect(() => {
     const unsubscribe = session.subscribe(setState);
+    // Cue turns run on wall-clock time (XERK-159), but a hidden tab throttles the
+    // release timer, so reconcile the queue when the tab becomes visible again:
+    // any cue whose turn elapsed while hidden is retired into the transcript at
+    // once instead of replaying one-at-a-time.
+    const onVisible = () => {
+      if (!document.hidden) session.syncCues();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       unsubscribe();
+      document.removeEventListener("visibilitychange", onVisible);
       void session.stop(); // release mic + socket if the URL changes or the panel unmounts
     };
   }, [session]);

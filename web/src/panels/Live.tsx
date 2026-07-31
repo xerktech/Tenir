@@ -12,6 +12,7 @@ import {
   CUE_EXIT_MS,
   cueCountdownLabel,
   cueSecondsLeft,
+  cueSecondsUntil,
   DISCLOSURES,
   isPinnedToBottom,
   liveTranscript,
@@ -33,7 +34,7 @@ type ActiveCue = CaptureController["state"]["activeCue"];
  * Returns the cue to paint plus whether it is on its way out, so the band can
  * transition to nothing instead of blinking off the screen. A cue that arrives
  * mid-fade cancels the pending unmount and takes over immediately, matching the
- * "only one cue at a time" rule (XERK-102).
+ * "one cue at a time, freshest wins" rule (XERK-102, XERK-159).
  */
 function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } {
   const [painted, setPainted] = useState<ActiveCue>(activeCue);
@@ -51,32 +52,34 @@ function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } 
 /**
  * Count the seconds a cue has left on screen (XERK-110).
  *
- * The countdown is derived from a timestamp taken when the cue appeared rather
- * than decremented per tick, so a throttled tab (or a slow frame) resyncs to
- * the truth instead of accumulating drift away from the release timer in
- * `CaptureSession`. It restarts whenever a different cue takes the band —
- * including a queued cue promoted into it, which gets its own full countdown.
+ * Derived from the cue's wall-clock end time (`activeCueEndsAt`, XERK-159) read
+ * against the real clock rather than decremented per tick, so a throttled tab —
+ * or the whole app coming back from the background — resyncs to the truth instead
+ * of drifting from the release timer in `CaptureSession`. A cue whose turn opened
+ * while the app was away therefore shows the time it actually has left, not a
+ * fresh ten. It restarts whenever a different cue takes the band, and holds its
+ * last value through the exit fade (when `endsAt` is null).
  */
-function useCueCountdown(cueId: string | undefined): number {
+function useCueCountdown(endsAt: number | null): number {
   const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
   useEffect(() => {
-    if (!cueId) return;
-    setSecondsLeft(cueSecondsLeft(0));
-    const startedAt = Date.now();
-    const timer = window.setInterval(
-      () => setSecondsLeft(cueSecondsLeft(Date.now() - startedAt)),
-      CUE_COUNTDOWN_TICK_MS,
-    );
+    if (endsAt == null) return;
+    const tick = () => setSecondsLeft(cueSecondsUntil(endsAt, Date.now()));
+    tick();
+    const timer = window.setInterval(tick, CUE_COUNTDOWN_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [cueId]);
+  }, [endsAt]);
   return secondsLeft;
 }
 
 /**
  * The single active private-context cue over the live transcript (XERK-102).
- * One cue shows at a time; any others wait in a FIFO queue and pop the moment
- * this one is released. When the queue is non-empty a small "+N more" note tells
- * the wearer more cues are lined up.
+ * One cue shows at a time for its full turn; any others wait in a FIFO queue and
+ * take the band as each turn ends. The turns run on a continuous wall-clock
+ * schedule that keeps advancing while the app is backgrounded (XERK-159), so a
+ * cue whose turn passed while you were away is already in the transcript on
+ * return rather than replaying — you rejoin the live cue mid-turn, not a backlog.
+ * When the queue is non-empty a small "+N more" note says more cues are lined up.
  *
  * The band *floats over* the top of the transcript box rather than sitting above
  * it in the flow (XERK-107): a cue arriving or expiring used to push the
@@ -88,13 +91,15 @@ function useCueCountdown(cueId: string | undefined): number {
  */
 function LiveCueBand({
   activeCue,
+  activeCueEndsAt,
   queuedCount,
 }: {
   activeCue: ActiveCue;
+  activeCueEndsAt: number | null;
   queuedCount: number;
 }): JSX.Element | null {
   const { cue, exiting } = useCueExit(activeCue);
-  const secondsLeft = useCueCountdown(cue?.id);
+  const secondsLeft = useCueCountdown(activeCueEndsAt);
   if (!cue) return null;
   return (
     <div
@@ -206,7 +211,11 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
             </ul>
           </div>
         )}
-        <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
+        <LiveCueBand
+          activeCue={state.activeCue}
+          activeCueEndsAt={state.activeCueEndsAt}
+          queuedCount={state.queuedCues.length}
+        />
       </Card>
     </section>
   );

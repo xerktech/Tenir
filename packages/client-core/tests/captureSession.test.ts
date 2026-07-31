@@ -8,6 +8,7 @@ import {
   CUE_TTL_MS,
   cueCountdownLabel,
   cueSecondsLeft,
+  cueSecondsUntil,
   initialCaptureState,
   liveTranscript,
   reduce,
@@ -50,8 +51,8 @@ describe("reduce", () => {
     // a cue released after the 100th turn still sits right after that turn.
     let s = base();
     for (let i = 0; i < 100; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cueRelease", id: "c1" });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS });
     for (let i = 100; i < 200; i++) s = reduce(s, { type: "final", segmentId: `s${i}`, text: `t${i}` });
 
     const items = liveTranscript(s.segments, s.pastCues);
@@ -75,55 +76,60 @@ describe("reduce", () => {
     s = reduce(s, {
       type: "cue",
       cue: { id: "c1", title: "PM", body: "Andy Burnham took office.", source: "BBC News" },
+      now: 0,
     });
     expect(s.activeCue?.source).toBe("BBC News");
-    // Released into the transcript, the attribution rides along for review.
-    s = reduce(s, { type: "cueRelease", id: "c1" });
+    // Released into the transcript once its window closes, the attribution rides along.
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS });
     expect(s.pastCues[0].source).toBe("BBC News");
   });
 
   it("drops to idle on stop but keeps the transcript and clears live cues", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // queued
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" }, now: 0 }); // queued
     s = reduce(s, { type: "stop" });
     expect(s.running).toBe(false);
     expect(s.connection).toBe("closed");
     expect(s.segments.length).toBe(1); // transcript stays on screen to read back
     expect(s.activeCue).toBeNull(); // active cue cleared
     expect(s.queuedCues).toEqual([]); // and the whole backlog with it
+    expect(s.activeCueEndsAt).toBeNull(); // the schedule is torn down too
   });
 
   it("shows the first cue and queues the rest behind it (XERK-102)", () => {
-    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
-    // No turns yet, so the cue anchors before the transcript (afterSegmentId null).
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" }, now: 0 });
+    // No turns yet → anchors before the transcript; its window ends one TTL out.
     expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "150M", afterSegmentId: null });
+    expect(s.activeCueEndsAt).toBe(CUE_TTL_MS);
     expect(s.queuedCues).toEqual([]);
-    // A second cue while the first is up waits its turn rather than clobbering it.
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } });
+    // A second cue arriving while the first is still inside its window waits its turn.
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" }, now: 1000 });
     expect(s.activeCue?.id).toBe("c1");
     expect(s.queuedCues.map((c) => c.id)).toEqual(["c2"]);
     // A third stacks behind the second (FIFO).
-    s = reduce(s, { type: "cue", cue: { id: "c3", title: "Mars", body: "225M" } });
+    s = reduce(s, { type: "cue", cue: { id: "c3", title: "Mars", body: "225M" }, now: 2000 });
     expect(s.queuedCues.map((c) => c.id)).toEqual(["c2", "c3"]);
   });
 
   it("de-duplicates a re-delivered cue by id in place, active or queued", () => {
-    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" } }); // queued
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" }, now: 0 });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "384k" }, now: 1000 }); // queued
     // Same id as the active cue updates it in place, not a duplicate.
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" } });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "updated" }, now: 2000 });
     expect(s.activeCue).toEqual({ id: "c1", title: "Sun", body: "updated", afterSegmentId: null });
     expect(s.queuedCues.map((c) => c.id)).toEqual(["c2"]);
     // Same id as a queued cue updates that slot, keeping its place in line.
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "closer" } });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "Moon", body: "closer" }, now: 3000 });
     expect(s.queuedCues).toEqual([{ id: "c2", title: "Moon", body: "closer", afterSegmentId: null }]);
   });
 
   it("caps the backlog, dropping the stalest waiting cue", () => {
-    let s = reduce(base(), { type: "cue", cue: { id: "active", title: "t", body: "b" } });
-    // 16 more pile up behind the active one; the queue holds at most 16.
-    for (let i = 1; i <= 20; i++) s = reduce(s, { type: "cue", cue: { id: `q${i}`, title: "t", body: "b" } });
+    let s = reduce(base(), { type: "cue", cue: { id: "active", title: "t", body: "b" }, now: 0 });
+    // 20 more arrive inside the active cue's window; the queue holds at most 16.
+    for (let i = 1; i <= 20; i++) {
+      s = reduce(s, { type: "cue", cue: { id: `q${i}`, title: "t", body: "b" }, now: 0 });
+    }
     expect(s.activeCue?.id).toBe("active");
     expect(s.queuedCues.length).toBe(16);
     // The oldest waiting cues (q1..q4) fell off; the freshest survive, in order.
@@ -131,51 +137,99 @@ describe("reduce", () => {
     expect(s.queuedCues[s.queuedCues.length - 1].id).toBe("q20");
   });
 
-  it("releases the active cue and promotes the queue head (XERK-102)", () => {
-    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // queued
-    s = reduce(s, { type: "cueRelease", id: "c1" });
-    expect(s.activeCue?.id).toBe("c2"); // next in line pops immediately
+  it("releases the active cue and promotes the queue head as its window ends (XERK-102)", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" }, now: 500 }); // queued
+    // A tick at c1's window close retires it and promotes c2 for its own full turn.
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS });
+    expect(s.activeCue?.id).toBe("c2");
+    expect(s.activeCueEndsAt).toBe(CUE_TTL_MS * 2); // c2 gets a full window, not c1's remainder
     expect(s.queuedCues).toEqual([]);
-    // Releasing the last cue clears the surface.
-    s = reduce(s, { type: "cueRelease", id: "c2" });
+    expect(s.pastCues.map((c) => c.id)).toEqual(["c1"]);
+    // c2's window closes a full TTL later, clearing the band.
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS * 2 });
     expect(s.activeCue).toBeNull();
-    // A stale release (wrong / already-gone id) is a no-op (same reference back).
-    const same = reduce(s, { type: "cueRelease", id: "ghost" });
+    expect(s.activeCueEndsAt).toBeNull();
+    // A tick with nothing due is a no-op (same reference back).
+    const same = reduce(s, { type: "cueTick", now: CUE_TTL_MS * 5 });
     expect(same).toBe(s);
+  });
+
+  it("advances the queue on wall-clock time so a backgrounded gap doesn't replay (XERK-159)", () => {
+    // Four cues arrive close together while the app is backgrounded — no ticks fire
+    // (the release timer is frozen), so they pile onto the continuous schedule.
+    let s = base();
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "t", body: "b" }, now: 0 });
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "t", body: "b" }, now: 1000 });
+    s = reduce(s, { type: "cue", cue: { id: "c3", title: "t", body: "b" }, now: 2000 });
+    s = reduce(s, { type: "cue", cue: { id: "c4", title: "t", body: "b" }, now: 3000 });
+    expect(s.activeCue?.id).toBe("c1");
+    expect(s.queuedCues.map((c) => c.id)).toEqual(["c2", "c3", "c4"]);
+
+    // Coming back to the foreground 3.5 windows later, ONE tick reconciles the whole
+    // schedule: c1 [0,T], c2 [T,2T] and c3 [2T,3T] have all closed → into the
+    // transcript at once (no one-at-a-time replay); c4's window [3T,4T] is still
+    // open, so it holds the band for the time it has left.
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS * 3 + 500 });
+    expect(s.pastCues.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+    expect(s.activeCue?.id).toBe("c4");
+    expect(s.queuedCues).toEqual([]);
+    expect(s.activeCueEndsAt).toBe(CUE_TTL_MS * 4);
+  });
+
+  it("clears the band when the whole queue's windows have closed while away (XERK-159)", () => {
+    // Same backgrounded burst, but the wearer returns long after every window closed:
+    // there is nothing left to show, so the band is empty and all cues are inline.
+    let s = base();
+    for (let i = 1; i <= 4; i++) {
+      s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" }, now: (i - 1) * 500 });
+    }
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS * 10 });
+    expect(s.activeCue).toBeNull();
+    expect(s.activeCueEndsAt).toBeNull();
+    expect(s.queuedCues).toEqual([]);
+    expect(s.pastCues.map((c) => c.id)).toEqual(["c1", "c2", "c3", "c4"]);
+  });
+
+  it("holds the band while the active cue is still inside its window (XERK-159)", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    // A tick before the window closes must not churn the state.
+    const early = reduce(s, { type: "cueTick", now: CUE_TTL_MS - 1 });
+    expect(early).toBe(s);
+    expect(early.activeCue?.id).toBe("c1");
   });
 
   // ---- past cues embedded in the live transcript (XERK-108) -----------------
 
   it("anchors a cue to the last turn and embeds it in the transcript on release", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hello" });
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" } });
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "Sun", body: "150M" }, now: 0 });
     // The cue is anchored to the turn that was showing when it arrived.
     expect(s.activeCue?.afterSegmentId).toBe("a");
     expect(s.pastCues).toEqual([]); // not in the transcript while it's still in the band
     // A later turn doesn't move an already-anchored cue.
     s = reduce(s, { type: "final", segmentId: "b", text: "world" });
-    s = reduce(s, { type: "cueRelease", id: "c1" });
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS });
     expect(s.activeCue).toBeNull();
     expect(s.pastCues).toEqual([{ id: "c1", title: "Sun", body: "150M", afterSegmentId: "a" }]);
   });
 
   it("keeps embedded past cues across a session stop, only clearing live band cues", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hi" });
-    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cueRelease", id: "c1" }); // c1 → transcript
-    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" } }); // still in band
+    s = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS }); // c1 → transcript
+    s = reduce(s, { type: "cue", cue: { id: "c2", title: "T2", body: "B2" }, now: CUE_TTL_MS }); // still in band
     s = reduce(s, { type: "stop" });
     expect(s.pastCues.map((c) => c.id)).toEqual(["c1"]); // reviewed cue stays with the transcript
     expect(s.activeCue).toBeNull(); // the still-live band cue is dropped
   });
 
-  it("does not double a past cue if its release is re-applied (stale timer / resume)", () => {
-    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
-    s = reduce(s, { type: "cueRelease", id: "c1" });
+  it("does not double a past cue if a released cue is re-delivered (stale timer / resume)", () => {
+    let s = reduce(base(), { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: 0 });
+    s = reduce(s, { type: "cueTick", now: CUE_TTL_MS });
     expect(s.pastCues.map((c) => c.id)).toEqual(["c1"]);
     // A resume re-delivers the already-reviewed cue: it must not re-enter the band.
-    const after = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" } });
+    const after = reduce(s, { type: "cue", cue: { id: "c1", title: "T", body: "B" }, now: CUE_TTL_MS + 100 });
     expect(after).toBe(s); // no-op
     expect(after.activeCue).toBeNull();
     expect(after.pastCues.map((c) => c.id)).toEqual(["c1"]);
@@ -183,10 +237,10 @@ describe("reduce", () => {
 
   it("bounds the retained past cues", () => {
     let s = base();
-    // Release 70 cues one after another; only the last 60 are kept.
+    // Release 70 cues one after another, each its own full window; keep the last 60.
     for (let i = 0; i < 70; i++) {
-      s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" } });
-      s = reduce(s, { type: "cueRelease", id: `c${i}` });
+      s = reduce(s, { type: "cue", cue: { id: `c${i}`, title: "t", body: "b" }, now: i * CUE_TTL_MS });
+      s = reduce(s, { type: "cueTick", now: (i + 1) * CUE_TTL_MS });
     }
     expect(s.pastCues.length).toBe(60);
     expect(s.pastCues[0].id).toBe("c10"); // oldest dropped
@@ -221,6 +275,30 @@ describe("cueSecondsLeft", () => {
     expect(cueSecondsLeft(0, 4000)).toBe(4);
     expect(cueSecondsLeft(2500, 4000)).toBe(2);
     expect(cueSecondsLeft(4000, 4000)).toBe(0);
+  });
+});
+
+describe("cueSecondsUntil (XERK-159)", () => {
+  it("counts from the cue's wall-clock end time against the current clock", () => {
+    const endsAt = 50_000;
+    // A full window ahead reads the full count; each second closer ticks it down.
+    expect(cueSecondsUntil(endsAt, endsAt - CUE_TTL_MS)).toBe(10);
+    expect(cueSecondsUntil(endsAt, endsAt - CUE_TTL_MS + 1000)).toBe(9);
+    expect(cueSecondsUntil(endsAt, endsAt - 1000)).toBe(1);
+    expect(cueSecondsUntil(endsAt, endsAt)).toBe(0);
+  });
+
+  it("shows only the time a mid-window cue has left, not a fresh ten", () => {
+    // A cue promoted on return whose window opened 7s ago (backdated schedule):
+    // the count is truthful — 3s — rather than restarting at 10.
+    const endsAt = 50_000;
+    expect(cueSecondsUntil(endsAt, endsAt - 3000)).toBe(3);
+  });
+
+  it("clamps past a window that already closed or a clock that jumped back", () => {
+    const endsAt = 50_000;
+    expect(cueSecondsUntil(endsAt, endsAt + 5000)).toBe(0); // long overdue
+    expect(cueSecondsUntil(endsAt, endsAt - CUE_TTL_MS * 3)).toBe(10); // never above the TTL
   });
 });
 
@@ -460,31 +538,61 @@ describe("CaptureSession", () => {
       expect(session.getState().activeCue).toBeNull(); // released at TTL
     });
 
-    it("queues cues and pops the next one the moment the active is released (XERK-102)", async () => {
+    it("shows queued cues in turn as each window closes on wall-clock time (XERK-102)", async () => {
       const { session, refs } = harness();
       await session.start();
-      // Three cues arrive back to back; only the first shows, the rest queue.
+      // Three cues arrive back to back within the first window: c1 shows, rest queue.
       refs.client!.handlers.onCue?.(cue("c1", "Sun", "150M"));
       refs.client!.handlers.onCue?.(cue("c2", "Moon", "384k"));
       refs.client!.handlers.onCue?.(cue("c3", "Mars", "225M"));
       expect(session.getState().activeCue?.id).toBe("c1");
       expect(session.getState().queuedCues.map((c) => c.id)).toEqual(["c2", "c3"]);
 
-      // First TTL: c2 takes over immediately with its own fresh countdown.
+      // Each cue gets a full window: c1 hands off to c2 at the TTL, with its own
+      // fresh countdown, and c1 drops into the transcript.
       vi.advanceTimersByTime(CUE_TTL_MS);
       expect(session.getState().activeCue?.id).toBe("c2");
       expect(session.getState().queuedCues.map((c) => c.id)).toEqual(["c3"]);
+      expect(session.getState().pastCues.map((c) => c.id)).toEqual(["c1"]);
 
-      // c2's countdown is its own full TTL, not a leftover from c1.
+      // c2 shows for its own full TTL before c3 takes over.
       vi.advanceTimersByTime(CUE_TTL_MS - 1);
       expect(session.getState().activeCue?.id).toBe("c2");
       vi.advanceTimersByTime(1);
       expect(session.getState().activeCue?.id).toBe("c3");
 
-      // Last one drains the queue empty.
+      // The last one drains the band empty.
       vi.advanceTimersByTime(CUE_TTL_MS);
       expect(session.getState().activeCue).toBeNull();
+      expect(session.getState().pastCues.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+    });
+
+    it("drains cues whose turn passed while backgrounded when the app returns (XERK-159)", async () => {
+      const { session, refs } = harness();
+      await session.start();
+      const t0 = Date.now();
+      // A burst of cues arrives, then the app is backgrounded: the release timer
+      // is frozen, so nothing drains while time passes.
+      refs.client!.handlers.onCue?.(cue("c1"));
+      refs.client!.handlers.onCue?.(cue("c2"));
+      refs.client!.handlers.onCue?.(cue("c3"));
+      expect(session.getState().activeCue?.id).toBe("c1");
+      expect(session.getState().queuedCues.map((c) => c.id)).toEqual(["c2", "c3"]);
+
+      // Jump the wall clock past two windows WITHOUT firing timers (backgrounded).
+      vi.setSystemTime(t0 + CUE_TTL_MS * 2 + 500);
+      // Returning to the foreground reconciles the schedule in one pass: c1 and c2
+      // closed → transcript; c3 is mid-window and holds the band for the time it
+      // has left — no one-at-a-time replay of the ones already gone.
+      session.syncCues();
+      expect(session.getState().pastCues.map((c) => c.id)).toEqual(["c1", "c2"]);
+      expect(session.getState().activeCue?.id).toBe("c3");
       expect(session.getState().queuedCues).toEqual([]);
+
+      // c3 finishes its remaining time on the re-armed real timer and clears.
+      vi.advanceTimersByTime(CUE_TTL_MS);
+      expect(session.getState().activeCue).toBeNull();
+      expect(session.getState().pastCues.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
     });
 
     it("cancels the pending cue-release timer and clears the queue on stop", async () => {

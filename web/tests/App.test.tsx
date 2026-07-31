@@ -50,6 +50,7 @@ vi.mock("@tenir/client-core", () => ({
         partial: "",
         activeCue: null,
         queuedCues: [],
+        activeCueEndsAt: null,
         pastCues: [],
       };
     }

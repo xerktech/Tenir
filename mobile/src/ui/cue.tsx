@@ -9,6 +9,7 @@ import {
   CUE_EXIT_MS,
   cueCountdownLabel,
   cueSecondsLeft,
+  cueSecondsUntil,
   type LiveCue,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
@@ -22,8 +23,8 @@ import { mix, radius, space, withAlpha, type Palette } from "./theme";
  *
  * Returns the cue to paint plus whether it is on its way out, so the band can
  * fade to nothing instead of blinking off the screen. A cue arriving mid-fade
- * cancels the pending unmount and takes over immediately, matching the "only
- * one cue at a time" rule (XERK-102). Mirrors the web `useCueExit`.
+ * cancels the pending unmount and takes over immediately, matching the "one cue
+ * at a time, freshest wins" rule (XERK-102, XERK-159). Mirrors the web `useCueExit`.
  */
 function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: boolean } {
   const [painted, setPainted] = useState<LiveCue | null>(activeCue);
@@ -40,30 +41,33 @@ function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: 
 
 /**
  * Count the seconds a cue has left on screen (XERK-110). Mirrors the web
- * `useCueCountdown`: derived from the moment the cue appeared rather than
- * decremented per tick, so a backgrounded app resyncs to the truth instead of
- * drifting away from the release timer, and restarts for each cue that takes
- * the band — a promoted cue gets its own full countdown.
+ * `useCueCountdown`: derived from the cue's wall-clock end time (`activeCueEndsAt`,
+ * XERK-159) against the real clock rather than decremented per tick, so a
+ * backgrounded app resyncs to the truth instead of drifting away from the release
+ * timer — a cue whose turn opened while away shows the time it actually has left,
+ * not a fresh ten. It restarts for each cue that takes the band and holds its last
+ * value through the exit fade (when `endsAt` is null).
  */
-function useCueCountdown(cueId: string | undefined): number {
+function useCueCountdown(endsAt: number | null): number {
   const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
   useEffect(() => {
-    if (!cueId) return;
-    setSecondsLeft(cueSecondsLeft(0));
-    const startedAt = Date.now();
-    const timer = setInterval(
-      () => setSecondsLeft(cueSecondsLeft(Date.now() - startedAt)),
-      CUE_COUNTDOWN_TICK_MS,
-    );
+    if (endsAt == null) return;
+    const tick = () => setSecondsLeft(cueSecondsUntil(endsAt, Date.now()));
+    tick();
+    const timer = setInterval(tick, CUE_COUNTDOWN_TICK_MS);
     return () => clearInterval(timer);
-  }, [cueId]);
+  }, [endsAt]);
   return secondsLeft;
 }
 
 /**
- * The single active cue over the transcript (XERK-102). One cue shows at a
- * time; others wait in a FIFO queue and pop the moment this one is released. A
- * "+N more" note appears while cues are queued behind it.
+ * The single active cue over the transcript (XERK-102). One cue shows at a time
+ * for its full turn; others wait in a FIFO queue and take the band as each turn
+ * ends. The turns run on a continuous wall-clock schedule that keeps advancing
+ * while the app is backgrounded (XERK-159), so a cue whose turn passed while you
+ * were away is already in the transcript on return rather than replaying — you
+ * rejoin the live cue mid-turn, not a backlog. A "+N more" note appears while
+ * cues are queued behind it.
  *
  * The band *floats over* the top of the transcript rather than sitting above it
  * in the column (XERK-107): as a flow element, each arrival shoved the
@@ -76,14 +80,16 @@ function useCueCountdown(cueId: string | undefined): number {
  */
 export function LiveCueBand({
   activeCue,
+  activeCueEndsAt,
   queuedCount,
 }: {
   activeCue: LiveCue | null;
+  activeCueEndsAt: number | null;
   queuedCount: number;
 }): JSX.Element | null {
   const styles = useThemedStyles(makeStyles);
   const { cue, exiting } = useCueExit(activeCue);
-  const secondsLeft = useCueCountdown(cue?.id);
+  const secondsLeft = useCueCountdown(activeCueEndsAt);
   const fade = useRef(new Animated.Value(0)).current;
   const shown = Boolean(cue) && !exiting;
   useEffect(() => {

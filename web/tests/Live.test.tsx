@@ -18,6 +18,7 @@ const baseState = () => ({
   partial: "",
   activeCue: null as { id: string; title: string; body: string } | null,
   queuedCues: [] as { id: string; title: string; body: string }[],
+  activeCueEndsAt: null as number | null,
   pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
 });
 
@@ -76,7 +77,7 @@ describe("LiveView", () => {
     expect(screen.getByText(/150 million km/)).toBeInTheDocument();
   });
 
-  it("shows a '+N more' note when cues are queued behind the active one", () => {
+  it("shows a '+N more' note when cues are queued behind the active one (XERK-102)", () => {
     renderLive(
       fakeController({
         running: true,
@@ -272,7 +273,7 @@ describe("LiveView", () => {
     }
   });
 
-  it("cancels the fade when a queued cue takes over mid-exit (XERK-107)", () => {
+  it("cancels the fade when a fresher cue takes over mid-exit (XERK-107)", () => {
     vi.useFakeTimers();
     try {
       const running = {
@@ -304,9 +305,15 @@ describe("LiveView", () => {
 
   describe("live cue countdown (XERK-110)", () => {
     const running = { running: true, connection: "open" as const };
+    // The countdown reads the cue's wall-clock end time (XERK-159); a cue taking
+    // the band opens a fresh window one TTL from now (the boundary-promotion case).
     const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
       <LiveView
-        controller={fakeController({ ...running, activeCue })}
+        controller={fakeController({
+          ...running,
+          activeCue,
+          activeCueEndsAt: activeCue ? Date.now() + CUE_TTL_MS : null,
+        })}
       />
     );
     const cue = { id: "c1", title: "Sun", body: "About 150 million km away." };
@@ -337,7 +344,7 @@ describe("LiveView", () => {
       }
     });
 
-    it("restarts the count for a queued cue promoted into the band", () => {
+    it("restarts the count for a fresher cue that supersedes the current one", () => {
       vi.useFakeTimers();
       try {
         const { container, rerender } = render(withCue(cue));
@@ -349,6 +356,27 @@ describe("LiveView", () => {
         rerender(withCue({ id: "c2", title: "Moon", body: "384,400 km away." }));
         act(() => void vi.advanceTimersByTime(0));
         expect(countdown(container)).toBe("10s");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows a mid-window cue's remaining time, not a fresh ten (XERK-159)", () => {
+      vi.useFakeTimers();
+      try {
+        // A cue whose turn opened while the app was backgrounded is reconciled to
+        // the band already partway through its window (endsAt only 3s out). The
+        // count must read the truth — 3s — not restart at ten.
+        const { container } = render(
+          <LiveView
+            controller={fakeController({
+              ...running,
+              activeCue: cue,
+              activeCueEndsAt: Date.now() + 3000,
+            })}
+          />,
+        );
+        expect(countdown(container)).toBe("3s");
       } finally {
         vi.useRealTimers();
       }

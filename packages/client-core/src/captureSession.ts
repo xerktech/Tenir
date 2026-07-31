@@ -33,10 +33,10 @@ export const CUE_EXIT_MS = 160;
 // behind the release timer it is supposed to describe.
 export const CUE_COUNTDOWN_TICK_MS = 250;
 // Only ONE cue is shown at a time (XERK-102): a cue arriving while another is
-// active is queued and pops the moment the active one is released. This bounds
-// how deep that backlog can grow — well past any normal conversation — so a
-// torrent of cues can't grow the queue without limit. Over the cap, the stalest
-// waiting cue is dropped so the freshest still get their turn.
+// still inside its on-screen window waits its turn behind it. The queue drains on
+// wall-clock time (XERK-159), so it only actually backs up during a burst of cues
+// closer together than the TTL — this bounds how deep that can get. Over the cap
+// the stalest waiting cue is dropped so the freshest still get their turn.
 const MAX_QUEUED_CUES = 16;
 // A released cue drops into the transcript as a reviewable "past cue" (XERK-108);
 // this bounds how many we keep so a long session can't grow them without limit.
@@ -82,13 +82,23 @@ export interface CaptureState {
   sessionId?: string;
   segments: CaptureSegment[];
   partial: string;
-  /** The cue currently shown above the transcript; released after CUE_TTL_MS (XERK-102). */
+  /** The single cue shown above the transcript; released after its window (XERK-102). */
   activeCue: LiveCue | null;
   /**
-   * Cues waiting behind the active one (FIFO, XERK-102): when the active cue is
-   * released, the head of this queue immediately becomes the new active cue.
+   * Cues waiting behind the active one (FIFO, XERK-102): each takes the band in
+   * turn for CUE_TTL_MS. The turns run on a continuous wall-clock schedule that
+   * keeps advancing while the app is backgrounded (XERK-159), so a cue whose turn
+   * came and went while you were away is already released into the transcript on
+   * return rather than replaying one-at-a-time over the live conversation.
    */
   queuedCues: LiveCue[];
+  /**
+   * Wall-clock time (ms since epoch) the active cue's on-screen window closes
+   * (XERK-159). Release is scheduled against real time, not app-foreground time,
+   * so the queue reconciles correctly after a spell in the background. `null` when
+   * nothing is in the band.
+   */
+  activeCueEndsAt: number | null;
   /**
    * Cues that have already had their turn in the band and now sit inline in the
    * transcript for review (XERK-108), each anchored to the turn it followed. The
@@ -105,8 +115,13 @@ export type CaptureAction =
   | { type: "ready"; sessionId: string }
   | { type: "partial"; text: string }
   | { type: "final"; segmentId: string; text: string }
-  | { type: "cue"; cue: LiveCue }
-  | { type: "cueRelease"; id: string }
+  // `now` is the wall-clock arrival time, so the cue's on-screen window is timed
+  // against real time and survives the app being backgrounded (XERK-159).
+  | { type: "cue"; cue: LiveCue; now: number }
+  // Reconcile the cue schedule to wall-clock `now`: release every cue whose turn
+  // has elapsed (chaining promotions) and clear or re-seat the band. Fired by the
+  // release timer and on returning to the foreground.
+  | { type: "cueTick"; now: number }
   | { type: "error"; message: string }
   | { type: "togglePause" }
   | { type: "micSwitch"; micSource: MicSource }
@@ -122,8 +137,52 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     partial: "",
     activeCue: null,
     queuedCues: [],
+    activeCueEndsAt: null,
     pastCues: [],
   };
+}
+
+/**
+ * Append a cue to the transcript's past cues (XERK-108) as it leaves the band.
+ * Deduped by id so a stale timer or a resume re-release can't double it, and
+ * bounded so a long session can't grow the list without limit (the oldest falls
+ * off, matching how segments are bounded).
+ */
+function appendPastCue(pastCues: LiveCue[], cue: LiveCue): LiveCue[] {
+  if (pastCues.some((c) => c.id === cue.id)) return pastCues;
+  const next = [...pastCues, cue];
+  return next.length > MAX_PAST_CUES ? next.slice(next.length - MAX_PAST_CUES) : next;
+}
+
+/** The band-facing slice of the cue state, advanced together as the schedule runs. */
+type CueBand = Pick<CaptureState, "activeCue" | "queuedCues" | "activeCueEndsAt" | "pastCues">;
+
+/**
+ * Advance the cue schedule to wall-clock `now` (XERK-159): while the active cue's
+ * window has closed, release it into the transcript and promote the queue head to
+ * take over. Each promotion's window opens at the *previous* window's scheduled
+ * close (`endsAt + CUE_TTL_MS`), not at `now`, so the turns run on one continuous
+ * timeline: catching up after a spell in the background drains every cue whose
+ * turn already passed in a single pass, leaving at most the one cue still inside
+ * its window (shown for the time it has left) and clearing the band once the
+ * queue empties. Returns the same field references when nothing has elapsed, so
+ * the reducer can hand back the untouched state.
+ */
+function advanceCues(state: CaptureState, now: number): CueBand {
+  let { activeCue, queuedCues, activeCueEndsAt, pastCues } = state;
+  while (activeCue && activeCueEndsAt != null && now >= activeCueEndsAt) {
+    pastCues = appendPastCue(pastCues, activeCue);
+    if (queuedCues.length > 0) {
+      const [next, ...rest] = queuedCues;
+      activeCue = next;
+      queuedCues = rest;
+      activeCueEndsAt = activeCueEndsAt + CUE_TTL_MS;
+    } else {
+      activeCue = null;
+      activeCueEndsAt = null;
+    }
+  }
+  return { activeCue, queuedCues, activeCueEndsAt, pastCues };
 }
 
 /** Pure transition function — every state change in the session funnels through here. */
@@ -157,10 +216,10 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       return { ...state, segments, partial: "" };
     }
     case "cue": {
+      const cue = action.cue;
       // A re-delivered cue (e.g. on resume) shouldn't duplicate: if its id is
       // already the active or a queued cue, update its text in place but keep the
-      // transcript anchor it was first pinned to.
-      const cue = action.cue;
+      // transcript anchor and schedule it was first pinned to.
       if (state.activeCue?.id === cue.id) {
         return { ...state, activeCue: { ...cue, afterSegmentId: state.activeCue.afterSegmentId } };
       }
@@ -173,38 +232,37 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       // Already reviewed and sitting in the transcript (a resume can re-deliver a
       // long-released cue): don't replay it into the band (XERK-108).
       if (state.pastCues.some((c) => c.id === cue.id)) return state;
-      // Anchor a fresh cue to the last finalized turn so it later reads as landing
-      // just after the words that triggered it (XERK-108). No turns yet → null,
-      // i.e. it will sit before the transcript.
+      // First advance the schedule to the arrival time so any earlier cue whose
+      // window has already closed (e.g. while the app was backgrounded) is retired
+      // into the transcript before this one is placed (XERK-159).
+      const band = advanceCues(state, action.now);
+      // Anchor a fresh cue to the last finalized turn so it reads as landing just
+      // after the words that triggered it (XERK-108). No turns yet → null, i.e. it
+      // will sit before the transcript.
       const anchored: LiveCue = {
         ...cue,
         afterSegmentId: state.segments.length ? state.segments[state.segments.length - 1].id : null,
       };
-      // Nothing showing → this cue becomes active. Otherwise it waits its turn
-      // at the back of the queue (XERK-102).
-      if (!state.activeCue) return { ...state, activeCue: anchored };
-      let queuedCues = [...state.queuedCues, anchored];
-      // Bound the backlog: over the cap, drop the stalest waiting cue.
+      // Empty band → this cue shows now, its window running from arrival.
+      if (!band.activeCue) {
+        return { ...state, ...band, activeCue: anchored, activeCueEndsAt: action.now + CUE_TTL_MS };
+      }
+      // Otherwise it waits its turn at the back of the queue (XERK-102). Bound the
+      // backlog: over the cap, drop the stalest waiting cue.
+      let queuedCues = [...band.queuedCues, anchored];
       if (queuedCues.length > MAX_QUEUED_CUES) {
         queuedCues = queuedCues.slice(queuedCues.length - MAX_QUEUED_CUES);
       }
-      return { ...state, queuedCues };
+      return { ...state, ...band, queuedCues };
     }
-    case "cueRelease": {
-      // The active cue's time is up (or it was dismissed): promote the head of
-      // the queue immediately, or clear the surface if nothing is waiting. Guard
-      // on id so a stale timer can't release a cue that already moved on.
-      if (!state.activeCue || state.activeCue.id !== action.id) return state;
-      const [next, ...rest] = state.queuedCues;
-      // The released cue drops into the transcript for review (XERK-108). Dedup
-      // by id so a stale timer or a resume re-release can't double it; bound the
-      // list so a long session can't grow it without limit.
-      const released = state.activeCue;
-      let pastCues = state.pastCues.some((c) => c.id === released.id)
-        ? state.pastCues
-        : [...state.pastCues, released];
-      if (pastCues.length > MAX_PAST_CUES) pastCues = pastCues.slice(pastCues.length - MAX_PAST_CUES);
-      return { ...state, activeCue: next ?? null, queuedCues: rest, pastCues };
+    case "cueTick": {
+      // Reconcile the band to wall-clock time (XERK-159): release every cue whose
+      // window has closed and re-seat or clear the band. A no-op (same reference)
+      // when the active cue is still inside its window, so a stale/early tick
+      // can't churn the state.
+      const band = advanceCues(state, action.now);
+      if (band.activeCue === state.activeCue && band.queuedCues === state.queuedCues) return state;
+      return { ...state, ...band };
     }
     case "error":
       return { ...state, error: action.message };
@@ -216,7 +274,7 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "stop":
       // Session over: drop to idle but keep the transcript on screen to read back
       // — including the past cues now embedded in it (XERK-108). Only the live
-      // band's cues (active + queued) are ephemeral, so clear those.
+      // band's cues (active + queued) are ephemeral, so clear those and the schedule.
       return {
         ...state,
         running: false,
@@ -225,6 +283,7 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
         partial: "",
         activeCue: null,
         queuedCues: [],
+        activeCueEndsAt: null,
       };
   }
 }
@@ -283,6 +342,18 @@ export function cueSecondsLeft(elapsedMs: number, ttlMs: number = CUE_TTL_MS): n
   return Math.max(0, Math.min(Math.ceil(ttlMs / 1000), remaining));
 }
 
+/**
+ * Whole seconds left for the active cue, from the wall-clock time its window
+ * closes (`endsAt`) and the current time `now` (XERK-159). Because it reads off
+ * the real clock rather than counting local ticks, the count is truthful the
+ * instant the app returns from the background — and a cue promoted mid-window
+ * (its turn opened while you were away) shows the time it actually has left, not
+ * a fresh ten. Delegates to `cueSecondsLeft` for the shared clamping.
+ */
+export function cueSecondsUntil(endsAt: number, now: number): number {
+  return cueSecondsLeft(CUE_TTL_MS - (endsAt - now));
+}
+
 /** The countdown as it is painted in a cue's top-right corner, e.g. `"7s"`. */
 export function cueCountdownLabel(secondsLeft: number): string {
   return `${secondsLeft}s`;
@@ -322,10 +393,11 @@ export class CaptureSession {
   private state: CaptureState;
   private listeners = new Set<(s: CaptureState) => void>();
   // The single auto-release timer for the active cue (XERK-102): only one cue
-  // shows at a time, so only one timer is ever pending. `cueTimerFor` is the id
-  // of the cue it targets, so a promoted cue re-arms and stop() can cancel it.
+  // shows at a time, so only one timer is ever pending. `cueTimerFor` is the
+  // wall-clock end time it targets (XERK-159), so a promoted cue re-arms for its
+  // own window, a redundant sync is a no-op, and stop() can cancel it.
   private cueTimer: ReturnType<typeof setTimeout> | null = null;
-  private cueTimerFor: string | null = null;
+  private cueTimerFor: number | null = null;
 
   constructor(deps: CaptureSessionDeps) {
     this.deps = deps;
@@ -399,37 +471,55 @@ export class CaptureSession {
   }
 
   /**
-   * Enqueue a live cue (XERK-81, XERK-102). It shows immediately if nothing is
-   * active, otherwise it waits behind the active cue; either way `syncCueTimer`
-   * makes sure the current active cue has a release timer running.
+   * Show a live cue (XERK-81). It takes the band if nothing is up, else waits its
+   * turn behind the active cue (XERK-102). The arrival first advances the schedule
+   * to now, so any cue whose turn already elapsed (e.g. while backgrounded) is
+   * retired into the transcript first (XERK-159); `syncCueTimer` then arms the
+   * release timer for whichever cue now holds the band.
    */
   private showCue(cue: LiveCue): void {
-    this.dispatch({ type: "cue", cue });
+    this.dispatch({ type: "cue", cue, now: Date.now() });
     this.syncCueTimer();
   }
 
   /**
-   * Ensure exactly one release timer is pending, targeting the current active
-   * cue. Called after every cue transition: a newly-active cue arms its timer,
-   * a promoted cue re-arms, and an empty surface clears it. When the timer
-   * fires it releases the active cue (promoting the queue head) and re-syncs so
-   * the promoted cue gets its own countdown.
+   * Reconcile the cue schedule to real time and re-arm the release timer for the
+   * remaining life of whatever cue now holds the band (XERK-159). Public so the
+   * platform bindings can call it when the app returns to the foreground: the
+   * release timer is unreliable while the app is backgrounded, so on return this
+   * drains every cue whose turn passed while away in one pass instead of letting
+   * them replay one-at-a-time.
+   */
+  syncCues(): void {
+    this.dispatch({ type: "cueTick", now: Date.now() });
+    this.syncCueTimer();
+  }
+
+  /**
+   * Ensure exactly one release timer is pending, targeting the wall-clock end of
+   * the active cue's window (XERK-159). Called after every cue transition: a
+   * newly-seated cue arms its timer for the time it has left, a redundant call is
+   * a no-op, and an empty band clears it. When the timer fires it reconciles the
+   * schedule (releasing the cue and promoting the next) and re-syncs.
    */
   private syncCueTimer(): void {
-    const active = this.state.activeCue;
-    if (!active) {
+    const endsAt = this.state.activeCueEndsAt;
+    if (endsAt == null) {
       this.clearCueTimer();
       return;
     }
-    if (this.cueTimerFor === active.id) return; // already timing this cue
+    if (this.cueTimerFor === endsAt) return; // already timing this window
     this.clearCueTimer();
-    this.cueTimerFor = active.id;
-    this.cueTimer = setTimeout(() => {
-      this.cueTimer = null;
-      this.cueTimerFor = null;
-      this.dispatch({ type: "cueRelease", id: active.id });
-      this.syncCueTimer();
-    }, CUE_TTL_MS);
+    this.cueTimerFor = endsAt;
+    this.cueTimer = setTimeout(
+      () => {
+        this.cueTimer = null;
+        this.cueTimerFor = null;
+        this.dispatch({ type: "cueTick", now: Date.now() });
+        this.syncCueTimer();
+      },
+      Math.max(0, endsAt - Date.now()),
+    );
   }
 
   private clearCueTimer(): void {

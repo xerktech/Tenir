@@ -15,6 +15,7 @@
 import { ApiClient } from "@tenir/client-core";
 import type { MicSource } from "@tenir/contract";
 import { useEffect, useMemo, useState } from "react";
+import { AppState } from "react-native";
 
 import { deviceAudioSource } from "../audio/native";
 import { DEFAULT_MIC_SOURCE, DEFAULT_SOURCE_LANG } from "../config";
@@ -48,8 +49,16 @@ export function useCapture(wsUrl: string): CaptureController {
 
   useEffect(() => {
     const unsubscribe = session.subscribe(setState);
+    // Cue turns run on wall-clock time (XERK-159), but the release timer is
+    // unreliable while the app is backgrounded, so reconcile the queue the moment
+    // we return to the foreground: any cue whose turn elapsed while away is retired
+    // into the transcript at once instead of replaying one-at-a-time.
+    const appState = AppState.addEventListener("change", (status) => {
+      if (status === "active") session.syncCues();
+    });
     return () => {
       unsubscribe();
+      appState.remove();
       void session.stop(); // release mic + socket if the URL changes or the screen unmounts
     };
   }, [session]);
