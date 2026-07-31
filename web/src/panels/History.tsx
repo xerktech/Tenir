@@ -11,7 +11,16 @@ import { useMemo, useState } from "react";
 
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
-import { Button, Card, ConfirmButton, CueDisclosure, EmptyState, Input, Spinner } from "../ui";
+import {
+  Button,
+  Card,
+  ConfirmButton,
+  CueDisclosure,
+  EmptyState,
+  Input,
+  Spinner,
+  TranslationLine,
+} from "../ui";
 
 type SortKey = "date" | "duration" | "turns" | "status";
 type SortDir = "asc" | "desc";
@@ -261,6 +270,10 @@ function ConversationDetail({
             item.kind === "segment" ? (
               <div className="item" key={item.seg.segmentId}>
                 <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
+                {/* Stored English translation of a non-English turn (XERK-160). */}
+                {item.seg.translation && (
+                  <TranslationLine text={item.seg.translation} lang={item.seg.lang} />
+                )}
               </div>
             ) : (
               <CueDisclosure

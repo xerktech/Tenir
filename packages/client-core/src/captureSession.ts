@@ -49,6 +49,14 @@ export type Connection = "connecting" | "open" | "closed";
 export interface CaptureSegment {
   id: string;
   text: string;
+  /** Language the turn was spoken in, as detected by STT (absent = unknown). */
+  lang?: Lang;
+  /**
+   * English translation of a non-English turn (XERK-160). Arrives after the turn
+   * itself (the model call runs off the caption path), so it is attached to the
+   * already-rendered segment; the UIs show it turn-by-turn under the original.
+   */
+  translation?: string;
 }
 
 /** A private context cue currently shown above the live transcript (XERK-81). */
@@ -114,7 +122,9 @@ export type CaptureAction =
   | { type: "connection"; state: Connection }
   | { type: "ready"; sessionId: string }
   | { type: "partial"; text: string }
-  | { type: "final"; segmentId: string; text: string }
+  | { type: "final"; segmentId: string; text: string; lang?: Lang }
+  // English translation of an earlier finalized turn (XERK-160), paired by id.
+  | { type: "translation"; segmentId: string; text: string }
   // `now` is the wall-clock arrival time, so the cue's on-screen window is timed
   // against real time and survives the app being backgrounded (XERK-159).
   | { type: "cue"; cue: LiveCue; now: number }
@@ -212,8 +222,20 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       // anchored to them lingered and floated to the top — so scrolling up showed
       // all the cue data but no transcript. Caption text is tiny, so retaining it
       // costs nothing next to the audio being streamed; correctness wins.
-      const segments = [...state.segments, { id: action.segmentId, text: action.text }];
+      const segments = [
+        ...state.segments,
+        { id: action.segmentId, text: action.text, lang: action.lang },
+      ];
       return { ...state, segments, partial: "" };
+    }
+    case "translation": {
+      // Attach the (later-arriving) translation to its turn (XERK-160). A
+      // translation for a turn no longer in view decides nothing.
+      const idx = state.segments.findIndex((s) => s.id === action.segmentId);
+      if (idx === -1) return state;
+      const segments = [...state.segments];
+      segments[idx] = { ...segments[idx], translation: action.text };
+      return { ...state, segments };
     }
     case "cue": {
       const cue = action.cue;
@@ -448,7 +470,10 @@ export class CaptureSession {
         this.dispatch({ type: "ready", sessionId: m.sessionId });
       },
       onPartial: (m) => this.dispatch({ type: "partial", text: m.text }),
-      onFinal: (m) => this.dispatch({ type: "final", segmentId: m.segmentId, text: m.text }),
+      onFinal: (m) =>
+        this.dispatch({ type: "final", segmentId: m.segmentId, text: m.text, lang: m.lang }),
+      onTranslation: (m) =>
+        this.dispatch({ type: "translation", segmentId: m.segmentId, text: m.text }),
       onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),
       onError: (m) => this.dispatch({ type: "error", message: m.message }),
     });

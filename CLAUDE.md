@@ -65,15 +65,17 @@ npm install && npm run typecheck && npm run test && npm run build
 
 The GPU model servers run on the host at **`10.10.10.22`** and can be hit
 **directly**, bypassing the LiteLLM gateway — useful for exercising real
-model behaviour (e.g. cue accuracy) instead of only unit tests or the stub.
-Both expose the OpenAI-compatible vLLM / server API:
+model behaviour (e.g. cue/translation accuracy) instead of only unit tests or
+the stub. Both expose an OpenAI-compatible API:
 
-- **`10.10.10.22:9402`** — cue/summary LLM, `Qwen/Qwen3.6-27B-FP8`
-  (`GET /v1/models`, `POST /v1/chat/completions`). Point
-  `OpenAICueGenerator(endpoint="http://10.10.10.22:9402/v1", model="Qwen/Qwen3.6-27B-FP8", api_key="")`
-  straight at it to drive real cue generation.
+- **`10.10.10.22:9402`** — cue/summary/translation LLM: `gpt-oss:120b` served
+  by Ollama (`GET /v1/models`, `POST /v1/chat/completions`). Point
+  `OpenAICueGenerator(endpoint="http://10.10.10.22:9402/v1", model="gpt-oss:120b", api_key="")`
+  (or `OpenAITranslator(...)`) straight at it to drive the real model. Probe
+  `GET /v1/models` first and use the id it reports — a wrong model name comes
+  back as a 404 on /chat/completions, which looks like a missing route.
 - **`10.10.10.22:9401`** — Parakeet STT (`GET /health`).
 
-These are the same containers the gateway routes to (`qwen3-llm` →
-`Qwen/Qwen3.6-27B-FP8`); talking to them directly skips the gateway alias and
-auth so you can iterate on prompts/params without the full stack.
+These are the same containers the gateway routes to (the `gpt-oss:120b` alias);
+talking to them directly skips the gateway alias and auth so you can iterate on
+prompts/params without the full stack.

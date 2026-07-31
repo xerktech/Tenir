@@ -169,6 +169,34 @@
       }
     },
 
+    "Translation": {
+      "title": "Translation",
+      "description": "Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "segmentId", "text"],
+      "properties": {
+        "type": { "const": "translation" },
+        "segmentId": {
+          "type": "string",
+          "description": "The caption.final segment this translates."
+        },
+        "text": { "type": "string", "description": "The English translation of the segment's text." },
+        "sourceLang": { "$ref": "#/$defs/Lang" }
+      }
+    },
+
+    "TranslationDone": {
+      "title": "TranslationDone",
+      "description": "Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "translation.done" }
+      }
+    },
+
     "Pong": {
       "title": "Pong",
       "description": "Server -> client. Reply to Ping.",
@@ -205,6 +233,8 @@
         { "$ref": "#/$defs/CaptionPartial" },
         { "$ref": "#/$defs/CaptionFinal" },
         { "$ref": "#/$defs/Cue" },
+        { "$ref": "#/$defs/Translation" },
+        { "$ref": "#/$defs/TranslationDone" },
         { "$ref": "#/$defs/Pong" },
         { "$ref": "#/$defs/ErrorMessage" }
       ]

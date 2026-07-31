@@ -128,6 +128,21 @@ describe("SessionPage", () => {
     expect(badge().className).toBe("badge-accent");
   });
 
+  it("renders a turn's English translation under the original (XERK-160)", () => {
+    mount().update(
+      view({
+        segments: [{ text: "hola, ¿qué tal?", translation: "hello, how are you?" }, "sigo aquí"],
+      }),
+    );
+    const rowsEls = [...document.querySelectorAll("#session-text li")];
+    expect(rowsEls[0].textContent).toContain("hola, ¿qué tal?");
+    const tr = rowsEls[0].querySelector(".session-translation")!;
+    expect(tr.textContent).toContain("hello, how are you?");
+    expect(tr.querySelector(".session-translation-lang")!.textContent).toBe("EN");
+    // A turn without a translation renders no translation line.
+    expect(rowsEls[1].querySelector(".session-translation")).toBeNull();
+  });
+
   it("shows a waiting state before any speech arrives", () => {
     mount().update(view());
     expect(empty().hidden).toBe(false);
@@ -401,7 +416,7 @@ describe("SessionPage", () => {
 
 describe("liveTranscriptRows (XERK-108)", () => {
   const ids = (rows: ReturnType<typeof liveTranscriptRows>) =>
-    rows.map((r) => (r.kind === "segment" ? r.text : `cue:${r.cue.id}`));
+    rows.map((r) => (r.kind === "segment" ? r.segment.text : `cue:${r.cue.id}`));
 
   it("places each reviewed cue right after the turn it was anchored to", () => {
     const rows = liveTranscriptRows(["a", "b"], [pastCue("c1", 0), pastCue("c2", 1)]);

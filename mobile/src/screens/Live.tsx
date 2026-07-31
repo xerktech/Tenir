@@ -38,6 +38,7 @@ import {
   Heading,
   Muted,
   Row,
+  TranslationText,
 } from "../ui/components";
 import { useTheme, useThemedStyles } from "../ui/ThemeContext";
 import { space, type Palette } from "../ui/theme";
@@ -202,6 +203,9 @@ export function LiveScreen(): JSX.Element {
                     <Text key={seg.id}>
                       {j > 0 ? "\n" : null}
                       {seg.text}
+                      {/* English translation of a non-English turn (XERK-160),
+                          turn-by-turn inside the same selectable run. */}
+                      {seg.translation ? <TranslationText text={seg.translation} /> : null}
                     </Text>
                   ))}
                   {state.partial && i === runList.length - 1 ? (

@@ -2,27 +2,28 @@
 
 Why this exists
 ---------------
-Live STT today is Voxtral (Mistral) served by vLLM. Voxtral is an instruction-tuned
-audio *LLM*: fed silence or noise it sometimes *answers* ("I'm sorry, I couldn't
+Live STT used to be Voxtral (Mistral) served by vLLM. Voxtral is an instruction-tuned
+audio *LLM*: fed silence or noise it sometimes *answered* ("I'm sorry, I couldn't
 hear that. Could you please repeat...") instead of transcribing — the whole class
 of hallucination XERK-92 fought. A dedicated ASR model has no generative chat
 objective and structurally cannot do that; NVIDIA Parakeet also leads the open ASR
 leaderboards on accuracy and speed. ``parakeet-tdt-0.6b-v3`` is the multilingual
 variant (~25 European languages incl. Spanish) with automatic language detection.
+That A/B retired Voxtral; this server has been the production STT ever since.
 
-Parakeet is a NeMo model, not a vLLM one, so it can't ride the existing vLLM-STT
+Parakeet is a NeMo model, not a vLLM one, so it couldn't ride the old vLLM-STT
 image. This tiny FastAPI app wraps NeMo behind the **same** OpenAI
 ``POST /v1/audio/transcriptions`` surface the api already speaks (via
-``api.stt.voxtral.VoxtralEngine``), so evaluating Parakeet against Voxtral is a
-routing change, not a code change: point ``API_LITELLM_ENDPOINT`` (or a LiteLLM
-alias) at this server. Word timestamps — which the vLLM-Voxtral endpoint didn't
-return — come back here, restoring per-word caption timing.
+``api.stt.parakeet.ParakeetEngine``), so swapping models was a routing change,
+not a code change: point ``API_LITELLM_ENDPOINT`` (or a LiteLLM alias) at this
+server. Word timestamps — which the vLLM-Voxtral endpoint didn't return — come
+back here, restoring per-word caption timing.
 
 Response shape
 --------------
 Honors ``response_format`` = ``json`` (default) | ``text`` | ``verbose_json``.
 ``json`` returns ``{"text", "language", "words"}`` — the ``words`` array is a
-superset of the OpenAI schema that ``VoxtralEngine`` already knows how to read
+superset of the OpenAI schema that ``ParakeetEngine`` already knows how to read
 (``word``/``start``/``end``), so per-word timing flows through when the api points
 straight at this server. ``verbose_json`` adds ``segments`` and ``duration`` for
 LiteLLM's OpenAI transform, which rewrites ``json`` -> ``verbose_json`` to read

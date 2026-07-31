@@ -55,9 +55,18 @@ CREATE TABLE IF NOT EXISTS segments (
     text            TEXT NOT NULL,
     start_ms        INTEGER NOT NULL,
     end_ms          INTEGER NOT NULL,
-    lang            TEXT
+    lang            TEXT,
+    -- English translation of a non-English turn (XERK-160). NULL for English
+    -- turns, with translations off, and on rows written before the feature.
+    -- Deliberately outside the FTS index below: search matches what was said,
+    -- in the language it was said in.
+    translation     TEXT
 );
 CREATE INDEX IF NOT EXISTS segments_conversation_idx ON segments (conversation_id, start_ms);
+-- Additive column for data dirs created before XERK-160 (this file is applied
+-- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip
+-- the new column on an existing table).
+ALTER TABLE segments ADD COLUMN IF NOT EXISTS translation TEXT;
 
 -- Keyword search over transcripts (SqlConversationStore.search): a functional
 -- full-text index per segment, matched per-row with websearch_to_tsquery.

@@ -18,6 +18,8 @@ import type {
   Pong,
   ServerMessage,
   SessionReady,
+  Translation,
+  TranslationDone,
 } from "@tenir/contract";
 
 import { withToken } from "./auth";
@@ -32,6 +34,8 @@ export interface ApiHandlers {
   onPartial?: (m: CaptionPartial) => void;
   onFinal?: (m: CaptionFinal) => void;
   onCue?: (m: Cue) => void;
+  onTranslation?: (m: Translation) => void;
+  onTranslationDone?: (m: TranslationDone) => void;
   onPong?: (m: Pong) => void;
   onError?: (m: ErrorMessage) => void;
   onConnectionChange?: (state: "connecting" | "open" | "closed") => void;
@@ -151,6 +155,12 @@ export class ApiClient {
         break;
       case "cue":
         this.handlers.onCue?.(msg);
+        break;
+      case "translation":
+        this.handlers.onTranslation?.(msg);
+        break;
+      case "translation.done":
+        this.handlers.onTranslationDone?.(msg);
         break;
       case "pong":
         this.handlers.onPong?.(msg);

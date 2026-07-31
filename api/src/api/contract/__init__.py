@@ -15,5 +15,7 @@ from api.contract.messages import (  # noqa: F401
     SessionEnd,
     SessionReady,
     SessionStart,
+    Translation,
+    TranslationDone,
     Word,
 )

@@ -12,7 +12,7 @@ different models, and the streaming side is stateful (per-turn encoder cache) an
 async (a live socket), neither of which the synchronous per-window engine models.
 
 The concrete `NemotronWsEngine` is a WebSocket client (network I/O, excluded from
-coverage like `VoxtralEngine`); the protocol it speaks is covered by the
+coverage like `ParakeetEngine`); the protocol it speaks is covered by the
 `nemotron-stt` server tests, and `StreamingTranscriber`'s use of this seam is covered
 against a fake session with no socket.
 """

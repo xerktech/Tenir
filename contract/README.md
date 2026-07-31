@@ -36,5 +36,5 @@ installed with `pip install datamodel-code-generator` (see
 
 Client → server: `session.start`, `mic.switch`, `session.end`, `ping`.
 
-Server → client: `session.ready`, `caption.partial`, `caption.final`,
-`pong`, `error`.
+Server → client: `session.ready`, `caption.partial`, `caption.final`, `cue`,
+`translation`, `translation.done`, `pong`, `error`.

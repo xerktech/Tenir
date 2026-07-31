@@ -18,6 +18,10 @@ chat, …) was stripped back to; features return one at a time, slowly.
   drives the low-latency live partials while an offline model (NVIDIA Parakeet)
   decodes each finished turn for the accurate stored transcript (the *hybrid* path
   — see `docs/stt-model-gpu-benchmark.md`)
+- **Live translations** — a turn spoken in another language is transcribed as
+  spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): the
+  glasses show the translation in the cue box, web/Android/the phone app show
+  it under the original turn — see [`docs/translations.md`](docs/translations.md)
 - **Recorded, stored sessions** — every session is persisted as a conversation:
   transcript segments in Postgres, full audio retained on disk; browse, search,
   replay, export and delete from the UI
@@ -81,7 +85,7 @@ Live captions come from two models (`API_STT_BACKEND=hybrid`, the default):
   (`API_STT_ENDPOINT`, else the gateway) for the accurate stored transcript.
 
 If `nemotron` is unreachable the api degrades to Parakeet-only re-decode partials
-rather than losing the live band. Set `API_STT_BACKEND=voxtral` for the single-model
+rather than losing the live band. Set `API_STT_BACKEND=parakeet` for the single-model
 (Parakeet-only) path — then the `nemotron` service isn't needed. Rationale and the
 GPU benchmark behind the split: [`docs/stt-model-gpu-benchmark.md`](docs/stt-model-gpu-benchmark.md).
 
@@ -105,7 +109,7 @@ API_AUTH_SECRET        bearer-token signing secret (boot refuses the default)
 API_AUTH_ADMIN_*       bootstrap admin (username / password / household)
 API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT finals + cues (…/v1)
 API_LITELLM_API_KEY    gateway key
-API_STT_BACKEND        hybrid (prod) | voxtral (Parakeet-only) | stub (dev/CI)
+API_STT_BACKEND        hybrid (prod) | parakeet (Parakeet-only) | stub (dev/CI)
 API_STT_STREAM_ENDPOINT  WebSocket root of the Nemotron partials server (hybrid)
 API_PERSISTENCE_BACKEND  postgres | memory | off
 API_AUDIO_BACKEND      disk | memory | off      (+ API_AUDIO_DIR)

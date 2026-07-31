@@ -1,4 +1,4 @@
-"""Streaming STT seam: "stub" (model-free, CI/simulator), "voxtral" (one HTTP model
+"""Streaming STT seam: "stub" (model-free, CI/simulator), "parakeet" (one HTTP model
 via LiteLLM or a direct route), or "hybrid" (XERK-115: cache-aware streaming partials
 from Nemotron + offline finals from Parakeet)."""
 
@@ -27,14 +27,14 @@ def make_transcriber(
     if backend == "stub":
         return StubTranscriber(start_offset_ms=start_offset_ms)
 
-    if backend in ("voxtral", "hybrid"):
+    if backend in ("parakeet", "hybrid"):
         # Imported lazily so the networked deps load only when actually selected.
+        from api.stt.parakeet import ParakeetEngine
         from api.stt.streaming import StreamingTranscriber
-        from api.stt.voxtral import VoxtralEngine
 
-        # Offline engine: partials (voxtral backend) AND finals (both backends). On
+        # Offline engine: partials (parakeet backend) AND finals (both backends). On
         # the hybrid path finals decode the whole turn here (Parakeet) for accuracy.
-        offline = VoxtralEngine(
+        offline = ParakeetEngine(
             # The caption hot path prefers a direct route to the model server and
             # falls back to the LiteLLM gateway (see Settings.stt_endpoint_url).
             endpoint=settings.stt_endpoint_url,
@@ -76,5 +76,5 @@ def make_transcriber(
             final_words=settings.stt_final_word_timestamps,
         )
     raise ValueError(
-        f"unknown STT backend: {backend!r} (expected 'stub', 'voxtral' or 'hybrid')"
+        f"unknown STT backend: {backend!r} (expected 'stub', 'parakeet' or 'hybrid')"
     )

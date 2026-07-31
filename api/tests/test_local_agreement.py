@@ -69,9 +69,9 @@ def test_caption_grows_monotonically_and_never_rewrites_committed() -> None:
 
 
 def test_cosmetic_repunctuation_does_not_block_commits() -> None:
-    """The real-world failure mode: Voxtral adds a comma / capitalizes on the next
-    pass. Normalized comparison must still commit those words, keeping the displayed
-    (punctuated) surface form."""
+    """The real-world failure mode (first recorded on the retired Voxtral engine):
+    the decoder adds a comma / capitalizes on the next pass. Normalized comparison
+    must still commit those words, keeping the displayed (punctuated) surface form."""
     la = LocalAgreement()
     la.commit(["so", "i", "went"])
     # Same words, now re-punctuated and re-capitalized, plus one more word.

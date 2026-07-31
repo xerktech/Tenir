@@ -128,8 +128,8 @@ async def _gather() -> list[_RawResult]:
     # LiteLLM gateway, so the gateway is probed once whenever *either* is backed by a
     # real server (stub/off backends have nothing to reach). Each model light then
     # resolves against that single gateway probe (see _gateway_fronted_model).
-    # The offline model (Parakeet) backs finals under both voxtral and hybrid.
-    stt_via_gateway = s.stt_backend in ("voxtral", "hybrid")
+    # The offline model (Parakeet) backs finals under both parakeet and hybrid.
+    stt_via_gateway = s.stt_backend in ("parakeet", "hybrid")
     cue_via_gateway = s.cue_backend == "openai"
     if stt_via_gateway or cue_via_gateway:
         gw = await _http_probe(f"{s.litellm_probe_url}/health/liveliness")

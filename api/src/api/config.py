@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     litellm_endpoint: str = "http://litellm:4000/v1"
     litellm_api_key: str = ""
 
-    # STT backend selector: "stub" (model-free, CI/simulator) or "voxtral" (an
+    # STT backend selector: "stub" (model-free, CI/simulator) or "parakeet" (an
     # OpenAI-compatible audio-transcription endpoint via the LiteLLM gateway).
     #   "hybrid" — XERK-115: live partials from a cache-aware streaming model
     #     (Nemotron, over a WebSocket — stt_stream_endpoint) while finals decode the
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     #     latency partials + accurate finals; see docs/stt-model-gpu-benchmark.md.
     stt_backend: str = "stub"
     # The model alias sent to the gateway (must match litellm/config.yaml).
-    stt_model: str = "voxtral"
+    stt_model: str = "parakeet"
 
     # ---- direct STT route (XERK-115) --------------------------------------------
     # The caption hot path sends ONE transcription request per partial — several a
@@ -88,27 +88,46 @@ class Settings(BaseSettings):
     # + litellm_api_key, POSTing /chat/completions instead of /audio/transcriptions).
     #   "off"    — no cues (default; the stripped core stays STT-only unless enabled).
     #   "stub"   — model-free, deterministic generator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: qwen3-llm on tenir-vllm).
+    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b on Ollama,
+    #   the tenir-ollama-cue container — see docs/cues.md).
     cue_backend: str = "off"  # off | stub | openai
     # The chat-model alias sent to the gateway for cue generation (matches the
     # LiteLLM route + the deployed API_LLM_MODEL). The gateway owns the real model id.
-    llm_model: str = "qwen3-llm"
+    llm_model: str = "gpt-oss:120b"
     # How much recent transcript (finalized turns) to feed the cue model as context.
     cue_context_segments: int = 8
     # Cap the model's cue body length (characters) so a cue fits the glasses box and
     # the live band; the generator prompt also asks for brevity.
     cue_max_body_chars: int = 240
-    # Disable the chat model's chain-of-thought for cue calls. The prod model
-    # (Qwen3) is a reasoning model: left thinking it spends the whole token budget
-    # on reasoning and returns an empty `content`, so no cue is ever produced. Cues
-    # want fast structured JSON, not reasoning, so default on. Turn off only for a
-    # non-reasoning model whose chat template rejects the `enable_thinking` kwarg.
+    # Disable the chat model's chain-of-thought for cue calls. Reasoning models
+    # (gpt-oss today; the retired Qwen3 that motivated this) can spend the whole
+    # token budget on reasoning and return an empty `content`, so no cue is ever
+    # produced. Cues want fast structured JSON, not reasoning, so default on. A
+    # server that doesn't know the `enable_thinking` kwarg ignores/drops it
+    # (LiteLLM's drop_params); turn off only for a chat template that rejects it.
     cue_disable_thinking: bool = True
 
+    # ---- Live translations (XERK-160) --------------------------------------------
+    # When a finalized turn's detected language isn't English, the session
+    # translates it via the SAME chat model + gateway the cues use (llm_model over
+    # litellm_endpoint) and delivers it as a `translation` WS message paired to the
+    # segment. While a non-English run is live, cue generation is suppressed; when
+    # the run ends (an English turn arrives, or speech goes quiet past the hold
+    # window below) a `translation.done` message tells the glasses to start the
+    # translation box's dismiss countdown, and cues resume.
+    #   "off"    — no translations (default; matches the stripped core).
+    #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
+    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b).
+    translation_backend: str = "off"  # off | stub | openai
+    # How long speech may go quiet after the last non-English activity before the
+    # run is declared done. Finals only land at pauses, so partial captions also
+    # count as activity — the window only starts once the speaker actually stops.
+    translation_hold_ms: int = 3000
+
     # ---- Cue evidence retrieval (XERK-120) ---------------------------------------
-    # The cue model's weights are frozen years back (the deployed Qwen3 reports an
-    # October 2023 cutoff), so cues about current events answered from memory are
-    # guesses. With retrieval on, the session gathers evidence — the RSS-fed news
+    # The cue model's weights are frozen years back (measured on the previously
+    # deployed Qwen3, which reported an October 2023 cutoff; gpt-oss is likewise
+    # frozen), so cues about current events answered from memory are guesses. With retrieval on, the session gathers evidence — the RSS-fed news
     # corpus, Wikipedia, SearXNG web search — under a hard deadline and rides it in
     # the cue prompt; a cue whose fact came from evidence carries the source label
     # to the clients (the attribution line under the cue body).

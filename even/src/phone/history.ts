@@ -349,6 +349,14 @@ export class PhoneHistory {
         const row = this.make("div", "item");
         row.appendChild(this.make("span", "muted", segmentTiming(item.seg)));
         row.append(` ${item.seg.text}`);
+        // Stored English translation of a non-English turn (XERK-160),
+        // turn-by-turn under the original — mirrors the web history detail.
+        if (item.seg.translation) {
+          const tr = this.make("div", "session-translation");
+          tr.appendChild(this.make("span", "session-translation-lang", "EN"));
+          tr.appendChild(this.make("span", "session-translation-text", item.seg.translation));
+          row.appendChild(tr);
+        }
         frag.appendChild(row);
       } else if (showCues) {
         // An inline clickable chip (XERK-81): "✦ <title>" opens the cue popup.

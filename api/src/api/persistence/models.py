@@ -45,6 +45,9 @@ class Segment:
     start_ms: int
     end_ms: int
     lang: str | None = None
+    # English translation of a non-English turn (XERK-160). None for English
+    # turns, with translations off, and on rows written before the feature.
+    translation: str | None = None
 
 
 @dataclass

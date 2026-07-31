@@ -35,10 +35,25 @@ export interface PastCue extends CueCard {
   afterIndex: number;
 }
 
+/**
+ * One finalized turn as the phone mirror renders it: the spoken text, plus the
+ * English translation of a non-English turn once it lands (XERK-160). A plain
+ * string is accepted as shorthand for a turn with no translation.
+ */
+export interface SessionSegment {
+  text: string;
+  translation?: string;
+}
+
+/** Normalize the string shorthand to the object shape. */
+export function asSegment(seg: string | SessionSegment): SessionSegment {
+  return typeof seg === "string" ? { text: seg } : seg;
+}
+
 export interface LiveSessionView {
   recording: boolean;
   connection: "connecting" | "open" | "closed";
-  segments: string[]; // finalized turns
+  segments: Array<string | SessionSegment>; // finalized turns
   partial: string; // current live hypothesis
   cue: CueCard | null; // the current private context cue (XERK-81), or none
   cueSecondsLeft?: number; // seconds until that cue auto-dismisses (XERK-110)
@@ -46,16 +61,19 @@ export interface LiveSessionView {
 }
 
 /** One row of the rendered transcript: a finalized turn or a reviewed cue. */
-type TranscriptRow = { kind: "segment"; text: string } | { kind: "cue"; cue: PastCue };
+type TranscriptRow = { kind: "segment"; segment: SessionSegment } | { kind: "cue"; cue: PastCue };
 
 /**
  * Interleave finalized turns with reviewed cues (XERK-108): each cue lands right
  * after the turn it was anchored to, and a cue whose anchor is out of range —
  * before any speech, or a turn since scrolled off — leads the transcript. The
  * index-anchored counterpart to client-core's id-anchored `liveTranscript`, kept
- * here because the phone mirror carries plain-string turns without ids.
+ * here because the phone mirror carries index-anchored turns.
  */
-export function liveTranscriptRows(segments: string[], pastCues: PastCue[]): TranscriptRow[] {
+export function liveTranscriptRows(
+  segments: Array<string | SessionSegment>,
+  pastCues: PastCue[],
+): TranscriptRow[] {
   const byIndex = new Map<number, PastCue[]>();
   const leading: PastCue[] = [];
   for (const cue of pastCues) {
@@ -68,8 +86,8 @@ export function liveTranscriptRows(segments: string[], pastCues: PastCue[]): Tra
     }
   }
   const rows: TranscriptRow[] = leading.map((cue) => ({ kind: "cue", cue }));
-  segments.forEach((text, i) => {
-    rows.push({ kind: "segment", text });
+  segments.forEach((seg, i) => {
+    rows.push({ kind: "segment", segment: asSegment(seg) });
     for (const cue of byIndex.get(i) ?? []) rows.push({ kind: "cue", cue });
   });
   return rows;
@@ -231,7 +249,17 @@ export class SessionPage {
       for (const row of liveTranscriptRows(view.segments, view.pastCues)) {
         if (row.kind === "segment") {
           const li = doc.createElement("li");
-          li.textContent = row.text;
+          li.textContent = row.segment.text;
+          // English translation of a non-English turn (XERK-160), turn-by-turn
+          // under the original — the phone counterpart to the web's `.translation`.
+          if (row.segment.translation) {
+            const tr = doc.createElement("div");
+            tr.className = "session-translation";
+            const tag = this.make("span", "session-translation-lang", "EN");
+            const text = this.make("span", "session-translation-text", row.segment.translation);
+            tr.append(tag, text);
+            li.appendChild(tr);
+          }
           frag.appendChild(li);
         } else {
           frag.appendChild(this.buildCueRow(row.cue));

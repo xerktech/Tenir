@@ -48,7 +48,7 @@ log = logging.getLogger("api.cue.retrieval")
 _PARAGRAPH_RE = re.compile(r"<p\b[^>]*>(.*?)</p>", re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# Prompt budget. Measured on the deployed Qwen3.6-27B-FP8: ~1400 prompt tokens
+# Prompt budget. Measured on the then-deployed Qwen3.6-27B-FP8: ~1400 prompt tokens
 # adds ~200ms to the fixed ~1.1s call; ~5400 adds ~900ms. Six 300-char snippets
 # plus framing sits comfortably under the cheap zone.
 _MAX_SNIPPET_CHARS = 300

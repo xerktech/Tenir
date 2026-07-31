@@ -1092,3 +1092,174 @@ describe("wireLens cue interaction resets the countdown (XERK-129)", () => {
     await expectFreshTtl(t);
   });
 });
+
+describe("wireLens live translations (XERK-160)", () => {
+  const FINAL_ES = {
+    type: "caption.final" as const,
+    segmentId: "s1",
+    text: "hola, ¿qué tal?",
+    lang: "es" as const,
+    startMs: 0,
+    endMs: 900,
+  };
+  const TR = { type: "translation" as const, segmentId: "s1", text: "hello, how are you?", sourceLang: "es" as const };
+  const DONE = { type: "translation.done" as const };
+  const CUE = { type: "cue" as const, cueId: "c1", title: "Sun", body: "About 150 million km away.", atMs: 1000 };
+
+  const record = async (opts: { withPhone?: boolean } = {}) => {
+    const t = await boot(opts);
+    t.controls.enable();
+    await settle();
+    await t.click();
+    await settle();
+    return t;
+  };
+  const card = (...texts: string[]) => ({ title: controllerMod.TRANSLATION_TITLE, body: texts.join("\n") });
+  /** The scrolling body container from the last rebuilt page (shared with cues). */
+  const bodyContainer = (t: Awaited<ReturnType<typeof record>>) => {
+    const page = t.rebuilds[t.rebuilds.length - 1] as
+      | { textObject?: Array<{ containerName?: string; content?: string }> }
+      | undefined;
+    return page?.textObject?.find((c) => c.containerName === C().cueBody.name);
+  };
+
+  it("shows a translation in the cue box's slot with NO countdown while the run is live", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    // Same popup shape as a cue: base 4 containers + title frame + scrolling body.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    // Title row with no countdown — the 10s timer must not run yet (XERK-160).
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
+
+    // Well past a cue's TTL the box is STILL up: nothing counts down until the
+    // other language is done being spoken.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 3);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+  });
+
+  it("appends each further turn's translation to the open box", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    const TR2 = { ...TR, segmentId: "s2", text: "I am fine." };
+    t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s2", text: "estoy bien" });
+    t.api.handlers().onTranslation?.(TR2);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text, TR2.text)));
+  });
+
+  it("starts the 10s countdown only on translation.done, then dismisses", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    // The countdown now rides the pinned title row, like a cue's (XERK-110).
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text), 10));
+
+    // A full TTL after done, the box dismisses back to the plain page.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("a touch resets the countdown once the run is done (XERK-129 parity)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000);
+    await t.swipeDown(); // reading the box buys it time
+    await vi.advanceTimersByTimeAsync(3000);
+    // Past the original TTL, still up.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("a cue arriving mid-run waits; it appears only after the translation dismisses", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    // The translation still owns the box — the cue neither triggers nor appears.
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    // The run is over and its box gone: the queued cue resumes now.
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+  });
+
+  it("a translation run takes the box over from a showing cue, which embeds for review", async () => {
+    const t = await record({ withPhone: true });
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    // The displaced cue is reviewable in the phone transcript, not dropped.
+    expect(document.getElementById("session-text")!.textContent).toContain("Sun");
+  });
+
+  it("holds a run behind the open menu and shows it once the menu closes", async () => {
+    const t = await record();
+    await t.doubleTap(); // menu owns the popup
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    // The interactive menu is untouched.
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+
+    await t.doubleTap(); // close the menu — the finished run takes the box now
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text), 10));
+    // …and only now does its countdown run out.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("pairs each translation with its turn on the phone Session page", async () => {
+    const t = await record({ withPhone: true });
+    t.api.handlers().onFinal?.(FINAL_ES);
+    await vi.advanceTimersByTimeAsync(50);
+    const text = document.getElementById("session-text")!;
+    expect(text.querySelector(".session-translation")).toBeNull();
+
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    const row = text.querySelector(".session-translation")!;
+    expect(row.textContent).toContain("hello, how are you?");
+    expect(row.querySelector(".session-translation-lang")?.textContent).toBe("EN");
+  });
+
+  it("a fresh run replaces a finished box still counting down", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(2000); // mid-countdown
+
+    const TR2 = { ...TR, segmentId: "s2", text: "See you tomorrow." };
+    t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s2", text: "hasta mañana" });
+    t.api.handlers().onTranslation?.(TR2);
+    await vi.advanceTimersByTimeAsync(50);
+    // A new box with only the new run's text, and no countdown again.
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR2.text)));
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR2.text)));
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 2);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6); // still up
+  });
+});

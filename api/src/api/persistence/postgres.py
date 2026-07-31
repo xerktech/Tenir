@@ -149,11 +149,12 @@ class SqlConversationStore:
             conn.execute(
                 """
                 INSERT INTO segments
-                    (segment_id, conversation_id, text, start_ms, end_ms, lang)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (segment_id, conversation_id, text, start_ms, end_ms, lang, translation)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (segment_id) DO UPDATE SET
                     text = EXCLUDED.text, start_ms = EXCLUDED.start_ms,
-                    end_ms = EXCLUDED.end_ms, lang = EXCLUDED.lang
+                    end_ms = EXCLUDED.end_ms, lang = EXCLUDED.lang,
+                    translation = EXCLUDED.translation
                 """,
                 (
                     segment.segment_id,
@@ -162,7 +163,18 @@ class SqlConversationStore:
                     segment.start_ms,
                     segment.end_ms,
                     segment.lang,
+                    segment.translation,
                 ),
+            )
+
+    def set_segment_translation(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, segment_id: str, translation: str
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            conn.execute(
+                "UPDATE segments SET translation = %s "
+                "WHERE segment_id = %s AND conversation_id = %s",
+                (translation, segment_id, conversation_id),
             )
 
     def add_cue(  # pragma: no cover - requires a live database
@@ -252,6 +264,7 @@ class SqlConversationStore:
             start_ms=row["start_ms"],
             end_ms=row["end_ms"],
             lang=row["lang"],
+            translation=row["translation"],
         )
 
     @staticmethod

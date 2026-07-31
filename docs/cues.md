@@ -53,19 +53,22 @@ on the phone.
 
 1. **Generation is server-side, off the caption path.** On each finalized
    transcript turn, `api/src/api/session.py` considers a cue: cheap gating runs on
-   the event loop (skip when cues are off, one is already in flight, or inside the
-   fixed rate-limit window), and only past that does it spawn a background task
-   that calls the cue model off-loop. A slow or failing model never stalls
+   the event loop (skip when cues are off, one is already in flight, inside the
+   fixed rate-limit window, or while a live translation run is open — XERK-160:
+   cues neither trigger nor appear during translations, and resume once the run
+   ends; see `docs/translations.md`), and only past that does it spawn a
+   background task that calls the cue model off-loop. A slow or failing model never stalls
    captions — a cue is a best-effort aside.
 2. **The model call reuses the STT gateway.** The cue backend
    (`api/src/api/cue/openai.py`) POSTs `/chat/completions` to the *same* LiteLLM
    endpoint + key the STT engine uses (`API_LITELLM_ENDPOINT` /
    `API_LITELLM_API_KEY`) — no new URL/key var. The model alias is `API_LLM_MODEL`
-   (default `qwen3-llm`). The model returns a small JSON object
-   (`{cue, title, body}`). The prod model (Qwen3) is a *reasoning* model, so the
+   (default `gpt-oss:120b`). The model returns a small JSON object
+   (`{cue, title, body}`). The prod models have been *reasoning* models, so the
    call disables thinking (`chat_template_kwargs.enable_thinking = false`, toggle
-   `API_CUE_DISABLE_THINKING`) — otherwise it spends the whole token budget
-   reasoning and returns an empty `content`, and no cue is ever produced. The first
+   `API_CUE_DISABLE_THINKING`) — the retired Qwen3 left thinking spent the whole
+   token budget reasoning and returned an empty `content`, so no cue was ever
+   produced; a server that doesn't know the kwarg drops it harmlessly. The first
    JSON object is still extracted defensively, falling back to `reasoning_content`.
 3. **Delivery + persistence.** A cue is delivered as a `cue` WebSocket message
    (see `contract/ws-messages.schema.json`) and persisted to the `cues` table
@@ -135,8 +138,9 @@ the toggle, so it simply matches the single fixed setting everyone else gets.
 
 ## Evidence retrieval (XERK-120)
 
-The cue model's weights are frozen years back (the deployed Qwen3 reports an
-October 2023 cutoff), so a cue about anything current answered from memory is a
+The cue model's weights are frozen years back (measured on the previously
+deployed Qwen3, which reported an October 2023 cutoff; gpt-oss is likewise
+frozen), so a cue about anything current answered from memory is a
 guess — probed directly, the model confidently names a UK prime minister two
 governments stale. With `API_CUE_RETRIEVAL_BACKEND=live`, the session gathers
 **evidence** before the model call and rides it in the prompt: three tiers — an
@@ -163,32 +167,32 @@ by construction.
 |----------|-----------------------------------------------------------------------|
 | `off`    | No cues (default). The stripped core stays STT-only.                   |
 | `stub`   | Model-free, deterministic generator for CI/dev — no GPU.               |
-| `openai` | Real chat model via the LiteLLM gateway (`qwen3-llm`).                 |
+| `openai` | Real chat model via the LiteLLM gateway (`gpt-oss:120b`).              |
 
 The stub is what CI exercises end-to-end (session → WS frame → persistence →
 history), so the whole path is covered without a GPU.
 
 ## The model
 
-The production cue model is **Qwen3.6-27B-FP8**, served by vLLM and aliased
-`qwen3-llm` on the shared LiteLLM gateway. It runs as the `tenir-vllm-cue`
-container in the `tenir-gpu` compose stack (docker-ops repo), co-tenant with the
+The production cue model is **gpt-oss-120b**, served by Ollama and aliased
+`gpt-oss:120b` on the shared LiteLLM gateway. It runs as the `tenir-ollama-cue`
+container in the `tenir-gpu` compose stack (DockerOps repo), co-tenant with the
 Parakeet STT server on the GPU box. (STT moved Voxtral→Parakeet in XERK-92; the
-cue model is unaffected — it is a separate chat route through the same gateway.)
+cue model is a separate chat route through the same gateway.)
 
-Why this model:
-
-- **World knowledge.** Cues are fact checks and factual lookups (correcting wrong
-  claims, distances, entities), so breadth *and* reliability of knowledge matter
-  most — a cue is only worth surfacing if it is right (XERK-118). The Qwen3 family
-  leads open-weight models on knowledge/instruction-following benchmarks (MMLU-Pro,
-  IFEval) at this size.
-- **Speed as a GPU co-tenant.** FP8 weights keep latency low; the only other model
-  on the card is Parakeet STT (~2.4 GB), so the cue LLM gets the lion's share and
-  cue generation is a short, bursty chat call, not a sustained load.
-- **Reliable structured output.** vLLM's guided decoding + a JSON-only prompt give
-  dependable `{cue, title, body}` objects, which the parser still guards
-  defensively for reasoning-model wrapping.
+Why this model: the July 2026 cue-model eval
+(`scripts/cue_eval/RESULTS-2026-07.md`) replayed the frozen 12-conversation
+deployment dataset against the then-production Qwen3.6-27B-FP8 and candidate
+replacements, judged by a cross-family LLM judge. gpt-oss-120b won on the bar
+that matters — enrichment without accuracy loss (XERK-118: a cue is only worth
+surfacing if it is right) — and retired the vLLM/Qwen server. Cues are fact
+checks and factual lookups (correcting wrong claims, distances, entities), so
+breadth *and* reliability of knowledge matter most; the runtime is pinned
+(`ollama/ollama:0.32.4`, the version the eval ran on) so cue behaviour can't
+shift under a silent upgrade. The JSON-only prompt gives dependable
+`{cue, title, body}` objects, which the parser still guards defensively for
+reasoning-model wrapping. Since XERK-160 the same model also serves the live
+translations (`docs/translations.md`) — one chat route, two features.
 
 ### Running it on the single-host stack
 
@@ -202,6 +206,6 @@ API_CUE_BACKEND=stub docker compose up --build
 API_CUE_BACKEND=openai docker compose --profile cues up --build
 ```
 
-The `cues` profile starts the `vllm-cue` container and the gateway routes the
-`qwen3-llm` alias to it (`litellm/config.yaml`). Without the profile the route
+The `cues` profile starts the `ollama-cue` container and the gateway routes the
+`gpt-oss:120b` alias to it (`litellm/config.yaml`). Without the profile the route
 just 503s and cues stay silent — captions are unaffected.

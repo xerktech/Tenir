@@ -64,7 +64,7 @@ def pcm16_to_float32(pcm: bytes) -> np.ndarray:
 def float32_to_wav(samples: np.ndarray) -> bytes:
     """Encode a mono float32 [-1, 1] window as a 16 kHz s16le WAV in memory.
 
-    The wire format the Voxtral HTTP seam sends each window over: a
+    The wire format the offline HTTP seam (ParakeetEngine) sends each window over: a
     self-describing container the receiver decodes with ``wav_to_float32`` — no
     out-of-band sample-rate metadata.
     """

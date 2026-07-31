@@ -120,6 +120,32 @@ describe("HistoryPanel", () => {
     );
   });
 
+  it("renders a stored turn's English translation under the original (XERK-160)", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [
+        {
+          segmentId: "s1",
+          text: "hola, ¿qué tal?",
+          startMs: 0,
+          endMs: 1500,
+          lang: "es",
+          translation: "hello, how are you?",
+        },
+        { segmentId: "s2", text: "untranslated turn", startMs: 2000, endMs: 3000, lang: "en" },
+      ],
+    });
+    const { container } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+
+    await screen.findByText(/hola/);
+    expect(screen.getByText("hello, how are you?")).toBeInTheDocument();
+    expect(screen.getByTitle("Translated from Spanish")).toHaveTextContent("EN");
+    // Only the translated turn carries a translation line.
+    expect(container.querySelectorAll(".translation")).toHaveLength(1);
+  });
+
   it("opens the transcript as its own page, replacing the list, with a back button", async () => {
     // The detail used to render inline at the bottom of the list; it now takes over
     // the panel as its own page, so the transcript isn't lost below the fold (XERK-65).

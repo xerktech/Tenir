@@ -40,8 +40,8 @@ def check(name, cond, detail=""):
 
 
 def pcm_silence(seconds=1.0):
-    # 16kHz s16le mono silence is enough for the stub transcriber; the real
-    # Voxtral backend just produces empty/near-empty captions for it.
+    # 16kHz s16le mono silence is enough for the stub transcriber; a real
+    # STT backend just produces empty/near-empty captions for it.
     return b"\x00\x00" * int(16000 * seconds)
 
 

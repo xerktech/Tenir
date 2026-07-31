@@ -45,6 +45,28 @@ export function Muted({ children }: { children: ReactNode }): JSX.Element {
   return <Text style={styles.muted}>{children}</Text>;
 }
 
+/**
+ * English translation of a non-English turn (XERK-160), rendered turn-by-turn on
+ * its own line under the original — the web's `.translation` row. A nested
+ * `<Text>` fragment (not a View) so it lives INSIDE a selectable transcript run
+ * and drag-selection still crosses it (XERK-104). Quieter than the spoken words,
+ * led by a small accent "EN" tag so the pairing reads at a glance.
+ */
+export function TranslationText({ text }: { text: string }): JSX.Element {
+  const { colors } = useTheme();
+  return (
+    <Text style={{ color: colors.muted }}>
+      {"\n"}
+      <Text
+        style={{ color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 }}
+      >
+        {"EN "}
+      </Text>
+      {text}
+    </Text>
+  );
+}
+
 /** Uppercase micro-label — section/field captions (the web's `.field-label`). */
 export function Label({ children }: { children: ReactNode }): JSX.Element {
   const styles = useThemedStyles(makeStyles);

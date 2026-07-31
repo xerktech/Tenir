@@ -101,6 +101,8 @@ export interface SegmentView {
   startMs: number;
   endMs: number;
   lang: string | null;
+  /** English translation of a non-English turn (XERK-160); absent/null otherwise. */
+  translation?: string | null;
 }
 
 /** A private context cue, rendered inline in history at atMs (XERK-81). */

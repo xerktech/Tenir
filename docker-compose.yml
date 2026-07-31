@@ -31,7 +31,7 @@ services:
       # streaming server over a WebSocket (API_STT_STREAM_ENDPOINT), while finals
       # decode the whole turn on the offline Parakeet server (API_STT_ENDPOINT).
       # Low-latency partials + accurate finals; if Nemotron is unreachable the api
-      # degrades to Parakeet-only partials. Set to "voxtral" for the single-model
+      # degrades to Parakeet-only partials. Set to "parakeet" for the single-model
       # (Parakeet-only) path, which needs neither the nemotron service nor the
       # stream endpoint below.
       API_STT_BACKEND: ${API_STT_BACKEND:-hybrid}
@@ -52,9 +52,17 @@ services:
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
       # model through the SAME LiteLLM gateway — start it with `--profile cues`, which
-      # brings up vllm-cue + registers the qwen3-llm alias in litellm/config.yaml.
+      # brings up ollama-cue + registers the gpt-oss:120b alias in litellm/config.yaml.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
-      API_LLM_MODEL: ${API_LLM_MODEL:-qwen3-llm}
+      API_LLM_MODEL: ${API_LLM_MODEL:-gpt-oss:120b}
+      # Live translations (XERK-160): non-English turns are translated to English
+      # and shown alongside the transcript (the glasses show them in the cue box).
+      # Off by default like cues; "stub" is model-free, "openai" routes to the
+      # same chat model + gateway the cues use (`--profile cues` for the model).
+      API_TRANSLATION_BACKEND: ${API_TRANSLATION_BACKEND:-off}
+      # How long speech may go quiet after the last non-English activity before
+      # the run is declared done and the glasses' dismiss countdown starts.
+      API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}
       # Cue evidence retrieval (XERK-120): grounds cue facts in live sources —
       # the RSS-fed news corpus, Wikipedia, and a self-hosted SearXNG — because
       # the cue model's weights are years stale. "off" (default) keeps cues
@@ -81,7 +89,9 @@ services:
       # Hybrid partials server — probed directly for its own status light (it serves
       # GET /health alongside the WS endpoint). Only meaningful with the hybrid backend.
       API_STATUS_STREAM_URL: ${API_STATUS_STREAM_URL:-http://nemotron:8000}
-      API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-http://vllm-cue:8000}
+      # Left unset: Ollama serves no GET /health, so the cue-LLM light follows the
+      # LiteLLM gateway probe (the api's real path to it) — same as split-host prod.
+      API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-}
     volumes:
       # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
       # container recreation.
@@ -213,38 +223,41 @@ services:
               count: all
               capabilities: [gpu]
 
-  vllm-cue:
-    # Cue/summary LLM (XERK-81): a chat model the api calls through the SAME LiteLLM
-    # gateway to turn the live conversation into private context cues. Opt-in — only
-    # started with `--profile cues` (it's a large model and needs its own GPU share
-    # alongside Voxtral). The gateway aliases it as "qwen3-llm" (litellm/config.yaml),
-    # matching API_LLM_MODEL. Serves under its real model id (no --served-model-name).
+  ollama-cue:
+    # Cue/summary + translation LLM (XERK-81, XERK-160): a chat model the api calls
+    # through the SAME LiteLLM gateway. Opt-in — only started with `--profile cues`
+    # (it's a large model and needs its own GPU share alongside the STT servers).
+    # gpt-oss-120b on Ollama, mirroring the deployed tenir-gpu stack (the July 2026
+    # cue-model eval retired the earlier vLLM/Qwen server — see
+    # scripts/cue_eval/RESULTS-2026-07.md). The gateway aliases it as "gpt-oss:120b"
+    # (litellm/config.yaml), matching API_LLM_MODEL. Version PINNED like prod: cue
+    # behaviour must not shift under a silent runtime upgrade.
     profiles: ["cues"]
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.32.4}
+    # Serve, then pull the model (no-op once cached — the ~65 GB GGUF persists in
+    # the volume), then keep serving in the foreground.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - "--model"
-      - "${VLLM_CUE_MODEL:-Qwen/Qwen3.6-27B-FP8}"
-      - "--gpu-memory-utilization"
-      - "${VLLM_CUE_GPU_MEMORY_UTILIZATION:-0.4}"
-      - "--max-model-len"
-      - "${VLLM_CUE_MAX_MODEL_LEN:-16384}"
+      - "/bin/ollama serve & sleep 8; /bin/ollama pull ${OLLAMA_CUE_MODEL:-gpt-oss:120b}; wait"
     ports:
-      - "9300:8000"
+      - "9300:11434"
     volumes:
-      - "C:/docker/tenir/vllm-cue:/root/.cache/huggingface"
+      - "C:/docker/tenir/ollama-cue:/root/.ollama"
     environment:
-      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
-    ipc: host
+      # Cue prompts are ~2.5k tokens (system prompt + turn window + avoid list);
+      # 16384 matches the eval and leaves ample room (translations are far smaller).
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CUE_CONTEXT_LENGTH:-16384}
+      # Keep the model resident — a cue/translation attempt must never pay the
+      # model-load penalty mid-conversation.
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_FLASH_ATTENTION: "1"
     healthcheck:
-      # 503 until the model is resident (first boot downloads the weights), 200 after.
-      # NOTE: the vllm/vllm-openai image ships only `python3` (no `python` on PATH) —
-      # a `python`-based probe exec-fails forever and pins the container at
-      # `health: starting`, so this MUST use `python3`.
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "ollama", "ls"]
       interval: 15s
       timeout: 5s
       retries: 20
-      start_period: 600s
+      # First boot on an empty volume downloads the ~65 GB GGUF.
+      start_period: 1800s
     deploy:
       resources:
         reservations:
