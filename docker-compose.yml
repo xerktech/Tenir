@@ -60,6 +60,9 @@ services:
       # Off by default like cues; "stub" is model-free, "openai" routes to the
       # same chat model + gateway the cues use (`--profile cues` for the model).
       API_TRANSLATION_BACKEND: ${API_TRANSLATION_BACKEND:-off}
+      # How long speech may go quiet after the last non-English activity before
+      # the run is declared done and the glasses' dismiss countdown starts.
+      API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}
       # Cue evidence retrieval (XERK-120): grounds cue facts in live sources —
       # the RSS-fed news corpus, Wikipedia, and a self-hosted SearXNG — because
       # the cue model's weights are years stale. "off" (default) keeps cues
