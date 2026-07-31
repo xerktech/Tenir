@@ -321,6 +321,11 @@ def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
     # (definition, then mechanism, then history — measured as the paraphrase
     # class the Jaccard backstop can't reach, 0.18-0.30 similarity).
     assert "different angle" in system
+    # ... and so is the same idea under a different name (2026-07-30 review:
+    # pub/sub explained three times in 80 s as "Kafka topic broadcast",
+    # "Publish-Subscribe", then "Message Broker" — pairwise substance 0.13-0.19
+    # and zero subject-token overlap, invisible to both code backstops).
+    assert "different names for one idea" in system
 
 
 def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
@@ -398,6 +403,45 @@ def test_payload_system_prompt_defaults_bare_names_to_people_present() -> None:
     assert "wrong by construction" in system  # their X is not the public X
     assert "you know nothing about it" in system  # internal names undefined
     assert "acronym resolves within" in system  # no cross-domain expansions
+
+
+def test_payload_system_prompt_treats_acronym_variants_as_the_internal_term() -> None:
+    # 2026-07-30 post-deploy review: an accented work meeting garbled the
+    # team's own internal acronym differently each utterance, and every
+    # variant got its own cross-domain definitional cue — occupational-health
+    # Display Screen Equipment, an automotive Data-Collecting Unit, a telecom
+    # Data Service Unit, and Software Transactional Memory, all for the one
+    # internal term the speakers were debating the expansion of. Once the
+    # speakers treat an acronym as their own, later variants are that same
+    # term misheard, not fresh terms to define.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "a letter or two off" in system
+    assert "not a fresh term to define" in system
+
+
+def test_payload_system_prompt_blocks_analogous_tech_swaps() -> None:
+    # Same review: cues explained Kafka topics/offsets and an SQS visibility
+    # timeout to a team that had repeatedly named RabbitMQ as their broker,
+    # and pitched Airflow at their in-house orchestrator — plausible facts
+    # about a rival product the speakers don't use, presented as if they
+    # applied to the one they do.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "merely does the same job" in system
+    assert "another vendor's defaults" in system
+
+
+def test_payload_system_prompt_counts_generic_figures_as_invented() -> None:
+    # Same review: the invented-stat guard leaked on small plausible numbers
+    # ("over 200 attack-surface-reduction rules" — the real count is ~19;
+    # "~1 ms per inter-service call"; "retry libraries default to three
+    # attempts"). Typical/common/default figures count as invented unless the
+    # documented figure for the exact product is specifically remembered.
+    # The rule rides twice: in the practitioner bar and — because the first
+    # replay round showed it leaking in casual registers too ("most event
+    # vendors require 30 days' notice") — as a top-level accuracy bullet.
+    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "invented statistics" in system
+    assert "a guess wearing a number" in system
 
 
 def test_payload_system_prompt_extends_everyday_ban_to_calendar_trivia() -> None:

@@ -497,3 +497,113 @@ keeps exactly the companion cue.
   which the harness cannot replay. The next deployment review must check
   the Guardian-keyword-match and Royal-Mail-style false-correction
   classes specifically.
+
+## The garble-and-vendor pass (2026-07-30, from the first sessions under v14)
+
+### The deployment review
+
+Four sessions recorded since the v0.3.18 deploy (2026-07-28): an ambient
+tech video (`0aff8ae8` — a Z Fold 8 review plus a Framework 13 Pro build,
+both post-cutoff products) and a two-part accented engineering meeting
+(`2837af01`/`bd758f83`, a malware-analysis-pipeline knowledge share — the
+first real professional-audience data since the v14 audience pass). Hand
+review of all 113 production cues found ~36 defective, in six classes:
+
+- **Garbled-STT acronym chasing** (~15, the dominant class): the accented
+  audio garbled the team's internal acronym differently each utterance and
+  every variant got its own cross-domain definitional cue — one internal
+  term was "defined" five ways (occupational-health Display Screen
+  Equipment, automotive Data-Collecting Unit, telecom Data Service Unit,
+  Software Transactional Memory, plus a confabulated "industry" expansion
+  of the real one). Other members: RabbitMQ → Autodesk Revit plugins,
+  "verdicts" → Google Vertex AI (the speakers had named OpenAI), "upload
+  sample" → Apache Airflow, Mandiant's capa → Kappa architecture, "malware"
+  → an invented "Evalware" family. One cascade: a bad automotive-DCU cue
+  was followed by an NB-IoT cue chaining off the cue's own wrong content.
+- **Wrong-vendor tech swaps** (~6): Kafka topics/offsets and an SQS
+  visibility timeout explained to a team that had repeatedly named RabbitMQ
+  as their broker — the SQS cue landing directly on their real RabbitMQ
+  double-delivery bug — plus Airflow pitched at their in-house orchestrator
+  and S3 Glacier at their internal archive service.
+- **False corrections / cross-gen confabulation** (~4, known residual):
+  the Fold 8's stated cover screen "corrected" with Fold-7-era specs, the
+  correct IP48 rating "corrected" to IPX8, a post-cutoff Intel chip filed
+  under Meteor Lake, the 2021 iPad mini called current.
+- **Thematic redundancy below both gates** (~7 clusters): pub/sub explained
+  three times in 80 s ("Kafka topic broadcast" / "Publish-Subscribe" /
+  "Message Broker"), GraphQL round-trips twice in 23 s, sequence numbers
+  twice in 23 s. Measured pairwise: substance 0.03–0.28, subject overlap
+  0.000 — legitimately below the calibrated thresholds, so these are not
+  backstop bugs but an unhandled class (same idea, fresh title and angle).
+- **Invented stats** (~5): Defender "over 200 attack-surface-reduction
+  rules" (real count ≈19), "4:3 gives ~33% more vertical space" (≈22%),
+  "~1 ms per inter-service call", "retry libraries default to three".
+- **Bare-fragment misfire** (1): a lone "Confidence." during goodbyes
+  produced a confidence-interval statistics cue.
+
+### The fix (v15 → v15.2) and what replay actually showed
+
+Four prompt rules, each pinned by a test: (1) a short acronym a letter or
+two off one already in the conversation is that acronym misheard, and once
+the speakers treat an acronym as their own, later variants are the same
+internal term — never a fresh cross-domain definition; (2) when the
+speakers have named the product they use for a job, a rival product doing
+the same job is the wrong subject, and another vendor's defaults never
+apply to theirs; (3) typical/common/default/round-number figures are
+invented statistics unless the documented value for the exact named thing
+is specifically remembered (v15.2 promoted this into the top-level accuracy
+rules after the first candidate run showed it leaking in casual registers);
+(4) the avoid-list counts different names for one idea as one subject, and
+"concept" joins the bare-mumbled-word rule.
+
+Frozen set: the three new sessions plus three established controls
+(ambient-movie `87e2acbe`, ambient-TV `1cf67366`, garbled `ed1d330d`),
+re-exported and re-baselined 2026-07-30; gpt-oss:120b @ medium, temp 0;
+795 attempts per full run (baseline, v15, v15.2 subset, v15.2 full).
+
+| run | cues | emit% | novelty | relevance | accuracy | restates | wrong | judge dups |
+|---|---|---|---|---|---|---|---|---|
+| v14 (shipped baseline) | 147 | 18% | 1.90 | 1.97 | 1.95 | 3 | 1 | 4 |
+| **v15.2 (this branch, full run)** | 150 | 19% | 1.92 | 1.93 | **1.99** | **1** | **0** | **1** |
+
+Hand-read, the honest picture is narrower than the scorecard suggests:
+
+- **Reproducible wins.** The serial same-acronym expansion pattern (five
+  definitions of one internal term) appears in no candidate run. The
+  message-broker cues now mostly ground in the speakers' actual RabbitMQ
+  (including the best cue of the exercise — RabbitMQ's single-active-
+  consumer mode, v3.8, offered exactly on their double-delivery bug), and
+  Document360/Ingate get accurate descriptions where the baseline invented
+  an Atlassian acquisition and a web-gateway product. Judged dups 4→1 and
+  the movie control sheds its one confabulated cue (a nonexistent "Yonka
+  vodka") in both candidate runs; all three controls otherwise unchanged.
+- **Churn, not elimination.** The broader garble-chasing class holds
+  roughly flat per run (~8–10 baseline, ~7–10 across candidates) — it
+  relocates instead of shrinking: one candidate run invented an "Orchid
+  ransomware" family from an "orchestrator" garble, another an "Orchid
+  VPN"; a garbled "stored procedure" became DTMF signalling; "the C and
+  Python" became MicroPython; the team's own product got defined as a
+  public SAST scanner. The wrong-vendor class dropped in part 1 but
+  returned in part 2 of the final run (a Kafka/SQS cluster around the
+  same bug). The invented-stat rule removed the retry-count and
+  compression figures in one session while a CTR benchmark elsewhere
+  gained an invented citation ("WordStream 2023 data").
+- **Unmoved.** False corrections/cross-gen confabulation on the ambient
+  video (~9–12 per run in every condition — one run "corrected" the Fold
+  8's price onto a $199 Analogue Pocket). Sub-threshold thematic
+  redundancy (the pub/sub cluster reformed in three of four runs).
+
+### Residuals and the next step
+
+Three prompt passes in three days have converged: each new rule removes
+its named examples and the model's error mass shifts to the nearest
+unnamed neighbour. The classes that remain — confabulated resolutions of
+garbled tokens, plausible-but-wrong vendor facts, invented figures with
+invented citations, post-cutoff false corrections — are all failures of
+*unverifiable memory*, which prompt text can redistribute but not remove.
+The structural fixes stay what the v14 residuals section named: a
+retrieval cross-check of entity cues before emission (an entity cue whose
+subject retrieval cannot corroborate in-domain gets dropped), and possibly
+a session-level garble-density gate (suppress entity cues entirely while
+the transcript's coherence is low). Those are the next investment, not a
+v16 wording pass.
