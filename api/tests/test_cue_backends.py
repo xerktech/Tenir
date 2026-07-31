@@ -225,7 +225,7 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def _gen() -> OpenAICueGenerator:
-    return OpenAICueGenerator(endpoint="http://litellm:4000/v1", model="qwen3-llm")
+    return OpenAICueGenerator(endpoint="http://litellm:4000/v1", model="gpt-oss:120b")
 
 
 def test_parse_valid_cue() -> None:
@@ -284,14 +284,15 @@ def test_parse_short_body_unchanged() -> None:
 
 
 def test_payload_disables_thinking_by_default() -> None:
-    # Qwen3 left thinking spends the whole token budget on reasoning and returns an
-    # empty content, so no cue is produced. The payload must switch thinking off.
+    # A reasoning model left thinking spends the whole token budget on reasoning and
+    # returns an empty content (recorded on the retired Qwen3), so no cue is
+    # produced. The payload must switch thinking off.
     payload = _gen()._build_payload("how far is the sun?")
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["response_format"] == {"type": "json_object"}
     # Greedy decoding: sampled decoding measurably produced more wrong cues.
     assert payload["temperature"] == 0.0
-    assert payload["model"] == "qwen3-llm"
+    assert payload["model"] == "gpt-oss:120b"
     assert [m["role"] for m in payload["messages"]] == ["system", "user"]
     assert payload["messages"][1]["content"] == "how far is the sun?"
 

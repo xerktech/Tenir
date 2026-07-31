@@ -26,7 +26,7 @@ src/api/
   contract/        Pydantic models generated from contract/ws-messages.schema.json
   persistence/     conversation store (memory + Postgres) and audio store
                    (memory + local disk), WAV helpers
-  stt/             streaming STT seam: stub (model-free) and voxtral
+  stt/             streaming STT seam: stub (model-free) and parakeet
                    (OpenAI-compatible /audio/transcriptions via LiteLLM)
 ```
 
@@ -49,8 +49,8 @@ the `API_AUTH_ADMIN_*` bootstrap admin to log in.
 |---|---|---|
 | `API_AUTH_SECRET` | (insecure) | bearer-token HMAC secret; boot refuses the default |
 | `API_AUTH_ADMIN_USERNAME/_PASSWORD/_HOUSEHOLD` | — | bootstrap admin seeded at startup |
-| `API_STT_BACKEND` | `stub` | `stub` (model-free) / `voxtral` |
-| `API_STT_MODEL` | `voxtral` | model alias sent to the gateway (litellm/config.yaml) |
+| `API_STT_BACKEND` | `stub` | `stub` (model-free) / `parakeet` / `hybrid` |
+| `API_STT_MODEL` | `parakeet` | model alias sent to the gateway (litellm/config.yaml) |
 | `API_LITELLM_ENDPOINT` / `API_LITELLM_API_KEY` | `http://litellm:4000/v1` / "" | OpenAI-compatible base URL + key for STT |
 | `API_PERSISTENCE_BACKEND` | `memory` | `memory` / `postgres` / `off` |
 | `API_DATABASE_URL` | compose default | Postgres DSN for the `postgres` backend |

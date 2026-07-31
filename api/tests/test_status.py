@@ -97,7 +97,7 @@ def test_litellm_probe_url_derives_gateway_root_from_endpoint(
 
 
 def test_refresh_registers_model_servers_and_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
 
     async def _http(url: str) -> tuple[str, str]:
         return st.READY, "ready"
@@ -139,7 +139,7 @@ def test_gateway_fronted_models_mirror_gateway_probe(monkeypatch: pytest.MonkeyP
     # Split-host deploy (the default): no direct status_stt_url is configured because
     # the api has no route to the model server, so the light follows the one gateway
     # probe instead of a phantom direct probe that would falsely read down.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_stt_url", "")
 
     probed: list[str] = []
@@ -164,7 +164,7 @@ def test_unreachable_model_host_does_not_read_down_when_gateway_is_healthy(
     # inference worked fine, because the probe used a compose-internal URL the api
     # could not open a socket to. With no direct URL configured the model server is
     # never probed at all, so an unroutable host cannot manufacture a red light.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_stt_url", "")
     monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
 
@@ -183,7 +183,7 @@ def test_unreachable_model_host_does_not_read_down_when_gateway_is_healthy(
 
 def test_gateway_fronted_models_go_down_with_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     # A genuine outage still surfaces: an unreachable gateway takes its models with it.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_stt_url", "")
     monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
 
@@ -201,7 +201,7 @@ def test_gateway_fronted_models_go_down_with_the_gateway(monkeypatch: pytest.Mon
 def test_direct_model_probe_when_a_url_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     # Single-host stack (docker-compose sets these): a declared URL means the api can
     # reach that server, so it is probed directly for per-model resolution.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_stt_url", "http://vllm-stt:8000")
 
     probed: list[str] = []
@@ -222,7 +222,7 @@ def test_direct_probe_still_reports_a_genuinely_dead_model_server(
 ) -> None:
     # The opt-in direct probe keeps its diagnostic value: a configured URL that refuses
     # connections goes red even though the gateway itself is healthy.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_stt_url", "http://vllm-stt:8000")
     monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
 
@@ -269,7 +269,7 @@ def test_refresh_registers_cue_llm_via_gateway(monkeypatch: pytest.MonkeyPatch) 
 def test_stt_and_cue_share_a_single_gateway_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     # Full deploy: STT + cues both real. The gateway they share is probed exactly once
     # and both model lights resolve against it.
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "cue_backend", "openai")
     monkeypatch.setattr(settings, "status_stt_url", "")
     monkeypatch.setattr(settings, "status_llm_url", "")
@@ -343,7 +343,7 @@ def test_refresh_registers_infra_for_real_backends(monkeypatch: pytest.MonkeyPat
 
 
 def test_unreachable_model_server_flips_connecting_then_down(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "status_grace_seconds", 180.0)
     clock = {"now": 9000.0}
     monkeypatch.setattr(st, "_now", lambda: clock["now"])

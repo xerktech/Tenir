@@ -1,14 +1,12 @@
-"""Voxtral engine (master plan §5.2).
+"""Offline HTTP transcription engine — Parakeet (XERK-92).
 
-Voxtral (Mistral) behind the same ``WhisperEngine`` seam faster-whisper uses, so
-it reuses all of ``StreamingTranscriber``'s windowing / VAD / partial-final cadence
-unchanged. It calls an OpenAI-compatible ``/audio/transcriptions`` endpoint — a
-vLLM-served Voxtral by default — sending each window as an in-memory WAV.
-
-Voxtral leads open STT on ES⇄EN WER and ships a true-streaming "Realtime" variant;
-this HTTP engine gets its accuracy through our existing windowing. Driving its
-*native* sub-500 ms causal stream (instead of re-decoding windows) is the natural
-follow-up behind this same seam.
+An OpenAI-compatible ``/audio/transcriptions`` client behind the same engine seam
+faster-whisper used, so it reuses all of ``StreamingTranscriber``'s windowing /
+VAD / partial-final cadence unchanged. In production it drives the Parakeet
+server (``parakeet-stt/``), directly or through the LiteLLM gateway, sending
+each window as an in-memory WAV. (It replaced the retired Voxtral audio-LLM —
+see ``parakeet-stt/README.md`` for that history; a few defensive choices below
+date from it.)
 
 Network/model I/O, so excluded from coverage — CI runs the deterministic stub and
 the windowing is covered by ``StreamingTranscriber`` tests against a fake engine;
@@ -23,10 +21,10 @@ import numpy as np
 
 from api.stt.engine import EngineResult, EngineWord, float32_to_wav
 
-log = logging.getLogger("api.stt.voxtral")
+log = logging.getLogger("api.stt.parakeet")
 
 
-class VoxtralEngine:
+class ParakeetEngine:
     def __init__(
         self, *, endpoint: str, model: str, api_key: str = "", timeout: float = 15.0
     ) -> None:
@@ -40,14 +38,15 @@ class VoxtralEngine:
         """Encode a mono float32 [-1, 1] window as 16 kHz s16le WAV in memory."""
         return float32_to_wav(samples)
 
-    def transcribe(  # pragma: no cover - requires httpx + a live Voxtral endpoint
+    def transcribe(  # pragma: no cover - requires httpx + a live STT endpoint
         self, samples: np.ndarray, *, language: str | None, want_words: bool = True
     ) -> EngineResult:
         import httpx
 
-        # vLLM-served Voxtral supports response_format "json"/"text" only — it returns
-        # 400 "do not support verbose_json for voxtral". We use "json" (no per-word
-        # timestamps); StreamingTranscriber falls back to segment-boundary timing.
+        # response_format "json" (no per-word timestamps in the body itself):
+        # chosen when the retired vLLM-Voxtral server 400'd on verbose_json, and
+        # kept — the Parakeet server returns its words field either way, and
+        # StreamingTranscriber falls back to segment-boundary timing without it.
         data = {"model": self._model, "response_format": "json"}
         if language is not None:
             data["language"] = language
@@ -58,8 +57,8 @@ class VoxtralEngine:
             # cheaper — so this is safe to send through the gateway too.
             data["timestamps"] = "false"
         files = {"file": ("audio.wav", self._wav_bytes(samples), "audio/wav")}
-        # The LiteLLM gateway requires a bearer token; a direct vLLM ignores it (no key
-        # configured → no header sent).
+        # The LiteLLM gateway requires a bearer token; a direct model server ignores
+        # it (no key configured → no header sent).
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         resp = httpx.post(
             self._url, data=data, files=files, headers=headers, timeout=self._timeout

@@ -1,7 +1,8 @@
 """Chat-model translator via the LiteLLM gateway (XERK-160).
 
 POSTs /chat/completions to the same endpoint + key the STT finals and cues use
-(prod: the ``qwen3-llm`` alias). One call per finalized non-English turn: the
+(prod: the ``gpt-oss:120b`` alias, the cue model). One call per finalized
+non-English turn: the
 turn's text goes in, an English rendering comes out as a small JSON object
 (``{"translation": …}``) so a chatty model can't smuggle commentary into the
 transcript. Mirrors the cue backend's defensive posture: temperature 0, thinking
@@ -83,8 +84,9 @@ class OpenAITranslator:
             "response_format": {"type": "json_object"},
         }
         if self._disable_thinking:
-            # Qwen3 is a reasoning model; left thinking it burns the token budget
-            # before the JSON answer (same failure mode as cues, XERK-81).
+            # A reasoning model left thinking burns the token budget before the
+            # JSON answer (same failure mode as cues, XERK-81); a server that
+            # doesn't know the kwarg drops it harmlessly.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return payload
 

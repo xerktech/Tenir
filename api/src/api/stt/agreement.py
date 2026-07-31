@@ -23,14 +23,15 @@ the first cut wasn't):
   window starts at a different point each pass, so its hypotheses never line up and
   nothing ever commits — the streaming layer decodes the whole segment for partials
   when LocalAgreement is on for exactly this reason.
-- **Normalized comparison.** Voxtral re-punctuates and re-capitalizes the window
-  every pass (``So`` → ``So,``, ``the`` → ``The``). Comparing raw tokens would break
-  the prefix on the first cosmetic change and commit almost nothing, so agreement is
-  checked on a lowercased, punctuation-stripped form while the original surface form
-  is what gets displayed.
+- **Normalized comparison.** STT engines re-punctuate and re-capitalize the window
+  every pass (``So`` → ``So,``, ``the`` → ``The`` — first recorded on the retired
+  Voxtral engine, and true of the offline decoders since). Comparing raw tokens
+  would break the prefix on the first cosmetic change and commit almost nothing, so
+  agreement is checked on a lowercased, punctuation-stripped form while the original
+  surface form is what gets displayed.
 
-The policy is text-only (no timestamps), so it works with any engine — including
-Voxtral, whose vLLM ``/audio/transcriptions`` endpoint returns no per-word timing.
+The policy is text-only (no timestamps), so it works with any engine — even one
+whose ``/audio/transcriptions`` endpoint returns no per-word timing.
 """
 
 from __future__ import annotations

@@ -24,7 +24,7 @@ endpoint didn't.
   request volume ([XERK-115](https://xerktech.atlassian.net/browse/XERK-115)). It
   defaults on, and `verbose_json` always keeps timing. `response_format`:
   - `json` (default) → `{"text", "language", "words"}` (the `words` superset is what
-    `api.stt.voxtral.VoxtralEngine` — the generic HTTP transcription engine — reads
+    `api.stt.parakeet.ParakeetEngine` — the generic HTTP transcription engine — reads
     for per-word timing)
   - `text` → plain text
   - `verbose_json` → adds `segments` + `duration` (for LiteLLM's OpenAI transform)

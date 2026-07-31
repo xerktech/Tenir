@@ -2,10 +2,11 @@
 
 Reuses the SAME gateway base URL + key the STT engine uses (no new URL/key var):
 it POSTs /chat/completions instead of /audio/transcriptions. In prod the alias is
-``qwen3-llm`` → Qwen3.6-27B-FP8 on the tenir-vllm container.
+``gpt-oss:120b`` → gpt-oss-120b on the tenir-ollama-cue container (the July 2026
+cue-model eval retired the earlier vLLM/Qwen3 server — scripts/cue_eval/RESULTS-2026-07.md).
 
-The prod model is a *reasoning* model: left to its own devices Qwen3 spends the
-token budget on a chain-of-thought it returns in ``reasoning_content`` and leaves
+The prod models have been *reasoning* models: left to their own devices they spend
+the token budget on a chain-of-thought returned in ``reasoning_content`` and leave
 ``content`` empty (``finish_reason: length``), so the JSON answer never arrives and
 every cue is silently dropped. Cues want fast, structured output, not reasoning, so
 we disable thinking (`chat_template_kwargs.enable_thinking = false`) — the JSON then
@@ -423,9 +424,10 @@ class OpenAICueGenerator(CueGenerator):
             "response_format": {"type": "json_object"},
         }
         if self._disable_thinking:
-            # Qwen3 is a reasoning model; without this it burns the whole token budget
-            # thinking and returns an empty `content`. LiteLLM forwards the kwarg to
-            # vLLM, which applies it to the chat template.
+            # A reasoning model left thinking burns the whole token budget and
+            # returns an empty `content` (recorded on the retired Qwen3). LiteLLM
+            # forwards the kwarg to a server that applies it to the chat template
+            # and drops it (drop_params) for one that doesn't know it.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return payload
 

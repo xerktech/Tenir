@@ -54,14 +54,14 @@ def test_stub_empty_returns_none() -> None:
 
 
 def _translator(**kwargs) -> OpenAITranslator:
-    defaults = dict(endpoint="http://gw:4000/v1", model="qwen3-llm", api_key="k")
+    defaults = dict(endpoint="http://gw:4000/v1", model="gpt-oss:120b", api_key="k")
     defaults.update(kwargs)
     return OpenAITranslator(**defaults)
 
 
 def test_payload_shape() -> None:
     payload = _translator()._build_payload("hola, ¿qué tal?", "es")
-    assert payload["model"] == "qwen3-llm"
+    assert payload["model"] == "gpt-oss:120b"
     assert payload["temperature"] == 0.0
     assert payload["response_format"] == {"type": "json_object"}
     system, user = payload["messages"]

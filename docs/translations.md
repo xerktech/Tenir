@@ -69,7 +69,7 @@ once the run ends.
 |----------|-----------------------------------------------------------------------|
 | `off`    | No translations (default). The stripped core stays STT-only.          |
 | `stub`   | Model-free, deterministic (`[es→en] …`) for CI/dev — no GPU.          |
-| `openai` | Real chat model via the LiteLLM gateway (the cue model, `qwen3-llm`). |
+| `openai` | Real chat model via the LiteLLM gateway (the cue model, `gpt-oss:120b`). |
 
 The stub is what CI exercises end-to-end (run state → WS messages →
 persistence → history). The real prompt was exercised against the deployed GPU

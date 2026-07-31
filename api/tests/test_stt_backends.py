@@ -1,6 +1,6 @@
-"""STT seam factory selection + the Voxtral WAV encoder.
+"""STT seam factory selection + the offline engine's WAV encoder.
 
-The Voxtral engine is exercised only with a real model/endpoint, so here we cover
+The Parakeet engine is exercised only with a real model/endpoint, so here we cover
 the *selection* logic and the pure WAV encoding the engine sends.
 """
 
@@ -16,17 +16,17 @@ from api.stt import make_transcriber
 from api.stt.engine import SAMPLE_RATE
 from api.stt.streaming import StreamingTranscriber
 from api.stt.stub import StubTranscriber
-from api.stt.voxtral import VoxtralEngine
+from api.stt.parakeet import ParakeetEngine
 
 
 def test_factory_stub_is_default() -> None:
     assert isinstance(make_transcriber(), StubTranscriber)
 
 
-def test_factory_voxtral_builds_streaming_transcriber(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_parakeet_builds_streaming_transcriber(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.config import settings
 
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     # Construction must not touch the network (the engine connects lazily on push).
     assert isinstance(make_transcriber(), StreamingTranscriber)
 
@@ -40,7 +40,7 @@ def test_factory_threads_start_offset_through_both_backends(
     assert isinstance(stub, StubTranscriber)
     assert stub._start_offset_ms == 1234
 
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     streaming = make_transcriber(start_offset_ms=1234)
     assert isinstance(streaming, StreamingTranscriber)
     assert streaming._segment_start_ms == 1234
@@ -51,7 +51,7 @@ def test_factory_final_word_timestamps_default_off(monkeypatch: pytest.MonkeyPat
     server, nothing consumes the words); the settings flag restores it."""
     from api.config import settings
 
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     assert make_transcriber()._final_words is False
 
     monkeypatch.setattr(settings, "stt_final_word_timestamps", True)
@@ -66,14 +66,14 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
         make_transcriber()
 
 
-def test_voxtral_engine_builds_transcriptions_url() -> None:
-    engine = VoxtralEngine(endpoint="http://vllm-stt:8000/v1/", model="voxtral")
+def test_parakeet_engine_builds_transcriptions_url() -> None:
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1/", model="parakeet")
     assert engine._url == "http://vllm-stt:8000/v1/audio/transcriptions"
 
 
-def test_voxtral_wav_encoding_is_16k_mono_s16le() -> None:
+def test_parakeet_wav_encoding_is_16k_mono_s16le() -> None:
     samples = np.zeros(SAMPLE_RATE // 10, dtype=np.float32)  # 0.1s of silence
-    data = VoxtralEngine._wav_bytes(samples)
+    data = ParakeetEngine._wav_bytes(samples)
     with wave.open(io.BytesIO(data), "rb") as wav:
         assert wav.getnchannels() == 1
         assert wav.getsampwidth() == 2
@@ -81,9 +81,10 @@ def test_voxtral_wav_encoding_is_16k_mono_s16le() -> None:
         assert wav.getnframes() == samples.size
 
 
-def test_voxtral_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    # vLLM-served Voxtral rejects response_format=verbose_json with a 400
-    # ("do not support verbose_json for voxtral"); the engine must request "json".
+def test_parakeet_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The retired vLLM-Voxtral server rejected response_format=verbose_json with a
+    # 400; the engine settled on "json" and keeps requesting it (word timestamps
+    # ride the body's words field either way).
     import httpx
 
     captured: dict = {}
@@ -101,7 +102,7 @@ def test_voxtral_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch)
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", _fake_post)
-    engine = VoxtralEngine(endpoint="http://vllm-stt:8000/v1", model="voxtral")
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
     result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
     assert captured["data"]["response_format"] == "json"
@@ -111,7 +112,7 @@ def test_voxtral_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch)
     assert result.text == "hello"
 
 
-def test_voxtral_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parakeet_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> None:
     # Through the LiteLLM gateway the engine must authenticate with its key.
     import httpx
 
@@ -129,13 +130,13 @@ def test_voxtral_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> Non
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", _fake_post)
-    engine = VoxtralEngine(endpoint="http://litellm:4000/v1", model="voxtral", api_key="sk-key")
+    engine = ParakeetEngine(endpoint="http://litellm:4000/v1", model="parakeet", api_key="sk-key")
     engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
     assert captured["headers"]["Authorization"] == "Bearer sk-key"
 
 
-def test_voxtral_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parakeet_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.MonkeyPatch) -> None:
     # Partials never read the words array, so the engine tells the server not to
     # spend decode time producing it (XERK-115).
     import httpx
@@ -154,7 +155,7 @@ def test_voxtral_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.Monke
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", _fake_post)
-    engine = VoxtralEngine(endpoint="http://parakeet:8000/v1", model="parakeet")
+    engine = ParakeetEngine(endpoint="http://parakeet:8000/v1", model="parakeet")
 
     samples = np.zeros(SAMPLE_RATE // 10, dtype=np.float32)
     engine.transcribe(samples, language=None, want_words=False)
@@ -205,7 +206,7 @@ def test_stt_route_carries_its_own_key_when_set(monkeypatch: pytest.MonkeyPatch)
 def test_factory_builds_the_engine_on_the_direct_route(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.config import settings
 
-    monkeypatch.setattr(settings, "stt_backend", "voxtral")
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "stt_endpoint", "http://parakeet:8000/v1")
     monkeypatch.setattr(settings, "stt_api_key", "")
 
@@ -216,10 +217,10 @@ def test_factory_builds_the_engine_on_the_direct_route(monkeypatch: pytest.Monke
     assert engine._api_key == ""
 
 
-def test_voxtral_wav_encoding_clips_and_scales() -> None:
+def test_parakeet_wav_encoding_clips_and_scales() -> None:
     # Out-of-range samples clip to the int16 extremes rather than wrapping.
     samples = np.array([2.0, -2.0], dtype=np.float32)
-    data = VoxtralEngine._wav_bytes(samples)
+    data = ParakeetEngine._wav_bytes(samples)
     with wave.open(io.BytesIO(data), "rb") as wav:
         frames = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2")
     assert frames[0] == 32767
