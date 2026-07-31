@@ -32,6 +32,9 @@ class SegmentOut(BaseModel):
     startMs: int
     endMs: int
     lang: str | None = None
+    # English translation of a non-English turn (XERK-160); clients render it
+    # alongside the original.
+    translation: str | None = None
 
     @classmethod
     def of(cls, seg: Segment) -> "SegmentOut":
@@ -41,6 +44,7 @@ class SegmentOut(BaseModel):
             startMs=seg.start_ms,
             endMs=seg.end_ms,
             lang=seg.lang,
+            translation=seg.translation,
         )
 
 

@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import { useCaptureContext } from "../lib/capture";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
 import { type CaptureController } from "../lib/useCapture";
-import { Badge, Button, Card, CueDisclosure, EmptyState } from "../ui";
+import { Badge, Button, Card, CueDisclosure, EmptyState, TranslationLine } from "../ui";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording");
 
@@ -195,7 +195,14 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
             <ul className="transcript">
               {items.map((item) =>
                 item.kind === "segment" ? (
-                  <li key={item.segment.id}>{item.segment.text}</li>
+                  <li key={item.segment.id}>
+                    {item.segment.text}
+                    {/* English translation of a non-English turn (XERK-160),
+                        turn-by-turn under the original as it arrives. */}
+                    {item.segment.translation && (
+                      <TranslationLine text={item.segment.translation} lang={item.segment.lang} />
+                    )}
+                  </li>
                 ) : (
                   // A released cue, embedded inline as a collapsed dropdown (XERK-108).
                   <li className="transcript-cue" key={`cue-${item.cue.id}`}>

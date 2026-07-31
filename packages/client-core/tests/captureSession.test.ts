@@ -31,6 +31,25 @@ describe("reduce", () => {
     expect(s.partial).toBe("");
   });
 
+  it("carries the detected language on a final turn (XERK-160)", () => {
+    const s = reduce(base(), { type: "final", segmentId: "a", text: "hola", lang: "es" });
+    expect(s.segments[0].lang).toBe("es");
+  });
+
+  it("attaches a translation to its turn by segment id (XERK-160)", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hola", lang: "es" });
+    s = reduce(s, { type: "final", segmentId: "b", text: "adiós", lang: "es" });
+    s = reduce(s, { type: "translation", segmentId: "a", text: "hello" });
+    expect(s.segments[0].translation).toBe("hello");
+    // Only the paired turn gains the translation.
+    expect(s.segments[1].translation).toBeUndefined();
+  });
+
+  it("ignores a translation for a turn that is not in view (XERK-160)", () => {
+    const s = base();
+    expect(reduce(s, { type: "translation", segmentId: "ghost", text: "hello" })).toBe(s);
+  });
+
 
 
   it("retains the whole live transcript so it never vanishes mid-session (XERK-135)", () => {
@@ -467,6 +486,26 @@ describe("CaptureSession", () => {
     await session.start();
     expect(refs.client?.started[0].resume).toBe("prior-9");
     expect(session.getState().sessionId).toBe("prior-9"); // shown as resumed before ready
+  });
+
+  it("attaches an incoming translation to its finalized turn (XERK-160)", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    refs.client!.handlers.onFinal?.({
+      type: "caption.final",
+      segmentId: "a",
+      text: "hola",
+      lang: "es",
+      startMs: 0,
+      endMs: 900,
+    });
+    refs.client!.handlers.onTranslation?.({ type: "translation", segmentId: "a", text: "hello" });
+    expect(session.getState().segments[0]).toMatchObject({
+      id: "a",
+      text: "hola",
+      lang: "es",
+      translation: "hello",
+    });
   });
 
   it("uploads decoded PCM while listening and drops it while paused", async () => {

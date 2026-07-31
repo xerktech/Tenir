@@ -22,8 +22,10 @@ export const DEFAULT_MIC_SOURCE: MicSource = "phone-microphone";
 
 /**
  * Leave the source language unset so STT auto-detects per turn and the server
- * auto-translates non-reading-language turns with no client toggle (master plan §5.4,
- * decision #8). v1 detects among EN/ES.
+ * auto-translates non-English turns with no client toggle (master plan §5.4,
+ * decision #8; shipped as live translations, XERK-160): each non-English
+ * finalized turn arrives paired with an English `translation` the Live screen
+ * renders under the original.
  */
 export const DEFAULT_SOURCE_LANG: Lang | undefined = undefined;
 

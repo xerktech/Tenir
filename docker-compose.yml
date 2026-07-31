@@ -55,6 +55,11 @@ services:
       # brings up vllm-cue + registers the qwen3-llm alias in litellm/config.yaml.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
       API_LLM_MODEL: ${API_LLM_MODEL:-qwen3-llm}
+      # Live translations (XERK-160): non-English turns are translated to English
+      # and shown alongside the transcript (the glasses show them in the cue box).
+      # Off by default like cues; "stub" is model-free, "openai" routes to the
+      # same chat model + gateway the cues use (`--profile cues` for the model).
+      API_TRANSLATION_BACKEND: ${API_TRANSLATION_BACKEND:-off}
       # Cue evidence retrieval (XERK-120): grounds cue facts in live sources —
       # the RSS-fed news corpus, Wikipedia, and a self-hosted SearXNG — because
       # the cue model's weights are years stale. "off" (default) keeps cues

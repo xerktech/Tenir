@@ -53,9 +53,11 @@ on the phone.
 
 1. **Generation is server-side, off the caption path.** On each finalized
    transcript turn, `api/src/api/session.py` considers a cue: cheap gating runs on
-   the event loop (skip when cues are off, one is already in flight, or inside the
-   fixed rate-limit window), and only past that does it spawn a background task
-   that calls the cue model off-loop. A slow or failing model never stalls
+   the event loop (skip when cues are off, one is already in flight, inside the
+   fixed rate-limit window, or while a live translation run is open — XERK-160:
+   cues neither trigger nor appear during translations, and resume once the run
+   ends; see `docs/translations.md`), and only past that does it spawn a
+   background task that calls the cue model off-loop. A slow or failing model never stalls
    captions — a cue is a best-effort aside.
 2. **The model call reuses the STT gateway.** The cue backend
    (`api/src/api/cue/openai.py`) POSTs `/chat/completions` to the *same* LiteLLM

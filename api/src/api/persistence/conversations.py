@@ -36,6 +36,9 @@ class ConversationStore(Protocol):
         source_lang: str | None = None,
     ) -> Conversation: ...
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None: ...
+    def set_segment_translation(
+        self, household: str, conversation_id: str, segment_id: str, translation: str
+    ) -> None: ...
     def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None: ...
     def finish(
         self,
@@ -103,6 +106,21 @@ class InMemoryConversationStore:
                     conv.segments[i] = segment
                     return
             conv.segments.append(segment)
+
+    def set_segment_translation(
+        self, household: str, conversation_id: str, segment_id: str, translation: str
+    ) -> None:
+        """Attach a (later-arriving) translation to an already-persisted turn
+        (XERK-160). The translation lands after the final was stored — the model
+        call runs off the caption path — so it is an update, not part of add."""
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is None:
+                return
+            for seg in conv.segments:
+                if seg.segment_id == segment_id:
+                    seg.translation = translation
+                    return
 
     def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None:
         with self._lock:

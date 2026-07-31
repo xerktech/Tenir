@@ -12,3 +12,4 @@ export { NavIcon, type NavPage } from "./NavIcon";
 export { Spinner } from "./Spinner";
 export { StatusLight } from "./StatusLight";
 export { ThemeToggle } from "./ThemeToggle";
+export { TranslationLine } from "./TranslationLine";

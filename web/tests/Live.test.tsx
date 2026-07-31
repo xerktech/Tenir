@@ -50,6 +50,24 @@ describe("LiveView", () => {
     expect(screen.getByText("open")).toBeInTheDocument();
   });
 
+  it("renders a turn's English translation under the original (XERK-160)", () => {
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        segments: [
+          { id: "a", text: "hola, ¿qué tal?", lang: "es", translation: "hello, how are you?" },
+          { id: "b", text: "sigo aquí", lang: "es" },
+        ],
+      }),
+    );
+    expect(screen.getByText("hello, how are you?")).toBeInTheDocument();
+    expect(screen.getByTitle("Translated from Spanish")).toHaveTextContent("EN");
+    // A turn whose translation hasn't landed yet renders no translation line.
+    const rows = document.querySelectorAll(".translation");
+    expect(rows).toHaveLength(1);
+  });
+
   it("shows Record when idle and calls start", () => {
     const c = fakeController();
     renderLive(c);

@@ -105,6 +105,23 @@ class Settings(BaseSettings):
     # non-reasoning model whose chat template rejects the `enable_thinking` kwarg.
     cue_disable_thinking: bool = True
 
+    # ---- Live translations (XERK-160) --------------------------------------------
+    # When a finalized turn's detected language isn't English, the session
+    # translates it via the SAME chat model + gateway the cues use (llm_model over
+    # litellm_endpoint) and delivers it as a `translation` WS message paired to the
+    # segment. While a non-English run is live, cue generation is suppressed; when
+    # the run ends (an English turn arrives, or speech goes quiet past the hold
+    # window below) a `translation.done` message tells the glasses to start the
+    # translation box's dismiss countdown, and cues resume.
+    #   "off"    — no translations (default; matches the stripped core).
+    #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
+    #   "openai" — real chat model via the gateway (prod: qwen3-llm).
+    translation_backend: str = "off"  # off | stub | openai
+    # How long speech may go quiet after the last non-English activity before the
+    # run is declared done. Finals only land at pauses, so partial captions also
+    # count as activity — the window only starts once the speaker actually stops.
+    translation_hold_ms: int = 3000
+
     # ---- Cue evidence retrieval (XERK-120) ---------------------------------------
     # The cue model's weights are frozen years back (the deployed Qwen3 reports an
     # October 2023 cutoff), so cues about current events answered from memory are

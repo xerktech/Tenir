@@ -18,6 +18,10 @@ chat, …) was stripped back to; features return one at a time, slowly.
   drives the low-latency live partials while an offline model (NVIDIA Parakeet)
   decodes each finished turn for the accurate stored transcript (the *hybrid* path
   — see `docs/stt-model-gpu-benchmark.md`)
+- **Live translations** — a turn spoken in another language is transcribed as
+  spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): the
+  glasses show the translation in the cue box, web/Android/the phone app show
+  it under the original turn — see [`docs/translations.md`](docs/translations.md)
 - **Recorded, stored sessions** — every session is persisted as a conversation:
   transcript segments in Postgres, full audio retained on disk; browse, search,
   replay, export and delete from the UI

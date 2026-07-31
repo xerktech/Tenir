@@ -21,6 +21,7 @@ import {
   Row,
   Screen,
   Spinner,
+  TranslationText,
 } from "../ui/components";
 import { useTheme } from "../ui/ThemeContext";
 
@@ -195,6 +196,9 @@ function Detail({
                   {j > 0 ? "\n" : null}
                   <Text style={{ color: colors.muted }}>[{msToClock(seg.startMs)}] </Text>
                   {seg.text}
+                  {/* Stored English translation of a non-English turn (XERK-160),
+                      turn-by-turn inside the same selectable run. */}
+                  {seg.translation ? <TranslationText text={seg.translation} /> : null}
                 </Text>
               ))}
             </Text>

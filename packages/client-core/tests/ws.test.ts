@@ -129,6 +129,25 @@ describe("ApiClient", () => {
     );
   });
 
+  it("routes translation frames to onTranslation / onTranslationDone (XERK-160)", () => {
+    const onTranslation = vi.fn();
+    const onTranslationDone = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onTranslation, onTranslationDone });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].emit({
+      type: "translation",
+      segmentId: "seg-1",
+      text: "Hello, how are you?",
+      sourceLang: "es",
+    });
+    instances[0].emit({ type: "translation.done" });
+    expect(onTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ segmentId: "seg-1", text: "Hello, how are you?", sourceLang: "es" }),
+    );
+    expect(onTranslationDone).toHaveBeenCalledOnce();
+  });
+
   it("does not send a cueLevel in session.start (XERK-114: toggle removed)", () => {
     const client = new ApiClient("ws://h/ws");
     client.start({ micSource: "g2-microphone" });

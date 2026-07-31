@@ -24,6 +24,8 @@ from api.contract import (
     MicSource,
     ServerMessage,
     SessionReady,
+    Translation,
+    TranslationDone,
 )
 from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize_cue_title
 from api.cue.base import (
@@ -46,6 +48,7 @@ from api.persistence import (
 )
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
+from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
 
@@ -119,6 +122,21 @@ class Session:
         self._last_cue_monotonic: float | None = None
         self._cue_inflight = False
         self._cue_tasks: set[asyncio.Task[None]] = set()
+        # Live translations (XERK-160): when a finalized turn's detected language
+        # isn't English, it is translated off the caption path and delivered as a
+        # `translation` message paired to the segment. Consecutive non-English
+        # turns form a RUN: while one is live, cues are suppressed; the run ends
+        # when an English turn arrives or speech goes quiet past the hold window,
+        # which emits `translation.done` (the glasses start their dismiss
+        # countdown on it) and lets cues resume. Translation calls are serialized
+        # through a single worker + queue so translations reach the client in
+        # transcript order even when the model is slow; the `done` marker rides
+        # the same queue, so it always follows the run's last translation.
+        self._translator: Translator | None = None
+        self._translation_queue: asyncio.Queue[tuple[str, CaptionFinal | None]] | None = None
+        self._translation_worker: asyncio.Task[None] | None = None
+        self._translation_hold: asyncio.Task[None] | None = None
+        self._translation_active = False
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -176,6 +194,12 @@ class Session:
         # And its evidence retriever (XERK-120); only meaningful with cues on.
         if self._cue_generator is not None:
             self._cue_retriever = make_evidence_retriever()
+        # The translator (XERK-160); None when API_TRANSLATION_BACKEND=off, so the
+        # stripped core does no translation work at all.
+        self._translator = make_translator()
+        if self._translator is not None:
+            self._translation_queue = asyncio.Queue()
+            self._translation_worker = asyncio.create_task(self._translation_worker_loop())
         if self._conversations is not None:
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
@@ -348,9 +372,135 @@ class Session:
                         lang=result.lang.value if result.lang is not None else None,
                     ),
                 )
+            if isinstance(result, CaptionPartial):
+                # Speech is still flowing: keep a live translation run's silence
+                # hold from expiring mid-utterance (finals only land at pauses).
+                self._touch_translation_hold()
             if isinstance(result, CaptionFinal):
+                # A non-English turn opens/extends a translation run (XERK-160);
+                # an English one closes it. Considered before the cue so the same
+                # turn that opens a run never also produces a cue.
+                self._consider_translation(result)
                 # A finalized turn may be cue-worthy; consider it out of band.
                 self._consider_cue(result)
+
+    def _consider_translation(self, result: CaptionFinal) -> None:
+        """Track the translation run across finalized turns (XERK-160).
+
+        A non-English turn (re)opens the run and queues its translation; an
+        English turn while a run is live means the other language is done being
+        spoken, so the run closes. A turn with no detected language decides
+        nothing — the silence hold alone governs then.
+        """
+        if self._translator is None:
+            return
+        lang = result.lang.value if result.lang is not None else None
+        if lang is not None and lang != "en":
+            assert self._translation_queue is not None
+            self._translation_active = True
+            self._touch_translation_hold()
+            self._translation_queue.put_nowait(("translate", result))
+        elif lang == "en" and self._translation_active:
+            self._end_translation_run()
+
+    def _touch_translation_hold(self) -> None:
+        """Restart the run's silence hold: any speech activity (a partial or a
+        final) means the speaker isn't done yet, so the countdown starts over."""
+        if not self._translation_active:
+            return
+        if self._translation_hold is not None:
+            self._translation_hold.cancel()
+        self._translation_hold = asyncio.create_task(self._translation_hold_expire())
+
+    async def _translation_hold_expire(self) -> None:
+        try:
+            await asyncio.sleep(max(0, settings.translation_hold_ms) / 1000)
+        except asyncio.CancelledError:
+            return
+        self._end_translation_run()
+
+    def _end_translation_run(self) -> None:
+        """The other language is done being spoken: close the run and queue the
+        `translation.done` marker behind any still-pending translations, so the
+        client's dismiss countdown never starts before the run's last translation
+        is on screen. Cues resume from here (the gate reads this flag)."""
+        if not self._translation_active:
+            return
+        assert self._translation_queue is not None
+        self._translation_active = False
+        if self._translation_hold is not None:
+            self._translation_hold.cancel()
+            self._translation_hold = None
+        self._translation_queue.put_nowait(("done", None))
+
+    async def _translation_worker_loop(self) -> None:
+        """Serialized translation delivery: one queue, one worker, transcript
+        order preserved no matter how slow individual model calls are."""
+        assert self._translation_queue is not None
+        while True:
+            kind, final = await self._translation_queue.get()
+            try:
+                if kind == "stop":
+                    return
+                if kind == "done":
+                    try:
+                        await self._send(TranslationDone(type="translation.done"))
+                    except Exception:
+                        log.warning(
+                            "session %s could not deliver translation.done (client gone)",
+                            self.session_id,
+                        )
+                        metrics.incr("translation.send_errors")
+                    continue
+                assert final is not None
+                await self._translate_final(final)
+            finally:
+                # Matched to the get() above so Queue.join() tracks the backlog
+                # (tests await it to know the worker is idle).
+                self._translation_queue.task_done()
+
+    async def _translate_final(self, final: CaptionFinal) -> None:
+        """Translate one finalized turn and deliver + persist the result.
+        Best-effort throughout, like cues: any failure is logged/counted and
+        swallowed so the caption stream is never disturbed."""
+        assert self._translator is not None
+        lang = final.lang.value if final.lang is not None else None
+        try:
+            with metrics.timer("translation.ms"):
+                translated = await asyncio.to_thread(
+                    self._translator.translate, final.text, source_lang=lang
+                )
+        except Exception:
+            log.warning("session %s translation failed", self.session_id, exc_info=True)
+            metrics.incr("translation.errors")
+            return
+        if not translated:
+            return
+        try:
+            await self._send(
+                Translation(
+                    type="translation",
+                    segmentId=final.segmentId,
+                    text=translated,
+                    sourceLang=final.lang,
+                )
+            )
+        except Exception:
+            # Like captions, delivery is best-effort but the record is not:
+            # persist below even if the socket is gone.
+            log.warning(
+                "session %s could not deliver a translation (client gone)", self.session_id
+            )
+            metrics.incr("translation.send_errors")
+        metrics.incr("translation.emitted")
+        if self._conversations is not None:
+            await asyncio.to_thread(
+                self._conversations.set_segment_translation,
+                self._household,
+                self.session_id,
+                final.segmentId,
+                translated,
+            )
 
     def _consider_cue(self, result: CaptionFinal) -> None:
         """On each finalized turn, maybe kick off cue generation in the background.
@@ -363,6 +513,11 @@ class Session:
             return
         if result.text:
             self._recent_finals.append(result.text)
+        if self._translation_active:
+            # Live translation run (XERK-160): cues neither trigger nor appear
+            # while the translation box owns their slot; they resume once the
+            # run ends. The turn's text still joined the context window above.
+            return
         if self._cue_inflight:
             return
         if self._last_cue_monotonic is not None:
@@ -412,6 +567,12 @@ class Session:
             title = generated.title.strip()
             body = generated.body.strip()
             if not title or not body:
+                return
+            if self._translation_active:
+                # A translation run opened while this cue was generating: it must
+                # not appear mid-run (XERK-160). Dropped entirely — not surfaced,
+                # not recorded — so the fact stays available for later.
+                metrics.incr("cue.translation_drops")
                 return
             # Backstop de-dupe: never surface the same cue twice in a conversation,
             # however far apart (XERK-102) — the report was an old cue popping up
@@ -508,6 +669,23 @@ class Session:
                 metrics.incr("stage.stt.errors")
         if self._pump is not None:
             await self._pump
+        if self._translation_worker is not None:
+            # The pump is done, so every translate job is queued. A run still open
+            # at teardown is over by definition (queues the `done` marker); then a
+            # stop sentinel lets the worker drain pending translations first, so
+            # the tail turns still persist translated. Bounded: a wedged model
+            # call must not hold teardown hostage.
+            self._end_translation_run()
+            assert self._translation_queue is not None
+            self._translation_queue.put_nowait(("stop", None))
+            try:
+                await asyncio.wait_for(self._translation_worker, timeout=15)
+            except asyncio.TimeoutError:
+                log.warning("session %s translation drain timed out", self.session_id)
+            self._translation_worker = None
+        if self._translation_hold is not None:
+            self._translation_hold.cancel()
+            self._translation_hold = None
         if self._cue_retriever is not None:
             try:
                 await self._cue_retriever.close()

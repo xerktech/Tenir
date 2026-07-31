@@ -18,7 +18,15 @@ export type MicSource = "g2-microphone" | "phone-microphone";
  * Languages the STT engine may detect/report on captions.
  */
 export type Lang = "en" | "es" | "fr" | "de" | "pt" | "it";
-export type ServerMessage = SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage;
+export type ServerMessage =
+  | SessionReady
+  | CaptionPartial
+  | CaptionFinal
+  | Cue
+  | Translation
+  | TranslationDone
+  | Pong
+  | ErrorMessage;
 
 /**
  * Client -> server. Opens a live session before any audio frames are sent.
@@ -114,6 +122,27 @@ export interface Cue {
    * Short label of the live source the cue's fact was grounded in (XERK-120), e.g. "BBC News" or "Wikipedia". Absent when the cue rests on the model's own knowledge; clients render it as a quiet attribution line under the body.
    */
   source?: string;
+}
+/**
+ * Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.
+ */
+export interface Translation {
+  type: "translation";
+  /**
+   * The caption.final segment this translates.
+   */
+  segmentId: string;
+  /**
+   * The English translation of the segment's text.
+   */
+  text: string;
+  sourceLang?: Lang;
+}
+/**
+ * Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.
+ */
+export interface TranslationDone {
+  type: "translation.done";
 }
 /**
  * Server -> client. Reply to Ping.

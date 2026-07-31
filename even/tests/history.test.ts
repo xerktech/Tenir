@@ -227,6 +227,36 @@ describe("conversation detail", () => {
     expect(document.getElementById("history-audio")!.hidden).toBe(true);
   });
 
+  it("renders a stored turn's English translation under the original (XERK-160)", async () => {
+    const api = fakeApi({
+      get: vi.fn(async () =>
+        conversation({
+          segments: [
+            {
+              segmentId: "s1",
+              text: "hola, ¿qué tal?",
+              startMs: 0,
+              endMs: 1500,
+              lang: "es",
+              translation: "hello, how are you?",
+            },
+            { segmentId: "s2", text: "untranslated turn", startMs: 2000, endMs: 3000, lang: "en" },
+          ],
+        }),
+      ),
+    });
+    const page = mount(api);
+    await page.refresh();
+    rowButtons()[0].click();
+    await vi.waitFor(() => expect(detail().hidden).toBe(false));
+    const items = [...document.querySelectorAll("#history-transcript .item")];
+    const tr = items[0].querySelector(".session-translation")!;
+    expect(tr.textContent).toContain("hello, how are you?");
+    expect(tr.querySelector(".session-translation-lang")!.textContent).toBe("EN");
+    // Only the translated turn carries a translation line.
+    expect(items[1].querySelector(".session-translation")).toBeNull();
+  });
+
   it("renders transcript text as text, not markup", async () => {
     const api = fakeApi({
       get: vi.fn(async () =>

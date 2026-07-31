@@ -170,6 +170,33 @@ class Cue(BaseModel):
     )
 
 
+class Translation(BaseModel):
+    """
+    Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['translation']
+    segmentId: str = Field(
+        ..., description='The caption.final segment this translates.'
+    )
+    text: str = Field(..., description="The English translation of the segment's text.")
+    sourceLang: Lang | None = None
+
+
+class TranslationDone(BaseModel):
+    """
+    Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['translation.done']
+
+
 class Pong(BaseModel):
     """
     Server -> client. Reply to Ping.
@@ -205,11 +232,27 @@ class ErrorMessage(BaseModel):
 
 
 class ServerMessage(
-    RootModel[SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage]
+    RootModel[
+        SessionReady
+        | CaptionPartial
+        | CaptionFinal
+        | Cue
+        | Translation
+        | TranslationDone
+        | Pong
+        | ErrorMessage
+    ]
 ):
-    root: SessionReady | CaptionPartial | CaptionFinal | Cue | Pong | ErrorMessage = (
-        Field(..., title='ServerMessage')
-    )
+    root: (
+        SessionReady
+        | CaptionPartial
+        | CaptionFinal
+        | Cue
+        | Translation
+        | TranslationDone
+        | Pong
+        | ErrorMessage
+    ) = Field(..., title='ServerMessage')
 
 
 class TenirWsMessages(RootModel[ClientMessage | ServerMessage]):
