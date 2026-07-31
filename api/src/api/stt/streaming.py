@@ -36,6 +36,7 @@ from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
 from api.stt.engine import BYTES_PER_SEC, WhisperEngine, pcm16_to_float32, rms
+from api.stt.langid import detect_lang
 from api.stt.streaming_engine import StreamingSttEngine
 
 log = logging.getLogger("api.stt.streaming")
@@ -429,12 +430,21 @@ class StreamingTranscriber:
             )
             for w in result.words
         ] or None
+        # The finalized turn's language, engine-reported first. The deployed
+        # Parakeet server transcribes multilingual speech but reports no detected
+        # language (the NeMo hypothesis exposes none — recorded on session
+        # a6ef5cad, a fully-Spanish conversation stored with every lang NULL, so
+        # live translation XERK-160 never triggered). When neither the engine nor
+        # a pinned session language names one, fall back to conservative
+        # text-based identification of the final itself; an ambiguous turn stays
+        # None, which decides nothing downstream.
+        lang = _lang(result.language or self._language) or _lang(detect_lang(text))
         await self._queue.put(
             CaptionFinal(
                 type="caption.final",
                 segmentId=str(uuid.uuid4()),
                 text=text,
-                lang=_lang(result.language or self._language),
+                lang=lang,
                 startMs=start,
                 endMs=end,
                 words=words,

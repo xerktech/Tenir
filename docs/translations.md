@@ -40,9 +40,20 @@ once the run ends.
 
 ## How it works
 
-1. **Detection is free.** Parakeet already reports each final's language
-   (`CaptionFinal.lang`); a non-English final opens (or extends) a *translation
-   run* in `api/src/api/session.py`.
+1. **Detection.** `CaptionFinal.lang` is the trigger. The engine's own report
+   is used when it gives one, but the deployed Parakeet server transcribes
+   multilingual speech without reporting the detected language (recorded on
+   session a6ef5cad: a fully-Spanish conversation stored with every lang NULL,
+   so no translation ever fired), so finals fall back to conservative
+   text-based identification (`api/src/api/stt/langid.py`): distinctive
+   function words + unique orthography per contract language, labeling a turn
+   only when one language clearly wins. A non-English final opens (or extends)
+   a *translation run* in `api/src/api/session.py`. An undecidable turn (a
+   proper-noun list, a bare interjection) *inherits* an open run — mid-run it
+   is overwhelmingly a continuation, so it is translated with the rest,
+   without a claimed source language; outside a run it decides nothing. A
+   translation that comes back identical to its source (an English turn that
+   slipped in as ambiguous) is suppressed rather than rendered as an echo.
 2. **Translation is server-side, off the caption path.** Each non-English final
    is translated by the same chat model + LiteLLM gateway the cues use
    (`API_LLM_MODEL` over `API_LITELLM_ENDPOINT`) — a `/chat/completions` call

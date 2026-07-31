@@ -156,20 +156,69 @@ def test_english_turn_closes_the_run_after_its_translations(
     asyncio.run(run())
 
 
-def test_unknown_lang_decides_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unknown_lang_outside_a_run_decides_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "translation_backend", "stub")
 
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        # No run open: a turn with no detected language neither translates nor
+        # opens one — translating it would be a guess.
+        session._consider_translation(_final("mumble mumble", segment_id="a", lang=None))
+        assert not session._translation_active
+        await _drain_translations(session)
+        await session.close()
+        assert _translations(sent) == []
+
+    asyncio.run(run())
+
+
+def test_unknown_lang_mid_run_inherits_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The session-a6ef5cad gap: "Mercurio, Venus, Tierra, Marte." between two
+    # Spanish turns carries no textual evidence, but the open run says the
+    # speaker is mid-Spanish — the turn is translated with the rest, without a
+    # claimed source language, and the run stays open.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("los planetas", segment_id="a", lang="es"))
         assert session._translation_active
-        # A turn with no detected language neither translates nor closes the run.
-        session._consider_translation(_final("mumble", segment_id="b", lang=None))
+        session._consider_translation(
+            _final("Mercurio, Venus, Tierra, Marte.", segment_id="b", lang=None)
+        )
         assert session._translation_active
         await _drain_translations(session)
         await session.close()
-        assert [t.segmentId for t in _translations(sent)] == ["a"]
+        got = _translations(sent)
+        assert [t.segmentId for t in got] == ["a", "b"]
+        # The inherited turn claims no source language — the model reads the text.
+        assert got[1].sourceLang is None
+
+    asyncio.run(run())
+
+
+def test_echoed_translation_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An English turn that reached the queue as an ambiguous run-continuation
+    # comes back unchanged from the model ("return it unchanged"); rendering it
+    # would just duplicate the caption, so it is dropped.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    class EchoTranslator:
+        def translate(self, text: str, *, source_lang: str | None = None) -> str | None:
+            return f"  {text.upper()}  "  # cosmetic differences only
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._translator = EchoTranslator()
+        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final("what is happening", segment_id="b", lang=None))
+        await _drain_translations(session)
+        await session.close()
+        assert _translations(sent) == []
+        assert metrics.snapshot()["counters"].get("translation.echo_drops") == 2
 
     asyncio.run(run())
 

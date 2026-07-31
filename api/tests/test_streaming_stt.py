@@ -1185,3 +1185,69 @@ def test_factory_hybrid_requires_stream_endpoint(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(settings, "stt_stream_endpoint", "")
     with pytest.raises(ValueError, match="hybrid"):
         make_transcriber()
+
+
+# ----- language fallback on finals (XERK-160 regression) ---------------------
+
+
+class NoLangSpanishEngine:
+    """The deployed Parakeet failure shape (session a6ef5cad): flawless Spanish
+    transcription, but `language` reported as None on every hypothesis."""
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+            return EngineResult(text="", words=[], language=None)
+        return EngineResult(
+            text="Ya es un planeta enano, no forma parte del Sistema Solar.",
+            words=[],
+            language=None,
+        )
+
+
+def test_final_falls_back_to_text_langid_when_engine_reports_none() -> None:
+    # The regression behind the untranslated Spanish session: with no engine-
+    # reported language and no pinned session language, finals must still carry
+    # the language the text itself evidences — it is the translation trigger.
+    async def run() -> None:
+        t = StreamingTranscriber(
+            NoLangSpanishEngine(),
+            language=None,
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 1
+        assert finals[0].lang is not None and finals[0].lang.value == "es"
+
+    asyncio.run(run())
+
+
+def test_engine_reported_language_outranks_text_langid() -> None:
+    # FakeEngine says "en"; its text is English too, but the point is the
+    # engine's own report is authoritative — the fallback only fills silence.
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(),
+            language=None,
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 1
+        assert finals[0].lang is not None and finals[0].lang.value == "en"
+
+    asyncio.run(run())
