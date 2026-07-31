@@ -77,16 +77,16 @@ describe("live cue counts down to its dismissal (XERK-110)", () => {
   it("derives the count from the shared client-core helpers, not its own timing", () => {
     // Same primitives the web card and the lens box use, so all three surfaces
     // count identically (10s, 9s, … 0s) off the one TTL.
-    expect(cue).toContain("cueSecondsLeft");
     expect(cue).toContain("cueCountdownLabel");
     expect(cue).toContain("CUE_COUNTDOWN_TICK_MS");
-    // Derived from when the cue appeared rather than decremented per tick, so a
-    // backgrounded app resyncs instead of drifting from the release timer.
-    expect(cue).toContain("const startedAt = Date.now();");
-    expect(cue).toContain("setSecondsLeft(cueSecondsLeft(Date.now() - startedAt))");
-    // Restarts per cue: a promoted cue gets its own full countdown.
-    expect(cue).toContain("}, [cueId]);");
-    expect(cue).toContain("useCueCountdown(cue?.id)");
+    // Derived from the cue's wall-clock end time against the real clock (XERK-159)
+    // rather than decremented per tick, so a backgrounded app resyncs to the truth
+    // instead of drifting from the release timer — and a cue whose turn opened
+    // while away shows the time it has left, not a fresh ten.
+    expect(cue).toContain("setSecondsLeft(cueSecondsUntil(endsAt, Date.now()))");
+    // Restarts per cue window: a promoted cue gets its own countdown.
+    expect(cue).toContain("}, [endsAt]);");
+    expect(cue).toContain("useCueCountdown(activeCueEndsAt)");
   });
 
   it("paints the count across from the title, out of the a11y tree", () => {

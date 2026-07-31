@@ -17,6 +17,8 @@ const baseState = () => ({
   segments: [] as { id: string; text: string }[],
   partial: "",
   activeCue: null as { id: string; title: string; body: string } | null,
+  queuedCues: [] as { id: string; title: string; body: string }[],
+  activeCueEndsAt: null as number | null,
   pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
 });
 
@@ -75,24 +77,22 @@ describe("LiveView", () => {
     expect(screen.getByText(/150 million km/)).toBeInTheDocument();
   });
 
-  it("shows only the freshest cue in the band, never a queued-count note (XERK-159)", () => {
+  it("shows a '+N more' note when cues are queued behind the active one (XERK-102)", () => {
     renderLive(
       fakeController({
         running: true,
         connection: "open",
-        // Only the current cue holds the band; superseded cues live in the
-        // transcript (pastCues), so there is never a backlog to advertise.
-        activeCue: { id: "c3", title: "Mars", body: "225 million km away." },
-        pastCues: [
-          { id: "c1", title: "Sun", body: "150 million km away.", afterSegmentId: null },
-          { id: "c2", title: "Moon", body: "384,400 km away.", afterSegmentId: null },
+        activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
+        queuedCues: [
+          { id: "c2", title: "Moon", body: "384,400 km away." },
+          { id: "c3", title: "Mars", body: "225 million km away." },
         ],
       }),
     );
-    // The current cue's body renders in the band...
-    expect(screen.getByText(/225 million km/)).toBeInTheDocument();
-    // ...and there is no "+N more" queue note over the top of it any more.
-    expect(screen.queryByText(/\+\d+ more/)).not.toBeInTheDocument();
+    // Only the active cue's body renders; the queued ones stay hidden behind it.
+    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
+    expect(screen.queryByText(/384,400 km/)).not.toBeInTheDocument();
+    expect(screen.getByText("+2 more")).toBeInTheDocument();
   });
 
   it("embeds a released cue inline in the transcript as a collapsed dropdown (XERK-108)", () => {
@@ -305,9 +305,15 @@ describe("LiveView", () => {
 
   describe("live cue countdown (XERK-110)", () => {
     const running = { running: true, connection: "open" as const };
+    // The countdown reads the cue's wall-clock end time (XERK-159); a cue taking
+    // the band opens a fresh window one TTL from now (the boundary-promotion case).
     const withCue = (activeCue: { id: string; title: string; body: string } | null) => (
       <LiveView
-        controller={fakeController({ ...running, activeCue })}
+        controller={fakeController({
+          ...running,
+          activeCue,
+          activeCueEndsAt: activeCue ? Date.now() + CUE_TTL_MS : null,
+        })}
       />
     );
     const cue = { id: "c1", title: "Sun", body: "About 150 million km away." };
@@ -350,6 +356,27 @@ describe("LiveView", () => {
         rerender(withCue({ id: "c2", title: "Moon", body: "384,400 km away." }));
         act(() => void vi.advanceTimersByTime(0));
         expect(countdown(container)).toBe("10s");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows a mid-window cue's remaining time, not a fresh ten (XERK-159)", () => {
+      vi.useFakeTimers();
+      try {
+        // A cue whose turn opened while the app was backgrounded is reconciled to
+        // the band already partway through its window (endsAt only 3s out). The
+        // count must read the truth — 3s — not restart at ten.
+        const { container } = render(
+          <LiveView
+            controller={fakeController({
+              ...running,
+              activeCue: cue,
+              activeCueEndsAt: Date.now() + 3000,
+            })}
+          />,
+        );
+        expect(countdown(container)).toBe("3s");
       } finally {
         vi.useRealTimers();
       }

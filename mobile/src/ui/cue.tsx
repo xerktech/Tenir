@@ -9,6 +9,7 @@ import {
   CUE_EXIT_MS,
   cueCountdownLabel,
   cueSecondsLeft,
+  cueSecondsUntil,
   type LiveCue,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
@@ -40,32 +41,33 @@ function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: 
 
 /**
  * Count the seconds a cue has left on screen (XERK-110). Mirrors the web
- * `useCueCountdown`: derived from the moment the cue appeared rather than
- * decremented per tick, so a backgrounded app resyncs to the truth instead of
- * drifting away from the release timer, and restarts for each cue that takes
- * the band — a cue that supersedes another gets its own full countdown.
+ * `useCueCountdown`: derived from the cue's wall-clock end time (`activeCueEndsAt`,
+ * XERK-159) against the real clock rather than decremented per tick, so a
+ * backgrounded app resyncs to the truth instead of drifting away from the release
+ * timer — a cue whose turn opened while away shows the time it actually has left,
+ * not a fresh ten. It restarts for each cue that takes the band and holds its last
+ * value through the exit fade (when `endsAt` is null).
  */
-function useCueCountdown(cueId: string | undefined): number {
+function useCueCountdown(endsAt: number | null): number {
   const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
   useEffect(() => {
-    if (!cueId) return;
-    setSecondsLeft(cueSecondsLeft(0));
-    const startedAt = Date.now();
-    const timer = setInterval(
-      () => setSecondsLeft(cueSecondsLeft(Date.now() - startedAt)),
-      CUE_COUNTDOWN_TICK_MS,
-    );
+    if (endsAt == null) return;
+    const tick = () => setSecondsLeft(cueSecondsUntil(endsAt, Date.now()));
+    tick();
+    const timer = setInterval(tick, CUE_COUNTDOWN_TICK_MS);
     return () => clearInterval(timer);
-  }, [cueId]);
+  }, [endsAt]);
   return secondsLeft;
 }
 
 /**
- * The single active cue over the transcript (XERK-102). Exactly one cue shows at
- * a time, and it is always the freshest: a newer cue takes the band in real time
- * (XERK-159) and the one it replaces drops straight into the transcript below —
- * nothing queues behind the band, so missed cues are read inline where they
- * belong rather than replayed one-by-one over the top.
+ * The single active cue over the transcript (XERK-102). One cue shows at a time
+ * for its full turn; others wait in a FIFO queue and take the band as each turn
+ * ends. The turns run on a continuous wall-clock schedule that keeps advancing
+ * while the app is backgrounded (XERK-159), so a cue whose turn passed while you
+ * were away is already in the transcript on return rather than replaying — you
+ * rejoin the live cue mid-turn, not a backlog. A "+N more" note appears while
+ * cues are queued behind it.
  *
  * The band *floats over* the top of the transcript rather than sitting above it
  * in the column (XERK-107): as a flow element, each arrival shoved the
@@ -78,12 +80,16 @@ function useCueCountdown(cueId: string | undefined): number {
  */
 export function LiveCueBand({
   activeCue,
+  activeCueEndsAt,
+  queuedCount,
 }: {
   activeCue: LiveCue | null;
+  activeCueEndsAt: number | null;
+  queuedCount: number;
 }): JSX.Element | null {
   const styles = useThemedStyles(makeStyles);
   const { cue, exiting } = useCueExit(activeCue);
-  const secondsLeft = useCueCountdown(cue?.id);
+  const secondsLeft = useCueCountdown(activeCueEndsAt);
   const fade = useRef(new Animated.Value(0)).current;
   const shown = Boolean(cue) && !exiting;
   useEffect(() => {
@@ -127,6 +133,14 @@ export function LiveCueBand({
             in. Absent for a cue from the model's own knowledge. */}
         {cue.source ? <Text style={styles.cardSource}>{cue.source}</Text> : null}
       </View>
+      {queuedCount > 0 && (
+        <Text
+          style={styles.queued}
+          accessibilityLabel={`${queuedCount} more ${queuedCount === 1 ? "cue" : "cues"} queued`}
+        >
+          +{queuedCount} more
+        </Text>
+      )}
     </Animated.View>
   );
 }
@@ -210,6 +224,19 @@ const makeStyles = (colors: Palette) =>
     cardBody: { color: colors.text, lineHeight: 20 },
     // Live-source attribution under the body (XERK-120): provenance, not content.
     cardSource: { color: colors.muted, fontWeight: "600", fontSize: 11, letterSpacing: 0.2 },
+    // Chipped like the card, since it now sits over the captions too.
+    queued: {
+      alignSelf: "flex-start",
+      color: colors.muted,
+      fontSize: 12,
+      fontWeight: "600",
+      backgroundColor: colors.surfaceRaised,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: radius.sm,
+      paddingHorizontal: space.sm,
+      elevation: 2,
+    },
     disclosure: { alignSelf: "flex-start", marginVertical: space.xs },
     inline: {
       alignSelf: "flex-start",

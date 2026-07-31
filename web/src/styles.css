@@ -325,6 +325,18 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   color: var(--text-muted);
   letter-spacing: .02em;
 }
+/* "+N more" note under the active cue when cues are queued behind it (XERK-102).
+   Chipped like the cue card because it now sits over the captions. */
+.cue-queued {
+  pointer-events: auto;
+  align-self: flex-start;
+  font-size: var(--text-sm); letter-spacing: .02em; line-height: 1.4;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  box-shadow: var(--shadow-sm);
+}
 @keyframes cue-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 /* Reduced motion: the cue still appears and clears, just without the movement. */
 @media (prefers-reduced-motion: reduce) {
