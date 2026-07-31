@@ -33,7 +33,7 @@ type ActiveCue = CaptureController["state"]["activeCue"];
  * Returns the cue to paint plus whether it is on its way out, so the band can
  * transition to nothing instead of blinking off the screen. A cue that arrives
  * mid-fade cancels the pending unmount and takes over immediately, matching the
- * "only one cue at a time" rule (XERK-102).
+ * "one cue at a time, freshest wins" rule (XERK-102, XERK-159).
  */
 function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } {
   const [painted, setPainted] = useState<ActiveCue>(activeCue);
@@ -55,7 +55,8 @@ function useCueExit(activeCue: ActiveCue): { cue: ActiveCue; exiting: boolean } 
  * than decremented per tick, so a throttled tab (or a slow frame) resyncs to
  * the truth instead of accumulating drift away from the release timer in
  * `CaptureSession`. It restarts whenever a different cue takes the band —
- * including a queued cue promoted into it, which gets its own full countdown.
+ * including a fresher cue that supersedes the current one, which gets its own
+ * full countdown.
  */
 function useCueCountdown(cueId: string | undefined): number {
   const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
@@ -74,9 +75,10 @@ function useCueCountdown(cueId: string | undefined): number {
 
 /**
  * The single active private-context cue over the live transcript (XERK-102).
- * One cue shows at a time; any others wait in a FIFO queue and pop the moment
- * this one is released. When the queue is non-empty a small "+N more" note tells
- * the wearer more cues are lined up.
+ * Exactly one cue shows at a time, and it is always the freshest: a newer cue
+ * takes the band in real time (XERK-159) and the one it replaces drops straight
+ * into the transcript below — nothing queues behind the band, so missed cues are
+ * read inline where they belong rather than replayed one-by-one over the top.
  *
  * The band *floats over* the top of the transcript box rather than sitting above
  * it in the flow (XERK-107): a cue arriving or expiring used to push the
@@ -86,13 +88,7 @@ function useCueCountdown(cueId: string | undefined): number {
  * follows the newest text at the bottom. It is click-through except for the card
  * itself, so the transcript underneath still scrolls and selects.
  */
-function LiveCueBand({
-  activeCue,
-  queuedCount,
-}: {
-  activeCue: ActiveCue;
-  queuedCount: number;
-}): JSX.Element | null {
+function LiveCueBand({ activeCue }: { activeCue: ActiveCue }): JSX.Element | null {
   const { cue, exiting } = useCueExit(activeCue);
   const secondsLeft = useCueCountdown(cue?.id);
   if (!cue) return null;
@@ -118,14 +114,6 @@ function LiveCueBand({
             in. Absent for a cue from the model's own knowledge. */}
         {cue.source && <div className="cue-card-source">{cue.source}</div>}
       </div>
-      {queuedCount > 0 && (
-        <div
-          className="cue-queued muted"
-          aria-label={`${queuedCount} more ${queuedCount === 1 ? "cue" : "cues"} queued`}
-        >
-          +{queuedCount} more
-        </div>
-      )}
     </div>
   );
 }
@@ -206,7 +194,7 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
             </ul>
           </div>
         )}
-        <LiveCueBand activeCue={state.activeCue} queuedCount={state.queuedCues.length} />
+        <LiveCueBand activeCue={state.activeCue} />
       </Card>
     </section>
   );

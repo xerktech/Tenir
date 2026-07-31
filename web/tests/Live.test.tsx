@@ -17,7 +17,6 @@ const baseState = () => ({
   segments: [] as { id: string; text: string }[],
   partial: "",
   activeCue: null as { id: string; title: string; body: string } | null,
-  queuedCues: [] as { id: string; title: string; body: string }[],
   pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
 });
 
@@ -76,22 +75,24 @@ describe("LiveView", () => {
     expect(screen.getByText(/150 million km/)).toBeInTheDocument();
   });
 
-  it("shows a '+N more' note when cues are queued behind the active one", () => {
+  it("shows only the freshest cue in the band, never a queued-count note (XERK-159)", () => {
     renderLive(
       fakeController({
         running: true,
         connection: "open",
-        activeCue: { id: "c1", title: "Sun", body: "About 150 million km away." },
-        queuedCues: [
-          { id: "c2", title: "Moon", body: "384,400 km away." },
-          { id: "c3", title: "Mars", body: "225 million km away." },
+        // Only the current cue holds the band; superseded cues live in the
+        // transcript (pastCues), so there is never a backlog to advertise.
+        activeCue: { id: "c3", title: "Mars", body: "225 million km away." },
+        pastCues: [
+          { id: "c1", title: "Sun", body: "150 million km away.", afterSegmentId: null },
+          { id: "c2", title: "Moon", body: "384,400 km away.", afterSegmentId: null },
         ],
       }),
     );
-    // Only the active cue's body renders; the queued ones stay hidden behind it.
-    expect(screen.getByText(/150 million km/)).toBeInTheDocument();
-    expect(screen.queryByText(/384,400 km/)).not.toBeInTheDocument();
-    expect(screen.getByText("+2 more")).toBeInTheDocument();
+    // The current cue's body renders in the band...
+    expect(screen.getByText(/225 million km/)).toBeInTheDocument();
+    // ...and there is no "+N more" queue note over the top of it any more.
+    expect(screen.queryByText(/\+\d+ more/)).not.toBeInTheDocument();
   });
 
   it("embeds a released cue inline in the transcript as a collapsed dropdown (XERK-108)", () => {
@@ -272,7 +273,7 @@ describe("LiveView", () => {
     }
   });
 
-  it("cancels the fade when a queued cue takes over mid-exit (XERK-107)", () => {
+  it("cancels the fade when a fresher cue takes over mid-exit (XERK-107)", () => {
     vi.useFakeTimers();
     try {
       const running = {
@@ -337,7 +338,7 @@ describe("LiveView", () => {
       }
     });
 
-    it("restarts the count for a queued cue promoted into the band", () => {
+    it("restarts the count for a fresher cue that supersedes the current one", () => {
       vi.useFakeTimers();
       try {
         const { container, rerender } = render(withCue(cue));

@@ -32,12 +32,6 @@ export const CUE_EXIT_MS = 160;
 // second boundary — a countdown ticked on a 1000ms interval drifts visibly
 // behind the release timer it is supposed to describe.
 export const CUE_COUNTDOWN_TICK_MS = 250;
-// Only ONE cue is shown at a time (XERK-102): a cue arriving while another is
-// active is queued and pops the moment the active one is released. This bounds
-// how deep that backlog can grow — well past any normal conversation — so a
-// torrent of cues can't grow the queue without limit. Over the cap, the stalest
-// waiting cue is dropped so the freshest still get their turn.
-const MAX_QUEUED_CUES = 16;
 // A released cue drops into the transcript as a reviewable "past cue" (XERK-108);
 // this bounds how many we keep so a long session can't grow them without limit.
 // Over the cap the oldest past cue falls off, matching how segments are bounded.
@@ -82,18 +76,19 @@ export interface CaptureState {
   sessionId?: string;
   segments: CaptureSegment[];
   partial: string;
-  /** The cue currently shown above the transcript; released after CUE_TTL_MS (XERK-102). */
+  /**
+   * The single cue shown above the transcript right now (XERK-102, XERK-159).
+   * Only ever the freshest cue: a newer one takes the band immediately and the
+   * one it replaces drops straight into the transcript (see `pastCues`). Released
+   * to the transcript on its own after CUE_TTL_MS if nothing supersedes it first.
+   */
   activeCue: LiveCue | null;
   /**
-   * Cues waiting behind the active one (FIFO, XERK-102): when the active cue is
-   * released, the head of this queue immediately becomes the new active cue.
-   */
-  queuedCues: LiveCue[];
-  /**
    * Cues that have already had their turn in the band and now sit inline in the
-   * transcript for review (XERK-108), each anchored to the turn it followed. The
-   * live band shows only the active/queued cues, so past cues can be re-read
-   * without interfering with cues still coming in.
+   * transcript for review (XERK-108), each anchored to the turn it followed. Cues
+   * are never queued behind the band (XERK-159): a superseded cue lands here at
+   * once, so the ones you missed are already in the transcript where they belong
+   * rather than replaying one-by-one over the top.
    */
   pastCues: LiveCue[];
   error?: string;
@@ -121,9 +116,21 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     segments: [],
     partial: "",
     activeCue: null,
-    queuedCues: [],
     pastCues: [],
   };
+}
+
+/**
+ * Append a cue to the transcript's past cues (XERK-108) as it leaves the band —
+ * whether its TTL expired or a fresher cue superseded it (XERK-159). Deduped by
+ * id so a stale timer or a resume re-release can't double it, and bounded so a
+ * long session can't grow the list without limit (the oldest falls off, matching
+ * how segments are bounded).
+ */
+function releaseToTranscript(state: CaptureState, cue: LiveCue): LiveCue[] {
+  if (state.pastCues.some((c) => c.id === cue.id)) return state.pastCues;
+  const pastCues = [...state.pastCues, cue];
+  return pastCues.length > MAX_PAST_CUES ? pastCues.slice(pastCues.length - MAX_PAST_CUES) : pastCues;
 }
 
 /** Pure transition function — every state change in the session funnels through here. */
@@ -157,54 +164,39 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       return { ...state, segments, partial: "" };
     }
     case "cue": {
-      // A re-delivered cue (e.g. on resume) shouldn't duplicate: if its id is
-      // already the active or a queued cue, update its text in place but keep the
-      // transcript anchor it was first pinned to.
+      // A re-delivered cue (e.g. on resume) shouldn't duplicate: if it's already
+      // the cue in the band, update its text in place but keep the transcript
+      // anchor it was first pinned to.
       const cue = action.cue;
       if (state.activeCue?.id === cue.id) {
         return { ...state, activeCue: { ...cue, afterSegmentId: state.activeCue.afterSegmentId } };
       }
-      const queuedIdx = state.queuedCues.findIndex((c) => c.id === cue.id);
-      if (queuedIdx !== -1) {
-        const queuedCues = [...state.queuedCues];
-        queuedCues[queuedIdx] = { ...cue, afterSegmentId: queuedCues[queuedIdx].afterSegmentId };
-        return { ...state, queuedCues };
-      }
       // Already reviewed and sitting in the transcript (a resume can re-deliver a
       // long-released cue): don't replay it into the band (XERK-108).
       if (state.pastCues.some((c) => c.id === cue.id)) return state;
-      // Anchor a fresh cue to the last finalized turn so it later reads as landing
-      // just after the words that triggered it (XERK-108). No turns yet → null,
-      // i.e. it will sit before the transcript.
+      // Anchor a fresh cue to the last finalized turn so it reads as landing just
+      // after the words that triggered it (XERK-108). No turns yet → null, i.e. it
+      // will sit before the transcript.
       const anchored: LiveCue = {
         ...cue,
         afterSegmentId: state.segments.length ? state.segments[state.segments.length - 1].id : null,
       };
-      // Nothing showing → this cue becomes active. Otherwise it waits its turn
-      // at the back of the queue (XERK-102).
+      // The newest cue always takes the band in real time (XERK-159). Cues are
+      // never queued behind it: if one is already up, it is superseded and drops
+      // straight into the transcript at its anchor via `releaseToTranscript`. A
+      // backlog that lands in a burst (e.g. coming back to a backgrounded session)
+      // therefore collapses to the current cue in the band plus the missed ones
+      // already inline in the transcript — not a minutes-long one-at-a-time replay
+      // of stale cues over the top of the live conversation.
       if (!state.activeCue) return { ...state, activeCue: anchored };
-      let queuedCues = [...state.queuedCues, anchored];
-      // Bound the backlog: over the cap, drop the stalest waiting cue.
-      if (queuedCues.length > MAX_QUEUED_CUES) {
-        queuedCues = queuedCues.slice(queuedCues.length - MAX_QUEUED_CUES);
-      }
-      return { ...state, queuedCues };
+      return { ...state, activeCue: anchored, pastCues: releaseToTranscript(state, state.activeCue) };
     }
     case "cueRelease": {
-      // The active cue's time is up (or it was dismissed): promote the head of
-      // the queue immediately, or clear the surface if nothing is waiting. Guard
-      // on id so a stale timer can't release a cue that already moved on.
+      // The active cue's time is up (or it was dismissed): drop it into the
+      // transcript and clear the band. Guard on id so a stale timer can't release
+      // a cue that a fresher one already superseded.
       if (!state.activeCue || state.activeCue.id !== action.id) return state;
-      const [next, ...rest] = state.queuedCues;
-      // The released cue drops into the transcript for review (XERK-108). Dedup
-      // by id so a stale timer or a resume re-release can't double it; bound the
-      // list so a long session can't grow it without limit.
-      const released = state.activeCue;
-      let pastCues = state.pastCues.some((c) => c.id === released.id)
-        ? state.pastCues
-        : [...state.pastCues, released];
-      if (pastCues.length > MAX_PAST_CUES) pastCues = pastCues.slice(pastCues.length - MAX_PAST_CUES);
-      return { ...state, activeCue: next ?? null, queuedCues: rest, pastCues };
+      return { ...state, activeCue: null, pastCues: releaseToTranscript(state, state.activeCue) };
     }
     case "error":
       return { ...state, error: action.message };
@@ -216,7 +208,7 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "stop":
       // Session over: drop to idle but keep the transcript on screen to read back
       // — including the past cues now embedded in it (XERK-108). Only the live
-      // band's cues (active + queued) are ephemeral, so clear those.
+      // band's cue is ephemeral, so clear it.
       return {
         ...state,
         running: false,
@@ -224,7 +216,6 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
         connection: "closed",
         partial: "",
         activeCue: null,
-        queuedCues: [],
       };
   }
 }
@@ -399,9 +390,10 @@ export class CaptureSession {
   }
 
   /**
-   * Enqueue a live cue (XERK-81, XERK-102). It shows immediately if nothing is
-   * active, otherwise it waits behind the active cue; either way `syncCueTimer`
-   * makes sure the current active cue has a release timer running.
+   * Show a live cue (XERK-81). It takes the band immediately — in real time,
+   * never queued (XERK-159) — superseding any cue already up, which drops into
+   * the transcript. `syncCueTimer` then re-arms the release timer for whichever
+   * cue now holds the band.
    */
   private showCue(cue: LiveCue): void {
     this.dispatch({ type: "cue", cue });
@@ -411,9 +403,9 @@ export class CaptureSession {
   /**
    * Ensure exactly one release timer is pending, targeting the current active
    * cue. Called after every cue transition: a newly-active cue arms its timer,
-   * a promoted cue re-arms, and an empty surface clears it. When the timer
-   * fires it releases the active cue (promoting the queue head) and re-syncs so
-   * the promoted cue gets its own countdown.
+   * a cue that superseded the previous one re-arms with its own full TTL, and an
+   * empty surface clears it. When the timer fires it releases the active cue into
+   * the transcript and re-syncs.
    */
   private syncCueTimer(): void {
     const active = this.state.activeCue;

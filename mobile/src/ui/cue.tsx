@@ -22,8 +22,8 @@ import { mix, radius, space, withAlpha, type Palette } from "./theme";
  *
  * Returns the cue to paint plus whether it is on its way out, so the band can
  * fade to nothing instead of blinking off the screen. A cue arriving mid-fade
- * cancels the pending unmount and takes over immediately, matching the "only
- * one cue at a time" rule (XERK-102). Mirrors the web `useCueExit`.
+ * cancels the pending unmount and takes over immediately, matching the "one cue
+ * at a time, freshest wins" rule (XERK-102, XERK-159). Mirrors the web `useCueExit`.
  */
 function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: boolean } {
   const [painted, setPainted] = useState<LiveCue | null>(activeCue);
@@ -43,7 +43,7 @@ function useCueExit(activeCue: LiveCue | null): { cue: LiveCue | null; exiting: 
  * `useCueCountdown`: derived from the moment the cue appeared rather than
  * decremented per tick, so a backgrounded app resyncs to the truth instead of
  * drifting away from the release timer, and restarts for each cue that takes
- * the band — a promoted cue gets its own full countdown.
+ * the band — a cue that supersedes another gets its own full countdown.
  */
 function useCueCountdown(cueId: string | undefined): number {
   const [secondsLeft, setSecondsLeft] = useState(() => cueSecondsLeft(0));
@@ -61,9 +61,11 @@ function useCueCountdown(cueId: string | undefined): number {
 }
 
 /**
- * The single active cue over the transcript (XERK-102). One cue shows at a
- * time; others wait in a FIFO queue and pop the moment this one is released. A
- * "+N more" note appears while cues are queued behind it.
+ * The single active cue over the transcript (XERK-102). Exactly one cue shows at
+ * a time, and it is always the freshest: a newer cue takes the band in real time
+ * (XERK-159) and the one it replaces drops straight into the transcript below —
+ * nothing queues behind the band, so missed cues are read inline where they
+ * belong rather than replayed one-by-one over the top.
  *
  * The band *floats over* the top of the transcript rather than sitting above it
  * in the column (XERK-107): as a flow element, each arrival shoved the
@@ -76,10 +78,8 @@ function useCueCountdown(cueId: string | undefined): number {
  */
 export function LiveCueBand({
   activeCue,
-  queuedCount,
 }: {
   activeCue: LiveCue | null;
-  queuedCount: number;
 }): JSX.Element | null {
   const styles = useThemedStyles(makeStyles);
   const { cue, exiting } = useCueExit(activeCue);
@@ -127,14 +127,6 @@ export function LiveCueBand({
             in. Absent for a cue from the model's own knowledge. */}
         {cue.source ? <Text style={styles.cardSource}>{cue.source}</Text> : null}
       </View>
-      {queuedCount > 0 && (
-        <Text
-          style={styles.queued}
-          accessibilityLabel={`${queuedCount} more ${queuedCount === 1 ? "cue" : "cues"} queued`}
-        >
-          +{queuedCount} more
-        </Text>
-      )}
     </Animated.View>
   );
 }
@@ -218,19 +210,6 @@ const makeStyles = (colors: Palette) =>
     cardBody: { color: colors.text, lineHeight: 20 },
     // Live-source attribution under the body (XERK-120): provenance, not content.
     cardSource: { color: colors.muted, fontWeight: "600", fontSize: 11, letterSpacing: 0.2 },
-    // Chipped like the card, since it now sits over the captions too.
-    queued: {
-      alignSelf: "flex-start",
-      color: colors.muted,
-      fontSize: 12,
-      fontWeight: "600",
-      backgroundColor: colors.surfaceRaised,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: radius.sm,
-      paddingHorizontal: space.sm,
-      elevation: 2,
-    },
     disclosure: { alignSelf: "flex-start", marginVertical: space.xs },
     inline: {
       alignSelf: "flex-start",
