@@ -50,7 +50,25 @@ export function deviceAudioSource(): PcmAudioSource {
             buttonNegative: "Deny",
           },
         );
-        return result === PermissionsAndroid.RESULTS.GRANTED;
+        const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+        // Android 13+ (API 33) gates posting the ongoing capture notification — and the
+        // live cues shown in it (XERK-163) — behind a runtime permission. Request it
+        // best-effort once the mic is granted so the notification is visible; a denial
+        // only hides the notification, so it must never block capture from starting.
+        if (granted && Number(Platform.Version) >= 33) {
+          try {
+            await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS, {
+              title: "Notifications",
+              message: "Tenir shows the live session and its cues in a notification.",
+              buttonPositive: "Allow",
+              buttonNegative: "Deny",
+            });
+          } catch {
+            // Older RN / device without the constant — the notification simply stays
+            // hidden until the OS grants it; capture is unaffected.
+          }
+        }
+        return granted;
       }
       // iOS prompts via the native module (NSMicrophoneUsageDescription in Info.plist).
       return native?.requestPermission ? native.requestPermission() : true;

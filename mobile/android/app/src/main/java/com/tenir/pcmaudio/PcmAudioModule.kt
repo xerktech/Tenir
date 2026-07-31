@@ -196,4 +196,15 @@ class PcmAudioModule(private val reactContext: ReactApplicationContext) :
   fun requestPermission(promise: Promise) {
     promise.resolve(hasPermission())
   }
+
+  /**
+   * Rewrite the running-session foreground notification's content (XERK-163) so the
+   * live cue surfaces in the notification shade while the app is backgrounded. No-op if
+   * no session is active — the service guards on its running state.
+   */
+  @ReactMethod
+  fun updateNotification(title: String, text: String, promise: Promise) {
+    MicForegroundService.update(reactContext, title, text)
+    promise.resolve(null)
+  }
 }
