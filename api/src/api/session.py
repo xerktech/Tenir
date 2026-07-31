@@ -82,6 +82,13 @@ def _enum_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
+def _same_text(a: str, b: str) -> bool:
+    """Whether a translation is just its source echoed back (XERK-160): compared
+    case-insensitively with whitespace collapsed, so cosmetic differences don't
+    disguise an echo."""
+    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
 class Session:
     def __init__(
         self, send: Sender, *, session_id: str | None = None, household: str | None = None
@@ -389,8 +396,14 @@ class Session:
 
         A non-English turn (re)opens the run and queues its translation; an
         English turn while a run is live means the other language is done being
-        spoken, so the run closes. A turn with no detected language decides
-        nothing — the silence hold alone governs then.
+        spoken, so the run closes. A turn with no detected language INHERITS an
+        open run — the speaker is mid-run and only an explicit English turn
+        closes one, so an undecidable turn between two Spanish turns (a
+        proper-noun list like "Mercurio, Venus, Tierra, Marte.") is
+        overwhelmingly a continuation and gets translated with the rest; it is
+        queued without a claimed source language so the model reads the text
+        for itself. Outside a run an undecidable turn decides nothing — there
+        the same call would be a guess.
         """
         if self._translator is None:
             return
@@ -402,6 +415,10 @@ class Session:
             self._translation_queue.put_nowait(("translate", result))
         elif lang == "en" and self._translation_active:
             self._end_translation_run()
+        elif lang is None and self._translation_active:
+            assert self._translation_queue is not None
+            self._touch_translation_hold()
+            self._translation_queue.put_nowait(("translate", result))
 
     def _touch_translation_hold(self) -> None:
         """Restart the run's silence hold: any speech activity (a partial or a
@@ -475,6 +492,13 @@ class Session:
             metrics.incr("translation.errors")
             return
         if not translated:
+            return
+        if _same_text(translated, final.text):
+            # The "translation" is the original — an English turn that reached
+            # the queue as an ambiguous run-continuation (the prompt returns
+            # already-English text unchanged). An echo adds nothing to the
+            # listener, so it is dropped rather than rendered twice.
+            metrics.incr("translation.echo_drops")
             return
         try:
             await self._send(
