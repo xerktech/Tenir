@@ -45,6 +45,11 @@ describe("Android notification icon", () => {
     // Shares the launcher glyph's geometry (same "T" path in the 108 viewport).
     expect(xml).toContain('android:viewportWidth="108"');
     expect(xml).toContain("M25.31,31.64");
+    // Scaled up within the fixed status-bar slot so the mark fills the icon
+    // bounds (less transparent padding) instead of rendering small.
+    expect(xml).toContain("<group");
+    expect(xml).toContain('android:scaleX="1.5"');
+    expect(xml).toContain('android:scaleY="1.5"');
   });
 
   it("is wired as the session notification's small icon", () => {

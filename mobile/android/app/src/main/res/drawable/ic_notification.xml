@@ -3,17 +3,32 @@
      geometry (web/public/favicon.svg scaled to the 108 viewport) but drops the dark
      tile and the teal gradient — Android status-bar small icons use only the alpha
      channel and tint the shape at draw time, so a full-colour launcher icon would
-     render as a solid white square. The glyph is inset within the viewport, giving
-     the icon the transparent padding notification icons expect. -->
+     render as a solid white square.
+
+     The status-bar slot is a fixed size, so apparent glyph size is governed by how
+     much of the icon bounds the shape fills. The launcher glyph sits in a padded
+     ~59x49 box within the 108 viewport; wrapping it in a group scaled 1.5x about its
+     centre grows it to ~88x73 (a ~9% margin on the wider axis), close to Android's
+     recommended fill for a small icon so the mark reads clearly in the shade. The
+     paths are unchanged from the launcher geometry — only the group transform sizes
+     and re-centres them (glyph centre 53.37,56.11 -> viewport centre 54,54). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M25.31,31.64 H82.69 V47.25 H61.81 V80.58 H46.20 V47.25 H25.31 Z" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M24.05,60.33 a8.86,8.86 0 1,0 17.72,0 a8.86,8.86 0 1,0 -17.72,0 Z" />
+    <group
+        android:pivotX="53.37"
+        android:pivotY="56.11"
+        android:scaleX="1.5"
+        android:scaleY="1.5"
+        android:translateX="0.63"
+        android:translateY="-2.11">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M25.31,31.64 H82.69 V47.25 H61.81 V80.58 H46.20 V47.25 H25.31 Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M24.05,60.33 a8.86,8.86 0 1,0 17.72,0 a8.86,8.86 0 1,0 -17.72,0 Z" />
+    </group>
 </vector>
