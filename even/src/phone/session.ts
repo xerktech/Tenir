@@ -236,7 +236,7 @@ export class SessionPage {
     this.renderCue(view.recording ? view.cue : null, view.cueSecondsLeft);
 
     // The recognized song's synced lyrics (XERK-184): the same bordered card as a
-    // cue, with "ARTIST — TITLE" over a window of lyric lines that scrolls as the
+    // cue, with "TITLE — ARTIST" over a window of lyric lines that scrolls as the
     // song plays. Shown only while a song is live and a session is recording — the
     // phone counterpart of the lens's lyric box and web/mobile's LiveLyricsBand.
     this.renderSong(view.recording ? view.song ?? null : null);
@@ -381,8 +381,8 @@ export class SessionPage {
   }
 
   /**
-   * Render (or hide) the recognized-song lyric card (XERK-184): the title
-   * "ARTIST — TITLE" with a ♪ badge across from it, over a window of lyric lines.
+   * Render (or hide) the recognized-song lyric card (XERK-190): the title
+   * "TITLE — ARTIST" with a ♪ badge across from it, over a window of lyric lines.
    * Rebuilt in full on each `update`; between updates `tickSong` advances just the
    * lyric lines, so the scroll keeps moving without redrawing the transcript.
    */
@@ -397,7 +397,7 @@ export class SessionPage {
     const doc = this.els.song.ownerDocument;
     const head = doc.createElement("div");
     head.className = "session-song-head";
-    const title = this.make("div", "session-song-title", `${song.artist} — ${song.title}`);
+    const title = this.make("div", "session-song-title", `${song.title} — ${song.artist}`);
     const badge = this.make("div", "session-song-badge", "♪");
     // Out of the accessibility tree: the card is an aria-live region and the ♪ is
     // decoration, not content to announce.

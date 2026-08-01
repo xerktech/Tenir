@@ -97,8 +97,8 @@ describe("LiveView", () => {
         },
       }),
     );
-    // Title is "ARTIST — TITLE" and the first line is shown and current.
-    expect(screen.getByText("Radiohead — Weird Fishes")).toBeInTheDocument();
+    // Title is "TITLE — ARTIST" (XERK-190) and the first line is shown and current.
+    expect(screen.getByText("Weird Fishes — Radiohead")).toBeInTheDocument();
     const current = document.querySelector(".lyrics-line.current");
     expect(current).toHaveTextContent("in the deep");
     // The cue band is hidden while the song plays — its title is not shown.

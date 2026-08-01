@@ -148,7 +148,7 @@ export interface TranslationDone {
   type: "translation.done";
 }
 /**
- * Server -> client. A song was recognized playing in the room (XERK-184). Clients show its time-synced lyrics in the same box a cue uses — title 'ARTIST - SONG NAME' over a body that auto-scrolls as the song plays. The scroll is driven client-side from an anchor: at session-timeline `atMs` the song was at `offsetMs` into the track, so the current line at wall-time t is the last line whose (song) atMs <= offsetMs + (t - atMs). A run of the same song is refreshed by `song.sync` and ended by `song.done`. While a song run is live the api suppresses cues, exactly as a translation run does.
+ * Server -> client. A song was recognized playing in the room (XERK-184). Clients show its time-synced lyrics in the same box a cue uses — title 'SONG NAME - ARTIST' over a body that auto-scrolls as the song plays. The scroll is driven client-side from an anchor: at session-timeline `atMs` the song was at `offsetMs` into the track, so the current line at wall-time t is the last line whose (song) atMs <= offsetMs + (t - atMs). A run of the same song is refreshed by `song.sync` and ended by `song.done`. While a song run is live the api suppresses cues, exactly as a translation run does.
  */
 export interface Song {
   type: "song";
@@ -161,7 +161,7 @@ export interface Song {
    */
   title: string;
   /**
-   * The performing artist; the box title renders 'ARTIST - TITLE'.
+   * The performing artist; the box title renders 'TITLE - ARTIST'.
    */
   artist: string;
   /**

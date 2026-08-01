@@ -1,7 +1,7 @@
 /**
  * Live synced-lyrics UI for the mobile app (XERK-184) — parity with the web SPA's
  * `LiveLyricsBand`. When a song is recognized playing, its time-synced lyrics
- * scroll in the same box a cue uses: title "ARTIST — TITLE" over a fixed window
+ * scroll in the same box a cue uses: title "TITLE — ARTIST" over a fixed window
  * of lyric lines, the current one highlighted, advancing as the song plays.
  * Themed via the shared ThemeContext.
  */
@@ -58,7 +58,7 @@ export function LiveLyricsBand({ song }: { song: LiveSong | null }): JSX.Element
       <View style={styles.card}>
         <View style={styles.cardHead}>
           <Text style={styles.cardTitle}>
-            {song.artist} — {song.title}
+            {song.title} — {song.artist}
           </Text>
           <Text style={styles.badge} accessibilityElementsHidden>
             ♪

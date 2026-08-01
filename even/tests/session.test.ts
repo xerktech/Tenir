@@ -338,11 +338,11 @@ describe("SessionPage", () => {
       durationMs: 6000,
     });
 
-    it("shows 'ARTIST — TITLE' over the current lyric window while recording", () => {
+    it("shows 'TITLE — ARTIST' over the current lyric window while recording", () => {
       mount().update(view({ song: liveSong() }));
       expect(song().hidden).toBe(false);
       expect(song().querySelector(".session-song-title")!.textContent).toBe(
-        "The Beatles — Yesterday",
+        "Yesterday — The Beatles",
       );
       // Offset 0: the window opens on the first four lines, the first highlighted.
       expect(lyricLines().map((l) => l.textContent)).toEqual(["line0", "line1", "line2", "line3"]);

@@ -19,8 +19,8 @@ describe("mobile synced-lyrics band (XERK-184)", () => {
     // so it stays in lockstep with the web band.
     expect(lyrics).toContain("currentLyricIndex");
     expect(lyrics).toContain("lyricWindow");
-    // Title is "ARTIST — TITLE".
-    expect(lyrics).toContain("{song.artist} — {song.title}");
+    // Title is "TITLE — ARTIST" (XERK-190).
+    expect(lyrics).toContain("{song.title} — {song.artist}");
     // The current line is highlighted; empty lyrics fall back to a no-scroll marker.
     expect(lyrics).toContain("i === win.currentIndex ? styles.current : null");
   });
@@ -44,8 +44,8 @@ describe("mobile history renders recognized songs inline (XERK-184)", () => {
   it("places songs on the transcript timeline like cues", () => {
     expect(history).toContain('kind: "song"');
     expect(history).toContain("conv.songs");
-    // Rendered as "♪ ARTIST — TITLE" at the point it played.
-    expect(history).toContain("{run.song.artist} — {run.song.title}");
+    // Rendered as "♪ TITLE — ARTIST" at the point it played (XERK-190).
+    expect(history).toContain("{run.song.title} — {run.song.artist}");
     // Songs stay visible even with the cue toggle off (they aren't cues).
     expect(history).toContain('it.kind !== "cue" || showCues');
   });

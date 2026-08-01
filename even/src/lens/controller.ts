@@ -288,7 +288,7 @@ export async function wireLens(
   // the lens stand-in for the bold highlight the HUD can't render (`songBody`).
   // As the clock advances the window slides and the lyrics scroll (repainted from
   // the ticker, see `renderSongBody`). An empty-lyrics song shows the title over a
-  // quiet ♪ marker, matching web/mobile. The title is "ARTIST — SONG NAME".
+  // quiet ♪ marker, matching web/mobile. The title is "SONG NAME — ARTIST".
   const songCard = (): CueCard => {
     const song = state.song!;
     const win = lyricWindow(song.lines, currentLyricIndex(song, Date.now()));

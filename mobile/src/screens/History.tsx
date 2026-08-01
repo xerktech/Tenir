@@ -213,7 +213,7 @@ function Detail({
             // the point it played — the mobile parity of the web history marker.
             <Text key={run.song.songId} style={{ color: colors.muted, lineHeight: 22 }}>
               <Text style={{ color: colors.accentStrong }}>♪ </Text>
-              {run.song.artist} — {run.song.title}
+              {run.song.title} — {run.song.artist}
             </Text>
           ) : (
             <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
