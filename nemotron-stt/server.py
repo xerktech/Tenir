@@ -62,6 +62,41 @@ TARGET_SR = 16000  # the model decodes 16 kHz mono; the api already sends exactl
 ATT_CONTEXT_LEFT = 56
 ATT_CONTEXT_RIGHT = int(os.environ.get("NEMOTRON_ATT_CONTEXT_RIGHT", "3"))
 
+# Trailing mel frames withheld from the encoder on every feed: the STFT's centre
+# padding means the last few frames computed over the turn-so-far will change
+# once more audio arrives, so they are only consumed after they stabilise.
+GUARD_FRAMES = 4
+
+
+def _env_flag(name: str, *, default: bool = True) -> bool:
+    """Boolean env knob: "0"/"false"/"no" (any case) turn it off."""
+    return os.environ.get(name, "1" if default else "0").lower() not in ("0", "false", "no")
+
+
+def plan_chunks(
+    next_idx: int, step: int, avail: int, *, first_chunk: int, chunk: int, pre: int
+) -> list[tuple[int, int, int]]:
+    """Mel-frame spans that are complete enough to go through the encoder.
+
+    Returns ``(pre_start, start, end)`` tuples: ``[start, end)`` is the chunk and
+    ``[pre_start, start)`` is the pre-encode cache prepended to it. Mirrors how
+    NeMo's ``CacheAwareStreamingAudioBuffer`` slices a fully-buffered signal: the
+    first chunk is the shorter ``first_chunk`` with no pre-encode cache, every
+    later chunk is ``chunk`` frames with up to ``pre`` frames of overlap. Only
+    spans that fit entirely inside ``avail`` frames are returned — a partial
+    chunk stays unconsumed until more audio arrives.
+    """
+    spans: list[tuple[int, int, int]] = []
+    while True:
+        size = first_chunk if step == 0 else chunk
+        if next_idx + size > avail:
+            return spans
+        pre_start = next_idx if step == 0 else max(0, next_idx - pre)
+        spans.append((pre_start, next_idx, next_idx + size))
+        next_idx += size
+        step += 1
+
+
 app = FastAPI(title="tenir-nemotron-stt")
 
 # WebSocket implementation uvicorn serves /v1/audio/stream with. `wsproto`, NOT the
@@ -111,10 +146,6 @@ class NemotronStreamDecoder:  # pragma: no cover - requires NeMo + a GPU
     """
 
     def __init__(self, model: object, *, target_lang: str, att_context_right: int) -> None:
-        from nemo.collections.asr.parts.utils.streaming_utils import (  # noqa: PLC0415
-            CacheAwareStreamingAudioBuffer,
-        )
-
         self._model = model
         self._target_lang = target_lang
         model.encoder.set_default_att_context_size(  # type: ignore[attr-defined]
@@ -126,7 +157,11 @@ class NemotronStreamDecoder:  # pragma: no cover - requires NeMo + a GPU
             # Drop the trailing "<en-US>"-style language tag the prompt model appends,
             # so the api gets clean caption text (mirrors the GPU-benchmark harness).
             model.decoding.set_strip_lang_tags(True, lang_tag_pattern=None)  # type: ignore[attr-defined]
-        self._buffer_cls = CacheAwareStreamingAudioBuffer
+        scfg = model.encoder.streaming_cfg  # type: ignore[attr-defined]
+        self._first_chunk = scfg.chunk_size[0]
+        self._chunk = scfg.chunk_size[1]
+        self._pre = scfg.pre_encode_cache_size[1]
+        self._drop = scfg.drop_extra_pre_encoded
         self.reset()
 
     def reset(self) -> None:
@@ -136,22 +171,43 @@ class NemotronStreamDecoder:  # pragma: no cover - requires NeMo + a GPU
         self._prev_hyp = None
         self._pred_out = None
         self._step = 0
-        self._buffer = self._buffer_cls(model=m, online_normalization=False)
+        self._mel_idx = 0
+        self._pcm = np.zeros(0, dtype=np.float32)
         self._text = ""
 
-    def _drop_extra_pre_encoded(self) -> int:
-        if self._step == 0:
-            return 0
-        return self._model.encoder.streaming_cfg.drop_extra_pre_encoded  # type: ignore[attr-defined]
-
     def feed(self, samples: np.ndarray) -> str:
-        """Append mono float32 samples, decode any newly-complete chunks, return text."""
+        """Append mono float32 samples, decode any newly-complete chunks, return text.
+
+        The mel spectrogram is recomputed over the WHOLE in-flight turn on every
+        feed, and only the newly complete chunks (planned by ``plan_chunks``) go
+        through the cache-aware encoder. Preprocessing each arriving PCM piece on
+        its own — the previous approach — corrupts the mel frames at every piece
+        boundary (the STFT pads each piece independently), which turned the whole
+        stream into garbage-or-empty partials; GPU-verified either way. Mel over a
+        bounded turn is milliseconds of GPU work, and the encoder/decoder stay
+        strictly incremental, so per-feed cost stays flat (~40 ms per 320 ms chunk
+        measured on an RTX 4060).
+        """
         import torch  # noqa: PLC0415
 
-        self._buffer.append_audio(samples, stream_id=-1)
-        cache_lc, cache_lt, cache_len = self._cache
+        self._pcm = np.concatenate([self._pcm, samples])
+        m = self._model
         with torch.no_grad():
-            for chunk_audio, chunk_len in self._buffer:
+            sig = torch.tensor(self._pcm, device=m.device).unsqueeze(0)  # type: ignore[attr-defined]
+            slen = torch.tensor([len(self._pcm)], device=m.device)  # type: ignore[attr-defined]
+            mel, mel_len = m.preprocessor(input_signal=sig, length=slen)  # type: ignore[attr-defined]
+            avail = int(mel_len[0]) - GUARD_FRAMES
+            cache_lc, cache_lt, cache_len = self._cache
+            for pre_start, start, end in plan_chunks(
+                self._mel_idx,
+                self._step,
+                avail,
+                first_chunk=self._first_chunk,
+                chunk=self._chunk,
+                pre=self._pre,
+            ):
+                chunk_audio = mel[:, :, pre_start:end]
+                chunk_len = torch.tensor([chunk_audio.size(-1)], device=mel.device)
                 (
                     self._pred_out,
                     texts,
@@ -159,21 +215,22 @@ class NemotronStreamDecoder:  # pragma: no cover - requires NeMo + a GPU
                     cache_lt,
                     cache_len,
                     self._prev_hyp,
-                ) = self._model.conformer_stream_step(  # type: ignore[attr-defined]
+                ) = m.conformer_stream_step(  # type: ignore[attr-defined]
                     processed_signal=chunk_audio,
                     processed_signal_length=chunk_len,
                     cache_last_channel=cache_lc,
                     cache_last_time=cache_lt,
                     cache_last_channel_len=cache_len,
-                    keep_all_outputs=self._buffer.is_buffer_empty(),
+                    keep_all_outputs=False,
                     previous_hypotheses=self._prev_hyp,
                     previous_pred_out=self._pred_out,
-                    drop_extra_pre_encoded=self._drop_extra_pre_encoded(),
+                    drop_extra_pre_encoded=0 if self._step == 0 else self._drop,
                     return_transcription=True,
                 )
                 self._step += 1
+                self._mel_idx = end
                 self._text = _extract_text(texts)
-        self._cache = (cache_lc, cache_lt, cache_len)
+            self._cache = (cache_lc, cache_lt, cache_len)
         return self._text
 
 
@@ -215,8 +272,37 @@ def _load_model() -> None:  # pragma: no cover - requires NeMo + a GPU
     import nemo.collections.asr as nemo_asr  # noqa: PLC0415 — deferred heavy import
 
     log.info("loading %s ...", MODEL_NAME)
-    model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME)
+    # Restore on CPU, then move ONE copy of the weights to the GPU. Restoring
+    # straight to the GPU leaves a second full copy of the weights live there
+    # (~5 GB instead of ~2.6 GB for this 0.6B model, measured) — on a small card
+    # that is what stops the co-tenant Parakeet server from fitting alongside.
+    import gc  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    model = nemo_asr.models.ASRModel.from_pretrained(
+        model_name=MODEL_NAME, map_location="cpu"
+    )
     model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+        gc.collect()
+        torch.cuda.empty_cache()
+    # NEMOTRON_CUDA_GRAPHS=0 switches RNNT greedy decoding to the non-CUDA-graph
+    # implementation. Needed on hosts whose driver is older than the container's
+    # CUDA toolkit (minor-version compatibility mode): graph capture fails with
+    # "invalid argument" on every decode step there — and a failed decode step
+    # has been observed to leave uvicorn's WebSocket accept path answering 400
+    # to every later handshake, which presents as the whole streaming service
+    # silently dying while /health stays green.
+    if not _env_flag("NEMOTRON_CUDA_GRAPHS"):
+        from omegaconf import open_dict  # noqa: PLC0415
+
+        dec_cfg = model.cfg.decoding
+        with open_dict(dec_cfg):
+            dec_cfg.greedy.use_cuda_graph_decoder = False
+        model.change_decoding_strategy(dec_cfg)
+        log.info("CUDA-graph decoder disabled (NEMOTRON_CUDA_GRAPHS=0)")
     _model = model
     _ready.set()
     log.info("model ready")

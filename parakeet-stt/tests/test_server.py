@@ -303,3 +303,23 @@ def test_hyp_language_probes_candidate_attributes() -> None:
     assert server._hyp_language(Listed(), None) == "es"
     assert server._hyp_language(object(), "fr") == "fr"  # falls back to the request
     assert server._hyp_language(object(), None) is None
+
+
+# ---- the CUDA-graph env knob ----
+
+
+def test_env_flag_defaults_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARAKEET_CUDA_GRAPHS", raising=False)
+    assert server._env_flag("PARAKEET_CUDA_GRAPHS") is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "False", "NO"])
+def test_env_flag_off_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("PARAKEET_CUDA_GRAPHS", value)
+    assert server._env_flag("PARAKEET_CUDA_GRAPHS") is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes"])
+def test_env_flag_on_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("PARAKEET_CUDA_GRAPHS", value)
+    assert server._env_flag("PARAKEET_CUDA_GRAPHS") is True

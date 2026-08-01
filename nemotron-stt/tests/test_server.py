@@ -211,3 +211,57 @@ def test_real_uvicorn_ws_handshake_and_protocol(monkeypatch: pytest.MonkeyPatch)
         srv.should_exit = True
         thread.join(timeout=5)
         server._ready.clear()
+
+
+# ---- chunk planning (the mel-frame slicing behind NemotronStreamDecoder.feed) ----
+
+# The real model's values at [56,3]/320 ms: first chunk 25 frames (no pre-encode
+# cache), then 32-frame chunks with a 9-frame pre-encode overlap.
+PLAN = dict(first_chunk=25, chunk=32, pre=9)
+
+
+def test_plan_first_chunk_is_short_with_no_pre_cache() -> None:
+    spans = server.plan_chunks(0, 0, 60, **PLAN)
+    assert spans[0] == (0, 0, 25)  # pre_start == start: nothing prepended
+
+
+def test_plan_later_chunks_carry_the_pre_encode_overlap() -> None:
+    spans = server.plan_chunks(0, 0, 100, **PLAN)
+    assert spans == [(0, 0, 25), (16, 25, 57), (48, 57, 89)]
+
+
+def test_plan_withholds_incomplete_chunks() -> None:
+    # 56 available: the 25-frame first chunk fits, the next 32 don't (25+32 > 56).
+    assert server.plan_chunks(0, 0, 56, **PLAN) == [(0, 0, 25)]
+    # Nothing at all fits before the first chunk is complete.
+    assert server.plan_chunks(0, 0, 24, **PLAN) == []
+
+
+def test_plan_resumes_mid_stream_without_replanning_the_first_chunk() -> None:
+    # Picking up at frame 57 after 2 steps: chunk 3 starts exactly where step 2 ended.
+    assert server.plan_chunks(57, 2, 130, **PLAN) == [(48, 57, 89), (80, 89, 121)]
+
+
+def test_plan_pre_cache_is_clamped_at_zero() -> None:
+    # A resumed stream whose index is smaller than the overlap must not go negative.
+    assert server.plan_chunks(5, 1, 60, **PLAN)[0] == (0, 5, 37)
+
+
+# ---- the CUDA-graph env knob ----
+
+
+def test_env_flag_defaults_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NEMOTRON_CUDA_GRAPHS", raising=False)
+    assert server._env_flag("NEMOTRON_CUDA_GRAPHS") is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "False", "NO"])
+def test_env_flag_off_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("NEMOTRON_CUDA_GRAPHS", value)
+    assert server._env_flag("NEMOTRON_CUDA_GRAPHS") is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", ""])
+def test_env_flag_on_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("NEMOTRON_CUDA_GRAPHS", value)
+    assert server._env_flag("NEMOTRON_CUDA_GRAPHS") is True
