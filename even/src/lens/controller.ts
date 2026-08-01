@@ -37,7 +37,13 @@
 
 import { OsEventTypeList, type EvenAppBridge, type EvenHubEvent } from "@evenrealities/even_hub_sdk";
 
-import { ApiClient, cueSecondsLeft, type ApiHandlers, type SessionParams } from "@tenir/client-core";
+import {
+  ApiClient,
+  cueSecondsLeft,
+  langName,
+  type ApiHandlers,
+  type SessionParams,
+} from "@tenir/client-core";
 
 import { AudioCapture, pcmBytes } from "../audio/capture";
 import { config } from "../config";
@@ -56,6 +62,7 @@ import {
   clockText,
   cueRowRange,
   cueTitleLine,
+  dots,
   fitCaption,
   menuText,
   occludedCaption,
@@ -88,7 +95,22 @@ const TRANSCRIPT_MAX_CHARS = 1200;
 export const TRANSLATION_MAX_CHARS = 1200;
 // The translation box's pinned title row (XERK-160). The box reuses the cue
 // box's geometry — same place, same size — so the wearer reads one popup shape.
-export const TRANSLATION_TITLE = "Translation";
+// The base verb, used alone as the title when the run's source language wasn't
+// detected (XERK-173).
+export const TRANSLATION_TITLE = "Translating";
+
+// The translation box title (XERK-173): names the direction of the run —
+// "Translating <Source> → English" once the spoken language is known, else the
+// bare "Translating". English is always the target (the api translates
+// non-English turns into English), so only the source varies. While the run is
+// live a `tick` animates trailing dots — the same activity cue as the
+// "listening…" status line (XERK-85) — so the title reads as work in progress;
+// pass no tick once the run is done and the box is instead counting down.
+export function translationTitle(sourceLang?: string, tick?: number): string {
+  const from = langName(sourceLang);
+  const base = from ? `Translating ${from} → English` : TRANSLATION_TITLE;
+  return tick == null ? base : `${base}${dots(tick)}`;
+}
 // Cap how many finalized turns we keep on the lens.
 const MAX_SEGMENTS = 60;
 // The activity ticker (XERK-85): moves the "listening" dots and keeps the
@@ -133,8 +155,10 @@ type Mutable = {
   // The live translation run (XERK-160): English renderings of the non-English
   // turns currently being spoken, shown in the cue box's slot. `done` flips when
   // the api says the other language is done being spoken (`translation.done`) —
-  // only then does the box's 10s auto-dismiss countdown start.
-  translation: { texts: string[]; done: boolean } | null;
+  // only then does the box's 10s auto-dismiss countdown start. `sourceLang` is
+  // the run's detected spoken language, fixed from its first turn, so the box
+  // title can read "<Source> → English" (XERK-173).
+  translation: { texts: string[]; done: boolean; sourceLang?: string } | null;
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -225,7 +249,12 @@ export async function wireLens(
   // tailed to the last rows (XERK-172): a new turn arrives at the bottom, like
   // the caption band, instead of the rebuild snapping the host scroll to the top.
   const translationCard = (): CueCard => ({
-    title: TRANSLATION_TITLE,
+    // Animate the "Translating…" dots while the run is live (XERK-173); once it
+    // is done the box counts down instead, so the title goes static.
+    title: translationTitle(
+      state.translation?.sourceLang,
+      state.translation?.done ? undefined : tick,
+    ),
     body: tailCueBody((state.translation?.texts ?? []).join("\n")),
   });
   // Seconds left before the translation box auto-dismisses — undefined while the
@@ -425,7 +454,7 @@ export async function wireLens(
         persist();
       },
       onCue: (m) => showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),
-      onTranslation: (m) => showTranslation(m.segmentId, m.text),
+      onTranslation: (m) => showTranslation(m.segmentId, m.text, m.sourceLang),
       onTranslationDone: () => finishTranslation(),
       onError: (m) => {
         console.warn("api error", m.code, m.message);
@@ -557,9 +586,10 @@ export async function wireLens(
     if (state.cue) {
       renderMenu();
       sessionPage?.tickCue(cueCountdown());
-    } else if (state.translation?.done) {
-      // A finished run is counting down to dismissal (XERK-160): keep the
-      // number in the box's title row current, like a cue's.
+    } else if (state.translation) {
+      // A live run animates the "Translating…" dots (XERK-173); a finished one
+      // keeps its dismissal countdown current (XERK-160). Either way only the
+      // title row repaints, and the writer drops the frame when nothing changed.
       renderMenu();
     }
   }, TICK_MS);
@@ -644,11 +674,13 @@ export async function wireLens(
    * holding the box loses it — cues don't appear during translations — and is
    * embedded for review rather than dropped.
    */
-  const showTranslation = (segmentId: string, text: string) => {
+  const showTranslation = (segmentId: string, text: string, sourceLang?: string) => {
     const seg = state.segments.find((s) => s.id === segmentId);
     if (seg) seg.translation = text;
     if (!state.translation || state.translation.done) {
-      state.translation = { texts: [text], done: false };
+      // A new run: its source language, fixed here from the first turn, titles
+      // the box "<Source> → English" (XERK-173).
+      state.translation = { texts: [text], done: false, sourceLang };
       clearTranslationTimer();
       if (state.cue) {
         embedPastCue(state.cue);
@@ -657,6 +689,10 @@ export async function wireLens(
       }
     } else {
       state.translation.texts.push(text);
+      // Adopt a later turn's source language if the run started without one, so
+      // a first turn that arrived untagged doesn't strand the box on the generic
+      // title (XERK-173).
+      if (!state.translation.sourceLang && sourceLang) state.translation.sourceLang = sourceLang;
       // Bound the accumulated body like the transcript: the box tails to its
       // newest rows (XERK-172), so only the most recent text needs keeping.
       while (

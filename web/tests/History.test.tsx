@@ -10,6 +10,10 @@ const remove = vi.fn();
 
 vi.mock("@tenir/client-core", () => ({
   ApiError: class ApiError extends Error {},
+  langName: (lang?: string | null) =>
+    ({ en: "English", es: "Spanish", fr: "French", de: "German", pt: "Portuguese", it: "Italian" })[
+      lang ?? ""
+    ],
   history: {
     list: (q?: string) => list(q),
     get: (id: string) => get(id),
