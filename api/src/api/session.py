@@ -795,6 +795,16 @@ class Session:
         wav = self._music_window_wav()
         if wav is None:
             return
+        # Anchor the scroll to the END of THIS window, captured BEFORE the slow,
+        # variable-latency recognition call (XERK-188). `match.offset_ms` is the
+        # song's play position at this instant; `window_end_ms` is the matching
+        # session-timeline position and `window_end_monotonic` a reference for
+        # compensating the identify + lyric-fetch latency at send time. Without
+        # this the offset is anchored to "now" on the client but is really from
+        # seconds ago (Shazam can take up to its hard timeout), and every re-sync
+        # lands a different lag — the large, jumpy corrections this ticket is about.
+        window_end_ms = self._current_audio_ms()
+        window_end_monotonic = time.monotonic()
         try:
             match = await self._music.identify(wav)
         except Exception:
@@ -811,13 +821,13 @@ class Session:
             return
         self._music_misses = 0
         key = match.track_key or track_key(match.artist, match.title)
-        at_ms = self._current_audio_ms()
+        at_ms = window_end_ms
         if self._music_active and key == self._music_track_key:
             # The locked song again: refresh its clock and drop any takeover
             # candidate — the previous differing scan was a blip, not a change.
             self._music_last_match_monotonic = now
             self._music_pending_key = None
-            await self._send_song_sync(match, at_ms)
+            await self._send_song_sync(match, at_ms, window_end_monotonic)
         elif self._music_active and key != self._music_pending_key:
             # A different track while a song is locked (XERK-187): note it and
             # wait for a confirming scan. Crossfaded windows flap between the
@@ -836,9 +846,26 @@ class Session:
             # or the pending track matched twice in a row: (re)open the run.
             self._music_last_match_monotonic = now
             self._music_pending_key = None
-            await self._open_music_run(match, key, at_ms)
+            await self._open_music_run(match, key, at_ms, window_end_monotonic)
 
-    async def _open_music_run(self, match: MusicMatch, key: str, at_ms: int) -> None:
+    def _synced_offset_ms(self, match: MusicMatch, window_end_monotonic: float) -> int:
+        """The song's play position to anchor the client scroll on, compensated for
+        recognition latency (XERK-188).
+
+        `match.offset_ms` is the play position at the END of the fingerprinted
+        window (`window_end_monotonic`). The recognition call — and, for a run
+        open, the lyric fetch — take real, highly variable time (Shazam can spend
+        up to its hard timeout), during which the song keeps playing. The client
+        stamps its anchor on arrival, so without advancing the offset by that
+        elapsed time the scroll is anchored seconds behind the music and each
+        re-sync lands a different lag. Adding the elapsed wall time leaves only the
+        small, roughly-constant WS delivery delay for the checker to trim."""
+        elapsed_ms = int(max(0.0, (time.monotonic() - window_end_monotonic) * 1000))
+        return max(0, match.offset_ms + elapsed_ms)
+
+    async def _open_music_run(
+        self, match: MusicMatch, key: str, at_ms: int, window_end_monotonic: float
+    ) -> None:
         """A new song took over: close any prior run, fetch its lyrics, deliver the
         `song` frame, and persist the identity. Best-effort throughout."""
         if self._music_active:
@@ -863,7 +890,7 @@ class Session:
                     title=match.title,
                     artist=match.artist,
                     atMs=at_ms,
-                    offsetMs=max(0, match.offset_ms),
+                    offsetMs=self._synced_offset_ms(match, window_end_monotonic),
                     durationMs=match.duration_ms,
                     lines=lines,
                 )
@@ -887,7 +914,9 @@ class Session:
                 ),
             )
 
-    async def _send_song_sync(self, match: MusicMatch, at_ms: int) -> None:
+    async def _send_song_sync(
+        self, match: MusicMatch, at_ms: int, window_end_monotonic: float
+    ) -> None:
         """Re-anchor the locked song so the client corrects scroll drift."""
         if self._music_run_id is None:
             return
@@ -897,7 +926,7 @@ class Session:
                     type="song.sync",
                     songId=self._music_run_id,
                     atMs=at_ms,
-                    offsetMs=max(0, match.offset_ms),
+                    offsetMs=self._synced_offset_ms(match, window_end_monotonic),
                 )
             )
         except Exception:

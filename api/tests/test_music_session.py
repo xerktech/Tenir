@@ -26,18 +26,27 @@ class _SpyMusicService:
     calls, and notes when it was closed."""
 
     def __init__(
-        self, matches: list[MusicMatch | None], lyrics: list[SyncedLine] | None = None
+        self,
+        matches: list[MusicMatch | None],
+        lyrics: list[SyncedLine] | None = None,
+        identify_delay: float = 0.0,
     ) -> None:
         self._matches = list(matches)
         self._lyrics = lyrics if lyrics is not None else [
             SyncedLine(at_ms=0, text="one"),
             SyncedLine(at_ms=5000, text="two"),
         ]
+        # Simulated recognition latency: the real Shazam call is slow and varies
+        # wildly, which is exactly what the offset compensation (XERK-188) exists
+        # to absorb.
+        self._identify_delay = identify_delay
         self.identify_calls = 0
         self.closed = False
 
     async def identify(self, wav: bytes) -> MusicMatch | None:
         self.identify_calls += 1
+        if self._identify_delay:
+            await asyncio.sleep(self._identify_delay)
         return self._matches.pop(0) if self._matches else None
 
     async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
@@ -103,7 +112,9 @@ def test_song_emitted_and_persisted() -> None:
         song = songs[0]
         assert song.artist == "Radiohead"
         assert song.title == "Weird Fishes"
-        assert song.offsetMs == 60000
+        # The offset is compensated for recognition latency (XERK-188); with an
+        # instant spy that compensation rounds to ~0, so it stays at the match.
+        assert 60000 <= song.offsetMs < 60200
         assert song.durationMs == 318000
         assert [(ln.atMs, ln.text) for ln in song.lines] == [(0, "one"), (5000, "two")]
         assert session._music_active is True
@@ -130,9 +141,42 @@ def test_same_song_resyncs() -> None:
         songs, syncs = _songs(sent), _syncs(sent)
         assert len(songs) == 1
         assert len(syncs) == 1
-        # Re-sync keys the same run and carries the fresh offset.
+        # Re-sync keys the same run and carries the fresh offset (compensated for
+        # the instant spy's ~0 latency, XERK-188).
         assert syncs[0].songId == songs[0].songId
-        assert syncs[0].offsetMs == 78000
+        assert 78000 <= syncs[0].offsetMs < 78200
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_offset_compensated_for_recognition_latency() -> None:
+    """A slow recognition call must not anchor the scroll in the past: the emitted
+    offset is advanced by the wall time the identify (and lyric fetch) consumed, so
+    the client — which stamps its anchor on arrival — starts in sync instead of
+    lagging by the call latency, and each re-sync lands a consistent (small) offset
+    rather than a fresh multi-second jump (XERK-188)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        delay = 0.4  # 400ms of simulated recognition latency
+        session._music = _SpyMusicService(
+            [_match(offset_ms=60000), _match(offset_ms=60000)],
+            identify_delay=delay,
+        )
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run
+        await session._scan_music_once()  # same song -> re-sync
+
+        song = _songs(sent)[0]
+        sync = _syncs(sent)[0]
+        # Both matches report offset 60000, but ~400ms elapsed inside each call —
+        # the emitted offset is advanced past 60000 to keep the anchor honest.
+        lo = 60000 + int(delay * 1000 * 0.5)  # allow scheduling slack
+        hi = 60000 + int(delay * 1000 * 2) + 500
+        assert lo <= song.offsetMs <= hi, song.offsetMs
+        assert lo <= sync.offsetMs <= hi, sync.offsetMs
         await session.close()
 
     asyncio.run(run())

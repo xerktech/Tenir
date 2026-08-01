@@ -46,6 +46,13 @@ Where it appears:
    `MusicService.identify(wav)` returns the track plus the **play-offset into the
    song at the end of the window** (`MusicMatch.offset_ms`) — the sync anchor.
    `MusicService.lyrics(match)` returns the track's **time-synced LRC** lines.
+   Recognition is *slow and variable* (Shazam can spend up to its hard timeout),
+   so before emitting the anchor the session **advances the offset by the wall
+   time the identify + lyric-fetch consumed** (`_synced_offset_ms`, XERK-188):
+   `offset_ms` is the play position at the window's end, and the client stamps its
+   anchor on arrival, so without this the scroll would start seconds behind the
+   music and each re-sync would land a *different* lag — big, jumpy corrections.
+   Compensating leaves only the small, roughly-constant WS delivery delay.
 3. **The run state machine** mirrors the translation run. A confident match
    opens a **song run**: the api sends one `song` frame carrying the full synced
    lyrics and an anchor (`atMs` = the session-timeline position, `offsetMs` = the
@@ -66,7 +73,8 @@ Where it appears:
    anchor rather than counted per tick, a throttled tab or a backgrounded app
    resyncs to the truth on the next tick instead of drifting — the same
    discipline as the cue countdown (`cueSecondsLeft`). Periodic `song.sync`
-   frames re-anchor it, so the recognizer's coarse offset isn't precision-critical.
+   frames re-anchor it — and because the api latency-compensates each anchor
+   (point 2), those re-syncs are small nudges rather than multi-second jumps.
 5. **Delivery + persistence.** `song` / `song.sync` / `song.done` are WebSocket
    messages (`contract/ws-messages.schema.json`); the song identity is persisted
    to the `songs` table (`schema.sql`) at `at_ms` so history renders it inline.
