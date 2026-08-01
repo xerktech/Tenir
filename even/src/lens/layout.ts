@@ -490,13 +490,13 @@ export function cueTitleLine(cue: CueCard, secondsLeft?: number): string {
 }
 
 /**
- * The song box's title (XERK-184): "ARTIST — SONG NAME", the same "ARTIST — TITLE"
+ * The song box's title (XERK-190): "SONG NAME — ARTIST", the same "TITLE — ARTIST"
  * form the web/mobile lyric cards use — parity across the three front ends. Built
  * as a plain string here; `cueTitleLine` wraps/trims it to the box's title row
  * (with no countdown — a song box has none, it clears on `song.done`).
  */
 export function songTitle(artist: string, title: string): string {
-  return `${artist} — ${title}`;
+  return `${title} — ${artist}`;
 }
 
 /**

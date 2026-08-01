@@ -300,7 +300,7 @@ function ConversationDetail({
                   ♪
                 </span>{" "}
                 <span className="song-title">
-                  {item.song.artist} — {item.song.title}
+                  {item.song.title} — {item.song.artist}
                 </span>
               </div>
             ),

@@ -801,11 +801,11 @@ describe("synced-lyric song box (XERK-184)", () => {
     expect(SONG_ROWS).toBe(1 + SONG_BODY_LINES); // title over the four lyric rows
   });
 
-  it("titles the box 'ARTIST — SONG NAME', matching web/mobile", () => {
-    expect(songTitle("The Beatles", "Yesterday")).toBe("The Beatles — Yesterday");
+  it("titles the box 'SONG NAME — ARTIST', matching web/mobile (XERK-190)", () => {
+    expect(songTitle("The Beatles", "Yesterday")).toBe("Yesterday — The Beatles");
     // The box's pinned title row carries it with no countdown (a song box has none).
     const card = { title: songTitle("The Beatles", "Yesterday"), body: "line one" };
-    expect(cueTitleLine(card)).toBe("The Beatles — Yesterday");
+    expect(cueTitleLine(card)).toBe("Yesterday — The Beatles");
   });
 
   it("marks the line being sung with '>' — the lens stand-in for web/mobile's bold (XERK-189)", () => {

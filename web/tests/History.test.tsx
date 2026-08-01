@@ -238,8 +238,8 @@ describe("HistoryPanel", () => {
     });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
-    // The song sits inline as "ARTIST — TITLE" at the point it played.
-    expect(await screen.findByText("Radiohead — Weird Fishes")).toBeInTheDocument();
+    // The song sits inline as "TITLE — ARTIST" at the point it played (XERK-190).
+    expect(await screen.findByText("Weird Fishes — Radiohead")).toBeInTheDocument();
   });
 
   it("shows a grounded cue's source in the expanded dropdown (XERK-120)", async () => {

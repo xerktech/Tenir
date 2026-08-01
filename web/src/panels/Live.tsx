@@ -168,7 +168,7 @@ function useLyricScroll(song: LiveSong | null): LyricWindow {
 
 /**
  * The recognized song's synced lyrics, auto-scrolling in the same box a cue uses
- * (XERK-184). Title is "ARTIST — TITLE"; the body is a fixed window of lyric
+ * (XERK-184). Title is "TITLE — ARTIST"; the body is a fixed window of lyric
  * lines with the current one highlighted, advancing as the song plays. A live
  * song owns the box — the cue band is hidden while it shows. Floats over the
  * transcript exactly like the cue band, so nothing reflows.
@@ -181,7 +181,7 @@ function LiveLyricsBand({ song }: { song: LiveSong | null }): JSX.Element | null
       <div className="cue-card lyrics-card" key={song.id}>
         <div className="cue-card-head">
           <div className="cue-card-title">
-            {song.artist} — {song.title}
+            {song.title} — {song.artist}
           </div>
           <div className="cue-card-badge">♪</div>
         </div>

@@ -1460,8 +1460,8 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     endMs: 900,
   };
   const TR = { type: "translation" as const, segmentId: "s1", text: "hello", sourceLang: "es" as const };
-  // "ARTIST — SONG NAME" — the box's pinned title, no countdown (a song has none).
-  const TITLE = "The Beatles — Yesterday";
+  // "SONG NAME — ARTIST" — the box's pinned title, no countdown (a song has none).
+  const TITLE = "Yesterday — The Beatles";
   // The body as the lens paints it (XERK-189): the line being sung marked ">"
   // — the stand-in for the bold highlight web/mobile use — and every other row
   // space-indented so the lyrics stay in one column.
@@ -1487,7 +1487,7 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
   // to compare against the static base, exactly as the translation suite does.
   const liveTitle = (t: Awaited<ReturnType<typeof record>>) => t.text(C().menu)?.replace(/\.+$/, "");
 
-  it("opens the box in the cue box's slot: 'ARTIST — TITLE' over the opening lyrics", async () => {
+  it("opens the box in the cue box's slot: 'TITLE — ARTIST' over the opening lyrics", async () => {
     const t = await record();
     t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50);
