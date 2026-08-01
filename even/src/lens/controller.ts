@@ -68,6 +68,7 @@ import {
   occludedCaption,
   statusLine,
   tailCueBody,
+  TRANSLATION_BODY_LINES,
   type CueCard,
   type MenuChoice,
   type PageContents,
@@ -90,8 +91,9 @@ export const MAX_PAST_CUES = 60;
 // text we keep, persist, and measure.
 const TRANSCRIPT_MAX_CHARS = 1200;
 // Bound the translation box's accumulated body the same way (XERK-160): a long
-// non-English run keeps appending turn translations; the box tails to a 4-row
-// window (XERK-172), so only the most recent text needs to be kept.
+// non-English run keeps appending turn translations; the box tails to a 5-row
+// window (XERK-172, widened from four to five in XERK-176), so only the most
+// recent text needs to be kept.
 export const TRANSLATION_MAX_CHARS = 1200;
 // The translation box's pinned title row (XERK-160). The box reuses the cue
 // box's geometry — same place, same size — so the wearer reads one popup shape.
@@ -255,7 +257,7 @@ export async function wireLens(
       state.translation?.sourceLang,
       state.translation?.done ? undefined : tick,
     ),
-    body: tailCueBody((state.translation?.texts ?? []).join("\n")),
+    body: tailCueBody((state.translation?.texts ?? []).join("\n"), TRANSLATION_BODY_LINES),
   });
   // Seconds left before the translation box auto-dismisses — undefined while the
   // other language is still being spoken (the countdown hasn't started, XERK-160).
@@ -281,7 +283,7 @@ export async function wireLens(
     const [first, last] = state.menu
       ? [MENU_ROW_FIRST, MENU_ROW_LAST]
       : state.translation
-        ? cueRowRange(translationCard())
+        ? cueRowRange(translationCard(), TRANSLATION_BODY_LINES)
         : state.cue
           ? cueRowRange(state.cue)
           : [MENU_ROW_FIRST, MENU_ROW_LAST];
@@ -348,7 +350,7 @@ export async function wireLens(
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
       : state.translation
-        ? buildCuePage(contents, translationCard(), translationCountdown())
+        ? buildCuePage(contents, translationCard(), translationCountdown(), TRANSLATION_BODY_LINES)
         : state.cue
           ? buildCuePage(contents, state.cue, cueCountdown())
           : buildMainPage(contents);

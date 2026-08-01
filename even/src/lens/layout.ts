@@ -115,9 +115,19 @@ export const MENU_ROW_LAST = Math.ceil((MENU_Y + MENU_H - LINE_H) / LINE_H) - 1;
 // rows would just mask live transcript rows below it — while a body that fills
 // or overflows gets the full CUE_BODY_LINES-row box.
 export const CUE_BODY_LINES = 4;
+// The translation box (XERK-160) reuses this same geometry but shows one MORE
+// body row than a cue (XERK-176): five, so a non-English run keeps more of its
+// recent turns on screen at once. The box functions take a `maxLines` the
+// translation call sites pass this for; cues keep the CUE_BODY_LINES default.
+// Its full-height box is six rows (title + five body) — 188px, still
+// within the 7th transcript row's 189px boundary, so it too masks only whole
+// caption rows (see `cueHeight`).
+export const TRANSLATION_BODY_LINES = 5;
 // The MOST rows the box is ever tall: the title over a full CUE_BODY_LINES-row
 // body window. A shorter cue makes a shorter box (see `cueBox`/`cueRows`).
 export const CUE_ROWS = 1 + CUE_BODY_LINES;
+// The translation box's full-height row count (XERK-176): title + five body.
+export const TRANSLATION_ROWS = 1 + TRANSLATION_BODY_LINES;
 export const CUE_BORDER = MENU_BORDER;
 export const CUE_PAD = MENU_PAD;
 export const CUE_W = SCREEN_W;
@@ -126,9 +136,11 @@ export const CUE_Y = 0;
 // The box height for a given row count: content rows + symmetric padding +
 // border. At the CUE_ROWS max (5 rows), with pad+border = 13, this is 161px —
 // within the 6th transcript row's 162px boundary, so a full box occupies five
-// whole caption rows and never grows a half-line the host would scroll. A
-// shorter box lands on a whole-row boundary the same way (every row is LINE_H
-// and padding is fixed).
+// whole caption rows and never grows a half-line the host would scroll. The
+// taller TRANSLATION_ROWS box (6 rows, XERK-176) is 188px, still shy of the
+// 7th row's 189px boundary, so it masks six whole rows the same way. A shorter
+// box lands on a whole-row boundary the same way (every row is LINE_H and
+// padding is fixed).
 export function cueHeight(rows: number): number {
   return rows * LINE_H + 2 * (CUE_PAD + CUE_BORDER);
 }
@@ -273,8 +285,8 @@ const MENU_BOX: PopupBox = {
  * masking them behind blank rows. A body long enough to scroll always fills the
  * whole window, so this depends on the cue alone, not on the scroll position.
  */
-export function cueBox(cue: CueCard): PopupBox {
-  const rows = cueRows(cue);
+export function cueBox(cue: CueCard, maxLines = CUE_BODY_LINES): PopupBox {
+  const rows = cueRows(cue, maxLines);
   return {
     x: CUE_X,
     y: CUE_Y,
@@ -287,12 +299,13 @@ export function cueBox(cue: CueCard): PopupBox {
 
 /**
  * How many rows the cue's box renders: the title over the visible body rows —
- * the whole body when it fits, else the CUE_BODY_LINES-row window. This drives
- * the box height and `cueBodyBox`'s height, so the box, the scrolling body
- * container, and the masked caption range always match (XERK-119).
+ * the whole body when it fits, else the `maxLines`-row window (CUE_BODY_LINES
+ * for a cue, TRANSLATION_BODY_LINES for the translation box, XERK-176). This
+ * drives the box height and `cueBodyBox`'s height, so the box, the scrolling
+ * body container, and the masked caption range always match (XERK-119).
  */
-export function cueRows(cue: CueCard): number {
-  return 1 + Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
+export function cueRows(cue: CueCard, maxLines = CUE_BODY_LINES): number {
+  return 1 + Math.min(cueBodyLines(cue.body).length, maxLines);
 }
 
 /**
@@ -300,8 +313,8 @@ export function cueRows(cue: CueCard): number {
  * box frees the transcript rows a full box would have masked. The controller
  * passes this range to `occludedCaption`.
  */
-export function cueRowRange(cue: CueCard): [number, number] {
-  return cueRowRangeFor(cueBox(cue).height);
+export function cueRowRange(cue: CueCard, maxLines = CUE_BODY_LINES): [number, number] {
+  return cueRowRangeFor(cueBox(cue, maxLines).height);
 }
 
 /**
@@ -312,8 +325,11 @@ export function cueRowRange(cue: CueCard): [number, number] {
  * its own native scroll bar. Width is the box interior — the body text wraps a
  * touch narrower (CUE_TEXT_W) so the host's scroll bar has room down the right.
  */
-export function cueBodyBox(cue: CueCard): { x: number; y: number; width: number; height: number } {
-  const visibleRows = Math.min(cueBodyLines(cue.body).length, CUE_BODY_LINES);
+export function cueBodyBox(
+  cue: CueCard,
+  maxLines = CUE_BODY_LINES,
+): { x: number; y: number; width: number; height: number } {
+  const visibleRows = Math.min(cueBodyLines(cue.body).length, maxLines);
   return {
     x: CUE_X + CUE_BORDER + CUE_PAD,
     y: CUE_Y + CUE_BORDER + CUE_PAD + LINE_H, // below the pinned title row
@@ -383,9 +399,10 @@ export function buildCuePage(
   contents: PageContents,
   cue: CueCard,
   secondsLeft?: number,
+  maxLines = CUE_BODY_LINES,
 ): RebuildPageContainer {
-  const frame = borderedBox(CONTAINER.menu, cueBox(cue), cueTitleLine(cue, secondsLeft));
-  const bb = cueBodyBox(cue);
+  const frame = borderedBox(CONTAINER.menu, cueBox(cue, maxLines), cueTitleLine(cue, secondsLeft));
+  const bb = cueBodyBox(cue, maxLines);
   const body = new TextContainerProperty({
     containerID: CONTAINER.cueBody.id,
     containerName: CONTAINER.cueBody.name,
@@ -482,13 +499,14 @@ export function cueBodyText(cue: CueCard): string {
  * the wearer kept seeing the OLDEST rows. Tailing here makes the box behave like
  * the caption band: it keeps the most recent rows and lets older ones fall off
  * the top, so a new turn always arrives at the BOTTOM with no scroll to reset.
- * A body still short of CUE_BODY_LINES is returned whole (the box stays short,
+ * A body still short of `maxLines` is returned whole (the box stays short,
  * XERK-119); the char bound upstream keeps the accumulated text from growing
- * without limit.
+ * without limit. The translation box passes TRANSLATION_BODY_LINES (five rows,
+ * XERK-176) — one more than a cue — so a run keeps more of its recent turns.
  */
-export function tailCueBody(body: string): string {
+export function tailCueBody(body: string, maxLines = CUE_BODY_LINES): string {
   const rows = cueBodyLines(body);
-  return (rows.length > CUE_BODY_LINES ? rows.slice(-CUE_BODY_LINES) : rows).join("\n");
+  return (rows.length > maxLines ? rows.slice(-maxLines) : rows).join("\n");
 }
 
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */
