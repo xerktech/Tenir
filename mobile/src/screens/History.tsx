@@ -17,6 +17,7 @@ import {
   Field,
   Heading,
   ListItem,
+  LangTagText,
   Muted,
   Row,
   Screen,
@@ -195,6 +196,9 @@ function Detail({
                 <Text key={seg.segmentId}>
                   {j > 0 ? "\n" : null}
                   <Text style={{ color: colors.muted }}>[{msToClock(seg.startMs)}] </Text>
+                  {/* Source-language chip on a translated turn's original
+                      text (XERK-160) — the counterpart of the "EN" tag. */}
+                  {seg.translation && seg.lang ? <LangTagText lang={seg.lang} /> : null}
                   {seg.text}
                   {/* Stored English translation of a non-English turn (XERK-160),
                       turn-by-turn inside the same selectable run. */}

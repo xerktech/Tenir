@@ -142,8 +142,12 @@ describe("HistoryPanel", () => {
     await screen.findByText(/hola/);
     expect(screen.getByText("hello, how are you?")).toBeInTheDocument();
     expect(screen.getByTitle("Translated from Spanish")).toHaveTextContent("EN");
+    // The translated turn's ORIGINAL text is led by its source-language chip —
+    // the counterpart of the "EN" tag; the untranslated turn carries neither.
+    expect(screen.getByTitle("Spoken in Spanish")).toHaveTextContent("ES");
     // Only the translated turn carries a translation line.
     expect(container.querySelectorAll(".translation")).toHaveLength(1);
+    expect(container.querySelectorAll(".translation-lang")).toHaveLength(2);
   });
 
   it("opens the transcript as its own page, replacing the list, with a back button", async () => {

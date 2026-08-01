@@ -111,8 +111,10 @@ const TOUCH_GESTURES: ReadonlySet<OsEventTypeList> = new Set([
 export const SIGN_IN_PROMPT = "Not signed in — open the Tenir app on your phone to sign in.";
 export const IDLE_PROMPT = "Tap to start a new session.";
 
-/** One finalized turn on the lens, keyed so a translation can pair to it (XERK-160). */
-type LensSegment = { id: string; text: string; translation?: string };
+/** One finalized turn on the lens, keyed so a translation can pair to it (XERK-160).
+ * `lang` is the turn's detected spoken language — the phone mirror tags a
+ * translated turn's original text with it, pairing with the "EN" tag. */
+type LensSegment = { id: string; text: string; lang?: string; translation?: string };
 
 type Mutable = {
   sessionId?: string; // authoritative id, persisted so a resume survives backgrounding
@@ -405,7 +407,7 @@ export async function wireLens(
         syncPhone();
       },
       onFinal: (m) => {
-        state.segments.push({ id: m.segmentId, text: m.text });
+        state.segments.push({ id: m.segmentId, text: m.text, lang: m.lang });
         if (state.segments.length > MAX_SEGMENTS) {
           state.segments.shift();
           // The oldest turn fell off the bounded window: shift every embedded

@@ -21,9 +21,12 @@ Where it appears:
 - **Web, Android, and the glasses phone Session page**: turn-by-turn — the
   English rendering sits directly under the original turn, quieter than the
   spoken text and led by a small accent "EN" tag, in the live transcript as it
-  arrives. (Turn-by-turn rather than side-by-side: it reads identically on all
-  three surfaces, and on Android it keeps each transcript run one selectable
-  `<Text>` (XERK-104).)
+  arrives. The original text of a translated turn leads with the matching
+  source-language chip ("ES", "FR", …) so both halves of the pair are labeled —
+  omitted when the turn's language wasn't actually detected (a run-inherited
+  turn has no claimed source). (Turn-by-turn rather than side-by-side: it reads
+  identically on all three surfaces, and on Android it keeps each transcript
+  run one selectable `<Text>` (XERK-104).)
 - **History** (web + mobile + glasses phone): translations persist on their
   segments (`segments.translation`) and render the same way in the stored
   transcript. Search still matches the original text only — the record is what

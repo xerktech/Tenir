@@ -131,16 +131,37 @@ describe("SessionPage", () => {
   it("renders a turn's English translation under the original (XERK-160)", () => {
     mount().update(
       view({
-        segments: [{ text: "hola, ¿qué tal?", translation: "hello, how are you?" }, "sigo aquí"],
+        segments: [
+          { text: "hola, ¿qué tal?", lang: "es", translation: "hello, how are you?" },
+          "sigo aquí",
+        ],
       }),
     );
     const rowsEls = [...document.querySelectorAll("#session-text li")];
     expect(rowsEls[0].textContent).toContain("hola, ¿qué tal?");
+    // The translated turn's ORIGINAL text is led by its source-language chip —
+    // the counterpart of the translation's "EN" tag.
+    expect(rowsEls[0].querySelector(".session-translation-lang")!.textContent).toBe("ES");
     const tr = rowsEls[0].querySelector(".session-translation")!;
     expect(tr.textContent).toContain("hello, how are you?");
     expect(tr.querySelector(".session-translation-lang")!.textContent).toBe("EN");
-    // A turn without a translation renders no translation line.
+    // A turn without a translation renders no translation line and no chip.
     expect(rowsEls[1].querySelector(".session-translation")).toBeNull();
+    expect(rowsEls[1].querySelector(".session-translation-lang")).toBeNull();
+  });
+
+  it("a translated turn with no detected language stays untagged (XERK-160)", () => {
+    // A run-inherited turn (proper-noun list mid-run) is translated without a
+    // claimed source language — its original renders plain.
+    mount().update(
+      view({ segments: [{ text: "Mercurio, Venus, Tierra, Marte.", translation: "Mercury, Venus, Earth, Mars." }] }),
+    );
+    const li = document.querySelector("#session-text li")!;
+    expect(li.textContent).toContain("Mercurio, Venus, Tierra, Marte.");
+    expect(li.querySelector(".session-translation")).not.toBeNull();
+    // Only the translation's own "EN" chip is present — none on the original.
+    expect(li.querySelectorAll(".session-translation-lang")).toHaveLength(1);
+    expect(li.querySelector(".session-translation-lang")!.textContent).toBe("EN");
   });
 
   it("shows a waiting state before any speech arrives", () => {

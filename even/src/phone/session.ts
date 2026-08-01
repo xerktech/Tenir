@@ -42,6 +42,8 @@ export interface PastCue extends CueCard {
  */
 export interface SessionSegment {
   text: string;
+  /** Detected spoken language of the turn — tags a translated turn's original text. */
+  lang?: string;
   translation?: string;
 }
 
@@ -249,7 +251,16 @@ export class SessionPage {
       for (const row of liveTranscriptRows(view.segments, view.pastCues)) {
         if (row.kind === "segment") {
           const li = doc.createElement("li");
-          li.textContent = row.segment.text;
+          // A translated turn's original text is led by its source-language
+          // chip (XERK-160) — the counterpart of the translation's "EN" tag.
+          if (row.segment.translation && row.segment.lang) {
+            li.append(
+              this.make("span", "session-translation-lang", row.segment.lang.toUpperCase()),
+              ` ${row.segment.text}`,
+            );
+          } else {
+            li.textContent = row.segment.text;
+          }
           // English translation of a non-English turn (XERK-160), turn-by-turn
           // under the original — the phone counterpart to the web's `.translation`.
           if (row.segment.translation) {
