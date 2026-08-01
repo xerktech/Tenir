@@ -19,8 +19,10 @@ import { AppState } from "react-native";
 
 import { deviceAudioSource } from "../audio/native";
 import { DEFAULT_MIC_SOURCE, DEFAULT_SOURCE_LANG } from "../config";
+import { postSessionNotification } from "../native/notification";
 import { deviceKeyValue } from "../secureStorage";
 import { clearSessionId, loadSessionId, saveSessionId } from "../storage";
+import { sessionNotificationContent } from "./sessionNotification";
 import { CaptureSession, type CaptureState } from "@tenir/client-core";
 
 export interface CaptureController {
@@ -62,6 +64,15 @@ export function useCapture(wsUrl: string): CaptureController {
       void session.stop(); // release mic + socket if the URL changes or the screen unmounts
     };
   }, [session]);
+
+  // Mirror the live session into the Android background notification (XERK-163): the
+  // active cue surfaces in the notification shade when the app is backgrounded, and the
+  // notification falls back to a plain "capturing" line between cues. Keyed on the cue id
+  // (not the object) so it only re-posts when the band actually changes. Android-only and
+  // a no-op otherwise; the foreground service tears its notification down on stop.
+  useEffect(() => {
+    postSessionNotification(sessionNotificationContent(state.running, state.activeCue));
+  }, [state.running, state.activeCue?.id]);
 
   return {
     state,

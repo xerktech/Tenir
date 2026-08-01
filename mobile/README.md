@@ -32,12 +32,23 @@ projects:
   `RECORD_AUDIO` (requested at runtime via `PermissionsAndroid`).
 - **Background audio** — so a session keeps streaming when the app is backgrounded: iOS
   `UIBackgroundModes: ["audio"]`; Android a foreground service with a microphone type.
+- **Session notification (Android, XERK-163)** — the foreground service's ongoing
+  notification is the running-session indicator, and its content mirrors the live cue so a
+  cue surfaces in the notification shade while the app is backgrounded. `useCapture`
+  computes the content with the pure `lib/sessionNotification.ts` and pushes it through
+  `native/notification.ts` → the `PcmAudio.updateNotification` native method; tapping the
+  notification returns to the session. Gated on the `POST_NOTIFICATIONS` runtime permission
+  (Android 13+), requested best-effort alongside the mic so a denial never blocks capture.
+  Web has no equivalent — an ongoing OS notification for a backgrounded session is an
+  Android-only capability, so this is a deliberate platform-specific exception to web↔app
+  parity (the web SPA shows cues in-page only).
 
 The **Android** project under `android/` implements all of the above: `PcmAudioModule`
 (an `AudioRecord`-backed 16 kHz/mono/s16le recorder), `MicForegroundService` (a
-`microphone`-typed foreground service that keeps capture alive in the background), and the
-`RECORD_AUDIO` / `FOREGROUND_SERVICE*` permissions in `AndroidManifest.xml`. (The iOS
-project is still to come.)
+`microphone`-typed foreground service that keeps capture alive in the background and hosts
+the session notification), and the `RECORD_AUDIO` / `FOREGROUND_SERVICE*` /
+`POST_NOTIFICATIONS` permissions in `AndroidManifest.xml`. (The iOS project is still to
+come.)
 
 ### In-app update (Android, XERK-63)
 
