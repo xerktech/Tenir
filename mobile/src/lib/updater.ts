@@ -86,6 +86,48 @@ export function latestApkUpdate(releases: ReleaseView[], installed: string): Ava
   return compareVersions(best.version, installed) > 0 ? best : null;
 }
 
+/**
+ * The banner's state machine (XERK-63; shared shape with Turma's
+ * `Updater.State`). Lives here rather than in `useUpdater` so the transition
+ * logic below stays framework-free and unit-testable.
+ */
+export type UpdateState =
+  | { kind: "hidden" }
+  | { kind: "available"; version: string }
+  | { kind: "downloading"; version: string; pct: number | null }
+  | { kind: "installing"; version: string; needsPermission: boolean }
+  | { kind: "failed"; version: string };
+
+/**
+ * Minimum gap between update checks (XERK-167) — Turma's `CHECK_THROTTLE_MS`.
+ * Re-check triggers (foreground, interval) are cheap to fire because anything
+ * inside this window is skipped.
+ */
+export const CHECK_THROTTLE_MS = 15 * 60 * 1000;
+
+/** Whether enough time has passed since [lastCheckAt] to check again. */
+export function shouldCheck(lastCheckAt: number, now: number): boolean {
+  return now - lastCheckAt >= CHECK_THROTTLE_MS;
+}
+
+/**
+ * Fold a completed check into the banner state (XERK-167), mirroring Turma's
+ * `Updater.check()`: a result only ever moves the `hidden`/`available` states —
+ * a re-check must never clobber an in-flight download/install (or a `failed`
+ * offer whose Retry still works). Within those, the banner tracks reality: a
+ * newer version bumps an existing offer, and a vanished/dismissed one retracts
+ * it.
+ */
+export function applyCheckResult(
+  prev: UpdateState,
+  update: AvailableUpdate | null,
+  dismissedVersion: string | null,
+): UpdateState {
+  if (prev.kind !== "hidden" && prev.kind !== "available") return prev;
+  if (update === null || update.version === dismissedVersion) return { kind: "hidden" };
+  return { kind: "available", version: update.version };
+}
+
 interface GhAsset {
   name?: string;
   browser_download_url?: string;

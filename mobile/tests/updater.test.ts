@@ -2,12 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   apkAssetVersion,
+  applyCheckResult,
+  CHECK_THROTTLE_MS,
   checkForUpdate,
   compareVersions,
   fetchReleases,
   latestApkUpdate,
   RELEASES_URL,
+  shouldCheck,
   type ReleaseView,
+  type UpdateState,
 } from "../src/lib/updater";
 
 describe("apkAssetVersion", () => {
@@ -92,6 +96,59 @@ describe("latestApkUpdate", () => {
   it("returns null when no release carries an APK", () => {
     expect(latestApkUpdate([release(["manifest.json"])], "0.1.0")).toBeNull();
     expect(latestApkUpdate([], "0.1.0")).toBeNull();
+  });
+});
+
+describe("shouldCheck (XERK-167 re-check throttle)", () => {
+  it("throttles to Turma's 15-minute cadence", () => {
+    expect(CHECK_THROTTLE_MS).toBe(15 * 60 * 1000);
+  });
+
+  it("allows a first check and anything past the throttle window", () => {
+    // Never checked: lastCheckAt starts at 0, so any real clock is past the window.
+    expect(shouldCheck(0, 1_753_000_000_000)).toBe(true);
+    expect(shouldCheck(1000, 1000 + CHECK_THROTTLE_MS)).toBe(true);
+  });
+
+  it("skips a check inside the throttle window", () => {
+    expect(shouldCheck(1000, 1000 + CHECK_THROTTLE_MS - 1)).toBe(false);
+    expect(shouldCheck(1000, 1000)).toBe(false);
+  });
+});
+
+describe("applyCheckResult (XERK-167 re-check state fold)", () => {
+  const hidden: UpdateState = { kind: "hidden" };
+  const available: UpdateState = { kind: "available", version: "0.1.5" };
+  const update = { version: "0.1.6", downloadUrl: "https://dl/apk" };
+
+  it("surfaces a found update from hidden", () => {
+    expect(applyCheckResult(hidden, update, null)).toEqual({ kind: "available", version: "0.1.6" });
+  });
+
+  it("bumps an existing offer to a newer version", () => {
+    expect(applyCheckResult(available, update, null)).toEqual({ kind: "available", version: "0.1.6" });
+  });
+
+  it("retracts the offer when the update vanishes or was dismissed", () => {
+    expect(applyCheckResult(available, null, null)).toEqual(hidden);
+    expect(applyCheckResult(hidden, update, "0.1.6")).toEqual(hidden);
+    expect(applyCheckResult(available, { ...update, version: "0.1.5" }, "0.1.5")).toEqual(hidden);
+  });
+
+  it("shows a version newer than the dismissed one", () => {
+    expect(applyCheckResult(hidden, update, "0.1.5")).toEqual({ kind: "available", version: "0.1.6" });
+  });
+
+  it("never clobbers an in-flight download/install or a retryable failure", () => {
+    const busy: UpdateState[] = [
+      { kind: "downloading", version: "0.1.5", pct: 40 },
+      { kind: "installing", version: "0.1.5", needsPermission: false },
+      { kind: "failed", version: "0.1.5" },
+    ];
+    for (const prev of busy) {
+      expect(applyCheckResult(prev, update, null)).toBe(prev);
+      expect(applyCheckResult(prev, null, null)).toBe(prev);
+    }
   });
 });
 
