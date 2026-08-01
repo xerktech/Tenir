@@ -48,6 +48,19 @@ log = logging.getLogger("api.stt.streaming")
 # detected, whatever the floor estimate says.
 _VAD_PEAK_FRACTION = 0.5
 
+# Minimum words a partial must carry before an empty whole-turn decode may surface
+# it as the final (the XERK-174 recovery). A recovered final is a *partial*
+# hypothesis the offline decode rejected; on non-speech audio (music, room noise)
+# those partials are overwhelmingly one-word hallucinated filler, and surfacing
+# every one of them buries the transcript in junk turns that then feed the cue
+# context and the translation queue (XERK-182). Calibrated by replaying retained
+# session audio through the full pipeline against the production Parakeet server:
+# hallucinated recoveries were 1-2 words in ~90% of cases (19/24 one-worders in
+# the worst session), while every substantive recovery observed — real speech the
+# offline decode blanked, the class XERK-174 exists to protect — was 3 words or
+# longer. Below the gate the turn stays dropped, exactly as before XERK-174.
+_RECOVERY_MIN_WORDS = 3
+
 
 def _ms_to_bytes(ms: int) -> int:
     return ms * BYTES_PER_SEC // 1000
@@ -452,6 +465,14 @@ class StreamingTranscriber:
             text = fallback.strip()
             if not text:
                 return  # silence / no speech in this window — nothing to surface
+            if len(text.split()) < _RECOVERY_MIN_WORDS:
+                # The offline decode heard nothing in the whole turn and the
+                # partial never got past bare filler: on real speech the partial
+                # source builds a clause, so a 1-2 word partial against an empty
+                # whole-turn decode is overwhelmingly a hallucination on
+                # non-speech audio (XERK-182), not a lost turn. Keep it dropped.
+                metrics.incr("stage.stt.final_recovery_suppressed")
+                return
             recovered = True
             metrics.incr("stage.stt.final_recovered")
 

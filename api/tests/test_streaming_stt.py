@@ -1326,6 +1326,96 @@ def test_final_recovers_partial_on_single_engine_empty_final() -> None:
     asyncio.run(run())
 
 
+def test_recovery_suppresses_short_filler_partial() -> None:
+    """XERK-182: an empty whole-turn decode may only surface a *substantive*
+    partial. On non-speech audio (music, room noise) the partial source
+    hallucinates one-word filler while the offline decode correctly hears
+    nothing; recovering those buried transcripts in junk turns. A partial below
+    the recovery word gate stays dropped (and is counted), exactly as before
+    XERK-174."""
+
+    filler = "Hm."
+
+    class BlankFinalEngine:
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+                return EngineResult(text="", words=[], language=None)
+            if want_words:  # the whole-turn final decode hears nothing
+                return EngineResult(text="", words=[], language=None)
+            return EngineResult(text=filler, words=[], language=None)
+
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        t = StreamingTranscriber(
+            BlankFinalEngine(),
+            language=None,
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):  # speech -> the partial shows only the filler word
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):  # trailing silence -> finalize; final decode is empty
+            await t.push(_pcm(100, amplitude=0))
+        msgs = _drain(t)
+        partials = [m for m in msgs if isinstance(m, CaptionPartial)]
+        assert partials and all(m.text == filler for m in partials)  # user saw the filler
+        # The junk partial does NOT become a final — the turn stays dropped.
+        assert not [m for m in msgs if isinstance(m, CaptionFinal)]
+        counters = metrics.snapshot()["counters"]
+        assert counters.get("stage.stt.final_recovered", 0) == 0
+        assert counters["stage.stt.final_recovery_suppressed"] == 1
+        metrics.reset()
+
+    asyncio.run(run())
+
+
+def test_recovery_word_gate_boundary() -> None:
+    """Pin the recovery gate at three words: a two-word partial is suppressed, a
+    three-word partial is recovered (the smallest substantive save measured on
+    real session replays — see _RECOVERY_MIN_WORDS)."""
+
+    class GateEngine:
+        def __init__(self, partial_text: str) -> None:
+            self.partial_text = partial_text
+
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+                return EngineResult(text="", words=[], language=None)
+            if want_words:
+                return EngineResult(text="", words=[], language=None)
+            return EngineResult(text=self.partial_text, words=[], language=None)
+
+    async def run_one(partial_text: str) -> list[CaptionFinal]:
+        t = StreamingTranscriber(
+            GateEngine(partial_text),
+            language=None,
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        return [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+
+    async def run() -> None:
+        assert await run_one("ven aquí") == []  # two words: suppressed
+        finals = await run_one("ven aquí ya")  # three words: recovered
+        assert len(finals) == 1 and finals[0].text == "ven aquí ya"
+
+    asyncio.run(run())
+
+
 def test_silence_only_turn_is_still_dropped_not_recovered() -> None:
     """The recovery must not resurrect a turn the user never saw: a turn with no
     partial at all (pure silence, empty final) still emits nothing and counts no
