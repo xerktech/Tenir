@@ -78,3 +78,52 @@ the cheapest latency win found so far — cheaper than any model migration.
    `parakeet-unified-en-0.6b` if an English-only mode is on the table;
    Nemotron streaming via its published `ws://10.10.10.22:9403` endpoint
    needs a WS client mode in the harness first).
+
+## 2026-08-01 — Turn-close windows retuned (XERK-175)
+
+Long turns were making translations (and cues) land late: both run only on
+FINALIZED turns, so a word spoken early in a turn waits out the rest of the
+turn before the pipeline can even see it. Measured over the whole July
+deployment (105 conversations / ~7.8 h of retained audio) by replaying every
+WAV through the real `StreamingTranscriber` VAD offline (`segment_sim.py`,
+added with this cycle):
+
+| config (silence/cap) | speech turns | closed on cap | len p50 | wait-for-final mean | p90 | max |
+|---|---|---|---|---|---|---|
+| **700/12000 (shipped before)** | 5475 | 20 % | 4.7 s | 4.69 s | 9.6 s | 12 s |
+| 700/8000 | 6425 | 33 % | 4.8 s | 3.43 s | 6.6 s | 8 s |
+| 700/6000 | 7464 | 44 % | 5.0 s | 2.70 s | 5.1 s | 6 s |
+| 500/12000 | 7841 | 8 % | 3.0 s | 3.78 s | 8.4 s | 12 s |
+| **500/8000 (shipped now)** | 8490 | 16 % | 3.1 s | 2.96 s | 6.1 s | 8 s |
+
+(wait-for-final = per 100 ms speech chunk, time until its turn's final; the
+stored-segment export cross-checks the baseline: 27.6 % of stored July turns
+sat at the 12 s cap, 33.7 % of translated ones.)
+
+The stand-out finding is the silence window, not the cap: many real pauses
+fall between 500 and 700 ms, so 500 ms *more than halves* forced cap-closes
+(20 % → 8 % at the old cap) — turns end at actual pauses instead of arbitrary
+mid-speech chops. The tighter 8 s cap then bounds the worst case (music /
+wall-to-wall speech) without re-inflating forced closes past the old rate.
+
+Quality spot-check (re-transcribed candidate boundaries on the production
+Parakeet, re-translated non-English spans on the production `gpt-oss:120b`,
+hand-read): silence-closed turns at 500/8000 read as complete clauses;
+the 1-hour bilingual conversation captured slightly *more* normalized words
+than the 700/12000 replay (4699 vs 4349) with p50 turn length halved
+(6.9 s → 3.8 s); the Spanish music session (no pauses ever — every turn caps)
+simply delivers its translations every 8 s instead of every 12 s, per-chunk
+translation quality comparable on read. Final-decode cost per turn is flat
+(~80–170 ms regardless of length), so ~55 % more finals is noise for the GPU.
+
+Residuals / next steps for turn latency:
+
+1. The translation model call itself measured 1.8–4.6 s per turn on the
+   deployed `gpt-oss:120b` — now the dominant term for translation delivery.
+   A smaller/faster translation model or streaming delivery is the next lever.
+2. Shorter turns mean `cue_context_segments = 8` spans ~25 s instead of ~37 s
+   of conversation; if stale-context cues appear, re-run the cue eval with a
+   larger window rather than re-inflating turns.
+3. The multilingual test session (`159fe63c`) retained no audio
+   (`audio_key` NULL) and could not be replayed — worth understanding why
+   before the next eval cycle.

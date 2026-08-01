@@ -83,6 +83,29 @@ Normalization matches `docs/stt-model-gpu-benchmark.md`: NFKC, lower-cased,
 punctuation stripped, whitespace collapsed; WER is jiwer's, pooled as
 errors / reference-words over whatever set is being aggregated.
 
+## 4. Simulate turn segmentation (no model server needed)
+
+Translations and cues run only on finalized turns, so the VAD turn-close
+windows (`stt_silence_ms` / `stt_max_segment_ms`) are their latency floor.
+`segment_sim.py` replays retained audio through the **real**
+`StreamingTranscriber` windowing/VAD code with a stub engine and reports, per
+candidate setting, turn-length percentiles, how turns closed (real pause vs
+forced cap), and the wait-for-final distribution over speech chunks — the
+XERK-175 methodology. It imports the installed `api` package
+(`pip install -e api` first):
+
+```bash
+python scripts/stt_eval/segment_sim.py \
+  --audio-dir /mnt/data/Docker/Tenir/audio \
+  --config 500/8000 --config 700/12000 \
+  --out sim.json [--conversations id1,id2,...]
+```
+
+Boundary decisions only — no transcription happens, so it runs anywhere in
+seconds per audio-hour. To judge *quality* at a candidate setting, feed its
+boundaries through a real re-transcribe/re-translate pass (steps 2–3) and
+hand-read the result.
+
 ## Rules that keep a comparison honest
 
 - **Freeze the eval set.** Fix the conversation-id list before iterating and
@@ -104,5 +127,7 @@ errors / reference-words over whatever set is being aggregated.
 ## Tests
 
 `python -m pytest scripts/stt_eval/tests/` covers normalization, WER edge
-cases and aggregation, and WAV slicing (synthetic audio; needs jiwer). Not
-CI-gated, same as the rest of the harness.
+cases and aggregation, WAV slicing, and the segmentation simulator's boundary
+decisions (synthetic audio; needs jiwer, and the simulator tests skip unless
+the `api` package is installed). Not CI-gated, same as the rest of the
+harness.

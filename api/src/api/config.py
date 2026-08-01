@@ -202,9 +202,21 @@ class Settings(BaseSettings):
     # latency stays bounded instead of growing with turn length; finals still decode
     # the whole segment for a stable transcript.
     stt_partial_window_ms: int = 6000
-    stt_max_segment_ms: int = 12000  # force a final at this segment length
+    # Turn-close windows, retuned for XERK-175. Translations and cues both run
+    # only on FINALIZED turns, so every ms a turn stays open is added latency on
+    # them: over the July 2026 deployment sessions (105 conversations, ~7.8 h of
+    # retained audio replayed through this exact VAD), the previous 700/12000
+    # left a spoken word waiting a mean 4.7 s (p90 9.6 s) for its final, and 20 %
+    # of speech turns never found a pause and rode out the full 12 s cap.
+    # 500/8000 cuts the mean wait to 3.0 s (p90 6.1 s) and, because many real
+    # pauses fall between 500 and 700 ms, closes far more turns on an actual
+    # pause instead of an arbitrary mid-speech chop (forced-cap closes drop to
+    # 16 % even with the tighter cap; 8 % at 500/12000). Re-run
+    # scripts/stt_eval/segment_sim.py against current session audio before
+    # retuning further.
+    stt_max_segment_ms: int = 8000  # force a final at this segment length
     stt_min_segment_ms: int = 400  # don't close a turn on silence below this length
-    stt_silence_ms: int = 700  # trailing silence that closes a turn
+    stt_silence_ms: int = 500  # trailing silence that closes a turn
     stt_silence_rms: float = 0.005  # energy threshold below which audio is "silent"
     # Adaptive VAD (XERK-115). stt_silence_rms alone is an ABSOLUTE gate: in a room
     # whose noise floor sits above it — a café, a car, a fan — no frame is ever

@@ -104,3 +104,61 @@ class TestConversationAudio:
             out.writeframes(b"\x00" * 64)
         with pytest.raises(ValueError, match="expected"):
             ConversationAudio(tmp_path / "bad.wav")
+
+
+class TestSegmentSim:
+    """segment_sim replays the REAL StreamingTranscriber, so it needs the api
+    package installed (pip install -e api) — skipped, not failed, without it."""
+
+    @pytest.fixture(autouse=True)
+    def _needs_api(self):
+        pytest.importorskip("api.stt.streaming")
+
+    @staticmethod
+    def _pcm(*spans: tuple[int, bool]) -> bytes:
+        """Concatenate (duration_ms, loud) spans of 16 kHz s16le audio."""
+        out = bytearray()
+        for duration_ms, loud in spans:
+            n = SAMPLE_RATE * duration_ms // 1000
+            sample = (8000).to_bytes(2, "little", signed=True) if loud else b"\x00\x00"
+            out.extend(sample * n)
+        return bytes(out)
+
+    def test_pause_closes_turn_on_silence(self):
+        import asyncio
+
+        from segment_sim import replay
+
+        pcm = self._pcm((1000, True), (800, False), (1000, True), (800, False))
+        result = asyncio.run(replay(pcm, silence_ms=500, max_segment_ms=12000))
+        assert [reason for _, reason in result["turns"]] == ["silence", "silence"]
+        # First turn: 1 s speech + the ~500 ms trailing silence that closed it.
+        # Second: the same plus the leftover ~300 ms of the first pause — segments
+        # are contiguous, so inter-turn silence rides at the head of the next turn.
+        first, second = (length for length, _ in result["turns"])
+        assert 1400 <= first <= 1700
+        assert 1700 <= second <= 2000
+
+    def test_cap_forces_final_when_no_pause_exists(self):
+        import asyncio
+
+        from segment_sim import replay
+
+        pcm = self._pcm((5000, True))
+        result = asyncio.run(replay(pcm, silence_ms=500, max_segment_ms=2000))
+        reasons = [reason for _, reason in result["turns"]]
+        assert reasons == ["cap", "cap", "flush"]
+
+    def test_waits_measure_time_to_final(self):
+        import asyncio
+
+        from segment_sim import replay
+
+        pcm = self._pcm((1000, True), (800, False))
+        result = asyncio.run(replay(pcm, silence_ms=500, max_segment_ms=12000))
+        # 10 speech chunks; the first waits the longest, the last the least,
+        # and every wait includes the ~500 ms silence window that closed the turn.
+        waits = result["waits"]
+        assert len(waits) == 10
+        assert waits == sorted(waits, reverse=True)
+        assert waits[-1] >= 500
