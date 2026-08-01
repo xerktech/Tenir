@@ -121,3 +121,39 @@ identical. That frees the 96 GB card to be what it's actually needed for (the
 65 GB cue LLM), and turns "STT capacity" into a ~$300 line item. Concurrency is
 the open question an 8 GB card doesn't answer: one household is fine; many
 simultaneous sessions still favour the big card or a second small one.
+
+## 5. One model or two? (re-test after the fixes)
+
+XERK-115 adopted the hybrid (Nemotron partials + Parakeet finals) because
+re-decode partials were slow and lagged as a turn grew. With the CUDA-graph
+decoder benched out, that premise was re-tested on the RTX 4060 deployment.
+
+**Re-decode partial cost is no longer a problem.** Text-only decodes (the
+partial path) on the 4060: 58 ms at a 2 s prefix, 85 ms at 10 s, ~110 ms at
+15 s — and the api's partials only decode the trailing 6 s window
+(`stt_partial_window_ms`), bounding the per-partial cost at ~80 ms regardless
+of turn length. That fits a 350 ms cadence with room to spare, which puts
+Parakeet-only caption freshness (~300 ms average behind speech) at parity with
+the hybrid's (~360 ms: 320 ms lookahead + ~39 ms chunk compute).
+
+**Hybrid partials are measurably less faithful.** Streaming Nemotron's
+end-of-utterance partial text, scored against Parakeet's decode of the
+identical audio (11 real speech utterances): **18.3 % word divergence pooled**
+(11–32 % per utterance). Every endpoint therefore visibly rewrites the caption
+when the Parakeet final replaces the Nemotron partial. Parakeet-only partials
+come from the same engine as the final, so the live caption previews the
+stored transcript essentially verbatim.
+
+**GPU duty per live stream** (the hybrid's remaining advantage): Nemotron is
+~12 % (39 ms / 320 ms chunk) regardless of anything; Parakeet-only at a 350 ms
+cadence is ~23 % (windowed ~80 ms / 350 ms). Both are far from contended at
+household concurrency; cache-aware streaming only starts to matter at many
+simultaneous sessions.
+
+**Decision: Parakeet-only is the default again.** One model, one container,
+~2.6 GB resident, partials that match finals, and it retires the WS streaming
+path — the component that failed three separate ways (two XERK-128 handshake
+breaks, the accept-path poisoning, the decoder bug). The nemotron service
+stays in the repo behind `--profile hybrid` (with `API_STT_BACKEND=hybrid`)
+for a future many-session deployment where constant per-chunk compute earns
+its keep.
