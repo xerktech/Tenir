@@ -1,10 +1,16 @@
 # tenir — single-host stack: `docker compose up --build`.
 #
 # Bare minimum: one app container (api + web UI), Postgres for transcripts,
-# the LiteLLM gateway, and the two GPU STT servers (need the NVIDIA Container
-# Toolkit): Parakeet for accurate finals and Nemotron for low-latency streaming
-# partials — the hybrid path XERK-115's GPU benchmark recommends (see
-# docs/stt-model-gpu-benchmark.md). Real prod values come from .env (the
+# the LiteLLM gateway, and ONE GPU STT server (needs the NVIDIA Container
+# Toolkit): Parakeet decodes both the live partials (a bounded trailing-window
+# re-decode each cadence) and the accurate finals. The two-model hybrid that
+# XERK-115's benchmark recommended is retired as the default: once the
+# CUDA-graph decoder was benched out (Tenir PR #99), the re-decode partial
+# costs ~60-85 ms — comfortably inside even a 350 ms cadence — and measured
+# hybrid partials diverged 18.3 % from the Parakeet final on identical audio
+# (visible caption churn at every endpoint). See docs/stt-rtx4060-benchmark.md
+# §5. Start with `--profile hybrid` (plus API_STT_BACKEND=hybrid) to bring the
+# Nemotron streaming-partials server back. Real prod values come from .env (the
 # ${VAR:-default} fallbacks are this host's defaults).
 
 name: tenir
@@ -27,15 +33,19 @@ services:
       # .env override would only desync the api. Endpoints/secrets/models come from .env.
       API_LITELLM_ENDPOINT: ${API_LITELLM_ENDPOINT:-http://litellm:4000/v1}
       API_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-tenir-master}
-      # "hybrid" (XERK-115): live partials come from the Nemotron cache-aware
-      # streaming server over a WebSocket (API_STT_STREAM_ENDPOINT), while finals
-      # decode the whole turn on the offline Parakeet server (API_STT_ENDPOINT).
-      # Low-latency partials + accurate finals; if Nemotron is unreachable the api
-      # degrades to Parakeet-only partials. Set to "parakeet" for the single-model
-      # (Parakeet-only) path, which needs neither the nemotron service nor the
-      # stream endpoint below.
-      API_STT_BACKEND: ${API_STT_BACKEND:-hybrid}
+      # "parakeet" (the default): one model does everything — partials re-decode a
+      # bounded trailing window each cadence, finals decode the whole turn. Set to
+      # "hybrid" (XERK-115) — and start the stack with `--profile hybrid` — to
+      # source live partials from the Nemotron cache-aware streaming server over a
+      # WebSocket (API_STT_STREAM_ENDPOINT) instead; if Nemotron is unreachable the
+      # api degrades back to re-decode partials. Hybrid stopped being the default
+      # when the re-decode path got fast (see the header note).
+      API_STT_BACKEND: ${API_STT_BACKEND:-parakeet}
       API_STT_MODEL: ${API_STT_MODEL:-parakeet}
+      # Partial cadence. 350 ms (down from the pre-PR-#99 700 ms) keeps caption
+      # freshness at parity with the retired hybrid: the windowed re-decode costs
+      # ~60-85 ms on a modest GPU, well inside this budget.
+      API_STT_PARTIAL_INTERVAL_MS: ${API_STT_PARTIAL_INTERVAL_MS:-350}
       # Direct route for the FINALS hot path (XERK-115). Live captions send one
       # transcription request per final — so the gateway hop (an extra proxy round
       # trip plus its json->verbose_json rewrite) is avoided. On this single-host
@@ -44,9 +54,10 @@ services:
       # deploy that can only reach the model through the gateway — the api then
       # falls back to API_LITELLM_ENDPOINT on its own.
       API_STT_ENDPOINT: ${API_STT_ENDPOINT:-http://parakeet:8000/v1}
-      # PARTIALS stream (hybrid only): WebSocket root of the Nemotron server. The
-      # api holds one persistent connection per session and is fed audio as it
-      # arrives, emitting a growing transcript for the live caption band.
+      # PARTIALS stream (hybrid backend + `--profile hybrid` only): WebSocket root
+      # of the Nemotron server. The api holds one persistent connection per session
+      # and is fed audio as it arrives, emitting a growing transcript for the live
+      # caption band. Ignored by the default parakeet backend.
       API_STT_STREAM_ENDPOINT: ${API_STT_STREAM_ENDPOINT:-ws://nemotron:8000}
       # Cues (XERK-81): private context cards derived from the conversation. Off by
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
@@ -87,8 +98,11 @@ services:
       # The cue LLM only runs (and is only probed) under the "cues" profile.
       API_STATUS_STT_URL: ${API_STATUS_STT_URL:-http://parakeet:8000}
       # Hybrid partials server — probed directly for its own status light (it serves
-      # GET /health alongside the WS endpoint). Only meaningful with the hybrid backend.
-      API_STATUS_STREAM_URL: ${API_STATUS_STREAM_URL:-http://nemotron:8000}
+      # GET /health alongside the WS endpoint). Only meaningful with the hybrid
+      # backend; left unset by default so the status page shows no light for a
+      # service the default stack doesn't run. Set to http://nemotron:8000 with
+      # `--profile hybrid`.
+      API_STATUS_STREAM_URL: ${API_STATUS_STREAM_URL:-}
       # Left unset: Ollama serves no GET /health, so the cue-LLM light follows the
       # LiteLLM gateway probe (the api's real path to it) — same as split-host prod.
       API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-}
@@ -190,7 +204,12 @@ services:
     # WebSocket /v1/audio/stream surface. It produces the low-latency streaming
     # partials of the hybrid path; Parakeet above keeps the accurate finals. Built
     # from nemotron-stt/Dockerfile (same NGC NeMo base as parakeet). Same 0.6B size
-    # class as Parakeet, so the two fit together on one GPU (<5 GB, per the benchmark).
+    # class as Parakeet, so the two fit together on one GPU (~5.2 GB, measured).
+    #
+    # OPT-IN since the parakeet backend became the default (see the header): start
+    # with `--profile hybrid` and set API_STT_BACKEND=hybrid (plus
+    # API_STATUS_STREAM_URL=http://nemotron:8000 for its status light) to use it.
+    profiles: ["hybrid"]
     build:
       context: .
       dockerfile: nemotron-stt/Dockerfile
