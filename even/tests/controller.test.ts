@@ -1114,7 +1114,20 @@ describe("wireLens live translations (XERK-160)", () => {
     await settle();
     return t;
   };
-  const card = (...texts: string[]) => ({ title: controllerMod.TRANSLATION_TITLE, body: texts.join("\n") });
+  // TR is a Spanish run, so the box title names its direction (XERK-173). This
+  // is the STATIC form (no trailing dots) — what a finished run counting down
+  // shows; a live run animates dots onto it (see `liveTitle`).
+  const card = (...texts: string[]) => ({
+    title: controllerMod.translationTitle("es"),
+    body: texts.join("\n"),
+  });
+  // A live run animates trailing dots on the title (XERK-173) — the same
+  // activity cue as the "listening…" status line — so the exact dot count rides
+  // the ticker. Strip the trailing dots to compare against the static base; a
+  // stray countdown would sit at the row's RIGHT edge and survive the strip, so
+  // this still catches an unexpected countdown while the run is live.
+  const liveTitle = (t: Awaited<ReturnType<typeof record>>) =>
+    t.text(C().menu)?.replace(/\.+$/, "");
   /** The scrolling body container from the last rebuilt page (shared with cues). */
   const bodyContainer = (t: Awaited<ReturnType<typeof record>>) => {
     const page = t.rebuilds[t.rebuilds.length - 1] as
@@ -1131,14 +1144,59 @@ describe("wireLens live translations (XERK-160)", () => {
     // Same popup shape as a cue: base 4 containers + title frame + scrolling body.
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
     // Title row with no countdown — the 10s timer must not run yet (XERK-160).
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    expect(liveTitle(t)).toBe(card().title);
     expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
 
     // Well past a cue's TTL the box is STILL up: nothing counts down until the
     // other language is done being spoken.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 3);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    expect(liveTitle(t)).toBe(card().title);
+  });
+
+  it("titles a live run 'Translating <Source> → English' with moving dots (XERK-173)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    // The direction of the run, not the old generic "Translation" label.
+    expect(liveTitle(t)).toBe("Translating Spanish → English");
+
+    // The trailing dots animate with the ticker, exactly like the "listening…"
+    // status line (XERK-85): three ticks walk the full 1 → 2 → 3 dot cycle.
+    const dotsNow = () => t.text(C().menu)!.slice("Translating Spanish → English".length);
+    const seen = new Set([dotsNow()]);
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    seen.add(dotsNow());
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS);
+    seen.add(dotsNow());
+    expect([...seen].sort()).toEqual([".", "..", "..."]);
+  });
+
+  it("falls back to the bare 'Translating' title when the source language is unknown (XERK-173)", async () => {
+    const t = await record();
+    const { sourceLang: _drop, ...TR_NO_LANG } = TR;
+    t.api.handlers().onFinal?.({ ...FINAL_ES, lang: undefined });
+    t.api.handlers().onTranslation?.(TR_NO_LANG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(controllerMod.TRANSLATION_TITLE); // "Translating"
+  });
+
+  it("adopts a later turn's source language if the run's first turn arrived untagged (XERK-173)", async () => {
+    const t = await record();
+    const { sourceLang: _drop, ...TR_NO_LANG } = TR;
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR_NO_LANG); // first turn: no language
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(controllerMod.TRANSLATION_TITLE); // bare "Translating"
+
+    // A second, tagged turn names the run: the title upgrades in place.
+    const TR2 = { ...TR, segmentId: "s2", text: "I am fine." };
+    t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s2", text: "estoy bien" });
+    t.api.handlers().onTranslation?.(TR2);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(card().title); // "Translating Spanish → English"
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text, TR2.text)));
   });
 
   it("appends each further turn's translation to the open box", async () => {
@@ -1213,7 +1271,7 @@ describe("wireLens live translations (XERK-160)", () => {
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50);
     // The translation still owns the box — the cue neither triggers nor appears.
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    expect(liveTitle(t)).toBe(card().title);
 
     t.api.handlers().onTranslationDone?.(DONE);
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
@@ -1230,7 +1288,7 @@ describe("wireLens live translations (XERK-160)", () => {
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text)));
+    expect(liveTitle(t)).toBe(card().title);
     // The displaced cue is reviewable in the phone transcript, not dropped.
     expect(document.getElementById("session-text")!.textContent).toContain("Sun");
   });
@@ -1287,7 +1345,7 @@ describe("wireLens live translations (XERK-160)", () => {
     t.api.handlers().onTranslation?.(TR2);
     await vi.advanceTimersByTimeAsync(50);
     // A new box with only the new run's text, and no countdown again.
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR2.text)));
+    expect(liveTitle(t)).toBe(card().title);
     expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR2.text)));
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 2);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6); // still up

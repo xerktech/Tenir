@@ -6,14 +6,7 @@
  * tag (`LangTag`, e.g. "ES") so both halves of the pair are labeled.
  */
 
-const LANG_NAMES: Record<string, string> = {
-  en: "English",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  pt: "Portuguese",
-  it: "Italian",
-};
+import { langName } from "@tenir/client-core";
 
 /**
  * The source-language chip on the ORIGINAL text of a translated turn — the
@@ -22,7 +15,7 @@ const LANG_NAMES: Record<string, string> = {
  * inheritance has no claimed source language and stays untagged.
  */
 export function LangTag({ lang }: { lang: string }): JSX.Element {
-  const name = LANG_NAMES[lang];
+  const name = langName(lang);
   return (
     <>
       <span className="translation-lang" title={name ? `Spoken in ${name}` : "Spoken language"}>
@@ -40,7 +33,7 @@ export function TranslationLine({
   /** Language the original turn was spoken in, when detected. */
   lang?: string | null;
 }): JSX.Element {
-  const from = lang ? LANG_NAMES[lang] : undefined;
+  const from = langName(lang);
   return (
     <div className="translation">
       <span className="translation-lang" title={from ? `Translated from ${from}` : "Translated"}>

@@ -9,6 +9,7 @@
  */
 
 export * from "./config";
+export * from "./lang";
 export * from "./serverUrl";
 export * from "./auth";
 export * from "./api";
