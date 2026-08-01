@@ -107,6 +107,8 @@ compose. Key envs on the app container:
 ```
 API_AUTH_SECRET        bearer-token signing secret (boot refuses the default)
 API_AUTH_ADMIN_*       bootstrap admin (username / password / household)
+API_AUTH_TOKEN_TTL_SECONDS  token lifetime (default 30d); tokens auto-renew on use,
+                       so this is the max idle time before a device must re-login
 API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT finals + cues (…/v1)
 API_LITELLM_API_KEY    gateway key
 API_STT_BACKEND        hybrid (prod) | parakeet (Parakeet-only) | stub (dev/CI)

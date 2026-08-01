@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -24,9 +24,11 @@ from api.auth import (
     AuthError,
     Principal,
     assert_secure_auth_config,
+    get_user_store,
     principal_from_token,
     require_admin,
 )
+from api.auth.tokens import renew_token_if_due
 from api.auth.router import router as auth_router
 from api.config import settings
 from api.contract import (
@@ -93,6 +95,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
 
+# Sliding token renewal (XERK-168): the header a renewed bearer token rides back
+# on. Clients adopt it in their shared request path, so an actively-used device
+# keeps refreshing its token and is never logged out by plain expiry.
+RENEWED_TOKEN_HEADER = "X-Renewed-Token"
+
 _cors_origins = settings.cors_origin_list
 app.add_middleware(
     CORSMiddleware,
@@ -104,7 +111,38 @@ app.add_middleware(
     allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browsers hide non-safelisted response headers from cross-origin JS unless
+    # they are exposed — without this the web client would never see renewals.
+    expose_headers=[RENEWED_TOKEN_HEADER],
 )
+
+
+@app.middleware("http")
+async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Re-issue the bearer token on any authenticated request past half its life.
+
+    This is what keeps a device logged in until it manually logs out (XERK-168):
+    the client swaps in the fresh token from ``X-Renewed-Token``, so only going
+    unused for a whole token lifetime forces a re-login. Invalid/expired tokens
+    add no header — the route's own dependency 401s them as before. The user-store
+    lookup gates renewal on the account still existing (deleted users keep their
+    hard expiry) and only runs when a renewal is actually due.
+    """
+    response = await call_next(request)
+    authorization = request.headers.get("authorization", "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
+    if not token:
+        return response
+    fresh = renew_token_if_due(
+        token, secret=settings.auth_secret, ttl_seconds=settings.auth_token_ttl_seconds
+    )
+    if fresh is None:
+        return response
+    user = await asyncio.to_thread(get_user_store().get_by_id, principal_from_token(fresh).user_id)
+    if user is None:
+        return response
+    response.headers[RENEWED_TOKEN_HEADER] = fresh
+    return response
 
 app.include_router(auth_router)
 app.include_router(history_router)

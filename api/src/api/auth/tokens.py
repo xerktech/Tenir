@@ -117,8 +117,8 @@ def issue_token(
     return f"{payload_b64}.{_sign(payload_b64, secret)}"
 
 
-def decode_token(token: str, *, secret: str, now: float | None = None) -> Principal:
-    """Verify a bearer token's signature + expiry and return its ``Principal``."""
+def _decode_claims(token: str, *, secret: str, now: float | None = None) -> dict:
+    """Verify a bearer token's signature + expiry and return its raw claims."""
     try:
         payload_b64, sig = token.split(".")
     except ValueError as exc:
@@ -131,6 +131,10 @@ def decode_token(token: str, *, secret: str, now: float | None = None) -> Princi
         raise AuthError("malformed token payload") from exc
     if claims.get("exp", 0) < (now if now is not None else time.time()):
         raise AuthError("token expired")
+    return claims
+
+
+def _principal_of(claims: dict) -> Principal:
     role = claims.get("role")
     return Principal(
         user_id=str(claims.get("sub", "")),
@@ -138,3 +142,38 @@ def decode_token(token: str, *, secret: str, now: float | None = None) -> Princi
         role="admin" if role == "admin" else "member",
         username=str(claims.get("un", "")),
     )
+
+
+def decode_token(token: str, *, secret: str, now: float | None = None) -> Principal:
+    """Verify a bearer token's signature + expiry and return its ``Principal``."""
+    return _principal_of(_decode_claims(token, secret=secret, now=now))
+
+
+# A token becomes renewable once it is past this fraction of its own lifetime.
+# Half-life keeps renewal cheap (at most ~2 re-issues per lifetime for an active
+# device) while leaving a full half-life of slack before anything expires.
+RENEW_AFTER_FRACTION = 0.5
+
+
+def renew_token_if_due(
+    token: str, *, secret: str, ttl_seconds: int, now: float | None = None
+) -> str | None:
+    """Sliding renewal (XERK-168): a fresh token for a valid one past half its life.
+
+    Returns ``None`` when the token is invalid/expired (the request will 401
+    through the normal dependency path) or simply not old enough yet. Callers that
+    hand the fresh token out must first check the user still exists — expiry is the
+    only thing that ends a deleted user's access, and renewal must not extend it.
+    """
+    ts = now if now is not None else time.time()
+    try:
+        claims = _decode_claims(token, secret=secret, now=ts)
+    except AuthError:
+        return None
+    iat, exp = claims.get("iat"), claims.get("exp", 0)
+    if isinstance(iat, (int, float)) and exp > iat:
+        if ts < iat + (exp - iat) * RENEW_AFTER_FRACTION:
+            return None  # still young — keep the current token
+    # A legacy token without a usable ``iat`` renews unconditionally: it is valid,
+    # and re-issuing gives it a well-formed lifetime to slide on.
+    return issue_token(_principal_of(claims), secret=secret, ttl_seconds=ttl_seconds, now=ts)

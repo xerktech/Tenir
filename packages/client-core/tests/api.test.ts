@@ -11,7 +11,7 @@ import {
   type SystemStatus,
   users,
 } from "../src/api";
-import { clearToken, setToken } from "../src/auth";
+import { clearToken, getToken, setToken } from "../src/auth";
 import { configureApi } from "../src/config";
 
 type FetchCall = { url: string; init: RequestInit };
@@ -82,6 +82,31 @@ describe("auth", () => {
     expect(principal.household).toBe("acme");
     // The /auth/me call carried the token from the login response.
     expect((calls[1].init.headers as Record<string, string>).Authorization).toBe("Bearer tok-9");
+  });
+
+  it("adopts a renewed token from the X-Renewed-Token header (XERK-168)", async () => {
+    setToken("tok-old");
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ userId: "u1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Renewed-Token": "tok-fresh" },
+        }),
+    );
+    await me();
+    expect(getToken()).toBe("tok-fresh");
+    // The next request already carries the renewed token.
+    await me();
+    expect((calls[1].init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer tok-fresh",
+    );
+  });
+
+  it("leaves the stored token alone when no renewal header is present", async () => {
+    setToken("tok-old");
+    mockFetch(() => json({ userId: "u1" }));
+    await me();
+    expect(getToken()).toBe("tok-old");
   });
 
   it("describeLoginError maps the three user-facing cases", () => {

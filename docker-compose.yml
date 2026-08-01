@@ -85,6 +85,9 @@ services:
       API_HOUSEHOLD_ID: ${API_HOUSEHOLD_ID:-default}
       # You MUST override API_AUTH_SECRET — the api refuses to boot with the default.
       API_AUTH_SECRET: ${API_AUTH_SECRET:-dev-insecure-change-me}
+      # Bearer-token lifetime. Tokens auto-renew on use (sliding, XERK-168), so this
+      # is the max *idle* time before a device is asked to log in again.
+      API_AUTH_TOKEN_TTL_SECONDS: ${API_AUTH_TOKEN_TTL_SECONDS:-2592000}
       API_AUTH_ADMIN_USERNAME: ${API_AUTH_ADMIN_USERNAME:-}
       API_AUTH_ADMIN_PASSWORD: ${API_AUTH_ADMIN_PASSWORD:-}
       API_AUTH_ADMIN_HOUSEHOLD: ${API_AUTH_ADMIN_HOUSEHOLD:-default}

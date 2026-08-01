@@ -257,7 +257,11 @@ class Settings(BaseSettings):
     # HMAC signing secret for bearer tokens. MUST be overridden in production; the
     # api refuses to boot while this is still the insecure default.
     auth_secret: str = DEFAULT_AUTH_SECRET
-    auth_token_ttl_seconds: int = 86400  # 24h
+    # Bearer-token lifetime. Tokens slide (XERK-168): any authenticated request past
+    # half a token's life gets a fresh one back in the X-Renewed-Token header, which
+    # the clients adopt — so this is effectively the max *idle* time before a device
+    # is asked to log in again, not a hard re-login cadence.
+    auth_token_ttl_seconds: int = 2_592_000  # 30 days
     # Grace window a dropped session stays resumable: a reconnect carrying the same
     # sessionId rebinds to the live session instead of starting a fresh one.
     # 0 disables resume.
