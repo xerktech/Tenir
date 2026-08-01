@@ -197,6 +197,91 @@ class TranslationDone(BaseModel):
     type: Literal['translation.done']
 
 
+class LyricLine(BaseModel):
+    """
+    One time-synced lyric line: the text and the timestamp (ms) it is sung at, measured from the START of the song (not the session).
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    atMs: conint(ge=0) = Field(
+        ...,
+        description='Offset into the SONG (ms) at which this line is sung — the LRC timestamp.',
+    )
+    text: str = Field(
+        ..., description='The lyric line (may be empty for an instrumental gap).'
+    )
+
+
+class Song(BaseModel):
+    """
+    Server -> client. A song was recognized playing in the room (XERK-184). Clients show its time-synced lyrics in the same box a cue uses — title 'ARTIST - SONG NAME' over a body that auto-scrolls as the song plays. The scroll is driven client-side from an anchor: at session-timeline `atMs` the song was at `offsetMs` into the track, so the current line at wall-time t is the last line whose (song) atMs <= offsetMs + (t - atMs). A run of the same song is refreshed by `song.sync` and ended by `song.done`. While a song run is live the api suppresses cues, exactly as a translation run does.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['song']
+    songId: str = Field(
+        ...,
+        description='Stable id for this recognized-song run (keys song.sync / song.done / dedupe / history).',
+    )
+    title: str = Field(..., description="The song's title.")
+    artist: str = Field(
+        ...,
+        description="The performing artist; the box title renders 'ARTIST - TITLE'.",
+    )
+    atMs: conint(ge=0) = Field(
+        ...,
+        description='The session-timeline position (ms) this anchor was measured at — where the song is placed in history, and the reference the client scrolls from.',
+    )
+    offsetMs: conint(ge=0) = Field(
+        ...,
+        description='How far into the SONG (ms) the track was at `atMs` — the sync anchor. Paired with atMs it maps wall-clock to song position.',
+    )
+    durationMs: conint(ge=0) | None = Field(
+        None,
+        description="The track's total length (ms), when known; lets the client bound the scroll.",
+    )
+    lines: list[LyricLine] = Field(
+        ...,
+        description='The full time-synced lyrics (LRC), ordered by song time. Empty when no synced lyrics were found (the client shows the title without a scroll).',
+    )
+
+
+class SongSync(BaseModel):
+    """
+    Server -> client. A fresh sync anchor for a song already delivered (XERK-184): a periodic re-identification of the same run, so the client can correct drift between its local clock and the actual playback position. Carries no lyrics — same songId, same lines, new (atMs, offsetMs).
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['song.sync']
+    songId: str = Field(
+        ..., description="The run this re-anchors (matches the Song's songId)."
+    )
+    atMs: conint(ge=0) = Field(
+        ..., description='Session-timeline position of the fresh anchor.'
+    )
+    offsetMs: conint(ge=0) = Field(
+        ..., description='Song position (ms) at the fresh anchor.'
+    )
+
+
+class SongDone(BaseModel):
+    """
+    Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). On the glasses this starts the song box's dismiss countdown, mirroring translation.done; cue generation resumes after it.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['song.done']
+    songId: str = Field(..., description='The run that ended.')
+
+
 class Pong(BaseModel):
     """
     Server -> client. Reply to Ping.
@@ -239,6 +324,9 @@ class ServerMessage(
         | Cue
         | Translation
         | TranslationDone
+        | Song
+        | SongSync
+        | SongDone
         | Pong
         | ErrorMessage
     ]
@@ -250,6 +338,9 @@ class ServerMessage(
         | Cue
         | Translation
         | TranslationDone
+        | Song
+        | SongSync
+        | SongDone
         | Pong
         | ErrorMessage
     ) = Field(..., title='ServerMessage')

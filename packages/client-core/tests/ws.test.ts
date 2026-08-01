@@ -148,6 +148,34 @@ describe("ApiClient", () => {
     expect(onTranslationDone).toHaveBeenCalledOnce();
   });
 
+  it("routes song frames to onSong / onSongSync / onSongDone (XERK-184)", () => {
+    const onSong = vi.fn();
+    const onSongSync = vi.fn();
+    const onSongDone = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onSong, onSongSync, onSongDone });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].emit({
+      type: "song",
+      songId: "sng-1",
+      title: "Weird Fishes",
+      artist: "Radiohead",
+      atMs: 1000,
+      offsetMs: 60000,
+      durationMs: 318000,
+      lines: [{ atMs: 0, text: "a" }],
+    });
+    instances[0].emit({ type: "song.sync", songId: "sng-1", atMs: 2000, offsetMs: 78000 });
+    instances[0].emit({ type: "song.done", songId: "sng-1" });
+    expect(onSong).toHaveBeenCalledWith(
+      expect.objectContaining({ songId: "sng-1", title: "Weird Fishes", offsetMs: 60000 }),
+    );
+    expect(onSongSync).toHaveBeenCalledWith(
+      expect.objectContaining({ songId: "sng-1", offsetMs: 78000 }),
+    );
+    expect(onSongDone).toHaveBeenCalledWith(expect.objectContaining({ songId: "sng-1" }));
+  });
+
   it("does not send a cueLevel in session.start (XERK-114: toggle removed)", () => {
     const client = new ApiClient("ws://h/ws");
     client.start({ micSource: "g2-microphone" });

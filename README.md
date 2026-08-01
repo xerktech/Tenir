@@ -22,6 +22,11 @@ chat, …) was stripped back to; features return one at a time, slowly.
   spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): the
   glasses show the translation in the cue box, web/Android/the phone app show
   it under the original turn — see [`docs/translations.md`](docs/translations.md)
+- **Music ID** — when a song is playing, recognize the track and show its
+  **time-synced lyrics** in the cue box, auto-scrolling as the song plays, titled
+  `ARTIST - SONG NAME` (`API_MUSIC_BACKEND`): recognition via shazamio (Shazam's
+  global catalog), synced lyrics from LRCLIB — see
+  [`docs/music-id.md`](docs/music-id.md)
 - **Recorded, stored sessions** — every session is persisted as a conversation:
   transcript segments in Postgres, full audio retained on disk; browse, search,
   replay, export and delete from the UI

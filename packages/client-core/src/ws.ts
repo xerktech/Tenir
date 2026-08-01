@@ -18,6 +18,9 @@ import type {
   Pong,
   ServerMessage,
   SessionReady,
+  Song,
+  SongDone,
+  SongSync,
   Translation,
   TranslationDone,
 } from "@tenir/contract";
@@ -36,6 +39,12 @@ export interface ApiHandlers {
   onCue?: (m: Cue) => void;
   onTranslation?: (m: Translation) => void;
   onTranslationDone?: (m: TranslationDone) => void;
+  // A song was recognized playing (XERK-184): its synced lyrics scroll in the
+  // cue box. `song` opens/replaces a run, `song.sync` re-anchors the scroll to
+  // correct drift, `song.done` ends it.
+  onSong?: (m: Song) => void;
+  onSongSync?: (m: SongSync) => void;
+  onSongDone?: (m: SongDone) => void;
   onPong?: (m: Pong) => void;
   onError?: (m: ErrorMessage) => void;
   onConnectionChange?: (state: "connecting" | "open" | "closed") => void;
@@ -161,6 +170,15 @@ export class ApiClient {
         break;
       case "translation.done":
         this.handlers.onTranslationDone?.(msg);
+        break;
+      case "song":
+        this.handlers.onSong?.(msg);
+        break;
+      case "song.sync":
+        this.handlers.onSongSync?.(msg);
+        break;
+      case "song.done":
+        this.handlers.onSongDone?.(msg);
         break;
       case "pong":
         this.handlers.onPong?.(msg);

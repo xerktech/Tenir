@@ -22,6 +22,7 @@ from api.persistence.models import (
     ConversationStatus,
     Cue,
     Segment,
+    Song,
     utcnow,
 )
 
@@ -40,6 +41,7 @@ class ConversationStore(Protocol):
         self, household: str, conversation_id: str, segment_id: str, translation: str
     ) -> None: ...
     def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None: ...
+    def add_song(self, household: str, conversation_id: str, song: Song) -> None: ...
     def finish(
         self,
         household: str,
@@ -133,6 +135,18 @@ class InMemoryConversationStore:
                     conv.cues[i] = cue
                     return
             conv.cues.append(cue)
+
+    def add_song(self, household: str, conversation_id: str, song: Song) -> None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is None:
+                return
+            # Upsert by song id so a re-delivered song replaces rather than dupes.
+            for i, existing in enumerate(conv.songs):
+                if existing.song_id == song.song_id:
+                    conv.songs[i] = song
+                    return
+            conv.songs.append(song)
 
     def finish(
         self,

@@ -20,6 +20,7 @@ const baseState = () => ({
   queuedCues: [] as { id: string; title: string; body: string }[],
   activeCueEndsAt: null as number | null,
   pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
+  song: null as import("@tenir/client-core").LiveSong | null,
 });
 
 function fakeController(overrides: Partial<CaptureController["state"]> = {}): CaptureController {
@@ -71,6 +72,37 @@ describe("LiveView", () => {
     const rows = document.querySelectorAll(".translation");
     expect(rows).toHaveLength(1);
     expect(document.querySelectorAll(".translation-lang")).toHaveLength(2);
+  });
+
+  it("shows a recognized song's synced lyrics in place of the cue band (XERK-184)", () => {
+    const now = Date.now();
+    renderLive(
+      fakeController({
+        running: true,
+        connection: "open",
+        segments: [{ id: "a", text: "some talk" }],
+        // A cue is also active, but the song owns the box and hides it.
+        activeCue: { id: "c1", title: "Sun", body: "150M km", afterSegmentId: null },
+        activeCueEndsAt: now + CUE_TTL_MS,
+        song: {
+          id: "s1",
+          title: "Weird Fishes",
+          artist: "Radiohead",
+          anchorAt: now,
+          anchorOffsetMs: 0,
+          lines: [
+            { atMs: 0, text: "in the deep" },
+            { atMs: 60000, text: "hit the bottom" },
+          ],
+        },
+      }),
+    );
+    // Title is "ARTIST — TITLE" and the first line is shown and current.
+    expect(screen.getByText("Radiohead — Weird Fishes")).toBeInTheDocument();
+    const current = document.querySelector(".lyrics-line.current");
+    expect(current).toHaveTextContent("in the deep");
+    // The cue band is hidden while the song plays — its title is not shown.
+    expect(screen.queryByText("Sun")).not.toBeInTheDocument();
   });
 
   it("shows Record when idle and calls start", () => {

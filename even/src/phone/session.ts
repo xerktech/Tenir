@@ -19,7 +19,13 @@
  * jsdom without the Even SDK.
  */
 
-import { cueCountdownLabel, isPinnedToBottom } from "@tenir/client-core";
+import {
+  cueCountdownLabel,
+  currentLyricIndex,
+  isPinnedToBottom,
+  lyricWindow,
+  type LiveSong,
+} from "@tenir/client-core";
 
 import type { CueCard } from "../lens/layout";
 
@@ -60,6 +66,7 @@ export interface LiveSessionView {
   cue: CueCard | null; // the current private context cue (XERK-81), or none
   cueSecondsLeft?: number; // seconds until that cue auto-dismisses (XERK-110)
   pastCues: PastCue[]; // released cues embedded in the transcript for review (XERK-108)
+  song?: LiveSong | null; // the song recognized playing, whose lyrics scroll (XERK-184)
 }
 
 /** One row of the rendered transcript: a finalized turn or a reviewed cue. */
@@ -102,6 +109,7 @@ export interface SessionPageElements {
   start: HTMLButtonElement;
   stop: HTMLButtonElement;
   cue: HTMLElement; // the private context cue card (XERK-81), above the transcript
+  song: HTMLElement; // the recognized-song lyric card (XERK-184), above the transcript
   empty: HTMLElement; // the empty-state block (idle / waiting for speech)
   emptyTitle: HTMLElement;
   emptyHint: HTMLElement;
@@ -120,12 +128,13 @@ export function querySessionPageElements(doc: Document = document): SessionPageE
   const start = doc.getElementById("session-start");
   const stop = doc.getElementById("session-stop");
   const cue = doc.getElementById("session-cue");
+  const song = doc.getElementById("session-song");
   const empty = doc.getElementById("session-empty");
   const emptyTitle = doc.getElementById("session-empty-title");
   const emptyHint = doc.getElementById("session-empty-hint");
   const text = doc.getElementById("session-text");
   if (!badge || !dot || !controls || !start || !stop) return null;
-  if (!cue || !empty || !emptyTitle || !emptyHint || !text) return null;
+  if (!cue || !song || !empty || !emptyTitle || !emptyHint || !text) return null;
   return {
     badge,
     dot,
@@ -133,6 +142,7 @@ export function querySessionPageElements(doc: Document = document): SessionPageE
     start: start as HTMLButtonElement,
     stop: stop as HTMLButtonElement,
     cue,
+    song,
     empty,
     emptyTitle,
     emptyHint,
@@ -181,6 +191,11 @@ export class SessionPage {
   // The live cue card's countdown element (XERK-110) while one is on screen, so
   // the ticker can repaint just that number.
   private countdown: HTMLElement | null = null;
+  // The song currently on screen (XERK-184) and the element its lyric lines live
+  // in, so `tickSong` can advance the scroll without redrawing the transcript —
+  // the same targeted-repaint pattern the cue countdown uses.
+  private song: LiveSong | null = null;
+  private songLines: HTMLElement | null = null;
 
   constructor(
     private readonly els: SessionPageElements,
@@ -219,6 +234,12 @@ export class SessionPage {
     // transcript, shown only while a cue is live and a session is recording,
     // with the countdown to its dismissal top-right (XERK-110).
     this.renderCue(view.recording ? view.cue : null, view.cueSecondsLeft);
+
+    // The recognized song's synced lyrics (XERK-184): the same bordered card as a
+    // cue, with "ARTIST — TITLE" over a window of lyric lines that scrolls as the
+    // song plays. Shown only while a song is live and a session is recording — the
+    // phone counterpart of the lens's lyric box and web/mobile's LiveLyricsBand.
+    this.renderSong(view.recording ? view.song ?? null : null);
 
     const hasText =
       view.recording &&
@@ -357,6 +378,69 @@ export class SessionPage {
   tickCue(secondsLeft: number): void {
     if (!this.countdown) return;
     this.countdown.textContent = cueCountdownLabel(secondsLeft);
+  }
+
+  /**
+   * Render (or hide) the recognized-song lyric card (XERK-184): the title
+   * "ARTIST — TITLE" with a ♪ badge across from it, over a window of lyric lines.
+   * Rebuilt in full on each `update`; between updates `tickSong` advances just the
+   * lyric lines, so the scroll keeps moving without redrawing the transcript.
+   */
+  private renderSong(song: LiveSong | null): void {
+    this.song = song;
+    if (!song) {
+      this.els.song.hidden = true;
+      this.els.song.replaceChildren();
+      this.songLines = null;
+      return;
+    }
+    const doc = this.els.song.ownerDocument;
+    const head = doc.createElement("div");
+    head.className = "session-song-head";
+    const title = this.make("div", "session-song-title", `${song.artist} — ${song.title}`);
+    const badge = this.make("div", "session-song-badge", "♪");
+    // Out of the accessibility tree: the card is an aria-live region and the ♪ is
+    // decoration, not content to announce.
+    badge.setAttribute("aria-hidden", "true");
+    head.append(title, badge);
+    const body = doc.createElement("div");
+    body.className = "session-song-body";
+    this.els.song.replaceChildren(head, body);
+    this.els.song.hidden = false;
+    this.songLines = body;
+    this.paintLyrics();
+  }
+
+  /**
+   * Paint the current lyric window into the song card's body (XERK-184): the line
+   * being sung now — `currentLyricIndex(song, Date.now())` off the local clock —
+   * with one context line before and two upcoming, the current one highlighted.
+   * An empty-lyrics song shows a quiet ♪ marker, matching web/mobile.
+   */
+  private paintLyrics(): void {
+    if (!this.song || !this.songLines) return;
+    const win = lyricWindow(this.song.lines, currentLyricIndex(this.song, Date.now()));
+    const rows: HTMLElement[] =
+      win.lines.length === 0
+        ? [this.make("div", "session-song-line session-song-empty", "♪ ♪ ♪")]
+        : win.lines.map((ln, i) =>
+            this.make(
+              "div",
+              `session-song-line${i === win.currentIndex ? " current" : ""}`,
+              ln.text || "♪",
+            ),
+          );
+    this.songLines.replaceChildren(...rows);
+  }
+
+  /**
+   * Advance the song's lyric scroll (XERK-184) without redrawing anything else —
+   * the lens ticker calls this a few times a second while a song is up. Like
+   * `tickCue`, a full `update()` at that rate would rebuild the transcript
+   * underneath it. No song on screen → nothing to tick.
+   */
+  tickSong(): void {
+    this.paintLyrics();
   }
 
   /**

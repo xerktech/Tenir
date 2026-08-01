@@ -41,8 +41,9 @@ describe("selectable transcript text (XERK-104)", () => {
     const src = readText("src/screens/History.tsx");
     // Cues default to shown on every open (state resets when Detail remounts).
     expect(src).toMatch(/const \[showCues, setShowCues\] = useState\(true\);/);
-    // Hiding cues filters them out of the timeline, so runs() yields one run.
-    expect(src).toMatch(/timeline\(conv\)\.filter\(\(it\) => showCues \|\| it\.kind === "segment"\)/);
+    // Hiding cues filters them out of the timeline, so runs() yields one run
+    // (songs, when present, stay — they aren't cues; XERK-184).
+    expect(src).toMatch(/timeline\(conv\)\.filter\(\(it\) => it\.kind !== "cue" \|\| showCues\)/);
     // The toggle is only offered when there are cues to hide.
     expect(src).toMatch(/const hasCues = \(conv\.cues\?\.length \?\? 0\) > 0;/);
     expect(src).toMatch(/hasCues && \(/);

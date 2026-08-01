@@ -23,6 +23,7 @@ from api.persistence.models import (
     ConversationStatus,
     Cue,
     Segment,
+    Song,
     coerce_status,
 )
 from api.persistence.wav import pcm16_to_wav, wav_to_pcm16
@@ -35,6 +36,7 @@ __all__ = [
     "Cue",
     "LocalDiskAudioStore",
     "Segment",
+    "Song",
     "audio_key",
     "coerce_status",
     "get_audio_store",

@@ -226,6 +226,22 @@ describe("HistoryPanel", () => {
     await waitFor(() => expect(screen.queryByText(/150 million km/)).not.toBeInTheDocument());
   });
 
+  it("renders a recognized song inline in the transcript timeline (XERK-184)", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({
+      ...summary(),
+      segments: [{ segmentId: "s1", text: "nice track", startMs: 0, endMs: 1500, lang: "en" }],
+      cues: [],
+      songs: [
+        { songId: "song-1", title: "Weird Fishes", artist: "Radiohead", atMs: 1600, durationMs: 318000 },
+      ],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: new Date("2026-06-16T18:00:00Z").toLocaleString() }));
+    // The song sits inline as "ARTIST — TITLE" at the point it played.
+    expect(await screen.findByText("Radiohead — Weird Fishes")).toBeInTheDocument();
+  });
+
   it("shows a grounded cue's source in the expanded dropdown (XERK-120)", async () => {
     list.mockResolvedValue([summary()]);
     get.mockResolvedValue({

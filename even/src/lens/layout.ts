@@ -123,11 +123,20 @@ export const CUE_BODY_LINES = 4;
 // within the 7th transcript row's 189px boundary, so it too masks only whole
 // caption rows (see `cueHeight`).
 export const TRANSLATION_BODY_LINES = 5;
+// The synced-lyric box (XERK-184) reuses this same geometry to auto-scroll a
+// recognized song's lyrics. Its body is a fixed window of lyric lines around the
+// one being sung — one already-sung line for context, the current line, and two
+// upcoming (LYRIC_LINES_BEFORE + 1 + LYRIC_LINES_AFTER in client-core) — four
+// rows, matching a cue's body. The box functions take a `maxLines` the song call
+// sites pass this for, exactly as the translation box passes its own count.
+export const SONG_BODY_LINES = 4;
 // The MOST rows the box is ever tall: the title over a full CUE_BODY_LINES-row
 // body window. A shorter cue makes a shorter box (see `cueBox`/`cueRows`).
 export const CUE_ROWS = 1 + CUE_BODY_LINES;
 // The translation box's full-height row count (XERK-176): title + five body.
 export const TRANSLATION_ROWS = 1 + TRANSLATION_BODY_LINES;
+// The song box's full-height row count (XERK-184): title + four lyric rows.
+export const SONG_ROWS = 1 + SONG_BODY_LINES;
 export const CUE_BORDER = MENU_BORDER;
 export const CUE_PAD = MENU_PAD;
 export const CUE_W = SCREEN_W;
@@ -478,6 +487,16 @@ export function cueTitleLine(cue: CueCard, secondsLeft?: number): string {
   const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
   const titleLine = wrapLines(cue.title, CUE_TEXT_W - reserved)[0] ?? cue.title;
   return rowWithRightEdge(titleLine, countdown, CUE_TEXT_W);
+}
+
+/**
+ * The song box's title (XERK-184): "ARTIST — SONG NAME", the same "ARTIST — TITLE"
+ * form the web/mobile lyric cards use — parity across the three front ends. Built
+ * as a plain string here; `cueTitleLine` wraps/trims it to the box's title row
+ * (with no countdown — a song box has none, it clears on `song.done`).
+ */
+export function songTitle(artist: string, title: string): string {
+  return `${artist} — ${title}`;
 }
 
 /**

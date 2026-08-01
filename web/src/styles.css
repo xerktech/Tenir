@@ -344,6 +344,43 @@ th.history-col-turns .history-sort { flex-direction: row-reverse; }
   .cue-band.exiting { transform: none; }
 }
 
+/* Recognized-song lyrics in the cue box (XERK-184): the same floating card as a
+   cue, its body a fixed window of time-synced lyric lines that auto-scroll. The
+   ♪ badge sits where a cue's countdown would, marking it as music rather than a
+   dismissing card. */
+.cue-card-badge {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--accent-strong);
+}
+/* Four visible rows, matching the cue box (one past line, the current, two
+   upcoming); a fifth would spill, so the box is sized to exactly these. */
+.lyrics-body {
+  margin-top: 2px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.lyrics-line {
+  line-height: 1.4;
+  /* Dim by default; the current line lifts to full weight/colour below, so the
+     eye lands on where the song is now and the upcoming lines read as "next". */
+  color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: color var(--cue-fade) ease-out;
+}
+.lyrics-line.current {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.lyrics-empty { font-variant-numeric: tabular-nums; letter-spacing: .3em; }
+@media (prefers-reduced-motion: reduce) {
+  .lyrics-line { transition: none; }
+}
+/* A recognized song inline in the history transcript (XERK-184): a quiet one-line
+   marker at the point it played, mirroring how a cue sits on the timeline. */
+.song-item { color: var(--text-muted); }
+.song-badge { color: var(--accent-strong); }
+.song-title { font-weight: 600; }
+
 /* English translation of a non-English turn (XERK-160), rendered turn-by-turn
    directly under the original in the live transcript and history detail.
    Quieter than the spoken words — a rendering, not the record — with a small

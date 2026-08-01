@@ -1,6 +1,12 @@
 /** Recorded session history & search, with transcripts and retained audio. */
 
-import { history, type Conversation, type CueView, type SegmentView } from "@tenir/client-core";
+import {
+  history,
+  type Conversation,
+  type CueView,
+  type SegmentView,
+  type SongView,
+} from "@tenir/client-core";
 import { useState } from "react";
 import { Linking, Switch, Text, View } from "react-native";
 
@@ -26,30 +32,40 @@ import {
 } from "../ui/components";
 import { useTheme } from "../ui/ThemeContext";
 
-// A transcript row is either a spoken segment or a private cue, on one timeline.
+// A transcript row is a spoken segment, a private cue, or a recognized song, on
+// one timeline (XERK-81, XERK-184).
 type TranscriptItem =
   | { kind: "segment"; at: number; seg: SegmentView }
-  | { kind: "cue"; at: number; cue: CueView };
+  | { kind: "cue"; at: number; cue: CueView }
+  | { kind: "song"; at: number; song: SongView };
 
 function timeline(conv: Conversation): TranscriptItem[] {
   const items: TranscriptItem[] = [
     ...conv.segments.map((seg) => ({ kind: "segment" as const, at: seg.startMs, seg })),
     ...(conv.cues ?? []).map((cue) => ({ kind: "cue" as const, at: cue.atMs, cue })),
+    ...(conv.songs ?? []).map((song) => ({ kind: "song" as const, at: song.atMs, song })),
   ];
-  return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
+  return items.sort(
+    (a, b) => a.at - b.at || (a.kind === "segment" ? 0 : 1) - (b.kind === "segment" ? 0 : 1),
+  );
 }
 
 // Consecutive spoken turns are grouped into a run so they can render inside one
 // selectable <Text> — RN only extends a text selection within a single <Text>
-// tree, so a run is the largest span a drag-select can cover. A cue is a
-// separate tappable view (the collapsed dropdown), so it ends the current run.
-type Run = { kind: "segments"; segs: SegmentView[] } | { kind: "cue"; cue: CueView };
+// tree, so a run is the largest span a drag-select can cover. A cue or song is a
+// separate tappable/marker view, so it ends the current run.
+type Run =
+  | { kind: "segments"; segs: SegmentView[] }
+  | { kind: "cue"; cue: CueView }
+  | { kind: "song"; song: SongView };
 
 function runs(items: TranscriptItem[]): Run[] {
   const out: Run[] = [];
   for (const item of items) {
     if (item.kind === "cue") {
       out.push({ kind: "cue", cue: item.cue });
+    } else if (item.kind === "song") {
+      out.push({ kind: "song", song: item.song });
     } else {
       const last = out[out.length - 1];
       if (last && last.kind === "segments") last.segs.push(item.seg);
@@ -149,7 +165,7 @@ function Detail({
   // With cues hidden there are no cue dropdowns breaking the timeline, so every
   // turn collapses into one run / one selectable <Text> — the whole conversation
   // is then draggable-selectable end to end (RN only selects within one <Text>).
-  const items = timeline(conv).filter((it) => showCues || it.kind === "segment");
+  const items = timeline(conv).filter((it) => it.kind !== "cue" || showCues);
   return (
     <Screen>
       <Row>
@@ -174,9 +190,11 @@ function Detail({
       )}
       <View>
         {/* An empty transcript block reads as a detail that failed to open — name it. */}
-        {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 && (
-          <Muted>No transcript was recorded for this session.</Muted>
-        )}
+        {conv.segments.length === 0 &&
+          (conv.cues?.length ?? 0) === 0 &&
+          (conv.songs?.length ?? 0) === 0 && (
+            <Muted>No transcript was recorded for this session.</Muted>
+          )}
         {/* Each run of consecutive turns is ONE selectable <Text>, so a
             selection can be dragged across every turn in it and copied
             (XERK-104). RN only extends a selection within a single <Text> tree;
@@ -190,6 +208,13 @@ function Detail({
               body={run.cue.body}
               source={run.cue.source}
             />
+          ) : run.kind === "song" ? (
+            // A song recognized playing during the session (XERK-184), inline at
+            // the point it played — the mobile parity of the web history marker.
+            <Text key={run.song.songId} style={{ color: colors.muted, lineHeight: 22 }}>
+              <Text style={{ color: colors.accentStrong }}>♪ </Text>
+              {run.song.artist} — {run.song.title}
+            </Text>
           ) : (
             <Text key={`run-${i}`} selectable style={{ color: colors.text, lineHeight: 22 }}>
               {run.segs.map((seg, j) => (

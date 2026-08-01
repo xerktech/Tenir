@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS cues (
 ALTER TABLE cues ADD COLUMN IF NOT EXISTS source TEXT;
 CREATE INDEX IF NOT EXISTS cues_conversation_idx ON cues (conversation_id, at_ms);
 
+-- One song recognized playing during the session (mirrors the song contract,
+-- XERK-184). Derived from the audio, not part of the conversation; at_ms is its
+-- transcript-timeline position so history renders it inline where it played.
+-- The synced lyrics are NOT stored — they are re-fetchable from LRCLIB and
+-- licensing-sensitive, so the record is just the track identity. Deliberately
+-- NOT FTS-indexed: songs are context, not conversation.
+CREATE TABLE IF NOT EXISTS songs (
+    song_id         TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    artist          TEXT NOT NULL,
+    at_ms           INTEGER NOT NULL,
+    duration_ms     INTEGER
+);
+CREATE INDEX IF NOT EXISTS songs_conversation_idx ON songs (conversation_id, at_ms);
+
 -- Recent news items ingested from the configured RSS feeds (XERK-120): the
 -- knowledge corpus the cue retrieval layer searches so cue facts about current
 -- events are grounded in fresh reporting instead of the cue model's (years-
