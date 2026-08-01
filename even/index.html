@@ -348,6 +348,39 @@
         letter-spacing: .02em;
       }
 
+      /* The recognized-song lyric card (XERK-184): the same bordered accent box as
+         a cue, reused so a song and a cue read as one shape. Title on the left, a
+         ♪ badge on the right; a window of lyric lines below, the current one lifted
+         and the rest dimmed — parity with web/mobile's LiveLyricsBand. */
+      .session-song {
+        border: 1px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+        margin-bottom: var(--space-3);
+      }
+      .session-song[hidden] { display: none; }
+      .session-song-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: var(--space-3);
+      }
+      .session-song-title {
+        font-family: var(--font-display, inherit);
+        font-weight: 700; font-size: var(--text-sm);
+        color: var(--accent-strong);
+      }
+      .session-song-badge {
+        flex: none;
+        font-size: var(--text-sm);
+        color: var(--accent-strong);
+      }
+      .session-song-body { margin-top: 2px; line-height: 1.5; }
+      /* Upcoming/past lines read quietly; the line being sung now lifts to full
+         weight and colour so the eye lands on where the song is. */
+      .session-song-line { color: var(--text-muted); }
+      .session-song-line.current { color: var(--accent-strong); font-weight: 700; }
+      .session-song-empty { letter-spacing: .25em; }
+
       /* A reviewed cue embedded inline in the live transcript (XERK-108): a
          collapsed dropdown that expands in place, matching the web/mobile
          CueDisclosure. The dropdown block carries its own spacing, so the row it
@@ -519,6 +552,10 @@
             <button class="btn btn-primary" id="session-start" type="button">Start</button>
             <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
           </div>
+          <!-- The recognized song's synced lyrics (XERK-184): the same bordered
+               accent card as a cue, "ARTIST — TITLE" over a window of lyric lines
+               that scrolls as the song plays. Shown while a song is recognized. -->
+          <div class="session-song" id="session-song" aria-live="polite" hidden></div>
           <!-- The private context cue (XERK-81): a bordered accent card above
                the transcript, shown while a cue is live during a session. -->
           <div class="session-cue" id="session-cue" aria-live="polite" hidden></div>

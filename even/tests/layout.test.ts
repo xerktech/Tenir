@@ -42,6 +42,9 @@ import {
   occludedCaption,
   SCREEN_H,
   SCREEN_W,
+  SONG_BODY_LINES,
+  SONG_ROWS,
+  songTitle,
   statusLine,
   tailCueBody,
   TRANSLATION_BODY_LINES,
@@ -781,6 +784,60 @@ describe("cue popup (XERK-81, XERK-133)", () => {
       expect(cueBodyBox(long).height).toBe(CUE_BODY_LINES * LINE_H);
       expect(bodyOf(buildCuePage(CONTENTS, long, 10)).height).toBe(CUE_BODY_LINES * LINE_H);
     });
+  });
+});
+
+describe("synced-lyric song box (XERK-184)", () => {
+  const CONTENTS = { status: "listening", caption: "hi", clock: "2:05 PM" };
+  const frameOf = (page: ReturnType<typeof buildCuePage>) =>
+    page.textObject!.find((t) => t.containerName === CONTAINER.menu.name)!;
+  const bodyOf = (page: ReturnType<typeof buildCuePage>) =>
+    page.textObject!.find((t) => t.containerName === CONTAINER.cueBody.name)!;
+
+  it("declares a four-row lyric body — the window of lines around the current one", () => {
+    expect(SONG_BODY_LINES).toBe(4); // the ticket's "4 body box"
+    expect(SONG_ROWS).toBe(1 + SONG_BODY_LINES); // title over the four lyric rows
+  });
+
+  it("titles the box 'ARTIST — SONG NAME', matching web/mobile", () => {
+    expect(songTitle("The Beatles", "Yesterday")).toBe("The Beatles — Yesterday");
+    // The box's pinned title row carries it with no countdown (a song box has none).
+    const card = { title: songTitle("The Beatles", "Yesterday"), body: "line one" };
+    expect(cueTitleLine(card)).toBe("The Beatles — Yesterday");
+  });
+
+  it("reuses the cue box geometry: the title over up to SONG_BODY_LINES lyric rows", () => {
+    // A four-line window (LYRIC_LINES_BEFORE + current + LYRIC_LINES_AFTER).
+    const card = { title: songTitle("A", "B"), body: ["l0", "l1", "l2", "l3"].join("\n") };
+    const page = buildCuePage(CONTENTS, card, undefined, SONG_BODY_LINES);
+    // Base 4 + the pinned title frame + the lyric body container.
+    expect(page.containerTotalNum).toBe(6);
+    expect(cueRows(card, SONG_BODY_LINES)).toBe(SONG_ROWS); // title + four lyric rows
+    expect(frameOf(page).height).toBe(cueHeight(SONG_ROWS));
+    expect(frameOf(page).content).toBe(cueTitleLine(card)); // just the title, no countdown
+    // The body container holds the whole window, sized to the four lyric rows.
+    const body = bodyOf(page);
+    expect(body.content).toBe(cueBodyText(card));
+    expect(body.height).toBe(SONG_BODY_LINES * LINE_H);
+  });
+
+  it("lands on whole caption rows and fits the screen (masks five, XERK-119)", () => {
+    const card = { title: songTitle("A", "B"), body: ["l0", "l1", "l2", "l3"].join("\n") };
+    const box = cueBox(card, SONG_BODY_LINES);
+    expect(box.height).toBe(cueHeight(SONG_ROWS));
+    // Within a whole number of transcript rows — no half-line the host scrolls.
+    expect(box.height).toBeLessThanOrEqual((SONG_ROWS + 1) * LINE_H);
+    expect(box.height).toBeLessThan(SCREEN_H);
+    const [first, last] = cueRowRange(card, SONG_BODY_LINES);
+    expect(first).toBe(0);
+    expect(last).toBe(SONG_ROWS - 1); // five whole rows masked (0..4)
+  });
+
+  it("shrinks the box to a short window, freeing the transcript rows below (XERK-119)", () => {
+    // Before the song reaches its second line the window can be shorter than four.
+    const two = { title: songTitle("A", "B"), body: ["l0", "l1"].join("\n") };
+    expect(cueRows(two, SONG_BODY_LINES)).toBe(3); // title + two lyric rows
+    expect(cueBox(two, SONG_BODY_LINES).height).toBeLessThan(cueHeight(SONG_ROWS));
   });
 });
 

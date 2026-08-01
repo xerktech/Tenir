@@ -113,6 +113,7 @@ async function boot(
           <button class="btn btn-primary" id="session-start" type="button">Start</button>
           <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
         </div>
+        <div class="session-song" id="session-song" hidden></div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -749,6 +750,7 @@ describe("wireLens cues (XERK-81)", () => {
           <button class="btn btn-primary" id="session-start" type="button">Start</button>
           <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
         </div>
+        <div class="session-song" id="session-song" hidden></div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -832,6 +834,7 @@ describe("wireLens cues (XERK-81)", () => {
           <button class="btn btn-primary" id="session-start" type="button">Start</button>
           <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
         </div>
+        <div class="session-song" id="session-song" hidden></div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -878,6 +881,7 @@ describe("wireLens cues (XERK-81)", () => {
           <button class="btn btn-primary" id="session-start" type="button">Start</button>
           <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
         </div>
+        <div class="session-song" id="session-song" hidden></div>
         <div class="session-cue" id="session-cue" hidden></div>
         <div class="empty" id="session-empty">
           <p id="session-empty-title"></p>
@@ -1417,5 +1421,215 @@ describe("wireLens live translations (XERK-160)", () => {
     await vi.advanceTimersByTimeAsync(50);
     // All three turns are stacked in the one box, newest at the bottom.
     expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text, TR2.text, TR3.text)));
+  });
+});
+
+describe("wireLens synced-lyric song box (XERK-184)", () => {
+  // Six single-token lyric lines, one per second of the song, so each is one row.
+  const LINES = Array.from({ length: 6 }, (_, i) => ({ atMs: i * 1000, text: `line${i}` }));
+  const SONG = {
+    type: "song" as const,
+    songId: "song1",
+    title: "Yesterday",
+    artist: "The Beatles",
+    atMs: 1000,
+    offsetMs: 0, // the song opens at its very start
+    durationMs: 6000,
+    lines: LINES,
+  };
+  const SONG_SYNC = (offsetMs: number) => ({
+    type: "song.sync" as const,
+    songId: "song1",
+    atMs: 1000,
+    offsetMs,
+  });
+  const DONE = { type: "song.done" as const, songId: "song1" };
+  const CUE = {
+    type: "cue" as const,
+    cueId: "c1",
+    title: "Sun",
+    body: "About 150 million km away.",
+    atMs: 1000,
+  };
+  const FINAL_ES = {
+    type: "caption.final" as const,
+    segmentId: "s1",
+    text: "hola",
+    lang: "es" as const,
+    startMs: 0,
+    endMs: 900,
+  };
+  const TR = { type: "translation" as const, segmentId: "s1", text: "hello", sourceLang: "es" as const };
+  // "ARTIST — SONG NAME" — the box's pinned title, no countdown (a song has none).
+  const TITLE = "The Beatles — Yesterday";
+  const win = (...texts: string[]) => texts.join("\n");
+
+  const record = async (opts: { withPhone?: boolean } = {}) => {
+    const t = await boot(opts);
+    t.controls.enable();
+    await settle();
+    await t.click();
+    await settle();
+    return t;
+  };
+  /** The scrolling body container from the last rebuilt page (shared with cues). */
+  const bodyContainer = (t: Awaited<ReturnType<typeof record>>) => {
+    const page = t.rebuilds[t.rebuilds.length - 1] as
+      | { textObject?: Array<{ containerName?: string; content?: string }> }
+      | undefined;
+    return page?.textObject?.find((c) => c.containerName === C().cueBody.name);
+  };
+  // A live translation animates trailing dots on its title (XERK-173); strip them
+  // to compare against the static base, exactly as the translation suite does.
+  const liveTitle = (t: Awaited<ReturnType<typeof record>>) => t.text(C().menu)?.replace(/\.+$/, "");
+
+  it("opens the box in the cue box's slot: 'ARTIST — TITLE' over the opening lyrics", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    // Same popup shape as a cue: base 4 + the pinned title frame + the body.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    expect(t.text(C().menu)).toBe(TITLE);
+    // Offset 0: the window opens on the first four lines, the current one on top.
+    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+  });
+
+  it("scrolls the window to the line being sung as the song plays off the lens ticker", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    // Offset 0: opens on the first lines (read straight off the just-built page).
+    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+
+    // Play the song out; the ticker repaints the body as the current line advances.
+    // Past the last line the window clamps to the final four rows, so the result is
+    // stable regardless of exactly when in the 600ms ticker cadence we sample.
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(t.text(C().cueBody)).toBe(win("line2", "line3", "line4", "line5"));
+  });
+
+  it("re-anchors the scroll on song.sync so a drifted client jumps to the true line", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+
+    // A fresh anchor says the track is really 4s in: the window jumps at once.
+    t.api.handlers().onSongSync?.(SONG_SYNC(4000));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().cueBody)).toBe(win("line2", "line3", "line4", "line5"));
+  });
+
+  it("shows the title with a quiet marker when no synced lyrics were found", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.({ ...SONG, lines: [] });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+    expect(bodyContainer(t)?.content).toBe("♪ ♪ ♪");
+  });
+
+  it("clears the box on song.done when nothing is queued behind it", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4); // plain page again
+  });
+
+  it("suppresses cues while a song plays, releasing the queued cue when it ends", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    // A cue arriving during the song waits — the song owns the box (XERK-184).
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+
+    // song.done clears the box; the queued cue takes it at once with its countdown.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+  });
+
+  it("takes the box over from a showing cue, which embeds for review", async () => {
+    const t = await record({ withPhone: true });
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+    // The displaced cue is reviewable in the phone transcript, not dropped.
+    expect(document.getElementById("session-text")!.textContent).toContain("Sun");
+  });
+
+  it("yields the box to a translation run, then retakes it when the run is done (translation > song)", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+
+    // A translation run outranks the song box (precedence: translation > song).
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(controllerMod.translationTitle("es")); // the run owns the box
+
+    // The run ends; the still-live song retakes the box (song was held behind it).
+    t.api.handlers().onTranslationDone?.({ type: "translation.done" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+  });
+
+  it("holds a song behind the open menu and retakes the box when the menu closes", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    await t.doubleTap(); // the menu owns the popup
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+
+    await t.doubleTap(); // close it — the live song takes the box back
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+  });
+
+  it("mirrors the song's scrolling lyrics to the phone Session page", async () => {
+    const t = await record({ withPhone: true });
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    const songEl = document.getElementById("session-song")!;
+    expect(songEl.hidden).toBe(false);
+    expect(songEl.querySelector(".session-song-title")!.textContent).toBe(TITLE);
+    const lines = () => [...songEl.querySelectorAll(".session-song-line")].map((l) => l.textContent);
+    expect(lines()).toEqual(["line0", "line1", "line2", "line3"]);
+
+    // The ticker scrolls the phone lyrics in lockstep with the lens; past the last
+    // line the window clamps to the final rows (stable across the tick phase).
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(lines()).toEqual(["line2", "line3", "line4", "line5"]);
+
+    // Cleared with the song when it ends.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(songEl.hidden).toBe(true);
+  });
+
+  it("clears the song box when the session stops", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+
+    await t.exitViaMenu(); // stop the session
+    expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+    // A fresh session has no song box lingering from the last one.
+    await t.click();
+    await settle();
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 });

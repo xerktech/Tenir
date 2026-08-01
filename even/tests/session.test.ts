@@ -9,6 +9,8 @@ import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { LiveSong } from "@tenir/client-core";
+
 import {
   SessionPage,
   liveTranscriptRows,
@@ -27,6 +29,7 @@ function mountDom(): void {
         <button class="btn btn-primary" id="session-start" type="button">Start</button>
         <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
       </div>
+      <div class="session-song" id="session-song" hidden></div>
       <div class="session-cue" id="session-cue" hidden></div>
       <div class="empty" id="session-empty">
         <p id="session-empty-title"></p>
@@ -316,6 +319,78 @@ describe("SessionPage", () => {
       page.update(view({ cue: null }));
       expect(() => page.tickCue(2)).not.toThrow();
       expect(cue().textContent).toBe("");
+    });
+  });
+
+  describe("synced-lyric song card (XERK-184)", () => {
+    const song = () => document.getElementById("session-song")!;
+    const lyricLines = () => [...song().querySelectorAll(".session-song-line")];
+    const current = () => song().querySelector(".session-song-line.current");
+    // Six single-token lines, one per second; anchored now so the window opens on
+    // the current line for a given offset into the track.
+    const liveSong = (anchorOffsetMs = 0): LiveSong => ({
+      id: "song1",
+      title: "Yesterday",
+      artist: "The Beatles",
+      lines: Array.from({ length: 6 }, (_, i) => ({ atMs: i * 1000, text: `line${i}` })),
+      anchorAt: Date.now(),
+      anchorOffsetMs,
+      durationMs: 6000,
+    });
+
+    it("shows 'ARTIST — TITLE' over the current lyric window while recording", () => {
+      mount().update(view({ song: liveSong() }));
+      expect(song().hidden).toBe(false);
+      expect(song().querySelector(".session-song-title")!.textContent).toBe(
+        "The Beatles — Yesterday",
+      );
+      // Offset 0: the window opens on the first four lines, the first highlighted.
+      expect(lyricLines().map((l) => l.textContent)).toEqual(["line0", "line1", "line2", "line3"]);
+      expect(current()!.textContent).toBe("line0");
+    });
+
+    it("windows around and highlights the line being sung mid-song", () => {
+      mount().update(view({ song: liveSong(2000) })); // ~2s in — line2 is current
+      expect(lyricLines().map((l) => l.textContent)).toEqual(["line1", "line2", "line3", "line4"]);
+      expect(current()!.textContent).toBe("line2");
+    });
+
+    it("advances the scroll on tickSong off the clock, without redrawing the transcript", () => {
+      const base = 1_000_000;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(base);
+      const page = mount();
+      // Anchored at `base`, offset 0: line0 is the current line now.
+      page.update(view({ segments: ["a turn"], song: { ...liveSong(0), anchorAt: base } }));
+      const firstRow = document.querySelector("#session-text li")!;
+      expect(current()!.textContent).toBe("line0");
+
+      // 4s later the clock has moved; tickSong recomputes the window off it — with
+      // no update() call, so the transcript row underneath is left untouched.
+      nowSpy.mockReturnValue(base + 4000);
+      page.tickSong();
+      expect(current()!.textContent).toBe("line4");
+      expect(document.querySelector("#session-text li")).toBe(firstRow); // same node, no rebuild
+      nowSpy.mockRestore();
+    });
+
+    it("shows a quiet marker when the song has no synced lyrics", () => {
+      mount().update(view({ song: { ...liveSong(), lines: [] } }));
+      expect(lyricLines()).toHaveLength(1);
+      expect(song().querySelector(".session-song-empty")!.textContent).toBe("♪ ♪ ♪");
+    });
+
+    it("hides the card when there is no song, and when not recording (and clears it)", () => {
+      const page = mount();
+      page.update(view({ song: liveSong() }));
+      expect(song().hidden).toBe(false);
+
+      page.update(view({ song: null }));
+      expect(song().hidden).toBe(true);
+      expect(song().textContent).toBe("");
+
+      // A song outside a session never shows (the card is session-private).
+      page.update(view({ recording: false, song: liveSong() }));
+      expect(song().hidden).toBe(true);
     });
   });
 
