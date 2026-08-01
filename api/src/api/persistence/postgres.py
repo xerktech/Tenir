@@ -23,6 +23,7 @@ from api.persistence.models import (
     ConversationStatus,
     Cue,
     Segment,
+    Song,
     coerce_status,
     utcnow,
 )
@@ -102,7 +103,7 @@ class SqlConversationStore:
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover
-        row, segments: list[Segment], cues: list[Cue]
+        row, segments: list[Segment], cues: list[Cue], songs: list[Song]
     ) -> Conversation:
         return Conversation(
             id=row["id"],
@@ -118,6 +119,7 @@ class SqlConversationStore:
             audio_key=row["audio_key"],
             segments=segments,
             cues=cues,
+            songs=songs,
         )
 
     def create(  # pragma: no cover - requires a live database
@@ -193,6 +195,29 @@ class SqlConversationStore:
                 (cue.cue_id, conversation_id, cue.title, cue.body, cue.at_ms, cue.source),
             )
 
+    def add_song(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, song: Song
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO songs
+                    (song_id, conversation_id, title, artist, at_ms, duration_ms)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (song_id) DO UPDATE SET
+                    title = EXCLUDED.title, artist = EXCLUDED.artist,
+                    at_ms = EXCLUDED.at_ms, duration_ms = EXCLUDED.duration_ms
+                """,
+                (
+                    song.song_id,
+                    conversation_id,
+                    song.title,
+                    song.artist,
+                    song.at_ms,
+                    song.duration_ms,
+                ),
+            )
+
     def finish(  # pragma: no cover - requires a live database
         self,
         household: str,
@@ -250,10 +275,15 @@ class SqlConversationStore:
                 "SELECT * FROM cues WHERE conversation_id = %s ORDER BY at_ms",
                 (conversation_id,),
             ).fetchall()
+            song_rows = cur.execute(
+                "SELECT * FROM songs WHERE conversation_id = %s ORDER BY at_ms",
+                (conversation_id,),
+            ).fetchall()
         return self._row_to_conversation(
             row,
             [self._row_to_segment(r) for r in seg_rows],
             [self._row_to_cue(r) for r in cue_rows],
+            [self._row_to_song(r) for r in song_rows],
         )
 
     @staticmethod
@@ -275,6 +305,16 @@ class SqlConversationStore:
             body=row["body"],
             at_ms=row["at_ms"],
             source=row["source"],
+        )
+
+    @staticmethod
+    def _row_to_song(row) -> Song:  # pragma: no cover - requires a live database
+        return Song(
+            song_id=row["song_id"],
+            title=row["title"],
+            artist=row["artist"],
+            at_ms=row["at_ms"],
+            duration_ms=row["duration_ms"],
         )
 
     def list(  # pragma: no cover - requires a live database

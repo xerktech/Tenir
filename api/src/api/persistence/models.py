@@ -70,6 +70,25 @@ class Cue:
 
 
 @dataclass
+class Song:
+    """One song recognized playing during the session (mirrors the ``song``
+    contract, XERK-184).
+
+    Like a cue, a song is derived from the audio but is not part of the
+    conversation. ``at_ms`` is the transcript-timeline position it was recognized
+    at, so history renders it inline where it played. The time-synced lyrics
+    themselves are not stored — they are re-fetchable from LRCLIB and
+    licensing-sensitive — so the record is just the identity.
+    """
+
+    song_id: str
+    title: str
+    artist: str
+    at_ms: int
+    duration_ms: int | None = None
+
+
+@dataclass
 class Conversation:
     """A persisted conversation and its transcript."""
 
@@ -83,6 +102,7 @@ class Conversation:
     audio_key: str | None = None
     segments: list[Segment] = field(default_factory=list)
     cues: list[Cue] = field(default_factory=list)
+    songs: list[Song] = field(default_factory=list)
 
     @property
     def transcript(self) -> str:

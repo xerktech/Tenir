@@ -21,9 +21,13 @@ from api.contract import (
     CaptionPartial,
     Cue,
     Lang,
+    LyricLine,
     MicSource,
     ServerMessage,
     SessionReady,
+    Song,
+    SongDone,
+    SongSync,
     Translation,
     TranslationDone,
 )
@@ -37,9 +41,18 @@ from api.cue.base import (
 )
 from api.cue.retrieval import EvidenceRetriever, make_evidence_retriever
 from api.metrics import metrics
+from api.music import (
+    MusicMatch,
+    MusicService,
+    make_music_service,
+    scan_backoff_ms,
+    track_key,
+    window_bytes,
+)
 from api.persistence import (
     Cue as CueRecord,
     Segment,
+    Song as SongRecord,
     audio_key,
     get_audio_store,
     get_conversation_store,
@@ -144,6 +157,30 @@ class Session:
         self._translation_worker: asyncio.Task[None] | None = None
         self._translation_hold: asyncio.Task[None] | None = None
         self._translation_active = False
+        # Music ID (XERK-184): when a song is playing, the session periodically
+        # fingerprints a short window of the live audio, identifies the track, and
+        # shows its time-synced lyrics in the cue box, auto-scrolling as the song
+        # plays. Unlike cues/translations this is AUDIO-driven — it taps on_audio
+        # into a bounded rolling window and runs on its OWN scan loop, not off the
+        # transcript. A confident match opens a `song` run (full lyrics + a sync
+        # anchor); while the same song stays locked, periodic re-identification
+        # sends `song.sync` to correct scroll drift; when it stops matching past
+        # the hold window the run ends with `song.done`. A live song run suppresses
+        # cues, exactly as a translation run does (the box is shared).
+        self._music: MusicService | None = None
+        self._music_scan: asyncio.Task[None] | None = None
+        self._music_audio = bytearray()
+        self._music_window_bytes = 0
+        self._music_active = False
+        self._music_run_id: str | None = None
+        self._music_track_key: str | None = None
+        self._music_last_match_monotonic: float | None = None
+        self._music_misses = 0
+        # Running total of audio pushed this sitting, so the music scan can stamp a
+        # recognized song at the current session-timeline position (the same
+        # timeline cues/segments use), independent of the STT seam.
+        self._start_offset_ms = 0
+        self._audio_bytes_pushed = 0
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -192,6 +229,7 @@ class Session:
         # that timeline too or the merged transcript interleaves sittings and
         # History playback desyncs from the audio.
         start_offset_ms = await self._resume_offset_ms() if self.resumed else 0
+        self._start_offset_ms = start_offset_ms
         self._transcriber = make_transcriber(
             source_lang=source_lang, start_offset_ms=start_offset_ms
         )
@@ -207,6 +245,12 @@ class Session:
         if self._translator is not None:
             self._translation_queue = asyncio.Queue()
             self._translation_worker = asyncio.create_task(self._translation_worker_loop())
+        # The music identifier (XERK-184); None when API_MUSIC_BACKEND=off, so the
+        # stripped core does no music work — on_audio doesn't even buffer for it.
+        self._music = make_music_service()
+        if self._music is not None:
+            self._music_window_bytes = window_bytes(settings.music_window_seconds)
+            self._music_scan = asyncio.create_task(self._music_scan_loop())
         if self._conversations is not None:
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
@@ -269,6 +313,17 @@ class Session:
         # session, flushed to the audio store on end.
         if self._audio_store is not None:
             self._full_audio.extend(pcm)
+        # Track the session-timeline position so the music scan can stamp a song
+        # at "now" (cheap counter; independent of any backend being on).
+        self._audio_bytes_pushed += len(pcm)
+        # Music ID (XERK-184): keep a bounded rolling window of the most recent
+        # audio for the scan loop to fingerprint. The one place music diverges
+        # from cues/translations — it needs the audio, not the transcript.
+        if self._music is not None:
+            self._music_audio.extend(pcm)
+            excess = len(self._music_audio) - self._music_window_bytes
+            if excess > 0:
+                del self._music_audio[:excess]
         if self._transcriber is not None:
             await self._transcriber.push(pcm)
 
@@ -542,6 +597,11 @@ class Session:
             # while the translation box owns their slot; they resume once the
             # run ends. The turn's text still joined the context window above.
             return
+        if self._music_active:
+            # A song is playing (XERK-184): its lyrics own the box, so cues stand
+            # aside exactly as they do for a translation run; they resume once the
+            # song ends. The turn's text still joined the context window above.
+            return
         if self._cue_inflight:
             return
         if self._last_cue_monotonic is not None:
@@ -592,10 +652,11 @@ class Session:
             body = generated.body.strip()
             if not title or not body:
                 return
-            if self._translation_active:
-                # A translation run opened while this cue was generating: it must
-                # not appear mid-run (XERK-160). Dropped entirely — not surfaced,
-                # not recorded — so the fact stays available for later.
+            if self._translation_active or self._music_active:
+                # A translation run (XERK-160) or a song (XERK-184) opened while
+                # this cue was generating: it must not appear mid-run. Dropped
+                # entirely — not surfaced, not recorded — so the fact stays
+                # available for later.
                 metrics.incr("cue.translation_drops")
                 return
             # Backstop de-dupe: never surface the same cue twice in a conversation,
@@ -669,6 +730,171 @@ class Session:
         finally:
             self._cue_inflight = False
 
+    # ---- Music ID (XERK-184) -------------------------------------------------
+
+    def _current_audio_ms(self) -> int:
+        """The session-timeline position of the most recent audio, in ms — where a
+        recognized song is stamped (same timeline as cues/segments)."""
+        return self._start_offset_ms + self._audio_bytes_pushed * 1000 // BYTES_PER_SEC
+
+    def _music_window_wav(self) -> bytes | None:
+        """The current rolling window as a WAV, or None until enough audio has
+        accumulated. Requires ~5s so a landmark match has something to work with;
+        below that a scan would just waste a recognition call."""
+        min_bytes = min(self._music_window_bytes, window_bytes(5.0))
+        if len(self._music_audio) < min_bytes or min_bytes == 0:
+            return None
+        return pcm16_to_wav(bytes(self._music_audio))
+
+    async def _music_scan_loop(self) -> None:
+        """Periodically fingerprint the audio window and drive the song run.
+
+        Own background task, not the transcript pump: music is audio-driven. The
+        cadence adapts — a locked song only needs its anchor nudged
+        (`music_lock_interval_ms`), while searching backs off on repeated misses
+        so an idle session isn't scanned at full rate. Any failure is swallowed;
+        captions are never touched."""
+        try:
+            while not self._closed:
+                if self._music_active:
+                    interval = max(1, settings.music_lock_interval_ms)
+                else:
+                    interval = scan_backoff_ms(
+                        self._music_misses,
+                        base_ms=max(1, settings.music_scan_interval_ms),
+                        cap_ms=max(1, settings.music_hold_ms),
+                    )
+                await asyncio.sleep(interval / 1000)
+                if self._closed:
+                    return
+                await self._scan_music_once()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("session %s music scan loop failed", self.session_id, exc_info=True)
+            metrics.incr("music.errors")
+
+    async def _scan_music_once(self) -> None:
+        """One scan step: fingerprint the window and open / re-sync / end a run."""
+        if self._music is None:
+            return
+        if self._translation_active:
+            # A translation run owns the box (translation > song > cue); don't
+            # open or refresh a song while someone is being translated.
+            return
+        wav = self._music_window_wav()
+        if wav is None:
+            return
+        try:
+            match = await self._music.identify(wav)
+        except Exception:
+            log.warning("session %s music identify failed", self.session_id, exc_info=True)
+            metrics.incr("music.errors")
+            match = None
+        now = time.monotonic()
+        if match is None or match.confidence < settings.music_min_confidence:
+            self._music_misses += 1
+            if self._music_active and self._music_last_match_monotonic is not None:
+                quiet_ms = (now - self._music_last_match_monotonic) * 1000
+                if quiet_ms >= max(0, settings.music_hold_ms):
+                    await self._end_music_run()
+            return
+        self._music_misses = 0
+        self._music_last_match_monotonic = now
+        key = match.track_key or track_key(match.artist, match.title)
+        at_ms = self._current_audio_ms()
+        if self._music_active and key == self._music_track_key:
+            await self._send_song_sync(match, at_ms)
+        else:
+            await self._open_music_run(match, key, at_ms)
+
+    async def _open_music_run(self, match: MusicMatch, key: str, at_ms: int) -> None:
+        """A new song took over: close any prior run, fetch its lyrics, deliver the
+        `song` frame, and persist the identity. Best-effort throughout."""
+        if self._music_active:
+            # A different song replaced the last one: close the old run cleanly so
+            # the client's box (and the glasses countdown) resets before the new one.
+            await self._end_music_run()
+        try:
+            synced = await self._music.lyrics(match)
+        except Exception:
+            log.warning("session %s lyric lookup failed", self.session_id, exc_info=True)
+            synced = []
+        song_id = uuid.uuid4().hex
+        self._music_run_id = song_id
+        self._music_track_key = key
+        self._music_active = True
+        lines = [LyricLine(atMs=max(0, ln.at_ms), text=ln.text) for ln in synced]
+        try:
+            await self._send(
+                Song(
+                    type="song",
+                    songId=song_id,
+                    title=match.title,
+                    artist=match.artist,
+                    atMs=at_ms,
+                    offsetMs=max(0, match.offset_ms),
+                    durationMs=match.duration_ms,
+                    lines=lines,
+                )
+            )
+        except Exception:
+            # Like captions, delivery is best-effort but the record is not.
+            log.warning("session %s could not deliver a song (client gone)", self.session_id)
+            metrics.incr("music.send_errors")
+        metrics.incr("music.emitted")
+        if self._conversations is not None:
+            await asyncio.to_thread(
+                self._conversations.add_song,
+                self._household,
+                self.session_id,
+                SongRecord(
+                    song_id=song_id,
+                    title=match.title,
+                    artist=match.artist,
+                    at_ms=at_ms,
+                    duration_ms=match.duration_ms,
+                ),
+            )
+
+    async def _send_song_sync(self, match: MusicMatch, at_ms: int) -> None:
+        """Re-anchor the locked song so the client corrects scroll drift."""
+        if self._music_run_id is None:
+            return
+        try:
+            await self._send(
+                SongSync(
+                    type="song.sync",
+                    songId=self._music_run_id,
+                    atMs=at_ms,
+                    offsetMs=max(0, match.offset_ms),
+                )
+            )
+        except Exception:
+            log.warning("session %s could not deliver song.sync (client gone)", self.session_id)
+            metrics.incr("music.send_errors")
+        metrics.incr("music.sync")
+
+    async def _end_music_run(self) -> None:
+        """The song is over (stopped matching past the hold, or replaced): close
+        the run and tell the client, so its box dismisses and cues resume."""
+        if not self._music_active:
+            return
+        song_id = self._music_run_id
+        self._music_active = False
+        self._music_run_id = None
+        self._music_track_key = None
+        self._music_last_match_monotonic = None
+        if song_id is not None:
+            try:
+                await self._send(SongDone(type="song.done", songId=song_id))
+            except Exception:
+                log.warning(
+                    "session %s could not deliver song.done (client gone)", self.session_id
+                )
+                metrics.incr("music.send_errors")
+        metrics.incr("music.done")
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -710,6 +936,20 @@ class Session:
         if self._translation_hold is not None:
             self._translation_hold.cancel()
             self._translation_hold = None
+        # Stop the music scan loop and release its service (XERK-184). A song run
+        # left open just ends with the session — the client is tearing down too.
+        if self._music_scan is not None:
+            self._music_scan.cancel()
+            try:
+                await self._music_scan
+            except asyncio.CancelledError:
+                pass
+            self._music_scan = None
+        if self._music is not None:
+            try:
+                await self._music.close()
+            except Exception:
+                log.warning("session %s music service close failed", self.session_id)
         if self._cue_retriever is not None:
             try:
                 await self._cue_retriever.close()

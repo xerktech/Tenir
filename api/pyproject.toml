@@ -20,6 +20,13 @@ dependencies = [
 persistence = [
     "psycopg[binary,pool]>=3.2",
 ]
+# Real music ID (XERK-184): shazamio recognizes songs from a short audio window
+# against Shazam's global catalog. The base install has music off; enable the
+# real backend with `pip install -e '.[music]'`. Imported lazily, so CI (which
+# runs the stub) never needs it. LRCLIB lyric lookups use httpx (already a base dep).
+music = [
+    "shazamio>=0.5",
+]
 dev = [
     "datamodel-code-generator>=0.26",
     "pytest>=8.3",

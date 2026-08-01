@@ -133,6 +133,41 @@ class Settings(BaseSettings):
     # count as activity — the window only starts once the speaker actually stops.
     translation_hold_ms: int = 3000
 
+    # ---- Music ID (XERK-184) -----------------------------------------------------
+    # When a song is playing in the room, the session periodically fingerprints a
+    # short window of the live audio, identifies the track, and shows its
+    # time-synced lyrics in the cue box — auto-scrolling as the song plays. Unlike
+    # cues/translations this is AUDIO-driven (a fingerprint, not the transcript),
+    # so it taps on_audio and runs on its own scan loop. The synced lyrics come
+    # from LRCLIB (music_lyrics_endpoint) keyed by the recognized artist/title.
+    #   "off"    — no music ID (default; the stripped core stays STT-only).
+    #   "stub"   — model-free, deterministic identifier for CI/dev (no network).
+    #   "shazam" — real recognition via the shazamio library (Shazam's global
+    #   catalog); best-effort and unofficial, so a paid provider can drop in
+    #   behind the same seam later. See docs/music-id.md.
+    music_backend: str = "off"  # off | stub | shazam
+    # LRCLIB base URL for time-synced (LRC) lyrics — free, no key. Self-host and
+    # point this at your own instance to keep lyric lookups on-premises.
+    music_lyrics_endpoint: str = "https://lrclib.net"
+    # How often (ms) to fingerprint the audio while SEARCHING for a song. Kept
+    # conservative: each scan is a recognition call, and while nothing matches
+    # there is no reason to hammer it (also rate-limit hygiene for shazamio).
+    music_scan_interval_ms: int = 8000
+    # How often (ms) to RE-identify once a song is locked — the drift-correcting
+    # `song.sync`. Longer than the search interval: a locked song only needs its
+    # anchor nudged, and the local client clock carries the scroll between syncs.
+    music_lock_interval_ms: int = 18000
+    # How long (ms) the song box lingers with no fresh match before the run is
+    # declared done (`song.done`): covers a brief gap between tracks or a scan
+    # that missed, without dropping the lyrics the instant one window fails.
+    music_hold_ms: int = 20000
+    # Minimum recognizer confidence (0..1) to open/keep a song run. Below it the
+    # window is treated as "no song playing" and nothing is shown.
+    music_min_confidence: float = 0.5
+    # Seconds of the most-recent audio to fingerprint per scan. Landmark
+    # recognition is reliable from ~5s; more only sharpens the match.
+    music_window_seconds: float = 8.0
+
     # ---- Cue evidence retrieval (XERK-120) ---------------------------------------
     # The cue model's weights are frozen years back (measured on the previously
     # deployed Qwen3, which reported an October 2023 cutoff; gpt-oss is likewise

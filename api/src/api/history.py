@@ -18,6 +18,7 @@ from api.persistence import (
     ConversationStatus,
     Cue,
     Segment,
+    Song,
     coerce_status,
     get_audio_store,
     get_conversation_store,
@@ -65,6 +66,26 @@ class CueOut(BaseModel):
         )
 
 
+class SongOut(BaseModel):
+    """A song recognized playing, rendered inline in history at atMs (XERK-184)."""
+
+    songId: str
+    title: str
+    artist: str
+    atMs: int
+    durationMs: int | None = None
+
+    @classmethod
+    def of(cls, song: Song) -> "SongOut":
+        return cls(
+            songId=song.song_id,
+            title=song.title,
+            artist=song.artist,
+            atMs=song.at_ms,
+            durationMs=song.duration_ms,
+        )
+
+
 class ConversationSummaryOut(BaseModel):
     """List-view projection: metadata without the full segment list."""
 
@@ -97,10 +118,12 @@ class ConversationSummaryOut(BaseModel):
 
 
 class ConversationOut(ConversationSummaryOut):
-    """Detail view: the summary projection plus the transcript and its cues."""
+    """Detail view: the summary projection plus the transcript, its cues, and the
+    songs recognized during it."""
 
     segments: list[SegmentOut] = Field(default_factory=list)
     cues: list[CueOut] = Field(default_factory=list)
+    songs: list[SongOut] = Field(default_factory=list)
 
     @classmethod
     def of(cls, conv: Conversation) -> "ConversationOut":
@@ -109,6 +132,7 @@ class ConversationOut(ConversationSummaryOut):
             **base,
             segments=[SegmentOut.of(s) for s in conv.segments],
             cues=[CueOut.of(c) for c in conv.cues],
+            songs=[SongOut.of(s) for s in conv.songs],
         )
 
 
