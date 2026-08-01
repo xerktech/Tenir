@@ -51,6 +51,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     // server" apart from "the server said no".
     throw new NetworkError("could not reach the server", cause);
   }
+  // Sliding renewal (XERK-168): past half a token's life the api attaches a fresh
+  // one to every authenticated response. Adopting it here — the one request path
+  // every frontend shares — is what keeps a device logged in until it explicitly
+  // logs out, instead of being bounced to the login screen when the token expires.
+  const renewed = res.headers.get("x-renewed-token");
+  if (renewed) setToken(renewed);
   if (!res.ok) {
     let detail = res.statusText;
     try {

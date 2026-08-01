@@ -482,7 +482,7 @@ def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.real_auth
 def test_ws_expired_token_closes_1008(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression: an EXPIRED token (tokens live 24h) must be rejected with a close
+    """Regression: an EXPIRED token (tokens have a finite TTL) must be rejected with a close
     code the client can see (1008 → its fatal re-login path), not an opaque failed
     handshake it retries forever."""
     from starlette.websockets import WebSocketDisconnect
@@ -499,6 +499,113 @@ def test_ws_expired_token_closes_1008(monkeypatch: pytest.MonkeyPatch) -> None:
             with client.websocket_connect(f"/ws?token={expired}") as ws:
                 ws.receive_json()
         assert excinfo.value.code == 1008
+
+
+# --- sliding token renewal (XERK-168) ----------------------------------------
+
+
+def test_renew_token_if_due_only_past_half_life() -> None:
+    from api.auth.tokens import renew_token_if_due
+
+    p = Principal("u1", "acme", "admin", username="maya")
+    token = issue_token(p, secret="s3cret", ttl_seconds=100, now=1000)
+    # Young token (40% of its life): left alone.
+    assert renew_token_if_due(token, secret="s3cret", ttl_seconds=100, now=1040) is None
+    # Past half its life: a fresh token for the same principal, expiry pushed out —
+    # it still decodes after the original token's exp (1100) has passed.
+    fresh = renew_token_if_due(token, secret="s3cret", ttl_seconds=100, now=1060)
+    assert fresh is not None and fresh != token
+    assert decode_token(fresh, secret="s3cret", now=1150) == p
+
+
+def test_renew_token_if_due_rejects_invalid_and_expired() -> None:
+    from api.auth.tokens import renew_token_if_due
+
+    token = issue_token(Principal("u", "h"), secret="s3cret", ttl_seconds=60, now=1000)
+    # An expired token gets no renewal — that's a re-login, not a slide.
+    assert renew_token_if_due(token, secret="s3cret", ttl_seconds=60, now=2000) is None
+    assert renew_token_if_due(token, secret="other", ttl_seconds=60, now=1050) is None
+    assert renew_token_if_due("not-a-token", secret="s3cret", ttl_seconds=60, now=1050) is None
+
+
+def test_renew_token_without_iat_renews_unconditionally() -> None:
+    # A valid legacy token with no usable iat can't compute its age; renewing gives
+    # it a well-formed lifetime to slide on.
+    import json as _json
+
+    from api.auth.tokens import _b64url_encode, _sign, renew_token_if_due
+
+    claims = {"sub": "u1", "hh": "acme", "role": "member", "exp": 9_999_999_999}
+    payload = _b64url_encode(_json.dumps(claims).encode())
+    legacy = f"{payload}.{_sign(payload, 's3cret')}"
+    fresh = renew_token_if_due(legacy, secret="s3cret", ttl_seconds=60, now=1000)
+    assert fresh is not None
+    assert decode_token(fresh, secret="s3cret", now=1010).user_id == "u1"
+
+
+def _token_exp(token: str) -> int:
+    import json as _json
+
+    from api.auth.tokens import _b64url_decode
+
+    return int(_json.loads(_b64url_decode(token.split(".")[0]))["exp"])
+
+
+@pytest.mark.real_auth
+def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-168: any authenticated request past half the token's life answers with a
+    fresh token in X-Renewed-Token, so an actively-used device never hits expiry."""
+    from api.auth import get_user_store
+    from api.main import RENEWED_TOKEN_HEADER
+
+    _enable_auth(monkeypatch)
+    user = get_user_store().create("maya", "longpassword", household="acme")
+    ttl = settings.auth_token_ttl_seconds
+    principal = Principal(user.user_id, "acme", "member", username="maya")
+    aged = issue_token(
+        principal, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl
+    )
+    young = issue_token(principal, secret="test-secret", ttl_seconds=ttl)
+
+    with TestClient(app) as client:
+        # Past half-life: 200 + a renewed token with a later expiry. The Origin
+        # header makes CORSMiddleware annotate the response, and the renewal header
+        # must be in the exposed list or browser JS could never read it.
+        r = client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {aged}", "Origin": "http://example.test"},
+        )
+        assert r.status_code == 200
+        fresh = r.headers.get(RENEWED_TOKEN_HEADER)
+        assert fresh is not None
+        assert decode_token(fresh, secret="test-secret") == principal
+        assert _token_exp(fresh) > _token_exp(aged)
+        exposed = r.headers.get("access-control-expose-headers", "")
+        assert RENEWED_TOKEN_HEADER.lower() in exposed.lower()
+
+        # A young token is left alone; so is a request with a bad token (plain 401).
+        r = client.get("/auth/me", headers={"Authorization": f"Bearer {young}"})
+        assert r.status_code == 200 and RENEWED_TOKEN_HEADER not in r.headers
+        r = client.get("/auth/me", headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 401 and RENEWED_TOKEN_HEADER not in r.headers
+
+
+@pytest.mark.real_auth
+def test_renewal_denied_after_user_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deleted user's still-valid token works until exp exactly as before, but must
+    NOT renew — sliding renewal must never extend access past the account's removal."""
+    from api.main import RENEWED_TOKEN_HEADER
+
+    _enable_auth(monkeypatch)
+    ttl = settings.auth_token_ttl_seconds
+    ghost = Principal("no-such-user", "acme", "member", username="ghost")
+    aged = issue_token(ghost, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
+
+    with TestClient(app) as client:
+        r = client.get("/auth/me", headers={"Authorization": f"Bearer {aged}"})
+        # Token validity is untouched (signature + exp only), but no renewal is issued.
+        assert r.status_code == 200
+        assert RENEWED_TOKEN_HEADER not in r.headers
 
 
 
