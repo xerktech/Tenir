@@ -18,6 +18,7 @@ import {
   CueDisclosure,
   EmptyState,
   Input,
+  LangTag,
   Spinner,
   TranslationLine,
 } from "../ui";
@@ -269,7 +270,11 @@ function ConversationDetail({
           items.map((item) =>
             item.kind === "segment" ? (
               <div className="item" key={item.seg.segmentId}>
-                <span className="muted">{segmentTiming(item.seg)}</span> {item.seg.text}
+                <span className="muted">{segmentTiming(item.seg)}</span>{" "}
+                {/* Source-language chip on a translated turn's original text
+                    (XERK-160) — the counterpart of the translation's "EN" tag. */}
+                {item.seg.translation && item.seg.lang && <LangTag lang={item.seg.lang} />}
+                {item.seg.text}
                 {/* Stored English translation of a non-English turn (XERK-160). */}
                 {item.seg.translation && (
                   <TranslationLine text={item.seg.translation} lang={item.seg.lang} />

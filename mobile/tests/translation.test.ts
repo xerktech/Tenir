@@ -20,13 +20,33 @@ describe("live translations (XERK-160)", () => {
     expect(src).toMatch(/seg\.translation \? <TranslationText text=\{seg\.translation\} \/> : null/);
   });
 
+  it("Live and History: a translated turn's original text leads with its source-language chip", () => {
+    // The counterpart of the translation's "EN" tag: the original is tagged
+    // with the language it was spoken in — only when a translation landed AND
+    // the language was actually detected (run-inherited turns stay untagged).
+    for (const screen of ["src/screens/Live.tsx", "src/screens/History.tsx"]) {
+      const src = readText(screen);
+      expect(src).toMatch(
+        /seg\.translation && seg\.lang \? <LangTagText lang=\{seg\.lang\} \/> : null/,
+      );
+    }
+  });
+
   it("TranslationText is a nested <Text> fragment, not a View, so runs stay selectable", () => {
     const src = readText("src/ui/components.tsx");
     const fn = src.slice(src.indexOf("export function TranslationText"));
     const body = fn.slice(0, fn.indexOf("\n}"));
     // Leads with a newline onto its own line, tagged "EN", inside Text elements only.
     expect(body).toMatch(/\{"\\n"\}/);
-    expect(body).toMatch(/\{"EN "\}/);
+    expect(body).toMatch(/<LangTagText lang="en" \/>/);
+    expect(body).not.toMatch(/<View/);
+  });
+
+  it("LangTagText is a nested <Text> fragment rendering the uppercased code", () => {
+    const src = readText("src/ui/components.tsx");
+    const fn = src.slice(src.indexOf("export function LangTagText"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+    expect(body).toMatch(/lang\.toUpperCase\(\)/);
     expect(body).not.toMatch(/<View/);
   });
 });

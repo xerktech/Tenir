@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import { useCaptureContext } from "../lib/capture";
 import { acceptRecordingNotice, recordingNoticeAccepted } from "../lib/consent";
 import { type CaptureController } from "../lib/useCapture";
-import { Badge, Button, Card, CueDisclosure, EmptyState, TranslationLine } from "../ui";
+import { Badge, Button, Card, CueDisclosure, EmptyState, LangTag, TranslationLine } from "../ui";
 
 const RECORDING_NOTICE = DISCLOSURES.find((d) => d.id === "recording");
 
@@ -196,6 +196,11 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
               {items.map((item) =>
                 item.kind === "segment" ? (
                   <li key={item.segment.id}>
+                    {/* Source-language chip on a translated turn's original text
+                        (XERK-160) — the counterpart of the translation's "EN" tag. */}
+                    {item.segment.translation && item.segment.lang && (
+                      <LangTag lang={item.segment.lang} />
+                    )}
                     {item.segment.text}
                     {/* English translation of a non-English turn (XERK-160),
                         turn-by-turn under the original as it arrives. */}

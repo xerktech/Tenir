@@ -1237,12 +1237,20 @@ describe("wireLens live translations (XERK-160)", () => {
     await vi.advanceTimersByTimeAsync(50);
     const text = document.getElementById("session-text")!;
     expect(text.querySelector(".session-translation")).toBeNull();
+    // No source chip either until a translation lands — an untranslated turn
+    // renders plain even when its language was detected.
+    expect(text.querySelector(".session-translation-lang")).toBeNull();
 
     t.api.handlers().onTranslation?.(TR);
     await vi.advanceTimersByTimeAsync(50);
     const row = text.querySelector(".session-translation")!;
     expect(row.textContent).toContain("hello, how are you?");
     expect(row.querySelector(".session-translation-lang")?.textContent).toBe("EN");
+    // The final's detected language rode the lens segment to the phone mirror:
+    // the ORIGINAL text now leads with its "ES" chip (XERK-160).
+    const turn = text.querySelector("li")!;
+    expect(turn.querySelector(".session-translation-lang")?.textContent).toBe("ES");
+    expect(turn.textContent).toContain("hola, ¿qué tal?");
   });
 
   it("a fresh run replaces a finished box still counting down", async () => {

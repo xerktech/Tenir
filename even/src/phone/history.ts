@@ -348,6 +348,14 @@ export class PhoneHistory {
       if (item.kind === "segment") {
         const row = this.make("div", "item");
         row.appendChild(this.make("span", "muted", segmentTiming(item.seg)));
+        // A translated turn's original text is led by its source-language
+        // chip (XERK-160) — the counterpart of the translation's "EN" tag.
+        if (item.seg.translation && item.seg.lang) {
+          row.append(" ");
+          row.appendChild(
+            this.make("span", "session-translation-lang", item.seg.lang.toUpperCase()),
+          );
+        }
         row.append(` ${item.seg.text}`);
         // Stored English translation of a non-English turn (XERK-160),
         // turn-by-turn under the original — mirrors the web history detail.

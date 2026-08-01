@@ -63,9 +63,14 @@ describe("LiveView", () => {
     );
     expect(screen.getByText("hello, how are you?")).toBeInTheDocument();
     expect(screen.getByTitle("Translated from Spanish")).toHaveTextContent("EN");
-    // A turn whose translation hasn't landed yet renders no translation line.
+    // The translated turn's ORIGINAL text is led by its source-language chip —
+    // the counterpart of the "EN" tag.
+    expect(screen.getByTitle("Spoken in Spanish")).toHaveTextContent("ES");
+    // A turn whose translation hasn't landed yet renders no translation line
+    // and no source chip on its original.
     const rows = document.querySelectorAll(".translation");
     expect(rows).toHaveLength(1);
+    expect(document.querySelectorAll(".translation-lang")).toHaveLength(2);
   });
 
   it("shows Record when idle and calls start", () => {

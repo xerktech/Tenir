@@ -46,6 +46,24 @@ export function Muted({ children }: { children: ReactNode }): JSX.Element {
 }
 
 /**
+ * Small accent language chip inside a selectable transcript run — the web's
+ * `.translation-lang` tag. A nested `<Text>` fragment (not a View) so
+ * drag-selection still crosses it (XERK-104). Leads the translation line as
+ * "EN", and the ORIGINAL text of a translated turn as its detected source
+ * language ("ES", "FR", …) so both halves of the pair are labeled (XERK-160).
+ */
+export function LangTagText({ lang }: { lang: string }): JSX.Element {
+  const { colors } = useTheme();
+  return (
+    <Text
+      style={{ color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 }}
+    >
+      {`${lang.toUpperCase()} `}
+    </Text>
+  );
+}
+
+/**
  * English translation of a non-English turn (XERK-160), rendered turn-by-turn on
  * its own line under the original — the web's `.translation` row. A nested
  * `<Text>` fragment (not a View) so it lives INSIDE a selectable transcript run
@@ -57,11 +75,7 @@ export function TranslationText({ text }: { text: string }): JSX.Element {
   return (
     <Text style={{ color: colors.muted }}>
       {"\n"}
-      <Text
-        style={{ color: colors.accentStrong, fontWeight: "700", fontSize: 12, letterSpacing: 0.5 }}
-      >
-        {"EN "}
-      </Text>
+      <LangTagText lang="en" />
       {text}
     </Text>
   );

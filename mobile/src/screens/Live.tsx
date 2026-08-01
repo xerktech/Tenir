@@ -36,6 +36,7 @@ import {
   Card,
   EmptyState,
   Heading,
+  LangTagText,
   Muted,
   Row,
   TranslationText,
@@ -202,6 +203,9 @@ export function LiveScreen(): JSX.Element {
                   {run.segs.map((seg, j) => (
                     <Text key={seg.id}>
                       {j > 0 ? "\n" : null}
+                      {/* Source-language chip on a translated turn's original
+                          text (XERK-160) — the counterpart of the "EN" tag. */}
+                      {seg.translation && seg.lang ? <LangTagText lang={seg.lang} /> : null}
                       {seg.text}
                       {/* English translation of a non-English turn (XERK-160),
                           turn-by-turn inside the same selectable run. */}

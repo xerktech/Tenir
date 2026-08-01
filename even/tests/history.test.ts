@@ -250,11 +250,16 @@ describe("conversation detail", () => {
     rowButtons()[0].click();
     await vi.waitFor(() => expect(detail().hidden).toBe(false));
     const items = [...document.querySelectorAll("#history-transcript .item")];
+    // The translated turn's ORIGINAL text is led by its source-language chip —
+    // the counterpart of the translation's "EN" tag.
+    expect(items[0].querySelector(".session-translation-lang")!.textContent).toBe("ES");
     const tr = items[0].querySelector(".session-translation")!;
     expect(tr.textContent).toContain("hello, how are you?");
     expect(tr.querySelector(".session-translation-lang")!.textContent).toBe("EN");
-    // Only the translated turn carries a translation line.
+    // Only the translated turn carries a translation line; the untranslated
+    // turn carries no chip either.
     expect(items[1].querySelector(".session-translation")).toBeNull();
+    expect(items[1].querySelector(".session-translation-lang")).toBeNull();
   });
 
   it("renders transcript text as text, not markup", async () => {
