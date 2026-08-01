@@ -164,6 +164,10 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       PARAKEET_MODEL: ${PARAKEET_MODEL:-nvidia/parakeet-tdt-0.6b-v3}
+      # Set 0 on hosts whose driver predates the container's CUDA toolkit
+      # (minor-version compat mode rejects the CUDA-graph decoder's kernels) —
+      # see docs/stt-rtx4060-benchmark.md.
+      PARAKEET_CUDA_GRAPHS: ${PARAKEET_CUDA_GRAPHS:-1}
     ipc: host
     healthcheck:
       # 503 until the model is resident (first boot downloads the weights), 200 after.
@@ -207,6 +211,10 @@ services:
       # spot (EN accuracy flat 320→560ms, ES best at 320ms). Raise to 6 (560ms) or
       # 13 (1120ms) to trade latency for a little more accuracy.
       NEMOTRON_ATT_CONTEXT_RIGHT: ${NEMOTRON_ATT_CONTEXT_RIGHT:-3}
+      # Set 0 on hosts whose driver predates the container's CUDA toolkit
+      # (minor-version compat mode fails CUDA-graph capture per decode step) —
+      # see docs/stt-rtx4060-benchmark.md.
+      NEMOTRON_CUDA_GRAPHS: ${NEMOTRON_CUDA_GRAPHS:-1}
     ipc: host
     healthcheck:
       # 503 until the model is resident (first boot downloads the weights), 200 after.

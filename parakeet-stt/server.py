@@ -62,6 +62,12 @@ log = logging.getLogger("parakeet-stt")
 MODEL_NAME = os.environ.get("PARAKEET_MODEL", "nvidia/parakeet-tdt-0.6b-v3")
 TARGET_SR = 16000  # Parakeet decodes 16 kHz mono; the api already sends exactly this.
 
+
+def _env_flag(name: str, *, default: bool = True) -> bool:
+    """Boolean env knob: "0"/"false"/"no" (any case) turn it off."""
+    return os.environ.get(name, "1" if default else "0").lower() not in ("0", "false", "no")
+
+
 # Seconds of audio decoded once at startup to force every lazy initialisation the
 # first *real* request would otherwise pay for: CUDA context, cuDNN autotuning,
 # NeMo's decoding setup. Without it the first utterance of a session is by far the
@@ -125,8 +131,38 @@ def _load_model() -> None:
 
     log.info("loading %s ...", MODEL_NAME)
     t0 = time.perf_counter()
-    model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME)
+    # Restore on CPU, then move ONE copy of the weights to the GPU. Restoring
+    # straight to the GPU leaves a second full copy of the weights live there
+    # (~2x the resident size, measured on the RTX 4060 deploy) — a 96 GB card
+    # never notices, an 8 GB card can't co-tenant the Nemotron server with it.
+    import gc  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    model = nemo_asr.models.ASRModel.from_pretrained(
+        model_name=MODEL_NAME, map_location="cpu"
+    )
     model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+        gc.collect()
+        torch.cuda.empty_cache()
+    # PARAKEET_CUDA_GRAPHS=0 switches TDT greedy decoding to the non-CUDA-graph
+    # implementation. Needed on hosts whose driver is older than the container's
+    # CUDA toolkit (minor-version compatibility mode): NeMo's label-looping
+    # decoder JIT-compiles its kernels through NVRTC, whose PTX the older driver
+    # rejects with CUDA error 222 on every decode. Measured on the RTX 4060 the
+    # non-graph path costs nothing here — this server decodes one request at a
+    # time under _model_lock, where the graph decoder's per-call overhead
+    # dominates any kernel-launch savings.
+    if not _env_flag("PARAKEET_CUDA_GRAPHS"):
+        from omegaconf import open_dict  # noqa: PLC0415
+
+        dec_cfg = model.cfg.decoding
+        with open_dict(dec_cfg):
+            dec_cfg.greedy.use_cuda_graph_decoder = False
+        model.change_decoding_strategy(dec_cfg)
+        log.info("CUDA-graph decoder disabled (PARAKEET_CUDA_GRAPHS=0)")
     _model = model
     _supported = _supported_kwargs(model)
     log.info("transcribe() accepts: %s", ", ".join(sorted(_supported)) or "(none)")
