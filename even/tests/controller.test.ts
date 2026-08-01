@@ -1152,6 +1152,28 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text, TR2.text)));
   });
 
+  it("tails the box to its newest rows as a run overflows, so a new turn lands at the bottom (XERK-172)", async () => {
+    const t = await record();
+    // Feed more single-row turns than the box can show. Each rebuild used to
+    // reset the host's scroll to the top, stranding the wearer on the OLDEST
+    // rows; now the box keeps the last CUE_BODY_LINES rows, like the caption.
+    const texts = ["one", "two", "three", "four", "five", "six"];
+    texts.forEach((text, i) => {
+      const id = `s${i}`;
+      t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: id, text: `orig ${i}` });
+      t.api.handlers().onTranslation?.({ ...TR, segmentId: id, text });
+    });
+    await vi.advanceTimersByTimeAsync(50);
+
+    const shown = texts.slice(-layout.CUE_BODY_LINES);
+    expect(bodyContainer(t)?.content).toBe(shown.join("\n"));
+    // The newest turn is at the bottom; the earliest turns have fallen off.
+    expect(bodyContainer(t)?.content).toContain("six");
+    expect(bodyContainer(t)?.content).not.toContain("one");
+    // A full window means the full-height box — the title over CUE_BODY_LINES rows.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+  });
+
   it("starts the 10s countdown only on translation.done, then dismisses", async () => {
     const t = await record();
     t.api.handlers().onFinal?.(FINAL_ES);

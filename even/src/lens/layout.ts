@@ -474,6 +474,23 @@ export function cueBodyText(cue: CueCard): string {
   return cueBodyLines(cue.body).join("\n");
 }
 
+/**
+ * A streaming body tailed to the box's last CUE_BODY_LINES rows (XERK-172). A
+ * cue is written once and read from the top — its overflow is the host's to
+ * scroll. The translation box instead accumulates turn after turn, and a full
+ * rebuild on every new turn resets the host's native scroll back to the top, so
+ * the wearer kept seeing the OLDEST rows. Tailing here makes the box behave like
+ * the caption band: it keeps the most recent rows and lets older ones fall off
+ * the top, so a new turn always arrives at the BOTTOM with no scroll to reset.
+ * A body still short of CUE_BODY_LINES is returned whole (the box stays short,
+ * XERK-119); the char bound upstream keeps the accumulated text from growing
+ * without limit.
+ */
+export function tailCueBody(body: string): string {
+  const rows = cueBodyLines(body);
+  return (rows.length > CUE_BODY_LINES ? rows.slice(-CUE_BODY_LINES) : rows).join("\n");
+}
+
 /** Full in-place text replacement for a text container (offset/length 0 = replace all). */
 export async function setText(
   bridge: EvenAppBridge,

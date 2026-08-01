@@ -42,6 +42,7 @@ import {
   occludedCaption,
   SCREEN_W,
   statusLine,
+  tailCueBody,
   wrapLines,
 } from "../src/lens/layout";
 
@@ -693,6 +694,36 @@ describe("cue popup (XERK-81, XERK-133)", () => {
       const maskBottom = LINE_H + (last + 1) * LINE_H;
       expect(maskTop).toBeLessThanOrEqual(Math.max(box.y, LINE_H));
       expect(maskBottom).toBeGreaterThanOrEqual(box.y + box.height);
+    });
+  });
+
+  describe("tailCueBody tails a streaming body to its newest rows (XERK-172)", () => {
+    it("keeps a body that fits the window whole", () => {
+      const body = ["one", "two", "three"].join("\n");
+      expect(cueBodyLines(body).length).toBeLessThanOrEqual(CUE_BODY_LINES);
+      expect(tailCueBody(body)).toBe(body); // nothing dropped — the short box shows all of it
+    });
+
+    it("drops the oldest rows when the body overflows the window", () => {
+      const rows = Array.from({ length: 9 }, (_, i) => `row${i}`);
+      const tailed = tailCueBody(rows.join("\n"));
+      // Only the last CUE_BODY_LINES rows survive — the newest text.
+      expect(tailed).toBe(rows.slice(-CUE_BODY_LINES).join("\n"));
+      expect(tailed.split("\n")).toHaveLength(CUE_BODY_LINES);
+      expect(tailed).toContain("row8"); // newest kept
+      expect(tailed).not.toContain("row0"); // oldest fell off the top
+    });
+
+    it("tails at the WRAPPED-row level, so a long turn still shows its newest rows", () => {
+      const body = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
+      const wrapped = cueBodyLines(body);
+      expect(wrapped.length).toBeGreaterThan(CUE_BODY_LINES);
+      const tailed = tailCueBody(body);
+      // A cue-shaped card built from the tail fills the full window and no more.
+      const card = { title: "Translation", body: tailed };
+      expect(cueRows(card)).toBe(CUE_ROWS);
+      expect(cueBodyText(card).split("\n")).toHaveLength(CUE_BODY_LINES);
+      expect(cueBodyText(card)).toBe(wrapped.slice(-CUE_BODY_LINES).join("\n"));
     });
   });
 });
