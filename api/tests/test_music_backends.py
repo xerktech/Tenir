@@ -42,6 +42,16 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
         make_music_service()
 
 
+def test_factory_wires_identify_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recognize hard-cap (XERK-187) reaches the service from settings —
+    shazamio's own HTTP stack retries with no total deadline."""
+    monkeypatch.setattr(settings, "music_backend", "shazam")
+    monkeypatch.setattr(settings, "music_identify_timeout_ms", 9000)
+    svc = make_music_service()
+    assert isinstance(svc, ShazamMusicService)
+    assert svc._identify_timeout == 9.0
+
+
 # ---- stub --------------------------------------------------------------------
 
 

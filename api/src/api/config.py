@@ -172,6 +172,13 @@ class Settings(BaseSettings):
     # Minimum recognizer confidence (0..1) to open/keep a song run. Below it the
     # window is treated as "no song playing" and nothing is shown.
     music_min_confidence: float = 0.5
+    # Hard ceiling (ms) on one recognition call. shazamio's HTTP stack retries
+    # with no total timeout — replaying real sessions caught a single call taking
+    # 10+ minutes on a flaky upstream (XERK-187), which would stall the scan loop
+    # that long. Timing out raises like any transient failure: the scan counts a
+    # miss and the next tick proceeds. Kept under music_lock_interval_ms so even
+    # a locked song's re-check can't overrun its own cadence.
+    music_identify_timeout_ms: int = 15000
     # Seconds of the most-recent audio to fingerprint per scan. Landmark
     # recognition is reliable from ~5s; more only sharpens the match.
     music_window_seconds: float = 8.0

@@ -124,11 +124,13 @@ API_MUSIC_BACKEND=shazam docker compose up --build
 
 Tuning lives in `api/src/api/config.py` (`API_MUSIC_*`): `music_scan_interval_ms`,
 `music_scan_max_interval_ms`, `music_lock_interval_ms`, `music_hold_ms`,
-`music_min_confidence`, `music_window_seconds`, `music_lyrics_endpoint`. The
-defaults were tuned against real recorded sessions in XERK-187: the hold spans
-two failed lock-cadence re-checks (quiet passages routinely miss 1–3 consecutive
-scans mid-song), and the search backoff decays to a minute-scale ceiling because
-Shazam rate-limits aggressive scanning from one IP.
+`music_min_confidence`, `music_identify_timeout_ms`, `music_window_seconds`,
+`music_lyrics_endpoint`. The defaults were tuned against real recorded sessions
+in XERK-187: the hold spans two failed lock-cadence re-checks (quiet passages
+routinely miss 1–3 consecutive scans mid-song), the search backoff decays to a
+minute-scale ceiling because Shazam rate-limits aggressive scanning from one IP,
+and each recognition call carries a hard timeout because shazamio's retrying
+HTTP stack was observed spending 10+ minutes on one call on a flaky upstream.
 
 ## Verifying against real music
 
