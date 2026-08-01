@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 
 /**
@@ -39,6 +41,7 @@ class MicForegroundService : Service() {
 
   override fun onDestroy() {
     running = false
+    cancelRevert()
     super.onDestroy()
   }
 
@@ -53,6 +56,17 @@ class MicForegroundService : Service() {
     // Tracks whether the service is live so a late [update] after stop() can't post a
     // stray notification once the foreground service (and its notification) is gone.
     @Volatile private var running = false
+
+    // Reverts a cue to the plain capturing line when its window closes. Runs on the main
+    // looper, which the foreground service keeps alive while the app is backgrounded — so
+    // it fires on time even though the JS cue-release timer is frozen there (XERK-163).
+    private val handler = Handler(Looper.getMainLooper())
+    private var pendingRevert: Runnable? = null
+
+    private fun cancelRevert() {
+      pendingRevert?.let { handler.removeCallbacks(it) }
+      pendingRevert = null
+    }
 
     private fun ensureChannel(context: Context) {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -105,16 +119,39 @@ class MicForegroundService : Service() {
      * while the app is backgrounded (XERK-163). No-op unless the service is running, so
      * updates racing a stop() can't leave a lingering notification. Reuses NOTIFICATION_ID
      * so it replaces (not stacks on) the foreground notification.
+     *
+     * When [endsAt] is a future wall-clock time (epoch ms), the content is a cue and is
+     * auto-reverted to the plain capturing line at that time via [handler] — the cue must
+     * clear itself here because the JS release timer that would normally do it is frozen
+     * while the app is backgrounded. `endsAt <= 0` means no expiry (the capturing line),
+     * so any pending revert is simply cancelled.
      */
-    fun update(context: Context, title: String, text: String) {
+    fun update(context: Context, title: String, text: String, endsAt: Long) {
       if (!running) return
-      ensureChannel(context)
+      val appContext = context.applicationContext
+      ensureChannel(appContext)
+      post(appContext, title, text)
+
+      cancelRevert()
+      if (endsAt > 0L) {
+        val revert =
+            Runnable {
+              pendingRevert = null
+              if (running) post(appContext, DEFAULT_TITLE, DEFAULT_TEXT)
+            }
+        pendingRevert = revert
+        handler.postDelayed(revert, (endsAt - System.currentTimeMillis()).coerceAtLeast(0L))
+      }
+    }
+
+    private fun post(context: Context, title: String, text: String) {
       context
           .getSystemService(NotificationManager::class.java)
           .notify(NOTIFICATION_ID, buildNotification(context, title, text))
     }
 
     fun stop(context: Context) {
+      cancelRevert()
       context.stopService(Intent(context, MicForegroundService::class.java))
     }
   }

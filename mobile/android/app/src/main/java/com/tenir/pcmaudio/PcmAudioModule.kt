@@ -199,12 +199,15 @@ class PcmAudioModule(private val reactContext: ReactApplicationContext) :
 
   /**
    * Rewrite the running-session foreground notification's content (XERK-163) so the
-   * live cue surfaces in the notification shade while the app is backgrounded. No-op if
-   * no session is active — the service guards on its running state.
+   * live cue surfaces in the notification shade while the app is backgrounded. `endsAt`
+   * is the cue's wall-clock expiry (epoch ms; `0` = the capturing line, no expiry), which
+   * the service uses to clear the cue on time while JS timers are frozen in the
+   * background. No-op if no session is active — the service guards on its running state.
+   * The bridge passes JS numbers as doubles; epoch ms is exact within a double.
    */
   @ReactMethod
-  fun updateNotification(title: String, text: String, promise: Promise) {
-    MicForegroundService.update(reactContext, title, text)
+  fun updateNotification(title: String, text: String, endsAt: Double, promise: Promise) {
+    MicForegroundService.update(reactContext, title, text, endsAt.toLong())
     promise.resolve(null)
   }
 }

@@ -71,7 +71,9 @@ export function useCapture(wsUrl: string): CaptureController {
   // (not the object) so it only re-posts when the band actually changes. Android-only and
   // a no-op otherwise; the foreground service tears its notification down on stop.
   useEffect(() => {
-    postSessionNotification(sessionNotificationContent(state.running, state.activeCue));
+    postSessionNotification(
+      sessionNotificationContent(state.running, state.activeCue, state.activeCueEndsAt),
+    );
   }, [state.running, state.activeCue?.id]);
 
   return {
