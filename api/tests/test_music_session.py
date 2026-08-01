@@ -1,9 +1,10 @@
 """Session-level Music ID behaviour (XERK-184): a fingerprinted window opens a
 `song` run with synced lyrics, the same song re-syncs, a hold with no match ends
 the run with `song.done`, a different song replaces the last once a confirming
-scan agrees (the takeover debounce, XERK-187), cues stand aside while a song
-plays, and the scan loop drains on close — all against a spy service (no
-network, no real fingerprinter)."""
+scan agrees (the takeover debounce, XERK-187), a song played to its end auto-dismisses at the
+end instead of lingering to the hold and the scan tightens as it nears the end
+(song-end prep, XERK-192), cues stand aside while a song plays, and the scan loop
+drains on close — all against a spy service (no network, no real fingerprinter)."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import time
 import pytest
 
 from api.config import settings
-from api.contract import MicSource, ServerMessage, Song, SongDone, SongSync
+from api.contract import LyricLine, MicSource, ServerMessage, Song, SongDone, SongSync
 from api.cue.base import GeneratedCue
 from api.music.base import MusicMatch
 from api.music.lyrics import SyncedLine
@@ -427,6 +428,142 @@ def test_scan_loop_and_close_drain(monkeypatch: pytest.MonkeyPatch) -> None:
         await session.close()
         assert spy.closed is True
         assert session._music_scan is None
+
+    asyncio.run(run())
+
+
+def test_song_end_position_prefers_duration_then_lyrics() -> None:
+    """The auto-end position (XERK-192) is the reported duration when known, else
+    the last lyric line plus the tail, else None (unknown — hold ends it)."""
+
+    async def run() -> None:
+        session = await _fresh_session([])
+        lines = [LyricLine(atMs=0, text="one"), LyricLine(atMs=5000, text="two")]
+        # Duration known → use it verbatim, ignoring the lyrics.
+        assert session._song_end_ms(_match(), lines) == 318000
+        # No duration → last lyric + the end tail.
+        no_dur = _match()
+        no_dur.duration_ms = None
+        assert session._song_end_ms(no_dur, lines) == 5000 + settings.music_end_tail_ms
+        # No duration and no lyrics → unknown.
+        assert session._song_end_ms(no_dur, []) is None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_song_remaining_ms_derived_from_anchor() -> None:
+    """Remaining wall-ms is the end position minus the play position derived from
+    the retained anchor; may go negative once the track is past its end."""
+
+    async def run() -> None:
+        session = await _fresh_session([])
+        session._music_end_ms = 200000
+        session._music_offset_ms = 150000
+        session._music_offset_monotonic = time.monotonic()
+        remaining = session._song_remaining_ms(time.monotonic())
+        assert remaining is not None and 49000 <= remaining <= 50000
+        # Past the end → negative (dismiss now).
+        session._music_offset_ms = 205000
+        assert session._song_remaining_ms(time.monotonic()) < 0
+        # Anchor missing → unknown.
+        session._music_offset_ms = None
+        assert session._song_remaining_ms(time.monotonic()) is None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_open_run_schedules_precise_end() -> None:
+    """Opening a run fixes the end position and arms the auto-dismiss task off the
+    retained anchor, instead of relying solely on the no-match hold (XERK-192)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._music = _SpyMusicService([_match(offset_ms=60000)])
+        _arm_window(session)
+        await session._scan_music_once()
+
+        assert session._music_end_ms == 318000
+        assert session._music_end_task is not None
+        assert session._music_offset_ms is not None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_song_dismisses_at_track_end() -> None:
+    """A song matched at its very end auto-dismisses when the scheduled end fires —
+    the box clears at the song's end without waiting out the no-match hold, and
+    with no further no-match scan (XERK-192)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        # Offset == duration: zero remaining, so the end task fires immediately.
+        session._music = _SpyMusicService([_match(offset_ms=318000)])
+        _arm_window(session)
+        await session._scan_music_once()  # opens; schedules end at remaining≈0
+        # Let the scheduled end task run.
+        for _ in range(20):
+            if _dones(sent):
+                break
+            await asyncio.sleep(0.01)
+
+        assert len(_dones(sent)) == 1
+        assert _dones(sent)[0].songId == _songs(sent)[0].songId
+        assert session._music_active is False
+        assert session._music_end_task is None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_end_schedule_reused_after_run_ends() -> None:
+    """Ending a run cancels its auto-dismiss task and clears the anchor, so a stale
+    schedule can't fire against a later run (XERK-192)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._music = _SpyMusicService([_match(offset_ms=60000), None])
+        _arm_window(session)
+        await session._scan_music_once()  # opens; arms the end task
+        assert session._music_end_task is not None
+        # Force the hold to end the run on the next (no-match) scan.
+        session._music_last_match_monotonic = time.monotonic() - (
+            settings.music_hold_ms / 1000 + 1
+        )
+        await session._scan_music_once()
+
+        assert len(_dones(sent)) == 1
+        assert session._music_end_task is None
+        assert session._music_end_ms is None
+        assert session._music_offset_ms is None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_scan_tightens_near_song_end() -> None:
+    """The scan cadence drops from the slow locked interval to the search interval
+    once the locked song is within the end-prep window (XERK-192)."""
+
+    async def run() -> None:
+        session = await _fresh_session([])
+        session._music_active = True
+        session._music_pending_key = None
+        session._music_end_ms = 200000
+        session._music_offset_monotonic = time.monotonic()
+
+        # Far from the end → slow locked cadence.
+        session._music_offset_ms = 100000
+        assert session._next_scan_interval_ms() == settings.music_lock_interval_ms
+        # Inside the end-prep window → fast search cadence.
+        session._music_offset_ms = 200000 - (settings.music_end_prep_ms // 2)
+        assert session._next_scan_interval_ms() == settings.music_scan_interval_ms
+        await session.close()
 
     asyncio.run(run())
 

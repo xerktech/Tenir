@@ -181,6 +181,16 @@ class Session:
         # happens when the newcomer matches twice in a row, so the box doesn't
         # reset on every blended window.
         self._music_pending_key: str | None = None
+        # Song-end prep (XERK-192): the run carries the full lyrics and (usually) the
+        # track duration, so the session knows when the song ends and schedules a
+        # precise `song.done` rather than waiting out the no-match hold. These retain
+        # the last scroll anchor (the offset we sent and when it was true) and the
+        # song-time end position, so both the scheduled end and the scan-cadence
+        # tightening near the end can derive the current play position.
+        self._music_offset_ms: int | None = None
+        self._music_offset_monotonic: float | None = None
+        self._music_end_ms: int | None = None
+        self._music_end_task: asyncio.Task[None] | None = None
         # Running total of audio pushed this sitting, so the music scan can stamp a
         # recognized song at the current session-timeline position (the same
         # timeline cues/segments use), independent of the STT seam.
@@ -761,20 +771,7 @@ class Session:
         captions are never touched."""
         try:
             while not self._closed:
-                if self._music_active and self._music_pending_key is None:
-                    interval = max(1, settings.music_lock_interval_ms)
-                elif self._music_active:
-                    # A takeover candidate is waiting for its confirming scan
-                    # (XERK-187): re-check at the search cadence so a real song
-                    # change isn't held up by the slower lock interval.
-                    interval = max(1, settings.music_scan_interval_ms)
-                else:
-                    interval = scan_backoff_ms(
-                        self._music_misses,
-                        base_ms=max(1, settings.music_scan_interval_ms),
-                        cap_ms=max(1, settings.music_scan_max_interval_ms),
-                    )
-                await asyncio.sleep(interval / 1000)
+                await asyncio.sleep(self._next_scan_interval_ms() / 1000)
                 if self._closed:
                     return
                 await self._scan_music_once()
@@ -783,6 +780,29 @@ class Session:
         except Exception:
             log.warning("session %s music scan loop failed", self.session_id, exc_info=True)
             metrics.incr("music.errors")
+
+    def _next_scan_interval_ms(self) -> int:
+        """How long to wait before the next fingerprint. The cadence adapts to the
+        run state: slow while a song is locked (the client clock carries the scroll
+        between syncs), but fast while searching, while a takeover awaits its
+        confirming scan, and — new in XERK-192 — while the locked song is nearing
+        its end, so the NEXT track is picked up promptly instead of after one more
+        slow locked re-check. With no song, it backs off on repeated misses."""
+        if self._music_active and self._music_pending_key is None:
+            remaining_ms = self._song_remaining_ms(time.monotonic())
+            if remaining_ms is not None and remaining_ms <= max(0, settings.music_end_prep_ms):
+                return max(1, settings.music_scan_interval_ms)
+            return max(1, settings.music_lock_interval_ms)
+        if self._music_active:
+            # A takeover candidate is waiting for its confirming scan (XERK-187):
+            # re-check at the search cadence so a real song change isn't held up by
+            # the slower lock interval.
+            return max(1, settings.music_scan_interval_ms)
+        return scan_backoff_ms(
+            self._music_misses,
+            base_ms=max(1, settings.music_scan_interval_ms),
+            cap_ms=max(1, settings.music_scan_max_interval_ms),
+        )
 
     async def _scan_music_once(self) -> None:
         """One scan step: fingerprint the window and open / re-sync / end a run."""
@@ -863,6 +883,60 @@ class Session:
         elapsed_ms = int(max(0.0, (time.monotonic() - window_end_monotonic) * 1000))
         return max(0, match.offset_ms + elapsed_ms)
 
+    def _song_end_ms(self, match: MusicMatch, lines: list[LyricLine]) -> int | None:
+        """Song-time position at which the run should auto-end (XERK-192): the
+        recognizer's reported duration, else the last synced lyric line plus the
+        end tail, else None (unknown — the no-match hold ends the run instead)."""
+        if match.duration_ms and match.duration_ms > 0:
+            return match.duration_ms
+        if lines:
+            return lines[-1].atMs + max(0, settings.music_end_tail_ms)
+        return None
+
+    def _song_remaining_ms(self, now: float) -> int | None:
+        """Wall-ms until the current track reaches its end position, derived from
+        the retained scroll anchor; None when the end or the anchor is unknown.
+        May be negative — the song is already past its end (dismiss now)."""
+        if (
+            self._music_end_ms is None
+            or self._music_offset_ms is None
+            or self._music_offset_monotonic is None
+        ):
+            return None
+        position_ms = self._music_offset_ms + (now - self._music_offset_monotonic) * 1000
+        return int(self._music_end_ms - position_ms)
+
+    def _anchor_song(self, offset_ms: int) -> None:
+        """Retain the scroll anchor just sent (the offset and when it was true) and
+        (re)schedule the precise end-of-song dismissal off it (XERK-192)."""
+        self._music_offset_ms = offset_ms
+        self._music_offset_monotonic = time.monotonic()
+        self._schedule_song_end()
+
+    def _schedule_song_end(self) -> None:
+        """(Re)schedule the `song.done` for when the current track ends (XERK-192).
+        Cancels any prior schedule; a no-op when the end is unknown (no duration and
+        no lyrics), leaving the no-match hold to end the run."""
+        if self._music_end_task is not None:
+            self._music_end_task.cancel()
+            self._music_end_task = None
+        remaining_ms = self._song_remaining_ms(time.monotonic())
+        if remaining_ms is None:
+            return
+        self._music_end_task = asyncio.create_task(self._song_end_expire(remaining_ms))
+
+    async def _song_end_expire(self, remaining_ms: int) -> None:
+        """Wait out the rest of the track, then end the run so the box clears at the
+        song's end instead of lingering to the hold (XERK-192)."""
+        try:
+            await asyncio.sleep(max(0, remaining_ms) / 1000)
+        except asyncio.CancelledError:
+            return
+        # We ARE the end task; drop the handle before ending so _end_music_run
+        # doesn't cancel this coroutine mid-send.
+        self._music_end_task = None
+        await self._end_music_run()
+
     async def _open_music_run(
         self, match: MusicMatch, key: str, at_ms: int, window_end_monotonic: float
     ) -> None:
@@ -882,6 +956,10 @@ class Session:
         self._music_track_key = key
         self._music_active = True
         lines = [LyricLine(atMs=max(0, ln.at_ms), text=ln.text) for ln in synced]
+        # Song-end prep (XERK-192): fix where the track ends, then anchor the scroll
+        # (which schedules the precise `song.done` off that end).
+        self._music_end_ms = self._song_end_ms(match, lines)
+        self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
         try:
             await self._send(
                 Song(
@@ -890,7 +968,7 @@ class Session:
                     title=match.title,
                     artist=match.artist,
                     atMs=at_ms,
-                    offsetMs=self._synced_offset_ms(match, window_end_monotonic),
+                    offsetMs=self._music_offset_ms,
                     durationMs=match.duration_ms,
                     lines=lines,
                 )
@@ -920,13 +998,16 @@ class Session:
         """Re-anchor the locked song so the client corrects scroll drift."""
         if self._music_run_id is None:
             return
+        # Re-anchor (XERK-192): refresh the retained offset and reschedule the
+        # end-of-song dismissal off the fresh, drift-corrected position.
+        self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
         try:
             await self._send(
                 SongSync(
                     type="song.sync",
                     songId=self._music_run_id,
                     atMs=at_ms,
-                    offsetMs=self._synced_offset_ms(match, window_end_monotonic),
+                    offsetMs=self._music_offset_ms,
                 )
             )
         except Exception:
@@ -945,6 +1026,15 @@ class Session:
         self._music_track_key = None
         self._music_last_match_monotonic = None
         self._music_pending_key = None
+        # Drop the song-end schedule and its anchor (XERK-192). Skips the current
+        # task when the scheduled end is what's ending the run (it clears its own
+        # handle first), so this never self-cancels the coroutine mid-send.
+        if self._music_end_task is not None:
+            self._music_end_task.cancel()
+            self._music_end_task = None
+        self._music_offset_ms = None
+        self._music_offset_monotonic = None
+        self._music_end_ms = None
         if song_id is not None:
             try:
                 await self._send(SongDone(type="song.done", songId=song_id))
@@ -998,6 +1088,9 @@ class Session:
             self._translation_hold = None
         # Stop the music scan loop and release its service (XERK-184). A song run
         # left open just ends with the session — the client is tearing down too.
+        if self._music_end_task is not None:
+            self._music_end_task.cancel()
+            self._music_end_task = None
         if self._music_scan is not None:
             self._music_scan.cancel()
             try:
