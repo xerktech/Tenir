@@ -77,6 +77,14 @@ services:
       # How long speech may go quiet after the last non-English activity before
       # the run is declared done and the glasses' dismiss countdown starts.
       API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}
+      # Music ID (XERK-184): when a song is playing, recognize the track from a
+      # short audio window and show its time-synced lyrics in the cue box,
+      # auto-scrolling. "off" (default) keeps the core STT-only; "stub" is a
+      # model-free demo (no network); "shazam" is real recognition via shazamio
+      # (Shazam's global catalog) + synced lyrics from LRCLIB. The [music] extra
+      # must be installed in the api image for "shazam"; see docs/music-id.md.
+      API_MUSIC_BACKEND: ${API_MUSIC_BACKEND:-off}
+      API_MUSIC_LYRICS_ENDPOINT: ${API_MUSIC_LYRICS_ENDPOINT:-https://lrclib.net}
       # Cue evidence retrieval (XERK-120): grounds cue facts in live sources —
       # the RSS-fed news corpus, Wikipedia, and a self-hosted SearXNG — because
       # the cue model's weights are years stale. "off" (default) keeps cues
