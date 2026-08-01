@@ -38,6 +38,7 @@ import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
 import { displayServerUrl, normalizeServerUrl } from "./lib/serverUrl";
+import { requestUpdateCheck } from "./lib/useUpdater";
 import { saveLastTab, saveServerUrl } from "./storage";
 import { UpdateBanner } from "./ui/UpdateBanner";
 import { TabIcon } from "./ui/icons";
@@ -184,6 +185,9 @@ function DashboardShell({
   const { controller } = useCaptureContext();
   const recording = controller.state.running;
   const selectTab = (next: Tab) => {
+    // Landing on Live is the "am I current?" moment — re-check for an app
+    // update on every switch to it (XERK-167; throttled inside the updater).
+    if (next === "Live" && next !== tab) requestUpdateCheck();
     setTab(next);
     saveLastTab(deviceKeyValue(), next);
   };

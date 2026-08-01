@@ -105,9 +105,17 @@ export type UpdateState =
  */
 export const CHECK_THROTTLE_MS = 15 * 60 * 1000;
 
+/**
+ * The tighter gap for checks the user asks for by navigating — switching to the
+ * Live tab (XERK-167). Near-immediate so a deliberate visit really re-checks,
+ * but still a floor so rapid tab flipping can't hammer the anonymous GitHub
+ * API (60 req/h per IP).
+ */
+export const NAV_CHECK_THROTTLE_MS = 30 * 1000;
+
 /** Whether enough time has passed since [lastCheckAt] to check again. */
-export function shouldCheck(lastCheckAt: number, now: number): boolean {
-  return now - lastCheckAt >= CHECK_THROTTLE_MS;
+export function shouldCheck(lastCheckAt: number, now: number, minGap = CHECK_THROTTLE_MS): boolean {
+  return now - lastCheckAt >= minGap;
 }
 
 /**

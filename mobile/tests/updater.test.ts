@@ -5,6 +5,7 @@ import {
   applyCheckResult,
   CHECK_THROTTLE_MS,
   checkForUpdate,
+  NAV_CHECK_THROTTLE_MS,
   compareVersions,
   fetchReleases,
   latestApkUpdate,
@@ -113,6 +114,14 @@ describe("shouldCheck (XERK-167 re-check throttle)", () => {
   it("skips a check inside the throttle window", () => {
     expect(shouldCheck(1000, 1000 + CHECK_THROTTLE_MS - 1)).toBe(false);
     expect(shouldCheck(1000, 1000)).toBe(false);
+  });
+
+  it("takes a tighter gap for user-navigation checks (Live tab)", () => {
+    // A deliberate visit shouldn't wait out the background cadence, but rapid
+    // tab flipping still can't hammer the anonymous GitHub API.
+    expect(NAV_CHECK_THROTTLE_MS).toBe(30 * 1000);
+    expect(shouldCheck(1000, 1000 + NAV_CHECK_THROTTLE_MS, NAV_CHECK_THROTTLE_MS)).toBe(true);
+    expect(shouldCheck(1000, 1000 + NAV_CHECK_THROTTLE_MS - 1, NAV_CHECK_THROTTLE_MS)).toBe(false);
   });
 });
 
