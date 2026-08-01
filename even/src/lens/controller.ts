@@ -155,11 +155,15 @@ type Mutable = {
   cueQueue: PastCue[]; // cues waiting behind the active one (FIFO, XERK-102)
   pastCues: PastCue[]; // released cues embedded in the phone transcript (XERK-108)
   // The live translation run (XERK-160): English renderings of the non-English
-  // turns currently being spoken, shown in the cue box's slot. `done` flips when
-  // the api says the other language is done being spoken (`translation.done`) —
-  // only then does the box's 10s auto-dismiss countdown start. `sourceLang` is
-  // the run's detected spoken language, fixed from its first turn, so the box
-  // title can read "<Source> → English" (XERK-173).
+  // turns currently being spoken, shown in the cue box's slot. Turns stack into
+  // the same box for the length of a run (XERK-181). `done` flips when the api
+  // says the other language is done being spoken (`translation.done`); the box
+  // is then dismissed at once — the server already held ~translation_hold_ms of
+  // silence, so there is no on-lens countdown to wait out (XERK-181). `done`
+  // therefore only ever lingers true while a finished run waits behind the open
+  // menu, which dismisses it on closeMenu. `sourceLang` is the run's detected
+  // spoken language, fixed from its first turn, so the box title can read
+  // "<Source> → English" (XERK-173).
   translation: { texts: string[]; done: boolean; sourceLang?: string } | null;
 };
 
@@ -226,11 +230,10 @@ export async function wireLens(
   // be derived on every tick rather than decremented — the ticker idles while
   // the lens is backgrounded, and a derived count comes back correct.
   let cueShownAt: number | null = null;
-  // The translation box's auto-dismiss (XERK-160): armed only once the run is
-  // done — the countdown must not start while the other language is still being
-  // spoken. `translationDoneAt` derives its countdown, like `cueShownAt` above.
-  let translationTimer: ReturnType<typeof setTimeout> | null = null;
-  let translationDoneAt: number | null = null;
+  // The translation box no longer auto-dismisses on a timer (XERK-181): a run is
+  // shown until the api declares it done, at which point the box is dismissed
+  // straight away — the server's silence hold is the read time, so there is no
+  // redundant on-lens countdown to arm or derive.
   let enabled = false; // signed in — clicks act only while enabled
   let tick = 0;
   // Whether the app is currently backgrounded (XERK-117): set on FOREGROUND_EXIT,
@@ -251,18 +254,13 @@ export async function wireLens(
   // tailed to the last rows (XERK-172): a new turn arrives at the bottom, like
   // the caption band, instead of the rebuild snapping the host scroll to the top.
   const translationCard = (): CueCard => ({
-    // Animate the "Translating…" dots while the run is live (XERK-173); once it
-    // is done the box counts down instead, so the title goes static.
-    title: translationTitle(
-      state.translation?.sourceLang,
-      state.translation?.done ? undefined : tick,
-    ),
+    // Always animate the "Translating…" dots (XERK-173): the box is only ever
+    // visible while a run is live — a finished run is dismissed at once
+    // (XERK-181), never left on the lens counting down — so the title never
+    // needs a static, done form.
+    title: translationTitle(state.translation?.sourceLang, tick),
     body: tailCueBody((state.translation?.texts ?? []).join("\n"), TRANSLATION_BODY_LINES),
   });
-  // Seconds left before the translation box auto-dismisses — undefined while the
-  // other language is still being spoken (the countdown hasn't started, XERK-160).
-  const translationCountdown = () =>
-    translationDoneAt == null ? undefined : cueSecondsLeft(Date.now() - translationDoneAt);
   /** The caption band's live text: full band, or masked under the popup box. */
   const liveCaption = () => {
     // The popup-page rebuild failed: the band itself carries the menu, so the
@@ -318,7 +316,7 @@ export async function wireLens(
     if (menuFallback) return;
     if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
     else if (state.translation)
-      writer.set(CONTAINER.menu, cueTitleLine(translationCard(), translationCountdown()));
+      writer.set(CONTAINER.menu, cueTitleLine(translationCard()));
     else if (state.cue) writer.set(CONTAINER.menu, cueTitleLine(state.cue, cueCountdown()));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
@@ -350,7 +348,7 @@ export async function wireLens(
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
       : state.translation
-        ? buildCuePage(contents, translationCard(), translationCountdown(), TRANSLATION_BODY_LINES)
+        ? buildCuePage(contents, translationCard(), undefined, TRANSLATION_BODY_LINES)
         : state.cue
           ? buildCuePage(contents, state.cue, cueCountdown())
           : buildMainPage(contents);
@@ -370,7 +368,6 @@ export async function wireLens(
         // than leave the band masked with no box. The translations themselves
         // are safe — they're paired to their turns on the phone mirror.
         state.translation = null;
-        clearTranslationTimer();
         writer.set(CONTAINER.caption, pageContents().caption);
       } else if (!ok && openingCue && state.cue) {
         // A cue is a best-effort aside — if its popup page never appeared,
@@ -497,7 +494,6 @@ export async function wireLens(
     // embedded past cues don't carry over (XERK-108).
     state.pastCues = [];
     state.translation = null;
-    clearTranslationTimer();
     connect();
     syncPhone();
   };
@@ -512,7 +508,6 @@ export async function wireLens(
     state.pastCues = []; // the transcript is cleared on stop, so the review cues go with it
     state.translation = null;
     clearCueTimer();
-    clearTranslationTimer();
     menuFallback = false;
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
@@ -589,9 +584,10 @@ export async function wireLens(
       renderMenu();
       sessionPage?.tickCue(cueCountdown());
     } else if (state.translation) {
-      // A live run animates the "Translating…" dots (XERK-173); a finished one
-      // keeps its dismissal countdown current (XERK-160). Either way only the
-      // title row repaints, and the writer drops the frame when nothing changed.
+      // A live run animates the "Translating…" dots (XERK-173): only the title
+      // row repaints, and the writer drops the frame when nothing changed. A
+      // finished run never lingers here — it is dismissed at once (XERK-181) —
+      // so the box the ticker sees is always live and always animating.
       renderMenu();
     }
   }, TICK_MS);
@@ -628,7 +624,6 @@ export async function wireLens(
   const cleanup = async () => {
     clearInterval(ticker);
     if (cueTimer) clearTimeout(cueTimer);
-    if (translationTimer) clearTimeout(translationTimer);
     off();
     await capture.stop();
     client?.stop();
@@ -650,31 +645,16 @@ export async function wireLens(
   };
 
   /**
-   * Arm (or re-arm) the translation box's auto-dismiss (XERK-160). Only ever
-   * called once the run is done — the 10s countdown must not start while the
-   * other language is still being spoken — and again on a touch (XERK-129
-   * parity: touching the box means it is being read, and reading buys time).
-   */
-  const startTranslationTimer = () => {
-    if (translationTimer) clearTimeout(translationTimer);
-    translationDoneAt = Date.now();
-    translationTimer = setTimeout(() => dismissTranslation(), CUE_TTL_MS);
-  };
-
-  const clearTranslationTimer = () => {
-    if (translationTimer) clearTimeout(translationTimer);
-    translationTimer = null;
-    translationDoneAt = null;
-  };
-
-  /**
    * An English translation of one finalized non-English turn arrived (XERK-160).
    * Two jobs: pair it with its turn for the phone mirror, and put it in the
    * on-lens box — the cue box's slot, place and size (the ticket's contract).
-   * A run in progress appends turn after turn (the box tails to its newest rows,
-   * XERK-172); a fresh run replaces a finished box still counting down. A cue
-   * holding the box loses it — cues don't appear during translations — and is
-   * embedded for review rather than dropped.
+   * Every turn of a live run appends, stacking into the SAME box (XERK-181; the
+   * box tails to its newest rows, XERK-172); a fresh run starts only once the
+   * prior one is gone (a done run is dismissed at once, XERK-181, so the only
+   * "done" run still around is one held behind the open menu). A cue holding the
+   * box loses it immediately — a translation is time-sensitive and always
+   * overwrites a cue's countdown (XERK-181) — and the cue is embedded for review
+   * rather than dropped.
    */
   const showTranslation = (segmentId: string, text: string, sourceLang?: string) => {
     const seg = state.segments.find((s) => s.id === segmentId);
@@ -683,7 +663,6 @@ export async function wireLens(
       // A new run: its source language, fixed here from the first turn, titles
       // the box "<Source> → English" (XERK-173).
       state.translation = { texts: [text], done: false, sourceLang };
-      clearTranslationTimer();
       if (state.cue) {
         embedPastCue(state.cue);
         state.cue = null;
@@ -712,21 +691,20 @@ export async function wireLens(
 
   /**
    * The api says the other language is done being spoken (`translation.done`,
-   * XERK-160): NOW the box's 10s countdown starts. Behind the open menu it
-   * waits — `closeMenu` arms it when the box actually becomes visible.
+   * XERK-160): the run is over, so the box is dismissed at once (XERK-181). The
+   * server already held ~translation_hold_ms of silence before sending this —
+   * that is the read time — so there is no on-lens countdown to add. Behind the
+   * open menu the finished run waits; `closeMenu` dismisses it when the box would
+   * otherwise become visible.
    */
   const finishTranslation = () => {
     if (!state.translation || state.translation.done) return;
     state.translation.done = true;
-    if (!state.menu) {
-      startTranslationTimer();
-      renderMenu(); // paint the countdown into the pinned title row
-    }
+    if (!state.menu) dismissTranslation();
   };
 
   /** The translation box leaves; queued cues resume now the run is over (XERK-160). */
   const dismissTranslation = () => {
-    clearTranslationTimer();
     if (!state.translation) return;
     state.translation = null;
     if (!state.menu) {
@@ -735,18 +713,6 @@ export async function wireLens(
       rebuildPage();
     }
     syncPhone();
-  };
-
-  /**
-   * A touch on the translation box (XERK-129 parity): once the run is done and
-   * counting down, any tap or swipe restarts the countdown — touching the box
-   * means it is being read. While the run is still live there is no countdown
-   * to reset, and the host owns the body scroll either way (XERK-133).
-   */
-  const touchTranslation = () => {
-    if (!state.translation?.done) return;
-    startTranslationTimer();
-    renderMenu();
   };
 
   /**
@@ -816,15 +782,21 @@ export async function wireLens(
     state.menu = null;
     menuFallback = false;
     if (state.translation) {
-      // A translation run held behind the menu takes the box back (XERK-160).
-      // A run that finished while the menu was open starts its countdown only
-      // now, as the box actually becomes visible.
-      if (state.translation.done && translationTimer == null) startTranslationTimer();
-    } else {
-      // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).
-      state.cue = state.cueQueue.shift() ?? null;
-      if (state.cue) startCueTimer();
+      // A translation run was held behind the menu (XERK-160). A run that
+      // finished while the menu was up is dismissed now, as the box would
+      // otherwise become visible: the run is over and there is no countdown to
+      // wait out (XERK-181). A still-live run instead retakes the box and keeps
+      // stacking its turns. dismissTranslation / rebuildPage each sync the phone.
+      if (state.translation.done) dismissTranslation();
+      else {
+        rebuildPage();
+        syncPhone();
+      }
+      return;
     }
+    // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).
+    state.cue = state.cueQueue.shift() ?? null;
+    if (state.cue) startCueTimer();
     rebuildPage();
     syncPhone();
   };
@@ -863,9 +835,9 @@ export async function wireLens(
           // Idle: a single tap starts a new session.
           startSession();
         } else if (state.translation) {
-          // A tap on the translation box keeps it up once its countdown runs
-          // (XERK-129 parity); mid-run it does nothing — there is no countdown.
-          touchTranslation();
+          // A tap on the translation box does nothing (XERK-181): the box has no
+          // countdown to reset, and the host owns the body scroll (XERK-133). It
+          // dismisses itself when the run is done, not on a tap.
         } else if (state.cue) {
           // A tap on a live cue keeps it up (XERK-129): restart the
           // auto-dismiss (and the countdown with it) so the wearer can hold
@@ -889,21 +861,21 @@ export async function wireLens(
         void bridge.shutDownPageContainer(1);
         break;
       case OsEventTypeList.SCROLL_TOP_EVENT:
-        // Swipe up: highlight the menu's top row (Continue). On a cue or a
-        // translation box the host itself scrolls the body toward its start
-        // (XERK-133); the app just resets the countdown. Anywhere else the
+        // Swipe up: highlight the menu's top row (Continue). On a cue the app
+        // resets the countdown while the host scrolls the body toward its start
+        // (XERK-133); on a translation box the host scrolls the body and the app
+        // does nothing else — there is no countdown (XERK-181). Anywhere else the
         // gesture lands on the invisible overlay and does nothing.
         if (state.menu) moveMenuHighlight("continue");
-        else if (state.translation) touchTranslation();
-        else touchCue();
+        else if (!state.translation) touchCue();
         break;
       case OsEventTypeList.SCROLL_BOTTOM_EVENT:
         // Swipe down: highlight the menu's bottom row (Exit session). On a cue
-        // or a translation box the host scrolls the body toward its end
-        // (XERK-133); the app just resets the countdown.
+        // the app resets the countdown while the host scrolls the body toward its
+        // end (XERK-133); on a translation box the host scrolls and the app does
+        // nothing else — no countdown to reset (XERK-181).
         if (state.menu) moveMenuHighlight("exit");
-        else if (state.translation) touchTranslation();
-        else touchCue();
+        else if (!state.translation) touchCue();
         break;
       case OsEventTypeList.FOREGROUND_ENTER_EVENT:
         // Back in the foreground (XERK-117): a snapshot taken from here on is a

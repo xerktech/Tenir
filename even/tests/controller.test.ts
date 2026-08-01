@@ -1236,38 +1236,41 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
   });
 
-  it("starts the 10s countdown only on translation.done, then dismisses", async () => {
+  it("dismisses the box at once on translation.done, with no countdown (XERK-181)", async () => {
     const t = await record();
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
     await vi.advanceTimersByTimeAsync(50);
-    t.api.handlers().onTranslationDone?.(DONE);
-    await vi.advanceTimersByTimeAsync(50);
-    // The countdown now rides the pinned title row, like a cue's (XERK-110).
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text), 10));
-
-    // A full TTL after done, the box dismisses back to the plain page.
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
-    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
-  });
-
-  it("a touch resets the countdown once the run is done (XERK-129 parity)", async () => {
-    const t = await record();
-    t.api.handlers().onFinal?.(FINAL_ES);
-    t.api.handlers().onTranslation?.(TR);
-    t.api.handlers().onTranslationDone?.(DONE);
-    await vi.advanceTimersByTimeAsync(50);
-
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS - 2000);
-    await t.swipeDown(); // reading the box buys it time
-    await vi.advanceTimersByTimeAsync(3000);
-    // Past the original TTL, still up.
+    // Up and live, with no countdown on the pinned title row (stripping the
+    // animated dots leaves the bare title — a stray countdown would survive it).
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(liveTitle(t)).toBe(card().title);
+
+    // The api says the run is done. The server already held its silence window
+    // (the read time), so the box goes STRAIGHT back to the plain page — the
+    // redundant 10s countdown is gone (XERK-181).
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
-  it("a cue arriving mid-run waits; it appears only after the translation dismisses", async () => {
+  it("a tap or swipe on a live translation box leaves it up unchanged (XERK-181)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+
+    // No countdown to reset and the host owns the body scroll (XERK-133), so a
+    // tap or swipe on the box does nothing — only translation.done dismisses it.
+    await t.swipeDown();
+    await t.click();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    expect(liveTitle(t)).toBe(card().title);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
+  });
+
+  it("a cue arriving mid-run waits; it appears the moment the run is done (XERK-181)", async () => {
     const t = await record();
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
@@ -1278,9 +1281,33 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(liveTitle(t)).toBe(card().title);
 
     t.api.handlers().onTranslationDone?.(DONE);
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
-    // The run is over and its box gone: the queued cue resumes now.
+    await vi.advanceTimersByTimeAsync(50);
+    // The run is over and its box dismissed at once (no countdown): the queued
+    // cue resumes now, with its own 10s countdown.
     expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+  });
+
+  it("a translation overwrites a cue's live countdown at once (XERK-181)", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
+
+    // Part way through the cue's 10s countdown a translation arrives: it takes
+    // the box immediately — translations are time-sensitive and never wait out a
+    // cue's countdown (XERK-181).
+    await vi.advanceTimersByTimeAsync(4000);
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(card().title);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
+
+    // The displaced cue's auto-dismiss was cancelled with it, so its old timer
+    // can't fire later and clobber the live box.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS);
+    expect(liveTitle(t)).toBe(card().title);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
   });
 
   it("a translation run takes the box over from a showing cue, which embeds for review", async () => {
@@ -1297,21 +1324,36 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(document.getElementById("session-text")!.textContent).toContain("Sun");
   });
 
-  it("holds a run behind the open menu and shows it once the menu closes", async () => {
+  it("shows a still-live run held behind the menu once the menu closes", async () => {
     const t = await record();
     await t.doubleTap(); // menu owns the popup
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
-    t.api.handlers().onTranslationDone?.(DONE);
     await vi.advanceTimersByTimeAsync(50);
-    // The interactive menu is untouched.
+    // The interactive menu is untouched; the run accumulates behind it.
     expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
 
-    await t.doubleTap(); // close the menu — the finished run takes the box now
+    await t.doubleTap(); // close the menu — the live run takes the box back
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().menu)).toBe(layout.cueTitleLine(card(TR.text), 10));
-    // …and only now does its countdown run out.
-    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(liveTitle(t)).toBe(card().title);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
+  });
+
+  it("dismisses a run that finished behind the open menu when the menu closes (XERK-181)", async () => {
+    const t = await record();
+    await t.doubleTap(); // menu owns the popup
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onTranslationDone?.(DONE); // the run ends while the menu is up
+    await vi.advanceTimersByTimeAsync(50);
+    // The interactive menu is untouched; the finished run waits behind it.
+    expect(t.text(C().menu)).toBe("› Continue\n  Exit session");
+
+    // Closing the menu would make the box visible — but the run is already done,
+    // so it goes straight back to the plain page instead of appearing with a
+    // countdown (XERK-181).
+    await t.doubleTap();
+    await vi.advanceTimersByTimeAsync(50);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
@@ -1337,21 +1379,43 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(turn.textContent).toContain("hola, ¿qué tal?");
   });
 
-  it("a fresh run replaces a finished box still counting down", async () => {
+  it("opens a fresh box for a new run once the prior one has been dismissed (XERK-181)", async () => {
     const t = await record();
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
     t.api.handlers().onTranslationDone?.(DONE);
-    await vi.advanceTimersByTimeAsync(2000); // mid-countdown
+    await vi.advanceTimersByTimeAsync(50);
+    // The finished run's box is already gone — dismissed at once on done.
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
 
     const TR2 = { ...TR, segmentId: "s2", text: "See you tomorrow." };
     t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s2", text: "hasta mañana" });
     t.api.handlers().onTranslation?.(TR2);
     await vi.advanceTimersByTimeAsync(50);
-    // A new box with only the new run's text, and no countdown again.
+    // A fresh box with only the new run's text, and no countdown.
     expect(liveTitle(t)).toBe(card().title);
     expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR2.text)));
+    // No countdown ever fires: the box stays up until its own run is done.
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 2);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6); // still up
+  });
+
+  it("keeps stacking turns across a natural pause within one live run (XERK-181)", async () => {
+    const t = await record();
+    // Turns arrive with gaps between them but no translation.done — the run is
+    // still live, so each turn fills the SAME box instead of replacing it.
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(2000);
+    const TR2 = { ...TR, segmentId: "s2", text: "I am fine." };
+    t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s2", text: "estoy bien" });
+    t.api.handlers().onTranslation?.(TR2);
+    await vi.advanceTimersByTimeAsync(2000);
+    const TR3 = { ...TR, segmentId: "s3", text: "See you tomorrow." };
+    t.api.handlers().onFinal?.({ ...FINAL_ES, segmentId: "s3", text: "hasta mañana" });
+    t.api.handlers().onTranslation?.(TR3);
+    await vi.advanceTimersByTimeAsync(50);
+    // All three turns are stacked in the one box, newest at the bottom.
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text, TR2.text, TR3.text)));
   });
 });
