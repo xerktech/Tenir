@@ -109,7 +109,7 @@ class Settings(BaseSettings):
 
     # ---- Live translations (XERK-160) --------------------------------------------
     # When a finalized turn's detected language isn't English, the session
-    # translates it via the SAME chat model + gateway the cues use (llm_model over
+    # translates it via the same gateway the cues use (translation_model over
     # litellm_endpoint) and delivers it as a `translation` WS message paired to the
     # segment. While a non-English run is live, cue generation is suppressed; when
     # the run ends (an English turn arrives, or speech goes quiet past the hold
@@ -117,8 +117,17 @@ class Settings(BaseSettings):
     # translation box's dismiss countdown, and cues resume.
     #   "off"    — no translations (default; matches the stripped core).
     #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b).
+    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b weights
+    #   behind the dedicated translation alias below).
     translation_backend: str = "off"  # off | stub | openai
+    # The chat-model alias sent to the gateway for translations (matches the
+    # LiteLLM route + the deployed API_TRANSLATION_MODEL). Same gpt-oss:120b
+    # weights as llm_model, but the alias carries reasoning_effort low: the
+    # XERK-180 eval (scripts/translation_eval/RESULTS-2026-08.md) found low ~2x
+    # faster than the cue route's medium with accuracy within noise, and every
+    # dedicated smaller model an accuracy loss. Point this at llm_model's alias
+    # to fall back to the shared route.
+    translation_model: str = "gpt-oss:120b-translate"
     # How long speech may go quiet after the last non-English activity before the
     # run is declared done. Finals only land at pauses, so partial captions also
     # count as activity — the window only starts once the speaker actually stops.

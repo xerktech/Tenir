@@ -58,8 +58,9 @@ once the run ends.
    translation that comes back identical to its source (an English turn that
    slipped in as ambiguous) is suppressed rather than rendered as an echo.
 2. **Translation is server-side, off the caption path.** Each non-English final
-   is translated by the same chat model + LiteLLM gateway the cues use
-   (`API_LLM_MODEL` over `API_LITELLM_ENDPOINT`) — a `/chat/completions` call
+   is translated through the same LiteLLM gateway the cues use, on its own
+   route (`API_TRANSLATION_MODEL` over `API_LITELLM_ENDPOINT`; same weights as
+   the cue alias, reasoning_effort low — XERK-180) — a `/chat/completions` call
    returning `{"translation": …}` (temperature 0, thinking disabled, defensive
    JSON extraction; `api/src/api/translate/openai.py`). Calls are serialized
    through one per-session worker so translations reach the client in transcript
@@ -83,13 +84,17 @@ once the run ends.
 |----------|-----------------------------------------------------------------------|
 | `off`    | No translations (default). The stripped core stays STT-only.          |
 | `stub`   | Model-free, deterministic (`[es→en] …`) for CI/dev — no GPU.          |
-| `openai` | Real chat model via the LiteLLM gateway (the cue model, `gpt-oss:120b`). |
+| `openai` | Real chat model via the LiteLLM gateway: `API_TRANSLATION_MODEL`, default `gpt-oss:120b-translate` — the cue model's weights on a dedicated route with `reasoning_effort: low` (XERK-180). |
 
 The stub is what CI exercises end-to-end (run state → WS messages →
-persistence → history). The real prompt was exercised against the deployed GPU
-chat server directly (per `CLAUDE.md`'s bypass-the-gateway note): es/fr/de/pt
-utterances came back as faithful English (disfluencies preserved), and an
-already-English utterance came back unchanged.
+persistence → history). The real prompt and route were evaluated in the Aug
+2026 translation eval (`scripts/translation_eval/RESULTS-2026-08.md`): all 594
+utterances production would translate from the deployment export, six
+candidate model/effort configs. Reasoning low measured ~2× faster than the cue
+route's medium (p50 0.82 s vs 1.21 s serialized) with accuracy within noise,
+and every dedicated smaller model lost accuracy — notably reverse-translating
+English input that langid had mistagged, which the shipped prompt's
+"already English → return unchanged" rule guards against.
 
 ```bash
 # Model-free demo translations (no extra container):

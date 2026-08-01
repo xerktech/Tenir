@@ -29,6 +29,39 @@ def test_factory_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(make_translator(), OpenAITranslator)
 
 
+def test_factory_uses_the_translation_model_not_the_cue_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-180: translation has its own gateway alias (reasoning_effort low on
+    the LiteLLM side), independent of the cue route's llm_model."""
+    monkeypatch.setattr(settings, "translation_backend", "openai")
+    monkeypatch.setattr(settings, "translation_model", "translate-alias")
+    monkeypatch.setattr(settings, "llm_model", "cue-alias")
+    translator = make_translator()
+    assert isinstance(translator, OpenAITranslator)
+    assert translator._build_payload("hola", "es")["model"] == "translate-alias"
+
+
+def test_translation_model_defaults_to_the_dedicated_alias() -> None:
+    """The default must match the gpt-oss:120b-translate route in
+    litellm/config.yaml — a drifted alias 404s at the gateway and translations
+    silently fail closed."""
+    assert type(settings).model_fields["translation_model"].default == "gpt-oss:120b-translate"
+
+
+def test_gateway_config_carries_the_translation_alias() -> None:
+    """Pin the api default to the shipped gateway route (both sides of the
+    XERK-180 alias split live in this repo, so drift is testable)."""
+    from pathlib import Path
+
+    gateway = Path(__file__).parents[2] / "litellm" / "config.yaml"
+    if not gateway.is_file():  # pragma: no cover - api tested outside the monorepo
+        pytest.skip("litellm/config.yaml not present")
+    text = gateway.read_text()
+    assert "model_name: gpt-oss:120b-translate" in text
+    assert "reasoning_effort: low" in text
+
+
 def test_factory_unknown_backend_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "translation_backend", "nope")
     with pytest.raises(ValueError):

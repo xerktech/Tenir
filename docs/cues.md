@@ -192,7 +192,11 @@ breadth *and* reliability of knowledge matter most; the runtime is pinned
 shift under a silent upgrade. The JSON-only prompt gives dependable
 `{cue, title, body}` objects, which the parser still guards defensively for
 reasoning-model wrapping. Since XERK-160 the same model also serves the live
-translations (`docs/translations.md`) — one chat route, two features.
+translations (`docs/translations.md`) — same weights, and since XERK-180 a
+separate gateway alias (`gpt-oss:120b-translate`, reasoning_effort low): the
+Aug 2026 translation eval (`scripts/translation_eval/RESULTS-2026-08.md`) found
+low ~2× faster with no meaningful accuracy loss for translation, while cues
+keep medium for selectivity.
 
 ### Running it on the single-host stack
 
