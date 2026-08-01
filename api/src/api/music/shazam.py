@@ -11,7 +11,10 @@ Caveats and how they're handled (see docs/music-id.md):
   ``off``/``stub``/``shazam`` factory keeps a paid provider a one-module drop-in.
 - The Rust fingerprinter + ffmpeg decode are blocking, so recognition runs in a
   worker thread (with its own event loop) — never on the caption loop.
-- Best-effort: any failure returns ``None`` and nothing is shown.
+- A clean no-match returns ``None``; a transient failure (network, a Shazam 429)
+  RAISES so callers can tell the two apart. The session's scan step catches and
+  counts it (captions are never touched); the music_eval harness backs off on it
+  instead of mistaking rate limiting for "no song playing" (XERK-187).
 
 The network + fingerprint path is excluded from coverage; the response mapper
 ``_parse_match`` is pure and unit-tested against a canned Shazam payload.
@@ -110,14 +113,13 @@ class ShazamMusicService:
 
         return asyncio.run(_run())
 
-    async def identify(self, wav: bytes) -> MusicMatch | None:  # pragma: no cover - needs shazamio
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        """Recognize the window, or ``None`` on a clean no-match. Transient
+        failures propagate — every caller (the session scan, the eval harness)
+        handles them, and each needs to distinguish an error from silence."""
         import asyncio
 
-        try:
-            raw = await asyncio.to_thread(self._recognize_blocking, wav)
-        except Exception:
-            log.warning("shazam recognition failed", exc_info=True)
-            return None
+        raw = await asyncio.to_thread(self._recognize_blocking, wav)
         if not raw:
             return None
         match = self._parse_match(raw, window_ms=self._window_ms)

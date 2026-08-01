@@ -36,12 +36,15 @@ ssh NAS01-TrueNAS "docker exec Tenir cat /data/audio/default/<ID>.wav" > <ID>.wa
 ```bash
 python scripts/music_eval/replay.py <ID>.wav [more.wav ...] \
   --scan-seconds 8 --window-seconds 8 --min-confidence 0.5 \
+  --hold-seconds 45 --pace-seconds 0 \
   --json results.json
 ```
 
 It slides the session's scan window across the audio with the same gating the
 live session uses (fixed scan interval, min-confidence gate, track-key dedupe for
-"same song → re-sync" vs. "new song") and prints each recognition:
+"same song → re-sync" vs. "new song", the `music_hold_ms` hold that keeps a run
+alive across missed scans, and the takeover debounce that makes a different
+track match twice before it replaces a locked one) and prints each recognition:
 
 ```
 === <ID>.wav (612s) ===
@@ -53,7 +56,14 @@ live session uses (fixed scan interval, min-confidence gate, track-key dedupe fo
 `♪ NEW` is a `song` frame (a run opening/replacing); `sync` is a `song.sync`
 (the same song continuing, re-anchoring the scroll). `NO synced lyrics` means the
 track was recognized but LRCLIB had no LRC — the box would show the title
-without a scroll.
+without a scroll. Each file ends with an identify-latency summary (mean/p95/max
+per scan — what the live loop pays per recognition call).
+
+Recognition **errors** (network, Shazam 429 rate limiting) are reported and
+counted separately from no-matches, and each one triggers an exponential
+cool-off pause. Long replays hammer Shazam far faster than a live session's
+paced scan loop ever does — if a run draws 429s, re-run with `--pace-seconds 2`
+(or higher) to trade wall-clock time for clean data.
 
 ## What it validates
 
@@ -61,6 +71,7 @@ without a scroll.
   mic-captured music, at the real 16 kHz mono window.
 - **Sync anchor** (`offset_ms`) the client scrolls from.
 - **Lyrics** availability + parse (LRCLIB → the same `SyncedLine`s the box shows).
+- **Speed**: per-scan recognition latency (mean/p95/max, also in the JSON).
 
 Tuning knobs (`API_MUSIC_*` in `api/src/api/config.py`) map to the CLI flags, so
 a threshold change can be measured here before it ships.

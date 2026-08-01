@@ -153,6 +153,11 @@ class Settings(BaseSettings):
     # conservative: each scan is a recognition call, and while nothing matches
     # there is no reason to hammer it (also rate-limit hygiene for shazamio).
     music_scan_interval_ms: int = 8000
+    # Ceiling (ms) the searching scan decays to on repeated misses. A session with
+    # no music should settle at this cadence and stay there — recognition calls are
+    # rate-limited upstream (replaying recorded sessions at full tilt drew Shazam
+    # 429s; XERK-187), so an idle hour must not spend hundreds of them.
+    music_scan_max_interval_ms: int = 60000
     # How often (ms) to RE-identify once a song is locked — the drift-correcting
     # `song.sync`. Longer than the search interval: a locked song only needs its
     # anchor nudged, and the local client clock carries the scroll between syncs.
@@ -160,7 +165,10 @@ class Settings(BaseSettings):
     # How long (ms) the song box lingers with no fresh match before the run is
     # declared done (`song.done`): covers a brief gap between tracks or a scan
     # that missed, without dropping the lyrics the instant one window fails.
-    music_hold_ms: int = 20000
+    # Replaying real sessions (XERK-187) showed quiet passages miss 1–3
+    # consecutive scans mid-song, so the hold must survive two failed lock-cadence
+    # re-checks (music_lock_interval_ms apart) or the box flickers done/new.
+    music_hold_ms: int = 45000
     # Minimum recognizer confidence (0..1) to open/keep a song run. Below it the
     # window is treated as "no song playing" and nothing is shown.
     music_min_confidence: float = 0.5

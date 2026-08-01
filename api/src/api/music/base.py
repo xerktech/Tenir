@@ -8,10 +8,12 @@ session stays simple and the whole thing stubs as a unit for CI: the ``shazam``
 service recognizes via shazamio and fetches lyrics from LRCLIB, while the
 ``stub`` does both deterministically with no network.
 
-Methods are async (shazamio and the LRCLIB client are async HTTP) and
-best-effort: a no-match or any failure returns ``None``/``[]`` and nothing is
-shown. They must not raise for ordinary failures — a music box is an aside that
-can never disturb the captions.
+Methods are async (shazamio and the LRCLIB client are async HTTP). A no-match
+returns ``None``/``[]`` and nothing is shown; a transient backend failure (a
+network error, upstream rate limiting) may raise, and every caller guards it —
+the session's scan step catches and counts, so a music box is an aside that can
+never disturb the captions, while the eval harness backs off instead of
+mistaking an error for "no song playing" (XERK-187).
 """
 
 from __future__ import annotations
@@ -46,8 +48,8 @@ class MusicService(Protocol):
         """Identify the track in ``wav`` (a WAV-wrapped audio window).
 
         Returns the match, or ``None`` when nothing recognizable is playing
-        (silence, speech, an unknown track, or a failed lookup). Must not raise
-        for ordinary failures.
+        (silence, speech, an unknown track). May raise on a transient backend
+        failure — callers catch and treat it distinctly from a no-match.
         """
         ...
 
