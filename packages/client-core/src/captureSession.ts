@@ -14,7 +14,7 @@
  */
 
 import type { ApiHandlers } from "./ws";
-import type { Lang, MicSource } from "@tenir/contract";
+import type { Lang, LyricLine, MicSource } from "@tenir/contract";
 
 import type { PcmAudioSource } from "./pcmSource";
 import { decodeBase64 } from "./pcm";
@@ -57,6 +57,32 @@ export interface CaptureSegment {
    * already-rendered segment; the UIs show it turn-by-turn under the original.
    */
   translation?: string;
+}
+
+// How many lyric lines the box shows around the current one (XERK-184): one
+// already-sung line for context, the current line, and two upcoming — four rows,
+// matching the cue box. Shared so every frontend windows the lyrics identically.
+export const LYRIC_LINES_BEFORE = 1;
+export const LYRIC_LINES_AFTER = 2;
+
+/**
+ * A song recognized playing, whose time-synced lyrics auto-scroll in the cue box
+ * (XERK-184). The scroll is driven client-side from an anchor: at wall-clock
+ * `anchorAt` (ms epoch, when this client applied the anchor) the song was at
+ * `anchorOffsetMs` into the track, so the position at any later time `now` is
+ * `anchorOffsetMs + (now - anchorAt)`. `song.sync` refreshes the anchor to correct
+ * drift; the local clock carries the scroll smoothly between syncs.
+ */
+export interface LiveSong {
+  id: string;
+  title: string;
+  artist: string;
+  /** The full time-synced lyrics (LRC), ordered by song time. Empty = show the
+   *  title with no scroll (no synced lyrics were found). */
+  lines: LyricLine[];
+  anchorAt: number;
+  anchorOffsetMs: number;
+  durationMs?: number;
 }
 
 /** A private context cue currently shown above the live transcript (XERK-81). */
@@ -114,6 +140,12 @@ export interface CaptureState {
    * without interfering with cues still coming in.
    */
   pastCues: LiveCue[];
+  /**
+   * The song currently playing, whose lyrics scroll in the cue box (XERK-184), or
+   * null when none is recognized. A live song owns the box: the frontends show its
+   * lyrics in place of the cue band, and the api suppresses cues while it plays.
+   */
+  song: LiveSong | null;
   error?: string;
 }
 
@@ -132,6 +164,13 @@ export type CaptureAction =
   // has elapsed (chaining promotions) and clear or re-seat the band. Fired by the
   // release timer and on returning to the foreground.
   | { type: "cueTick"; now: number }
+  // A song was recognized playing (XERK-184). `now` is the wall-clock time this
+  // client applied the anchor, so the lyric scroll is timed against the real clock.
+  | { type: "song"; song: Omit<LiveSong, "anchorAt">; now: number }
+  // Re-anchor the current song's scroll to correct drift (song.sync).
+  | { type: "songSync"; songId: string; offsetMs: number; now: number }
+  // The current song ended (song.done) — clear the box.
+  | { type: "songDone"; songId: string }
   | { type: "error"; message: string }
   | { type: "togglePause" }
   | { type: "micSwitch"; micSource: MicSource }
@@ -149,6 +188,7 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     queuedCues: [],
     activeCueEndsAt: null,
     pastCues: [],
+    song: null,
   };
 }
 
@@ -286,6 +326,26 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       if (band.activeCue === state.activeCue && band.queuedCues === state.queuedCues) return state;
       return { ...state, ...band };
     }
+    case "song": {
+      // A song took over (XERK-184): stamp the anchor with this client's arrival
+      // time so the lyric scroll runs off the local clock, and take the box.
+      return { ...state, song: { ...action.song, anchorAt: action.now } };
+    }
+    case "songSync": {
+      // Re-anchor the scroll to the fresh offset (song.sync). Ignore a sync for a
+      // run we no longer hold (a late sync after the song already ended).
+      if (!state.song || state.song.id !== action.songId) return state;
+      return {
+        ...state,
+        song: { ...state.song, anchorAt: action.now, anchorOffsetMs: action.offsetMs },
+      };
+    }
+    case "songDone": {
+      // Clear the box when the current song ends. A done for a run we no longer
+      // hold (already replaced) decides nothing.
+      if (!state.song || state.song.id !== action.songId) return state;
+      return { ...state, song: null };
+    }
     case "error":
       return { ...state, error: action.message };
     case "togglePause":
@@ -306,6 +366,8 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
         activeCue: null,
         queuedCues: [],
         activeCueEndsAt: null,
+        // The live song box is ephemeral too — drop it when the session ends.
+        song: null,
       };
   }
 }
@@ -379,6 +441,67 @@ export function cueSecondsUntil(endsAt: number, now: number): number {
 /** The countdown as it is painted in a cue's top-right corner, e.g. `"7s"`. */
 export function cueCountdownLabel(secondsLeft: number): string {
   return `${secondsLeft}s`;
+}
+
+/** The song's play position (ms) at wall-clock `now`, from its scroll anchor
+ *  (XERK-184). Reads off the real clock like `cueSecondsUntil`, so a throttled or
+ *  backgrounded client resyncs to the truth on the next tick rather than drifting. */
+export function songPositionMs(
+  song: Pick<LiveSong, "anchorAt" | "anchorOffsetMs">,
+  now: number,
+): number {
+  return Math.max(0, song.anchorOffsetMs + (now - song.anchorAt));
+}
+
+/**
+ * Index of the currently-sung lyric line at wall-clock `now` — the last line
+ * whose (song-time) `atMs` has been reached, or -1 before the first line. Pure
+ * and shared, so the lens box and the web/mobile cards scroll identically.
+ */
+export function currentLyricIndex(song: LiveSong, now: number): number {
+  const pos = songPositionMs(song, now);
+  let idx = -1;
+  for (let i = 0; i < song.lines.length; i++) {
+    if (song.lines[i].atMs <= pos) idx = i;
+    else break; // lines are time-ordered
+  }
+  return idx;
+}
+
+/** A window of lyric lines around the current one, for the fixed-height box. */
+export interface LyricWindow {
+  /** The visible slice of lines. */
+  lines: LyricLine[];
+  /** Index of the current line WITHIN `lines`, or -1 when none is current yet
+   *  (the song hasn't reached the first line, or lyrics are empty). */
+  currentIndex: number;
+}
+
+/**
+ * The slice of lyrics to render around `index` (from `currentLyricIndex`):
+ * `before` already-sung lines for context, the current line, and `after`
+ * upcoming — the auto-scroll "window". Before the song reaches its first line
+ * (`index < 0`) it shows the opening lines with nothing highlighted. Pure and
+ * shared so every frontend scrolls the same rows in lockstep.
+ */
+export function lyricWindow(
+  lines: LyricLine[],
+  index: number,
+  before: number = LYRIC_LINES_BEFORE,
+  after: number = LYRIC_LINES_AFTER,
+): LyricWindow {
+  const size = before + 1 + after;
+  if (lines.length === 0) return { lines: [], currentIndex: -1 };
+  if (index < 0) {
+    // Not started: show the opening lines, nothing highlighted.
+    return { lines: lines.slice(0, size), currentIndex: -1 };
+  }
+  // Keep the current line `before` rows from the top, clamped to the ends so the
+  // window never runs past the last line or before the first.
+  let start = index - before;
+  if (start < 0) start = 0;
+  if (start > Math.max(0, lines.length - size)) start = Math.max(0, lines.length - size);
+  return { lines: lines.slice(start, start + size), currentIndex: index - start };
 }
 
 /** Minimal slice of `ApiClient` the session drives (so tests can inject a fake). */
@@ -475,6 +598,22 @@ export class CaptureSession {
       onTranslation: (m) =>
         this.dispatch({ type: "translation", segmentId: m.segmentId, text: m.text }),
       onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),
+      onSong: (m) =>
+        this.dispatch({
+          type: "song",
+          song: {
+            id: m.songId,
+            title: m.title,
+            artist: m.artist,
+            lines: m.lines,
+            anchorOffsetMs: m.offsetMs,
+            durationMs: m.durationMs ?? undefined,
+          },
+          now: Date.now(),
+        }),
+      onSongSync: (m) =>
+        this.dispatch({ type: "songSync", songId: m.songId, offsetMs: m.offsetMs, now: Date.now() }),
+      onSongDone: (m) => this.dispatch({ type: "songDone", songId: m.songId }),
       onError: (m) => this.dispatch({ type: "error", message: m.message }),
     });
     this.client = client;

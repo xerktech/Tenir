@@ -1,4 +1,4 @@
-import type { Lang, MicSource } from "@tenir/contract";
+import type { Lang, LyricLine, MicSource } from "@tenir/contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiHandlers } from "../src/ws";
@@ -9,12 +9,16 @@ import {
   cueCountdownLabel,
   cueSecondsLeft,
   cueSecondsUntil,
+  currentLyricIndex,
   initialCaptureState,
   liveTranscript,
+  lyricWindow,
   reduce,
+  songPositionMs,
   type CaptureSessionDeps,
   type CaptureState,
   type LiveCue,
+  type LiveSong,
   type ApiLike,
 } from "../src/captureSession";
 
@@ -647,5 +651,185 @@ describe("CaptureSession", () => {
       expect(session.getState().activeCue).toBeNull();
       expect(session.getState().queuedCues).toEqual([]);
     });
+  });
+});
+
+// ---- songs & synced lyrics (XERK-184) --------------------------------------
+
+const line = (atMs: number, text: string): LyricLine => ({ atMs, text });
+
+const songAction = (
+  id: string,
+  offsetMs: number,
+  lines: LyricLine[],
+  now: number,
+  extra: Partial<Pick<LiveSong, "title" | "artist" | "durationMs">> = {},
+) =>
+  ({
+    type: "song" as const,
+    song: {
+      id,
+      title: extra.title ?? "Weird Fishes",
+      artist: extra.artist ?? "Radiohead",
+      lines,
+      anchorOffsetMs: offsetMs,
+      durationMs: extra.durationMs,
+    },
+    now,
+  });
+
+describe("song reducer (XERK-184)", () => {
+  const base = (): CaptureState => ({ ...initialCaptureState("phone-microphone"), running: true });
+
+  it("opens a song run and stamps the anchor with the arrival time", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a"), line(5000, "b")], 1000));
+    expect(s.song?.id).toBe("s1");
+    expect(s.song?.title).toBe("Weird Fishes");
+    expect(s.song?.artist).toBe("Radiohead");
+    expect(s.song?.anchorAt).toBe(1000);
+    expect(s.song?.anchorOffsetMs).toBe(60000);
+    expect(s.song?.lines.map((l) => l.text)).toEqual(["a", "b"]);
+  });
+
+  it("re-anchors the scroll on song.sync for the same run", () => {
+    let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    s = reduce(s, { type: "songSync", songId: "s1", offsetMs: 78000, now: 20000 });
+    expect(s.song?.anchorAt).toBe(20000);
+    expect(s.song?.anchorOffsetMs).toBe(78000);
+  });
+
+  it("ignores a song.sync for a run it no longer holds", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    const same = reduce(s, { type: "songSync", songId: "other", offsetMs: 1, now: 2 });
+    expect(same).toBe(s);
+  });
+
+  it("clears the box on song.done for the current run", () => {
+    let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    s = reduce(s, { type: "songDone", songId: "s1" });
+    expect(s.song).toBeNull();
+  });
+
+  it("ignores a song.done for a run it no longer holds", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    const same = reduce(s, { type: "songDone", songId: "other" });
+    expect(same).toBe(s);
+  });
+
+  it("replaces the run when a different song takes over", () => {
+    let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    s = reduce(s, songAction("s2", 0, [line(0, "x")], 2000, { title: "Starlight", artist: "Muse" }));
+    expect(s.song?.id).toBe("s2");
+    expect(s.song?.title).toBe("Starlight");
+  });
+
+  it("drops the live song box on stop", () => {
+    let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    s = reduce(s, { type: "stop" });
+    expect(s.song).toBeNull();
+  });
+});
+
+describe("songPositionMs (XERK-184)", () => {
+  it("advances the song position by elapsed wall-clock time from the anchor", () => {
+    const anchor = { anchorAt: 1000, anchorOffsetMs: 60000 };
+    expect(songPositionMs(anchor, 1000)).toBe(60000);
+    expect(songPositionMs(anchor, 1500)).toBe(60500);
+  });
+
+  it("never goes negative", () => {
+    expect(songPositionMs({ anchorAt: 1000, anchorOffsetMs: 100 }, 0)).toBe(0);
+  });
+});
+
+describe("currentLyricIndex (XERK-184)", () => {
+  const song = (): LiveSong => ({
+    id: "s1",
+    title: "T",
+    artist: "A",
+    anchorAt: 1000,
+    anchorOffsetMs: 0,
+    lines: [line(2000, "a"), line(7000, "b"), line(12000, "c")],
+  });
+
+  it("is -1 before the first line is reached", () => {
+    expect(currentLyricIndex(song(), 1000)).toBe(-1); // pos 0, first line at 2000
+  });
+
+  it("tracks the last line whose time has passed", () => {
+    expect(currentLyricIndex(song(), 4000)).toBe(0); // pos 3000 -> line 0 (2000)
+    expect(currentLyricIndex(song(), 9000)).toBe(1); // pos 8000 -> line 1 (7000)
+    expect(currentLyricIndex(song(), 20000)).toBe(2); // past the last line
+  });
+});
+
+describe("lyricWindow (XERK-184)", () => {
+  const lines = [
+    line(0, "a"),
+    line(5, "b"),
+    line(10, "c"),
+    line(15, "d"),
+    line(20, "e"),
+    line(25, "f"),
+  ];
+
+  it("shows the opening lines with nothing highlighted before the song starts", () => {
+    const w = lyricWindow(lines, -1);
+    expect(w.lines.map((l) => l.text)).toEqual(["a", "b", "c", "d"]);
+    expect(w.currentIndex).toBe(-1);
+  });
+
+  it("keeps the current line one row from the top mid-song", () => {
+    const w = lyricWindow(lines, 2); // current = "c"
+    expect(w.lines.map((l) => l.text)).toEqual(["b", "c", "d", "e"]);
+    expect(w.currentIndex).toBe(1);
+    expect(w.lines[w.currentIndex].text).toBe("c");
+  });
+
+  it("clamps the window at the end so it never runs past the last line", () => {
+    const w = lyricWindow(lines, 5); // current = last "f"
+    expect(w.lines.map((l) => l.text)).toEqual(["c", "d", "e", "f"]);
+    expect(w.lines[w.currentIndex].text).toBe("f");
+  });
+
+  it("clamps at the start for the very first line", () => {
+    const w = lyricWindow(lines, 0);
+    expect(w.lines.map((l) => l.text)).toEqual(["a", "b", "c", "d"]);
+    expect(w.currentIndex).toBe(0);
+  });
+
+  it("returns an empty window for a song with no synced lyrics", () => {
+    expect(lyricWindow([], 3)).toEqual({ lines: [], currentIndex: -1 });
+  });
+});
+
+describe("CaptureSession song handlers (XERK-184)", () => {
+  const songMsg = (songId: string, offsetMs: number, lines: LyricLine[]) =>
+    ({
+      type: "song" as const,
+      songId,
+      title: "Weird Fishes",
+      artist: "Radiohead",
+      atMs: 1000,
+      offsetMs,
+      durationMs: 318000,
+      lines,
+    });
+
+  it("shows a recognized song's lyrics, re-syncs, and clears on done", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    refs.client!.handlers.onSong?.(songMsg("s1", 60000, [line(0, "a"), line(5000, "b")]));
+    const st = session.getState().song;
+    expect(st?.id).toBe("s1");
+    expect(st?.anchorOffsetMs).toBe(60000);
+    expect(st?.durationMs).toBe(318000);
+    expect(typeof st?.anchorAt).toBe("number");
+
+    refs.client!.handlers.onSongSync?.({ type: "song.sync", songId: "s1", atMs: 2000, offsetMs: 78000 });
+    expect(session.getState().song?.anchorOffsetMs).toBe(78000);
+
+    refs.client!.handlers.onSongDone?.({ type: "song.done", songId: "s1" });
+    expect(session.getState().song).toBeNull();
   });
 });
