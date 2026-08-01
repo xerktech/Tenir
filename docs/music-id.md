@@ -64,8 +64,12 @@ Where it appears:
    different track must match twice in a row to replace a locked one, because
    crossfaded/DJ-blended windows flap between the outgoing and incoming track and
    would otherwise reset the box several times per blend. A live song run
-   **suppresses cues** (gated in `session.py` beside the translation flag);
-   precedence when concurrent is translation > song > cue.
+   **suppresses cues** (gated in `session.py` beside the translation flag). Song
+   and translation are otherwise **independent streams** (XERK-194): music
+   recognition is not gated on a translation run, so both can be live at once and
+   the web/mobile/phone surfaces render both. Only the glasses share one popup box
+   for them, and there precedence is **lyrics > translation > cue** — arbitrated on
+   the lens (`even/src/lens/controller.ts`), not the server.
 
    **Song-end prep (XERK-192).** The hold alone left the box lingering on the last
    lyric long after a song *finished* — the hold is deliberately long (it must

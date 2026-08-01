@@ -339,17 +339,51 @@ def test_no_window_skips_identify() -> None:
     asyncio.run(run())
 
 
-def test_scan_skipped_during_translation() -> None:
+def test_scan_runs_during_translation() -> None:
+    """Music recognition is independent of a translation run (XERK-194): lyrics and
+    translation are separate streams that can be live at once, so a song still
+    opens while someone is being translated. The single-box arbitration (lyrics
+    beat translation) lives on the glasses, not here."""
+
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         spy = _SpyMusicService([_match()])
         session._music = spy
         _arm_window(session)
-        session._translation_active = True  # translation owns the box
+        session._translation_active = True  # a translation run is live
         await session._scan_music_once()
-        assert spy.identify_calls == 0
-        assert _songs(sent) == []
+        assert spy.identify_calls == 1
+        assert len(_songs(sent)) == 1  # the song opened anyway
+        assert session._music_active is True
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_song_ends_during_translation() -> None:
+    """A live song must be able to END while a translation is running (XERK-194):
+    once the music stops matching past the hold, `song.done` goes out even mid
+    translation — otherwise a finished song would keep blocking the lyrics box on
+    the glasses for the whole translation."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        # First scan matches and opens the run; the second (and later) miss.
+        session._music = _SpyMusicService([_match(), None])
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run
+        assert session._music_active is True
+
+        # A translation kicks in while the song plays, then the music stops.
+        session._translation_active = True
+        session._music_last_match_monotonic = time.monotonic() - (
+            settings.music_hold_ms / 1000 + 1
+        )
+        await session._scan_music_once()  # miss past the hold -> end the run
+        assert session._music_active is False
+        assert len(_dones(sent)) == 1
         await session.close()
 
     asyncio.run(run())

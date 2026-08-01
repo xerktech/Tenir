@@ -808,10 +808,13 @@ class Session:
         """One scan step: fingerprint the window and open / re-sync / end a run."""
         if self._music is None:
             return
-        if self._translation_active:
-            # A translation run owns the box (translation > song > cue); don't
-            # open or refresh a song while someone is being translated.
-            return
+        # Music recognition runs independently of a translation run (XERK-194):
+        # lyrics and translation are two separate streams that can be live at the
+        # same time (web/mobile/phone render both at once), so a song must be free
+        # to open, re-sync and end while someone is being translated. Only the
+        # glasses have a single popup box for both, and there lyrics beat
+        # translation beats cues — the arbitration lives on the lens, not here.
+        # Cues still stand aside for either run (see `_consider_cue`).
         wav = self._music_window_wav()
         if wav is None:
             return
