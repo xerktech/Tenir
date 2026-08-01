@@ -35,7 +35,7 @@ import {
 } from "@evenrealities/even_hub_sdk";
 import { getTextWidth } from "@evenrealities/pretext";
 
-import { cueCountdownLabel, type LyricWindow } from "@tenir/client-core";
+import { cueCountdownLabel, LYRIC_LINES_BEFORE, type LyricWindow } from "@tenir/client-core";
 
 export const SCREEN_W = 576;
 export const SCREEN_H = 288;
@@ -499,6 +499,12 @@ export function songTitle(artist: string, title: string): string {
   return `${artist} — ${title}`;
 }
 
+// The marker column's width: every `songBody` row starts with a two-character
+// prefix ("> " or "  "), so the lyric text itself wraps at the box interior
+// minus the wider prefix — keeping wrap points identical whichever line the
+// marker sits on.
+const SONG_PREFIX_W = Math.max(getTextWidth("> "), getTextWidth("  "));
+
 /**
  * The song box's body rows (XERK-189): the lyric window with the line being sung
  * marked "> " — the lens counterpart of the bolded current line on web/mobile.
@@ -510,12 +516,60 @@ export function songTitle(artist: string, title: string): string {
  * (LYRIC_LINES_BEFORE context row above it). Before the song reaches its first
  * line (`currentIndex` -1) no row is marked, matching the un-bolded opening
  * lines on web/mobile; a song with no synced lyrics is the quiet ♪ ♪ ♪ marker.
+ *
+ * The body is FITTED to at most `maxLines` physical rows (XERK-191). The body
+ * container's height is fixed at the window's row count when the box is built;
+ * a lyric wide enough to wrap would push a repainted body past that height and
+ * the host would grow its native scroll bar over the lyrics until the long
+ * line scrolled off. Lyrics auto-scroll — a scroll bar there is never right —
+ * so the window is fitted to the box instead, and every word of the line being
+ * SUNG always renders:
+ *
+ *   - Each lyric wraps at the column width (the box interior minus the marker
+ *     column) — the SAME width whether or not the line is current, so a row
+ *     count never shifts just because the marker moved onto a borderline row.
+ *   - The current line's rows all render, wherever they fall.
+ *   - Above it, already-sung context keeps its LYRIC_LINES_BEFORE-row slot —
+ *     the TAIL rows of the previous lines (the words just sung) — growing to
+ *     absorb whatever the upcoming rows can't fill (the end of the song).
+ *   - Upcoming rows fill the rest, clipped bottom-first: a long current line
+ *     costs preview rows, never its own words. A clipped upcoming line shows
+ *     whole once it becomes current.
+ *
+ * The fitted row count is min(maxLines, the window's total wrapped rows), and
+ * a song's window only ever changes by sliding (its size is fixed), so the
+ * count the box was built with holds for the whole song — repaints can never
+ * overflow the container, and the host has nothing to scroll.
  */
-export function songBody(win: LyricWindow): string {
+export function songBody(win: LyricWindow, maxLines = SONG_BODY_LINES): string {
   if (win.lines.length === 0) return "♪ ♪ ♪";
-  return win.lines
-    .map((l, i) => `${i === win.currentIndex ? ">" : " "} ${l.text || "♪"}`)
-    .join("\n");
+  // Each lyric line as its physical rows, prefixed into the marker column:
+  // "> " on the current line's first row, "  " on every other row.
+  const wrapped = win.lines.map((l, i) =>
+    wrapLines(l.text || "♪", CUE_TEXT_W - SONG_PREFIX_W).map(
+      (row, j) => `${i === win.currentIndex && j === 0 ? ">" : " "} ${row}`,
+    ),
+  );
+  if (win.currentIndex < 0) {
+    // Not started: the opening rows, top-first, capped to the box.
+    return wrapped.flat().slice(0, maxLines).join("\n");
+  }
+  const above = wrapped.slice(0, win.currentIndex).flat();
+  const current = wrapped[win.currentIndex];
+  const below = wrapped.slice(win.currentIndex + 1).flat();
+  // A single line wrapping past the whole box cannot fit by definition — clip
+  // it as the last resort (its marker row first).
+  if (current.length >= maxLines) return current.slice(0, maxLines).join("\n");
+  const remaining = maxLines - current.length;
+  const aboveTake = Math.min(
+    above.length,
+    Math.max(remaining - below.length, Math.min(remaining, LYRIC_LINES_BEFORE)),
+  );
+  return [
+    ...above.slice(above.length - aboveTake),
+    ...current,
+    ...below.slice(0, remaining - aboveTake),
+  ].join("\n");
 }
 
 /**
