@@ -37,7 +37,10 @@ projects:
   cue surfaces in the notification shade while the app is backgrounded. `useCapture`
   computes the content with the pure `lib/sessionNotification.ts` and pushes it through
   `native/notification.ts` → the `PcmAudio.updateNotification` native method; tapping the
-  notification returns to the session. Gated on the `POST_NOTIFICATIONS` runtime permission
+  notification returns to the session. A cue's wall-clock expiry rides along so the service
+  reverts it to the capturing line on a main-looper `Handler` — the cue must clear itself
+  natively because the JS cue-release timer is frozen while the app is backgrounded, which
+  is exactly when the notification is in use. Gated on the `POST_NOTIFICATIONS` runtime permission
   (Android 13+), requested best-effort alongside the mic so a denial never blocks capture.
   Web has no equivalent — an ongoing OS notification for a backgrounded session is an
   Android-only capability, so this is a deliberate platform-specific exception to web↔app

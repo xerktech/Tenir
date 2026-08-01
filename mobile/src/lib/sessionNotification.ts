@@ -15,6 +15,15 @@ import type { LiveCue } from "@tenir/client-core";
 export interface SessionNotification {
   title: string;
   text: string;
+  /**
+   * Wall-clock epoch ms when a cue's on-screen window closes, so the native side can
+   * revert the notification to the capturing line on time (XERK-163). This must be done
+   * natively: the JS cue-release timer is frozen while the app is backgrounded — exactly
+   * when the notification is in use — so a cue would otherwise stay pinned in the shade
+   * until the app next returns to the foreground. `0` means no auto-expiry: the capturing
+   * fallback stays until a cue or `stop()` supersedes it.
+   */
+  endsAt: number;
 }
 
 /** Default title when no cue fills the notification — the app/brand name. */
@@ -31,8 +40,9 @@ export const CAPTURING_TEXT = "Live session · capturing audio";
 export function sessionNotificationContent(
   running: boolean,
   cue: LiveCue | null,
+  activeCueEndsAt: number | null,
 ): SessionNotification | null {
   if (!running) return null;
-  if (cue) return { title: cue.title, text: cue.body };
-  return { title: CAPTURING_TITLE, text: CAPTURING_TEXT };
+  if (cue) return { title: cue.title, text: cue.body, endsAt: activeCueEndsAt ?? 0 };
+  return { title: CAPTURING_TITLE, text: CAPTURING_TEXT, endsAt: 0 };
 }

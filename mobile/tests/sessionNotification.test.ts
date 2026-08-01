@@ -24,24 +24,34 @@ const cue = (over: Partial<LiveCue> = {}): LiveCue => ({
 // src/native/notification.ts and is only typechecked.
 describe("session notification content (XERK-163)", () => {
   it("shows nothing when no session is running", () => {
-    expect(sessionNotificationContent(false, null)).toBeNull();
+    expect(sessionNotificationContent(false, null, null)).toBeNull();
     // Even a lingering cue reference is ignored once the session has stopped.
-    expect(sessionNotificationContent(false, cue())).toBeNull();
+    expect(sessionNotificationContent(false, cue(), 123)).toBeNull();
   });
 
-  it("shows a plain capturing line while running with no active cue", () => {
-    expect(sessionNotificationContent(true, null)).toEqual({
+  it("shows a plain capturing line with no expiry while running with no active cue", () => {
+    expect(sessionNotificationContent(true, null, null)).toEqual({
       title: CAPTURING_TITLE,
       text: CAPTURING_TEXT,
+      endsAt: 0,
     });
   });
 
-  it("mirrors the active cue's title and body so it surfaces in the shade", () => {
+  it("mirrors the active cue's title/body and carries its wall-clock expiry", () => {
     const active = cue({ title: "Radioactivity", body: "Coined the term in 1898." });
-    expect(sessionNotificationContent(true, active)).toEqual({
+    // The cue's expiry rides along so the native side can clear it on time even while
+    // the JS release timer is frozen in the background.
+    expect(sessionNotificationContent(true, active, 1_000_000)).toEqual({
       title: "Radioactivity",
       text: "Coined the term in 1898.",
+      endsAt: 1_000_000,
     });
+  });
+
+  it("treats a missing cue expiry as no auto-revert rather than an immediate one", () => {
+    // endsAt 0 means the native side keeps the cue until superseded, not that it has
+    // already expired — guards against clearing a cue the instant it is shown.
+    expect(sessionNotificationContent(true, cue(), null)?.endsAt).toBe(0);
   });
 });
 
@@ -49,8 +59,9 @@ describe("session notification wiring (XERK-163)", () => {
   it("posts the notification from useCapture, keyed on the running/active-cue state", () => {
     const useCapture = readText("src/lib/useCapture.ts");
     expect(useCapture).toContain("postSessionNotification");
+    // Passes the cue's wall-clock expiry through so the native side can auto-clear it.
     expect(useCapture).toContain(
-      "sessionNotificationContent(state.running, state.activeCue)",
+      "sessionNotificationContent(state.running, state.activeCue, state.activeCueEndsAt)",
     );
     // Keyed on the cue id so it only re-posts when the band changes, not every render.
     expect(useCapture).toContain("state.activeCue?.id");
@@ -82,7 +93,7 @@ describe("session notification wiring (XERK-163)", () => {
       "android/app/src/main/java/com/tenir/pcmaudio/MicForegroundService.kt",
     );
     // A single reused id so cue updates replace, never stack, the foreground notification.
-    expect(service).toContain("fun update(context: Context, title: String, text: String)");
+    expect(service).toContain("fun update(context: Context, title: String, text: String, endsAt: Long)");
     expect(service).toContain("notify(NOTIFICATION_ID, buildNotification");
     // Tapping the notification returns to the running session.
     expect(service).toContain("setContentIntent");
@@ -92,5 +103,20 @@ describe("session notification wiring (XERK-163)", () => {
       "android/app/src/main/java/com/tenir/pcmaudio/PcmAudioModule.kt",
     );
     expect(module).toContain("fun updateNotification(");
+  });
+
+  it("reverts a cue to the capturing line on a native timer, not the frozen JS one", () => {
+    const service = readText(
+      "android/app/src/main/java/com/tenir/pcmaudio/MicForegroundService.kt",
+    );
+    // The revert runs on the main looper (alive under the FGS while backgrounded), so a
+    // cue clears at its wall-clock expiry even though the JS release timer is frozen.
+    expect(service).toContain("Handler(Looper.getMainLooper())");
+    expect(service).toContain("handler.postDelayed(revert");
+    expect(service).toContain("DEFAULT_TITLE, DEFAULT_TEXT");
+    // Each update cancels the prior pending revert; stop() clears it too.
+    expect(service).toContain("cancelRevert()");
+    // The delay is derived from the wall-clock expiry, floored at zero.
+    expect(service).toContain("(endsAt - System.currentTimeMillis()).coerceAtLeast(0L)");
   });
 });
