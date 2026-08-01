@@ -152,6 +152,92 @@ principle we could subtract the reference audio from the mic signal. Obtaining
 reference audio is a licensing and practicality dead end; listed for
 completeness.
 
+## Creative & product ideas
+
+The tiers above fix the pipeline; these use the same data to make the *product*
+richer. They are independent of each other and of P1–P9 (though several get
+better with the P1 tag), and each would be its own ticket. Ordered roughly by
+value-for-effort.
+
+**C1. The session soundtrack.** History already drops a `♪ TITLE — ARTIST`
+marker per song (`songs` table, `at_ms`). Roll them up into a per-conversation
+"soundtrack" strip — every track that played, in order — and make it exportable:
+a text list, or ready-made search links (Spotify / YouTube / Apple Music take
+`artist title` query URLs, so no API keys or accounts). "What was that song from
+dinner last night?" becomes a solved problem. Web + Android + glasses phone
+History in parity.
+
+**C2. Jump to the moment.** Full session audio is retained
+(`persistence/audio.py`) and each song row carries `at_ms` on the session
+timeline. Make the ♪ marker a deep link that starts history playback at that
+offset — and conversely, when replaying audio, surface the song marker as the
+playhead crosses it. Cheap (the data is already joined in
+`ConversationDetail`), and it turns songs into the natural landmarks people
+actually remember conversations by ("it was right after that song came on").
+
+**C3. Ambient now-playing / scrobbling.** Tenir already is an ambient music
+recognizer; expose it. A `now_playing` field on the session REST surface plus
+an optional outbound webhook on `song` / `song.done` makes the household's
+music state available to home automation, and an opt-in Last.fm-style scrobbler
+falls out of the same hook. Strictly opt-in and off by default — it exports
+listening data from a self-hosted system, so it must be a deliberate choice
+(same posture as `music_lyrics_endpoint` for on-prem LRCLIB).
+
+**C4. Karaoke mode.** The lyric window is fixed at one line behind / two ahead
+(`LYRIC_LINES_BEFORE`/`AFTER`, `packages/client-core/src/captureSession.ts`).
+A per-session toggle that widens the look-ahead and leads the anchor by a
+second or two turns the glasses into a prompter — you see the line *before*
+you have to sing it. Almost entirely client-side; the sync machinery already
+does the hard part. (Pairs with the "singing along" open question: karaoke mode
+is the one context where suppressing the user's own singing is unambiguously
+right.)
+
+**C5. Lyric translation for foreign songs.** We suppress *transcript*
+translation during songs (P3) — but translating the *lyric lines themselves*
+is the feature that gate accidentally hints at. On demand (not per-line spam),
+run the fetched `SyncedLine` texts through the existing translation backend
+once per song and show original + translation stacked in the lyric card.
+Language learners get subtitled music for free. Display-only, like the lyrics
+themselves — nothing new is persisted, so the licensing posture is unchanged.
+
+**C6. Track card for instrumental / no-lyrics songs.** When LRCLIB has nothing
+synced, the card today shows a bare title over `♪ ♪ ♪`. Shazam's response
+already carries more than we keep (album, year, artwork URL) — `_parse_match`
+drops it. Keep album/year in `MusicMatch` and let the no-lyrics card show a
+small track card instead of placeholder notes. Low effort, and it makes the
+feature feel finished for the large minority of tracks with no synced lyrics.
+
+**C7. Ambience as session metadata.** "Music was playing" is a strong proxy
+for *where you were* (dinner, bar, gym, party). Aggregate song-run coverage
+into a per-conversation ambience hint (e.g. `music_ms` alongside duration) and
+use it two ways: as a history filter chip ("sessions with music"), and as a
+pipeline hint — sessions with heavy music coverage could run a more
+conservative VAD or suppress cue generation entirely, the way a human
+assistant knows not to interject at a party.
+
+**C8. A free labeled corpus for STT robustness.** A P2-flagged segment is a
+rare artifact: real-world music-over-mic audio *with known ground-truth text*
+(the lyric lines it matched). Harvested from retained audio, that's a
+benchmark set for exactly the failure XERK-182 heuristics guard against —
+feed it to `scripts/stt_eval/` to score STT models on music robustness, tune
+the hallucination guard against data instead of anecdotes, and regression-test
+future model swaps (`docs/stt-model-selection.md`) on the hardest ambient case
+we actually encounter. Internal tooling only; nothing ships to clients.
+
+**C9. Listening stats.** Self-hosted means the household owns its data: a
+small stats view over the `songs` table — most-heard tracks and artists, by
+week or by conversation — is a join away. Pure novelty, but the kind users
+show people. (Keep it household-scoped like everything else; it's derived from
+rows we already store, so no new privacy surface.)
+
+**C10. Duration-aware scan scheduling.** `MusicMatch.duration_ms` plus the
+current offset tells us *when the song will end* — the scan loop ignores this
+today and re-checks on a flat cadence (`music_lock_interval_ms`). Scheduling a
+scan just after the predicted end catches the next track seconds after it
+starts (instead of up to 18 s late), and skipping mid-song re-checks when sync
+is corroborated (P4/P5) spends fewer Shazam calls for a snappier box. Pure
+`_music_scan_loop` change, tunable with the existing replay harness.
+
 ## Suggested sequencing
 
 1. **P1** — contract field + `segments.song_id` + clients dim live sung
@@ -161,6 +247,10 @@ completeness.
 3. **P3** — search exclusion, translation gating, history collapse.
 4. **P4** — lock corroboration from the P2 matcher.
 5. Re-evaluate P5/P6 once 1–4 are live; P7–P9 stay parked.
+
+The C-ideas slot in independently whenever wanted — C1, C2, C6 and C10 are
+cheap and need nothing from the tiers; C8 wants P2's flag first; C4/C5/C7 are
+product calls to make deliberately.
 
 ## Open questions
 

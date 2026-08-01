@@ -144,8 +144,10 @@ HTTP stack was observed spending 10+ minutes on one call on a flaky upstream.
 
 [`docs/music-lyrics-usefulness.md`](music-lyrics-usefulness.md) (XERK-193)
 brainstorms how the song data — the run flag, the sync anchor, the synced lyric
-lines — can improve the rest of the pipeline: tagging and suppressing sung
-captions, search/translation hygiene, and lyric-corroborated lock keeping.
+lines — can improve the rest of the pipeline (tagging and suppressing sung
+captions, search/translation hygiene, lyric-corroborated lock keeping) and what
+products it enables (session soundtracks, replay landmarks, karaoke mode,
+now-playing hooks).
 
 ## Verifying against real music
 
