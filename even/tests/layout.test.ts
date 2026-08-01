@@ -40,9 +40,12 @@ import {
   MENU_Y,
   menuText,
   occludedCaption,
+  SCREEN_H,
   SCREEN_W,
   statusLine,
   tailCueBody,
+  TRANSLATION_BODY_LINES,
+  TRANSLATION_ROWS,
   wrapLines,
 } from "../src/lens/layout";
 
@@ -724,6 +727,59 @@ describe("cue popup (XERK-81, XERK-133)", () => {
       expect(cueRows(card)).toBe(CUE_ROWS);
       expect(cueBodyText(card).split("\n")).toHaveLength(CUE_BODY_LINES);
       expect(cueBodyText(card)).toBe(wrapped.slice(-CUE_BODY_LINES).join("\n"));
+    });
+
+    it("windows to a caller's maxLines — the translation box keeps five rows (XERK-176)", () => {
+      const rows = Array.from({ length: 9 }, (_, i) => `row${i}`);
+      const tailed = tailCueBody(rows.join("\n"), TRANSLATION_BODY_LINES);
+      // One more row survives than a cue's four-row window.
+      expect(tailed).toBe(rows.slice(-TRANSLATION_BODY_LINES).join("\n"));
+      expect(tailed.split("\n")).toHaveLength(TRANSLATION_BODY_LINES);
+      expect(tailed).toContain("row4"); // the 5th-from-newest is now kept
+      expect(tailed).not.toContain("row3"); // the 6th-from-newest still falls off
+    });
+  });
+
+  describe("the translation box body is one row taller than a cue's (XERK-176)", () => {
+    const CONTENTS = { status: "listening", caption: "hi", clock: "2:05 PM" };
+    // A run long enough to overflow either window.
+    const long = {
+      title: "Translation",
+      body: Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "),
+    };
+    const bodyOf = (page: ReturnType<typeof buildCuePage>) =>
+      page.textObject!.find((t) => t.containerName === CONTAINER.cueBody.name)!;
+
+    it("declares five body rows — CUE_BODY_LINES plus one", () => {
+      expect(TRANSLATION_BODY_LINES).toBe(5);
+      expect(TRANSLATION_BODY_LINES).toBe(CUE_BODY_LINES + 1);
+      expect(TRANSLATION_ROWS).toBe(1 + TRANSLATION_BODY_LINES);
+    });
+
+    it("gives an overflowing run a six-row box: the title over five body rows", () => {
+      expect(cueRows(long, TRANSLATION_BODY_LINES)).toBe(TRANSLATION_ROWS);
+      const bb = cueBodyBox(long, TRANSLATION_BODY_LINES);
+      expect(bb.height).toBe(TRANSLATION_BODY_LINES * LINE_H);
+      const body = bodyOf(buildCuePage(CONTENTS, long, 10, TRANSLATION_BODY_LINES));
+      expect(body.height).toBe(TRANSLATION_BODY_LINES * LINE_H);
+    });
+
+    it("still lands on whole caption rows and fits the screen (masks six, XERK-119)", () => {
+      const box = cueBox(long, TRANSLATION_BODY_LINES);
+      expect(box.height).toBe(cueHeight(TRANSLATION_ROWS));
+      // Within a whole number of transcript rows — no half-line the host scrolls.
+      expect(box.height).toBeLessThanOrEqual((TRANSLATION_ROWS + 1) * LINE_H);
+      expect(box.height).toBeLessThan(SCREEN_H); // the taller box still fits
+      const [first, last] = cueRowRange(long, TRANSLATION_BODY_LINES);
+      expect(first).toBe(0);
+      expect(last).toBe(TRANSLATION_ROWS - 1); // six whole rows masked (0..5)
+    });
+
+    it("leaves a cue untouched at four body rows", () => {
+      // Same overflowing body, but the cue path keeps the CUE_BODY_LINES window.
+      expect(cueRows(long)).toBe(CUE_ROWS);
+      expect(cueBodyBox(long).height).toBe(CUE_BODY_LINES * LINE_H);
+      expect(bodyOf(buildCuePage(CONTENTS, long, 10)).height).toBe(CUE_BODY_LINES * LINE_H);
     });
   });
 });
