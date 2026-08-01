@@ -14,6 +14,8 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
 
+import com.tenir.R
+
 /**
  * Microphone foreground service so the OS keeps audio capture running while the app is
  * backgrounded. Started/stopped by [PcmAudioModule] around a live session; its ongoing
@@ -97,7 +99,7 @@ class MicForegroundService : Service() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             // Keep the session/brand context visible even when a cue fills the title.
             .setSubText(DEFAULT_TITLE)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(contentIntent(context))
             .setOngoing(true)
             // LOW-importance updates are silent already; be explicit so a stream of
