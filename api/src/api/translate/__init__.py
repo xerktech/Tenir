@@ -30,7 +30,7 @@ def make_translator() -> Translator | None:
 
         return OpenAITranslator(
             endpoint=settings.litellm_endpoint,
-            model=settings.llm_model,
+            model=settings.translation_model,
             api_key=settings.litellm_api_key,
             disable_thinking=settings.cue_disable_thinking,
         )

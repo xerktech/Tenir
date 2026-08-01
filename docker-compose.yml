@@ -69,8 +69,11 @@ services:
       # Live translations (XERK-160): non-English turns are translated to English
       # and shown alongside the transcript (the glasses show them in the cue box).
       # Off by default like cues; "stub" is model-free, "openai" routes to the
-      # same chat model + gateway the cues use (`--profile cues` for the model).
+      # same gateway + Ollama backend the cues use (`--profile cues` for the
+      # model) via the dedicated gpt-oss:120b-translate alias — same weights,
+      # reasoning_effort low (XERK-180; see scripts/translation_eval/).
       API_TRANSLATION_BACKEND: ${API_TRANSLATION_BACKEND:-off}
+      API_TRANSLATION_MODEL: ${API_TRANSLATION_MODEL:-gpt-oss:120b-translate}
       # How long speech may go quiet after the last non-English activity before
       # the run is declared done and the glasses' dismiss countdown starts.
       API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}

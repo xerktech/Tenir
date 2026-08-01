@@ -40,6 +40,29 @@ model_list:
       api_base: http://ollama-cue:11434/v1
       api_key: tenir-local
       reasoning_effort: medium
+      # Without this allowlist, drop_params silently strips reasoning_effort
+      # (LiteLLM's model map doesn't know gpt-oss:120b supports it) and the
+      # backend runs at Ollama's default — verified by watching the proxied
+      # payloads during the XERK-180 route split. Ollama's gpt-oss default
+      # happens to BE medium, so cues behaved as intended, but only by luck;
+      # pin it explicitly so the dial actually works on both routes.
+      allowed_openai_params: ["reasoning_effort"]
+
+  # Translation route (XERK-180) — SAME weights and backend as the cue alias
+  # above, but with the reasoning dial at low. The Aug 2026 translation eval
+  # (scripts/translation_eval/RESULTS-2026-08.md) measured low at ~2x the speed
+  # of medium (p50 0.82s vs 1.21s serialized, p90 3.6s vs 7.6s at prod
+  # concurrency — medium blows the 1-2s translation budget) with accuracy
+  # within noise on conversational speech; dedicated smaller models all lost
+  # accuracy. Splitting the alias lets translations shed the cue route's
+  # reasoning tax without touching cue behavior. Matches API_TRANSLATION_MODEL.
+  - model_name: gpt-oss:120b-translate
+    litellm_params:
+      model: openai/gpt-oss:120b
+      api_base: http://ollama-cue:11434/v1
+      api_key: tenir-local
+      reasoning_effort: low
+      allowed_openai_params: ["reasoning_effort"]
 
 litellm_settings:
   # Drop OpenAI params the backend doesn't implement instead of erroring.

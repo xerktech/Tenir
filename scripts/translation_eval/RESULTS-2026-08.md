@@ -11,6 +11,16 @@ robustness. The win is a dedicated *route*: the same `gpt-oss:120b` with
 accuracy within noise of production, at zero extra VRAM and no new model to
 operate.**
 
+> **Correction (route-split implementation, 2026-08-01):** while shipping the
+> split we watched the gateway's proxied payloads and found LiteLLM's
+> `drop_params: true` had been silently stripping `reasoning_effort` before it
+> reached Ollama — the config *set* medium but the backend actually ran at
+> Ollama's own gpt-oss default, which happens to be medium too, so measured
+> production behavior (and this eval's medium baseline, replayed directly
+> against Ollama with the field honored) was unaffected. The route split adds
+> `allowed_openai_params: ["reasoning_effort"]` to both aliases so the dial is
+> real on each.
+
 ## Method
 
 Harness in this directory (see README.md); everything replays the shipped

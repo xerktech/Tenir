@@ -1,7 +1,8 @@
 """Chat-model translator via the LiteLLM gateway (XERK-160).
 
 POSTs /chat/completions to the same endpoint + key the STT finals and cues use
-(prod: the ``gpt-oss:120b`` alias, the cue model). One call per finalized
+(prod: the ``gpt-oss:120b-translate`` alias — the cue model's weights on a
+dedicated route with reasoning_effort low; XERK-180). One call per finalized
 non-English turn: the
 turn's text goes in, an English rendering comes out as a small JSON object
 (``{"translation": …}``) so a chatty model can't smuggle commentary into the
