@@ -140,6 +140,13 @@ minute-scale ceiling because Shazam rate-limits aggressive scanning from one IP,
 and each recognition call carries a hard timeout because shazamio's retrying
 HTTP stack was observed spending 10+ minutes on one call on a flaky upstream.
 
+## Where this can go next
+
+[`docs/music-lyrics-usefulness.md`](music-lyrics-usefulness.md) (XERK-193)
+brainstorms how the song data — the run flag, the sync anchor, the synced lyric
+lines — can improve the rest of the pipeline: tagging and suppressing sung
+captions, search/translation hygiene, and lyric-corroborated lock keeping.
+
 ## Verifying against real music
 
 `scripts/music_eval/` replays a **recorded session's audio** through the shipped
