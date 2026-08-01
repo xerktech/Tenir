@@ -168,8 +168,9 @@ type Mutable = {
   // says the other language is done being spoken (`translation.done`); the box
   // is then dismissed at once — the server already held ~translation_hold_ms of
   // silence, so there is no on-lens countdown to wait out (XERK-181). `done`
-  // therefore only ever lingers true while a finished run waits behind the open
-  // menu, which dismisses it on closeMenu. `sourceLang` is the run's detected
+  // therefore only ever lingers true while a finished run waits behind a box that
+  // outranks it — the open menu or a live song (XERK-194) — which dismisses it
+  // when the box frees (closeMenu / dismissSong). `sourceLang` is the run's detected
   // spoken language, fixed from its first turn, so the box title can read
   // "<Source> → English" (XERK-173).
   translation: { texts: string[]; done: boolean; sourceLang?: string } | null;
@@ -177,9 +178,10 @@ type Mutable = {
   // auto-scroll in the cue box's slot, exactly like a translation run reuses it.
   // The scroll is client-driven from the anchor stamped on the LiveSong: `song`
   // (re)opens it, `song.sync` re-anchors to correct drift, `song.done` clears it.
-  // A live song owns the box over a cue (the api suppresses cues while it plays,
-  // as with a translation) but yields to a translation run and the menu (see the
-  // precedence in `rebuildPage`). `null` when nothing is playing.
+  // A live song owns the box over a translation run and a cue (XERK-194: on the
+  // glasses lyrics beat translation beat cues; the api suppresses cues while it
+  // plays), yielding only to the interactive menu (see the precedence in
+  // `rebuildPage`). `null` when nothing is playing.
   song: LiveSong | null;
 };
 
@@ -309,14 +311,14 @@ export async function wireLens(
     if (!popupUp()) return fitCaption(bounded);
     // Mask exactly the rows the popup that's up covers: the cue/translation box
     // (XERK-112) hides more rows than the menu, and only as many as it is tall
-    // (XERK-119) — a short box frees the transcript rows below it. The menu
-    // outranks a held translation, so its range wins while it is open.
+    // (XERK-119) — a short box frees the transcript rows below it. The masked
+    // range follows the box on top: menu > song > translation > cue (XERK-194).
     const [first, last] = state.menu
       ? [MENU_ROW_FIRST, MENU_ROW_LAST]
-      : state.translation
-        ? cueRowRange(translationCard(), TRANSLATION_BODY_LINES)
-        : state.song
-          ? cueRowRange(songCard(), SONG_BODY_LINES)
+      : state.song
+        ? cueRowRange(songCard(), SONG_BODY_LINES)
+        : state.translation
+          ? cueRowRange(translationCard(), TRANSLATION_BODY_LINES)
           : state.cue
             ? cueRowRange(state.cue)
             : [MENU_ROW_FIRST, MENU_ROW_LAST];
@@ -353,10 +355,12 @@ export async function wireLens(
   // host scrolls (XERK-133), left untouched so a countdown tick can't reset it.
   const renderMenu = () => {
     if (menuFallback) return;
+    // Repaint the title row of whichever box is on top (XERK-194): song beats
+    // translation beats cue, the menu above all.
     if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
+    else if (state.song) writer.set(CONTAINER.menu, cueTitleLine(songCard()));
     else if (state.translation)
       writer.set(CONTAINER.menu, cueTitleLine(translationCard()));
-    else if (state.song) writer.set(CONTAINER.menu, cueTitleLine(songCard()));
     else if (state.cue) writer.set(CONTAINER.menu, cueTitleLine(state.cue, cueCountdown()));
   };
   // Repaint the scrolling body of the song box (XERK-184). Unlike a cue (written
@@ -364,9 +368,10 @@ export async function wireLens(
   // turn), a song's lyric window advances on its OWN off the local clock, so the
   // ticker repaints this container as the current line moves — the writer drops
   // the frame whenever the window hasn't turned over. Nothing to paint unless the
-  // song box is the one actually on screen (the menu and a translation outrank it).
+  // song box is the one actually on screen — only the menu outranks it now
+  // (XERK-194: the song beats a translation for the box).
   const renderSongBody = () => {
-    if (menuFallback || state.menu || state.translation || !state.song) return;
+    if (menuFallback || state.menu || !state.song) return;
     writer.set(CONTAINER.cueBody, cueBodyText(songCard()));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
@@ -393,29 +398,31 @@ export async function wireLens(
    */
   const rebuildPage = () => {
     const contents = pageContents();
-    // The menu outranks everything (it is interactive); a live translation run
-    // outranks a cue (XERK-160: cues neither trigger nor appear mid-run). The
-    // translation box IS the cue box — same page shape, same geometry.
-    // The song box IS the cue box — same page shape, same geometry — showing
-    // SONG_BODY_LINES lyric rows. Precedence (matching the server + web/mobile):
-    // menu > translation > song > cue > main.
+    // The menu outranks everything (it is interactive). On the glasses lyrics beat
+    // translation beat cues (XERK-194): the single popup box can hold only one, so a
+    // recognized song owns it over a live translation run, which owns it over a cue
+    // (XERK-160: cues neither trigger nor appear mid-run). Web/mobile/phone have room
+    // to show lyrics and a translation at once, so they render both — only the lens
+    // arbitrates. The translation box and the song box each ARE the cue box — same
+    // page shape, same geometry (the song showing SONG_BODY_LINES lyric rows).
+    // Precedence: menu > song > translation > cue > main.
     const page = state.menu
       ? buildMenuPage(contents, state.menu)
-      : state.translation
-        ? buildCuePage(contents, translationCard(), undefined, TRANSLATION_BODY_LINES)
-        : state.song
-          ? buildCuePage(contents, songCard(), undefined, SONG_BODY_LINES)
+      : state.song
+        ? buildCuePage(contents, songCard(), undefined, SONG_BODY_LINES)
+        : state.translation
+          ? buildCuePage(contents, translationCard(), undefined, TRANSLATION_BODY_LINES)
           : state.cue
             ? buildCuePage(contents, state.cue, cueCountdown())
             : buildMainPage(contents);
     const openingMenu = state.menu !== null;
-    const openingTranslation = state.menu === null && state.translation !== null;
-    const openingSong =
-      state.menu === null && state.translation === null && state.song !== null;
+    const openingSong = state.menu === null && state.song !== null;
+    const openingTranslation =
+      state.menu === null && state.song === null && state.translation !== null;
     const openingCue =
       state.menu === null &&
-      state.translation === null &&
       state.song === null &&
+      state.translation === null &&
       state.cue !== null;
     writer.run(async () => {
       const ok = await withBleTimeout(bridge.rebuildPageContainer(page), false);
@@ -653,22 +660,26 @@ export async function wireLens(
     tick += 1;
     renderClock();
     if (state.recording && state.connection === "open") renderStatus();
-    if (state.cue) {
-      renderMenu();
-      sessionPage?.tickCue(cueCountdown());
-    } else if (state.translation) {
-      // A live run animates the "Translating…" dots (XERK-173): only the title
-      // row repaints, and the writer drops the frame when nothing changed. A
-      // finished run never lingers here — it is dismissed at once (XERK-181) —
-      // so the box the ticker sees is always live and always animating.
-      renderMenu();
-    } else if (state.song) {
+    // Advance whichever box owns the lens, in precedence order (XERK-194: song
+    // beats translation beats cue). A song and a translation can be live at once
+    // — the song owns the box, so its lyrics scroll while the held translation
+    // waits; the phone mirror still ticks the song alongside the inline translation.
+    if (state.song) {
       // A live song's lyrics auto-scroll off the local clock (XERK-184): repaint
       // the body window so the current line advances as the song plays, on both
       // surfaces it shows on. The writer drops the frame whenever the window
       // hasn't turned over, so this costs BLE only when the lyric line changes.
       renderSongBody();
       sessionPage?.tickSong();
+    } else if (state.translation) {
+      // A live run animates the "Translating…" dots (XERK-173): only the title
+      // row repaints, and the writer drops the frame when nothing changed. A
+      // finished run never lingers here — it is dismissed at once (XERK-181) —
+      // so the box the ticker sees is always live and always animating.
+      renderMenu();
+    } else if (state.cue) {
+      renderMenu();
+      sessionPage?.tickCue(cueCountdown());
     }
   }, TICK_MS);
 
@@ -726,22 +737,26 @@ export async function wireLens(
 
   /**
    * An English translation of one finalized non-English turn arrived (XERK-160).
-   * Two jobs: pair it with its turn for the phone mirror, and put it in the
-   * on-lens box — the cue box's slot, place and size (the ticket's contract).
-   * Every turn of a live run appends, stacking into the SAME box (XERK-181; the
-   * box tails to its newest rows, XERK-172); a fresh run starts only once the
-   * prior one is gone (a done run is dismissed at once, XERK-181, so the only
-   * "done" run still around is one held behind the open menu). A cue holding the
-   * box loses it immediately — a translation is time-sensitive and always
-   * overwrites a cue's countdown (XERK-181) — and the cue is embedded for review
-   * rather than dropped.
+   * Two jobs: pair it with its turn for the phone mirror, and (unless a song owns
+   * the box) put it in the on-lens box — the cue box's slot, place and size (the
+   * ticket's contract). Every turn of a live run appends, stacking into the SAME
+   * box (XERK-181; the box tails to its newest rows, XERK-172); a fresh run starts
+   * only once the prior one is gone (a done run is dismissed at once, XERK-181, so
+   * the only "done" run still around is one held behind the open menu or a song).
+   * A cue holding the box loses it immediately — a translation is time-sensitive
+   * and always overwrites a cue's countdown (XERK-181) — and the cue is embedded
+   * for review rather than dropped. A recognized song outranks the translation on
+   * the lens, though (XERK-194: lyrics beat translation): while one plays the run
+   * still accumulates for the phone mirror and takes the box only once the song
+   * ends, so a translation never overwrites the lyrics box.
    */
   const showTranslation = (segmentId: string, text: string, sourceLang?: string) => {
     const seg = state.segments.find((s) => s.id === segmentId);
     if (seg) seg.translation = text;
     if (!state.translation || state.translation.done) {
       // A new run: its source language, fixed here from the first turn, titles
-      // the box "<Source> → English" (XERK-173).
+      // the box "<Source> → English" (XERK-173). A cue can only be showing when no
+      // song owns the box, so this embed never displaces a song.
       state.translation = { texts: [text], done: false, sourceLang };
       if (state.cue) {
         embedPastCue(state.cue);
@@ -763,9 +778,9 @@ export async function wireLens(
         state.translation.texts.shift();
       }
     }
-    // The menu outranks the box (it is interactive): a run behind it keeps
-    // accumulating and shows when the menu closes.
-    if (!state.menu) rebuildPage();
+    // The menu and a live song each outrank the box: a run behind either keeps
+    // accumulating and shows only when the box frees (closeMenu / dismissSong).
+    if (!state.menu && !state.song) rebuildPage();
     syncPhone();
   };
 
@@ -774,27 +789,26 @@ export async function wireLens(
    * XERK-160): the run is over, so the box is dismissed at once (XERK-181). The
    * server already held ~translation_hold_ms of silence before sending this —
    * that is the read time — so there is no on-lens countdown to add. Behind the
-   * open menu the finished run waits; `closeMenu` dismisses it when the box would
-   * otherwise become visible.
+   * open menu OR a live song (XERK-194) the finished run waits; `closeMenu` /
+   * `dismissSong` dismiss it when the box would otherwise become visible.
    */
   const finishTranslation = () => {
     if (!state.translation || state.translation.done) return;
     state.translation.done = true;
-    if (!state.menu) dismissTranslation();
+    if (!state.menu && !state.song) dismissTranslation();
   };
 
   /** The translation box leaves; queued cues resume now the run is over (XERK-160). */
   const dismissTranslation = () => {
     if (!state.translation) return;
     state.translation = null;
-    if (!state.menu) {
-      // A live song outranks a cue for the box (XERK-184): when it is playing it
-      // retakes the box, so don't pull a queued cue up (it would just be hidden,
-      // its timer running). Only drain the queue when no song owns the box.
-      if (!state.song) {
-        state.cue = state.cueQueue.shift() ?? null;
-        if (state.cue) startCueTimer();
-      }
+    // The translation only holds the box when neither the menu nor a live song is
+    // above it (XERK-194: song > translation): only then does its leaving free the
+    // box, so drain a queued cue up and repaint. Behind either, the run was hidden
+    // and there is nothing on screen to change.
+    if (!state.menu && !state.song) {
+      state.cue = state.cueQueue.shift() ?? null;
+      if (state.cue) startCueTimer();
       rebuildPage();
     }
     syncPhone();
@@ -807,10 +821,12 @@ export async function wireLens(
    * (`anchorAt` = the wall-clock this client applied it, `anchorOffsetMs` = how
    * far into the track the server says we are), so `currentLyricIndex(song, now)`
    * reads straight off the real clock and the ticker carries the window forward
-   * (renderSongBody). A song owns the box over a cue exactly as a translation does
-   * (the api suppresses cues while it plays); a showing cue is embedded for review
-   * rather than dropped. The menu and a live translation outrank it, so behind
-   * either the song is held and shows when the box frees (closeMenu / dismissTranslation).
+   * (renderSongBody). On the glasses lyrics beat translation beat cues (XERK-194):
+   * the song takes the box over a live translation run (which is held, still
+   * accumulating for the phone mirror) and over a cue (the api suppresses cues
+   * while it plays) — a showing cue is embedded for review rather than dropped.
+   * Only the interactive menu outranks the song, so behind it the song is held and
+   * shows when the menu closes (closeMenu).
    */
   const showSong = (m: Song) => {
     state.song = {
@@ -828,9 +844,11 @@ export async function wireLens(
       state.cue = null;
       clearCueTimer();
     }
-    // The menu and a live translation outrank the song box: behind either it is
-    // held and takes the box once that frees.
-    if (!state.menu && !state.translation) rebuildPage();
+    // Only the interactive menu outranks the song box (XERK-194): behind it the
+    // song is held and takes the box once the menu closes. A live translation run
+    // yields the box to the song (it stays held, still accumulating), so opening
+    // the song here repaints straight over it.
+    if (!state.menu) rebuildPage();
     syncPhone();
   };
 
@@ -858,19 +876,35 @@ export async function wireLens(
   };
 
   /**
-   * The song box leaves (XERK-184): queued cues resume now the box is free, the
-   * same way `dismissTranslation` drains them. The server held its own hold
-   * window before `song.done`, so — like a finished translation run (XERK-181) —
-   * the box is dismissed at once, with no on-lens countdown.
+   * The song box leaves (XERK-184): whatever the song outranked resumes now the
+   * box is free (XERK-194). Precedence below it is translation > cue: a run that
+   * was held behind the song retakes the box (or, if it finished while hidden, is
+   * dismissed now with no on-lens countdown, XERK-181, draining a queued cue);
+   * otherwise a queued cue pops, the same way `dismissTranslation` drains them.
+   * The server held its own hold window before `song.done`, so the box is
+   * dismissed at once. Nothing on screen changes while the menu owns the popup.
    */
   const dismissSong = () => {
     if (!state.song) return;
     state.song = null;
-    if (!state.menu && !state.translation) {
-      state.cue = state.cueQueue.shift() ?? null;
-      if (state.cue) startCueTimer();
-      rebuildPage();
+    if (state.menu) {
+      syncPhone();
+      return;
     }
+    if (state.translation) {
+      // A translation run was held behind the song. Finished while hidden → dismiss
+      // it now (dismissTranslation drains a queued cue); still live → it retakes the
+      // box and keeps stacking its turns.
+      if (state.translation.done) dismissTranslation();
+      else {
+        rebuildPage();
+        syncPhone();
+      }
+      return;
+    }
+    state.cue = state.cueQueue.shift() ?? null;
+    if (state.cue) startCueTimer();
+    rebuildPage();
     syncPhone();
   };
 
@@ -941,6 +975,16 @@ export async function wireLens(
   const closeMenu = () => {
     state.menu = null;
     menuFallback = false;
+    // Precedence below the menu is song > translation > cue (XERK-194): whatever
+    // ranks highest among what's held retakes the freed box.
+    if (state.song) {
+      // A live song retakes the box when the menu closes (XERK-184), outranking a
+      // held translation (which stays held) and a queued cue: rebuild to the song
+      // box and leave the rest to drain when the song ends (dismissSong).
+      rebuildPage();
+      syncPhone();
+      return;
+    }
     if (state.translation) {
       // A translation run was held behind the menu (XERK-160). A run that
       // finished while the menu was up is dismissed now, as the box would
@@ -952,14 +996,6 @@ export async function wireLens(
         rebuildPage();
         syncPhone();
       }
-      return;
-    }
-    // A live song retakes the box when the menu closes (XERK-184), outranking a
-    // queued cue: rebuild to the song box and leave the queue to drain when the
-    // song ends (dismissSong).
-    if (state.song) {
-      rebuildPage();
-      syncPhone();
       return;
     }
     // A cue that arrived while the menu owned the popup now gets its turn (XERK-102).

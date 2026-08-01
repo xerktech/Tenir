@@ -1575,23 +1575,79 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     expect(document.getElementById("session-text")!.textContent).toContain("Sun");
   });
 
-  it("yields the box to a translation run, then retakes it when the run is done (translation > song)", async () => {
-    const t = await record();
+  it("keeps the lyrics box when a translation arrives mid-song (XERK-194: lyrics beat translation)", async () => {
+    const t = await record({ withPhone: true });
     t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50);
     expect(t.text(C().menu)).toBe(TITLE);
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
 
-    // A translation run outranks the song box (precedence: translation > song).
+    // The ticket's bug: a song is playing and now a non-English turn is
+    // translated. On the glasses the song owns the single box, so the translation
+    // must NOT overwrite the lyrics — the box and its scrolling lyrics stay put.
     t.api.handlers().onFinal?.(FINAL_ES);
     t.api.handlers().onTranslation?.(TR);
     await vi.advanceTimersByTimeAsync(50);
-    expect(liveTitle(t)).toBe(controllerMod.translationTitle("es")); // the run owns the box
+    expect(t.text(C().menu)).toBe(TITLE);
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
 
-    // The run ends; the still-live song retakes the box (song was held behind it).
-    t.api.handlers().onTranslationDone?.({ type: "translation.done" });
+    // The translation still reaches the phone mirror, paired to its turn — the two
+    // run at once there (XERK-194), nothing is lost.
+    const row = document.getElementById("session-text")!.querySelector(".session-translation")!;
+    expect(row.textContent).toContain("hello");
+
+    // The song ends; the still-live translation run held behind it now takes the box.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(controllerMod.translationTitle("es"));
+  });
+
+  it("takes the box over a live translation run when a song is recognized (XERK-194)", async () => {
+    const t = await record();
+    // A translation run owns the box first (no song yet).
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveTitle(t)).toBe(controllerMod.translationTitle("es"));
+
+    // A song is now recognized playing: lyrics beat translation, so the song
+    // takes the box while the run is held behind it (still accumulating).
+    t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50);
     expect(t.text(C().menu)).toBe(TITLE);
     expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
+
+    // The run finishes while hidden behind the song; the song still owns the box.
+    t.api.handlers().onTranslationDone?.({ type: "translation.done" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE);
+
+    // When the song ends the finished run is dropped (no countdown) and the box
+    // frees to the plain page — a queued cue, if any, would take it here.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("drops a done translation held behind a song and releases a queued cue when the song ends (XERK-194)", async () => {
+    const t = await record();
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+
+    // A translation runs and finishes while the song owns the box (held, hidden),
+    // and a cue arrives too — both wait behind the lyrics.
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onTranslationDone?.({ type: "translation.done" });
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(TITLE); // the song still owns the box throughout
+
+    // song.done frees the box: the finished translation is dropped (no countdown),
+    // so the queued cue takes the box with its own 10s countdown.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.text(C().menu)).toBe(layout.cueTitleLine(CUE, 10));
   });
 
   it("holds a song behind the open menu and retakes the box when the menu closes", async () => {
