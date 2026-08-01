@@ -127,3 +127,71 @@ Residuals / next steps for turn latency:
 3. The multilingual test session (`159fe63c`) retained no audio
    (`audio_key` NULL) and could not be replayed — worth understanding why
    before the next eval cycle.
+
+## 2026-08-01 — Empty-final recovery gated to substantive partials (XERK-182)
+
+The evening after XERK-174 (recover a turn's last partial when the whole-turn
+decode is empty, PR #110) and XERK-175 (500 ms / 8 s turn windows, PR #111)
+deployed together, session quality fell off a cliff on music-heavy ambient
+audio: stored transcript density dropped 2.23 → 1.35 words per second of
+turn audio, one-to-two-word segments doubled (15 % → 32 %), single-filler-word
+segments exploded 7x evening-over-evening, and delivered translations
+collapsed (159 → 41) while translation/cue model calls were timing out at
+their 20 s ceiling.
+
+**The turn windows were exonerated.** Replaying the same retained WAVs through
+the real VAD at 700/12000 vs 500/8000 and transcribing both boundary sets on
+the production Parakeet: word capture is identical (2379 vs 2398 words on a
+44-min music session; 912 vs 914 on a 19-min conversation). The window change
+costs nothing in transcription accuracy.
+
+**The regression is the ungated recovery.** A full-pipeline replay
+(LocalAgreement partials at the production 350 ms cadence + whole-turn finals
++ the XERK-174 recovery, against the production Parakeet) on the worst
+post-deploy session reproduced production nearly exactly (31 finals vs 34
+stored) and showed **24/31 finals (77 %) were recovered-from-partial**, 19 of
+them single hallucinated filler words. On music and room noise the offline
+whole-turn decode returning empty is Parakeet *correctly rejecting non-speech*
+— but the partial path hallucinates a filler word or two from prefix windows,
+and XERK-174 surfaced every one as a stored, cue-feeding,
+translation-run-inheriting segment. Junk finals also amplified LLM call volume
+(each no-language junk turn inside a live translation run queues a translation
+call) to the point of saturating the cue/translation server — the timeout
+cascade above.
+
+**Fix: recover only substantive partials.** Word-count calibration over the
+full-pipeline replays of four sessions (two music-heavy, one EN conversation,
+one ES conversation): hallucinated recoveries are 1–2 words in ~90 % of cases
+(19/24 and 38/51 in the music sessions), while every substantive recovery
+observed — real speech the offline decode blanked, the class XERK-174 exists
+to protect, e.g. an 11-word English clause and a 4-word phrase in the
+conversation replays — was ≥ 3 words. `_RECOVERY_MIN_WORDS = 3` in
+`api/src/api/stt/streaming.py` recovers a partial only at three words or more;
+below the gate the turn stays dropped exactly as before XERK-174, and the
+drop is counted (`stage.stt.final_recovery_suppressed`).
+
+Before/after on the same audio, full-pipeline replay at production settings:
+
+| session | finals before | recovered before (junk ≤2 w) | finals after | recovered kept |
+|---|---|---|---|---|
+| b6bbc623 (music, worst) | 31 | 24 (20) | 12 | 5 |
+| 7ec1c2d2 (music + talk) | 133 | 51 (38) | 95 | 13 |
+| a68a4fe5 (conversation) | 114 | 5 (3) | 111 | 2 |
+
+Every kept recovery is ≥ 3 words; the conversation session is essentially
+untouched (114 → 111 finals, both substantive saves — an 11-word and a 4-word
+clause — survive), which is the XERK-174 protection working as intended.
+Run-to-run decode variance moves counts by a few — the junk class collapses,
+the substantive class survives.
+
+Residuals / next steps:
+
+1. Real (non-recovered) decodes of sung lyrics still mishear plenty — that is
+   the model on music, unchanged from before the regression; a music/speech
+   discriminator ahead of the caption path is the only real lever.
+2. Cue/translation server saturation should fall with the junk finals gone,
+   but the 500/8000 windows do raise finalized-turn rate ~50 % in wall-to-wall
+   audio; if 20 s timeouts persist in music sessions, cap translation-queue
+   depth or skip translating turns that arrive while the queue is deep.
+3. The stray `Task was destroyed but it is pending` on session teardown
+   (seen 2026-08-01 02:03) is unrelated but worth a look.
