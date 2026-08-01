@@ -30,6 +30,7 @@ import { useCaptureContext } from "../lib/capture";
 import type { useCapture } from "../lib/useCapture";
 import { useNotify } from "../lib/notify";
 import { CueDisclosure, LiveCueBand } from "../ui/cue";
+import { LiveLyricsBand } from "../ui/lyrics";
 import {
   Badge,
   Button,
@@ -229,13 +230,18 @@ export function LiveScreen(): JSX.Element {
           </ScrollView>
         ) : null}
 
-        {/* The cue floats over the transcript's top edge, never displacing the
-            captions as it comes and goes (XERK-107). */}
-        <LiveCueBand
-          activeCue={state.activeCue}
-          activeCueEndsAt={state.activeCueEndsAt}
-          queuedCount={state.queuedCues.length}
-        />
+        {/* A recognized song's lyrics own the box (XERK-184); the cue band is
+            hidden while it plays, exactly as cues stand aside for it server-side.
+            Both float over the transcript's top edge (XERK-107). */}
+        {state.song ? (
+          <LiveLyricsBand song={state.song} />
+        ) : (
+          <LiveCueBand
+            activeCue={state.activeCue}
+            activeCueEndsAt={state.activeCueEndsAt}
+            queuedCount={state.queuedCues.length}
+          />
+        )}
       </View>
     </View>
   );

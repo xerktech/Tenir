@@ -13,9 +13,13 @@ import {
   cueCountdownLabel,
   cueSecondsLeft,
   cueSecondsUntil,
+  currentLyricIndex,
   DISCLOSURES,
   isPinnedToBottom,
+  type LiveSong,
   liveTranscript,
+  type LyricWindow,
+  lyricWindow,
 } from "@tenir/client-core";
 import { useEffect, useRef, useState } from "react";
 
@@ -135,6 +139,72 @@ function LiveCueBand({
   );
 }
 
+// How often the lyric scroll recomputes which line is current (XERK-184).
+// Comfortably sub-second so the highlighted line turns over within a frame or
+// two of the beat, matching the cue countdown's cadence.
+const LYRIC_SCROLL_TICK_MS = 250;
+
+/**
+ * Advance the visible lyric window off the local clock (XERK-184). Recomputes the
+ * current line from the song's scroll anchor every tick, so the window scrolls
+ * smoothly between the server's periodic `song.sync` re-anchors — and a throttled
+ * or backgrounded tab resyncs to the truth on the next tick rather than drifting.
+ * Re-seeds whenever the song object changes (a new song, or a re-anchored one).
+ */
+function useLyricScroll(song: LiveSong | null): LyricWindow {
+  const [win, setWin] = useState<LyricWindow>({ lines: [], currentIndex: -1 });
+  useEffect(() => {
+    if (!song) {
+      setWin({ lines: [], currentIndex: -1 });
+      return;
+    }
+    const tick = () => setWin(lyricWindow(song.lines, currentLyricIndex(song, Date.now())));
+    tick();
+    const timer = window.setInterval(tick, LYRIC_SCROLL_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [song]);
+  return win;
+}
+
+/**
+ * The recognized song's synced lyrics, auto-scrolling in the same box a cue uses
+ * (XERK-184). Title is "ARTIST — TITLE"; the body is a fixed window of lyric
+ * lines with the current one highlighted, advancing as the song plays. A live
+ * song owns the box — the cue band is hidden while it shows. Floats over the
+ * transcript exactly like the cue band, so nothing reflows.
+ */
+function LiveLyricsBand({ song }: { song: LiveSong | null }): JSX.Element | null {
+  const win = useLyricScroll(song);
+  if (!song) return null;
+  return (
+    <div className="cue-band lyrics-band" aria-hidden="true">
+      <div className="cue-card lyrics-card" key={song.id}>
+        <div className="cue-card-head">
+          <div className="cue-card-title">
+            {song.artist} — {song.title}
+          </div>
+          <div className="cue-card-badge">♪</div>
+        </div>
+        <div className="lyrics-body">
+          {win.lines.length === 0 ? (
+            // No synced lyrics were found: show the title, no scroll.
+            <div className="lyrics-line lyrics-empty muted">♪ ♪ ♪</div>
+          ) : (
+            win.lines.map((ln, i) => (
+              <div
+                key={`${ln.atMs}-${i}`}
+                className={`lyrics-line ${i === win.currentIndex ? "current" : ""}`.trim()}
+              >
+                {ln.text || "♪"}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LiveView({ controller }: { controller: CaptureController }): JSX.Element {
   const { state } = controller;
   const hasContent = state.segments.length > 0 || state.pastCues.length > 0 || Boolean(state.partial);
@@ -223,11 +293,17 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
             </ul>
           </div>
         )}
-        <LiveCueBand
-          activeCue={state.activeCue}
-          activeCueEndsAt={state.activeCueEndsAt}
-          queuedCount={state.queuedCues.length}
-        />
+        {/* A recognized song's lyrics own the box (XERK-184); the cue band is
+            hidden while it plays, exactly as cues stand aside for it server-side. */}
+        {state.song ? (
+          <LiveLyricsBand song={state.song} />
+        ) : (
+          <LiveCueBand
+            activeCue={state.activeCue}
+            activeCueEndsAt={state.activeCueEndsAt}
+            queuedCount={state.queuedCues.length}
+          />
+        )}
       </Card>
     </section>
   );

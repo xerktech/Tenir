@@ -6,6 +6,7 @@ import {
   type ConversationSummary,
   type CueView,
   type SegmentView,
+  type SongView,
 } from "@tenir/client-core";
 import { useMemo, useState } from "react";
 
@@ -202,23 +203,26 @@ function segmentTiming(s: SegmentView): string {
   return `${formatDuration(s.startMs)}–${formatDuration(s.endMs)}`;
 }
 
-// A transcript row is either a spoken segment or a private cue, placed on the
-// same timeline (XERK-81). Cues carry `atMs`; segments carry `startMs`.
+// A transcript row is a spoken segment, a private cue, or a recognized song,
+// placed on the same timeline (XERK-81, XERK-184). Cues/songs carry `atMs`;
+// segments carry `startMs`.
 type TranscriptItem =
   | { kind: "segment"; at: number; seg: SegmentView }
-  | { kind: "cue"; at: number; cue: CueView };
+  | { kind: "cue"; at: number; cue: CueView }
+  | { kind: "song"; at: number; song: SongView };
 
-/** Merge segments and cues into one timeline, ordered by position (cues sit
- *  after the segment they share a timestamp with). */
+/** Merge segments, cues, and songs into one timeline, ordered by position (a cue
+ *  or song sits after the segment it shares a timestamp with). */
 function timeline(conv: Conversation): TranscriptItem[] {
   const items: TranscriptItem[] = [
     ...conv.segments.map((seg) => ({ kind: "segment" as const, at: seg.startMs, seg })),
-    // Tolerate an older/partial payload without cues rather than crashing the detail.
+    // Tolerate an older/partial payload without cues/songs rather than crashing the detail.
     ...(conv.cues ?? []).map((cue) => ({ kind: "cue" as const, at: cue.atMs, cue })),
+    ...(conv.songs ?? []).map((song) => ({ kind: "song" as const, at: song.atMs, song })),
   ];
-  // Stable-ish: order by position, breaking ties with segment before cue so a cue
-  // reads as landing just after the words that triggered it.
-  return items.sort((a, b) => a.at - b.at || (a.kind === "cue" ? 1 : 0) - (b.kind === "cue" ? 1 : 0));
+  // Stable-ish: order by position, breaking ties with segment before any aside so
+  // a cue/song reads as landing just after the words around it.
+  return items.sort((a, b) => a.at - b.at || (a.kind === "segment" ? 0 : 1) - (b.kind === "segment" ? 0 : 1));
 }
 
 function ConversationDetail({
@@ -264,7 +268,9 @@ function ConversationDetail({
       <div className="transcript-block">
         {/* A session can hold no turns at all (nothing was said, or the transcript
             was lost). Say so — an empty block reads as a detail that failed to open. */}
-        {conv.segments.length === 0 && (conv.cues?.length ?? 0) === 0 ? (
+        {conv.segments.length === 0 &&
+        (conv.cues?.length ?? 0) === 0 &&
+        (conv.songs?.length ?? 0) === 0 ? (
           <p className="muted">No transcript was recorded for this session.</p>
         ) : (
           items.map((item) =>
@@ -280,13 +286,23 @@ function ConversationDetail({
                   <TranslationLine text={item.seg.translation} lang={item.seg.lang} />
                 )}
               </div>
-            ) : (
+            ) : item.kind === "cue" ? (
               <CueDisclosure
                 key={item.cue.cueId}
                 title={item.cue.title}
                 body={item.cue.body}
                 source={item.cue.source}
               />
+            ) : (
+              // A song recognized playing during the session (XERK-184).
+              <div className="item song-item" key={item.song.songId}>
+                <span className="song-badge" aria-hidden="true">
+                  ♪
+                </span>{" "}
+                <span className="song-title">
+                  {item.song.artist} — {item.song.title}
+                </span>
+              </div>
             ),
           )
         )}

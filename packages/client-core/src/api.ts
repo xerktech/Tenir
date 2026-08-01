@@ -121,9 +121,21 @@ export interface CueView {
   source?: string | null;
 }
 
+/** A song recognized playing, rendered inline in history at atMs (XERK-184). */
+export interface SongView {
+  songId: string;
+  title: string;
+  artist: string;
+  atMs: number;
+  durationMs?: number | null;
+}
+
 export interface Conversation extends ConversationSummary {
   segments: SegmentView[];
   cues: CueView[];
+  /** Songs recognized playing during the session (XERK-184). Absent on payloads
+   *  written before the feature. */
+  songs?: SongView[];
 }
 
 export type ComponentState = "ready" | "connecting" | "down";
