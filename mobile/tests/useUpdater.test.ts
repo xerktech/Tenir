@@ -33,5 +33,20 @@ describe("useUpdater re-check wiring (XERK-167)", () => {
   it("tears the listeners down on unmount", () => {
     expect(src).toContain("sub.remove()");
     expect(src).toContain("clearInterval(timer)");
+    expect(src).toContain("checkRequests.delete(onRequest)");
+  });
+
+  it("exposes requestUpdateCheck, running on the tighter navigation gap", () => {
+    expect(src).toContain("export function requestUpdateCheck");
+    expect(src).toContain("checkRequests.add(onRequest)");
+    expect(src).toContain("runCheck(NAV_CHECK_THROTTLE_MS)");
+  });
+});
+
+describe("Live-tab re-check trigger (XERK-167)", () => {
+  const app = readFileSync(resolve(process.cwd(), "src/App.tsx")).toString("utf8");
+
+  it("asks the updater to check on every switch to the Live tab", () => {
+    expect(app).toContain('if (next === "Live" && next !== tab) requestUpdateCheck();');
   });
 });
