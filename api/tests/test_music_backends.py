@@ -42,6 +42,16 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
         make_music_service()
 
 
+def test_factory_wires_identify_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recognize hard-cap (XERK-187) reaches the service from settings —
+    shazamio's own HTTP stack retries with no total deadline."""
+    monkeypatch.setattr(settings, "music_backend", "shazam")
+    monkeypatch.setattr(settings, "music_identify_timeout_ms", 9000)
+    svc = make_music_service()
+    assert isinstance(svc, ShazamMusicService)
+    assert svc._identify_timeout == 9.0
+
+
 # ---- stub --------------------------------------------------------------------
 
 
@@ -187,3 +197,40 @@ def test_shazam_duration_coercion(raw: object, expected: int | None) -> None:
     match = ShazamMusicService._parse_match(payload, window_ms=0)
     assert match is not None
     assert match.duration_ms == expected
+
+
+# ---- shazam identify: error vs no-match (XERK-187) ---------------------------
+
+
+def _shazam_service() -> ShazamMusicService:
+    return ShazamMusicService(lyrics_endpoint="https://lrclib.invalid", window_seconds=8.0)
+
+
+def test_shazam_identify_returns_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _shazam_service()
+    monkeypatch.setattr(svc, "_recognize_blocking", lambda wav: _shazam_payload(offset=2.0))
+    match = asyncio.run(svc.identify(b"wav"))
+    assert match is not None
+    assert match.title == "Weird Fishes"
+    assert match.offset_ms == 10000  # 2s + 8s window
+
+
+def test_shazam_identify_no_match_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _shazam_service()
+    monkeypatch.setattr(svc, "_recognize_blocking", lambda wav: {"matches": [], "track": {}})
+    assert asyncio.run(svc.identify(b"wav")) is None
+    monkeypatch.setattr(svc, "_recognize_blocking", lambda wav: None)
+    assert asyncio.run(svc.identify(b"wav")) is None
+
+
+def test_shazam_identify_propagates_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rate limiting / network failures must RAISE, not read as "no song playing":
+    the session scan counts them, and the eval harness backs off on them."""
+    svc = _shazam_service()
+
+    def _boom(wav: bytes) -> dict:
+        raise RuntimeError("429 from shazam")
+
+    monkeypatch.setattr(svc, "_recognize_blocking", _boom)
+    with pytest.raises(RuntimeError, match="429"):
+        asyncio.run(svc.identify(b"wav"))

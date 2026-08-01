@@ -1,8 +1,9 @@
 """Session-level Music ID behaviour (XERK-184): a fingerprinted window opens a
 `song` run with synced lyrics, the same song re-syncs, a hold with no match ends
-the run with `song.done`, a different song replaces the last, cues stand aside
-while a song plays, and the scan loop drains on close — all against a spy service
-(no network, no real fingerprinter)."""
+the run with `song.done`, a different song replaces the last once a confirming
+scan agrees (the takeover debounce, XERK-187), cues stand aside while a song
+plays, and the scan loop drains on close — all against a spy service (no
+network, no real fingerprinter)."""
 
 from __future__ import annotations
 
@@ -177,16 +178,23 @@ def test_hold_not_yet_expired_keeps_run() -> None:
     asyncio.run(run())
 
 
-def test_different_song_replaces() -> None:
+def test_different_song_replaces_after_confirmation() -> None:
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         session._music = _SpyMusicService(
-            [_match(title="Weird Fishes"), _match(artist="Muse", title="Starlight")]
+            [
+                _match(title="Weird Fishes"),
+                _match(artist="Muse", title="Starlight"),
+                _match(artist="Muse", title="Starlight"),
+            ]
         )
         _arm_window(session)
         await session._scan_music_once()  # song A
-        await session._scan_music_once()  # song B replaces A
+        await session._scan_music_once()  # song B seen once — only noted (debounce)
+        assert session._music_pending_key is not None
+        assert [s.title for s in _songs(sent)] == ["Weird Fishes"]
+        await session._scan_music_once()  # song B confirmed — replaces A
 
         songs, dones = _songs(sent), _dones(sent)
         assert [s.title for s in songs] == ["Weird Fishes", "Starlight"]
@@ -194,6 +202,62 @@ def test_different_song_replaces() -> None:
         assert len(dones) == 1
         assert dones[0].songId == songs[0].songId
         assert songs[0].songId != songs[1].songId
+        assert session._music_pending_key is None
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_takeover_blip_does_not_replace() -> None:
+    """One crossfaded window that reads as another track must not reset the box:
+    the locked song re-matching right after clears the takeover candidate."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._music = _SpyMusicService(
+            [
+                _match(title="Weird Fishes"),
+                _match(artist="Muse", title="Starlight"),  # a single blended window
+                _match(title="Weird Fishes"),
+            ]
+        )
+        _arm_window(session)
+        await session._scan_music_once()  # locks A
+        await session._scan_music_once()  # B once — noted, nothing sent
+        await session._scan_music_once()  # A again — blip forgotten, plain re-sync
+
+        assert [s.title for s in _songs(sent)] == ["Weird Fishes"]
+        assert _dones(sent) == []
+        assert len(_syncs(sent)) == 1
+        assert session._music_pending_key is None
+        assert session._music_active is True
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_stale_pending_takeover_still_honors_hold() -> None:
+    """A locked song that stops matching while unconfirmed takeovers flap must
+    still end via the hold window — differing scans don't keep it alive."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._music = _SpyMusicService(
+            [_match(title="Weird Fishes"), _match(artist="Muse", title="Starlight")]
+        )
+        _arm_window(session)
+        await session._scan_music_once()  # locks A
+        # Age A's last match past the hold, then a differing (unconfirmed) scan.
+        session._music_last_match_monotonic = time.monotonic() - (
+            settings.music_hold_ms / 1000 + 1
+        )
+        await session._scan_music_once()
+
+        assert len(_dones(sent)) == 1
+        assert session._music_active is False
+        assert session._music_pending_key is None
         await session.close()
 
     asyncio.run(run())

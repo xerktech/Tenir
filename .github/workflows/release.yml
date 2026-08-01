@@ -272,7 +272,7 @@ jobs:
           context: .
           dockerfile: api/Dockerfile
           build-args: |
-            API_EXTRAS=persistence
+            API_EXTRAS=persistence,music
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 

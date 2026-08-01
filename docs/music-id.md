@@ -38,10 +38,10 @@ Where it appears:
    (`api/src/api/session.py`). A background **scan loop** periodically packages
    that window as a WAV and calls the music service; a slow or failing call
    never touches captions. The cadence adapts — while searching it backs off on
-   repeated misses (`music_scan_interval_ms`, doubling to a cap for rate-limit
-   hygiene), and while a song is locked it re-checks less often
-   (`music_lock_interval_ms`), because the client's local clock carries the
-   scroll between checks.
+   repeated misses (`music_scan_interval_ms`, doubling up to
+   `music_scan_max_interval_ms` for rate-limit hygiene), and while a song is
+   locked it re-checks less often (`music_lock_interval_ms`), because the
+   client's local clock carries the scroll between checks.
 2. **The service recognizes, then fetches lyrics** (`api/src/api/music/`).
    `MusicService.identify(wav)` returns the track plus the **play-offset into the
    song at the end of the window** (`MusicMatch.offset_ms`) — the sync anchor.
@@ -52,9 +52,12 @@ Where it appears:
    play position there). While the same track keeps matching, it re-identifies
    and sends `song.sync` (a fresh anchor, no lyrics) to correct drift. When it
    stops matching past the hold window (`music_hold_ms`) — or a different song
-   takes over — the run ends with `song.done`. A live song run **suppresses
-   cues** (gated in `session.py` beside the translation flag); precedence when
-   concurrent is translation > song > cue.
+   takes over — the run ends with `song.done`. A takeover is **debounced**
+   (XERK-187): a different track must match twice in a row to replace a locked
+   one, because crossfaded/DJ-blended windows flap between the outgoing and
+   incoming track and would otherwise reset the box several times per blend.
+   A live song run **suppresses cues** (gated in `session.py` beside the
+   translation flag); precedence when concurrent is translation > song > cue.
 4. **The scroll is client-driven** (`packages/client-core/src/captureSession.ts`).
    From the anchor, the client computes the song position at any moment as
    `offsetMs + (now - anchorAt)` and the current line as the last one whose
@@ -120,8 +123,14 @@ API_MUSIC_BACKEND=shazam docker compose up --build
 ```
 
 Tuning lives in `api/src/api/config.py` (`API_MUSIC_*`): `music_scan_interval_ms`,
-`music_lock_interval_ms`, `music_hold_ms`, `music_min_confidence`,
-`music_window_seconds`, `music_lyrics_endpoint`.
+`music_scan_max_interval_ms`, `music_lock_interval_ms`, `music_hold_ms`,
+`music_min_confidence`, `music_identify_timeout_ms`, `music_window_seconds`,
+`music_lyrics_endpoint`. The defaults were tuned against real recorded sessions
+in XERK-187: the hold spans two failed lock-cadence re-checks (quiet passages
+routinely miss 1–3 consecutive scans mid-song), the search backoff decays to a
+minute-scale ceiling because Shazam rate-limits aggressive scanning from one IP,
+and each recognition call carries a hard timeout because shazamio's retrying
+HTTP stack was observed spending 10+ minutes on one call on a flaky upstream.
 
 ## Verifying against real music
 

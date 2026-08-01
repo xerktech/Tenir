@@ -41,6 +41,7 @@ def make_music_service() -> MusicService | None:
             lyrics_endpoint=settings.music_lyrics_endpoint,
             min_confidence=settings.music_min_confidence,
             window_seconds=settings.music_window_seconds,
+            identify_timeout=settings.music_identify_timeout_ms / 1000,
         )
     raise ValueError(
         f"unknown music backend: {backend!r} (expected 'off', 'stub' or 'shazam')"

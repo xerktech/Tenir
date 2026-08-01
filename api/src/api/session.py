@@ -176,6 +176,11 @@ class Session:
         self._music_track_key: str | None = None
         self._music_last_match_monotonic: float | None = None
         self._music_misses = 0
+        # A different track seen ONCE while a song is locked (XERK-187). Crossfades
+        # and DJ blends make single scans flap between two tracks; a takeover only
+        # happens when the newcomer matches twice in a row, so the box doesn't
+        # reset on every blended window.
+        self._music_pending_key: str | None = None
         # Running total of audio pushed this sitting, so the music scan can stamp a
         # recognized song at the current session-timeline position (the same
         # timeline cues/segments use), independent of the STT seam.
@@ -756,13 +761,18 @@ class Session:
         captions are never touched."""
         try:
             while not self._closed:
-                if self._music_active:
+                if self._music_active and self._music_pending_key is None:
                     interval = max(1, settings.music_lock_interval_ms)
+                elif self._music_active:
+                    # A takeover candidate is waiting for its confirming scan
+                    # (XERK-187): re-check at the search cadence so a real song
+                    # change isn't held up by the slower lock interval.
+                    interval = max(1, settings.music_scan_interval_ms)
                 else:
                     interval = scan_backoff_ms(
                         self._music_misses,
                         base_ms=max(1, settings.music_scan_interval_ms),
-                        cap_ms=max(1, settings.music_hold_ms),
+                        cap_ms=max(1, settings.music_scan_max_interval_ms),
                     )
                 await asyncio.sleep(interval / 1000)
                 if self._closed:
@@ -800,12 +810,32 @@ class Session:
                     await self._end_music_run()
             return
         self._music_misses = 0
-        self._music_last_match_monotonic = now
         key = match.track_key or track_key(match.artist, match.title)
         at_ms = self._current_audio_ms()
         if self._music_active and key == self._music_track_key:
+            # The locked song again: refresh its clock and drop any takeover
+            # candidate — the previous differing scan was a blip, not a change.
+            self._music_last_match_monotonic = now
+            self._music_pending_key = None
             await self._send_song_sync(match, at_ms)
+        elif self._music_active and key != self._music_pending_key:
+            # A different track while a song is locked (XERK-187): note it and
+            # wait for a confirming scan. Crossfaded windows flap between the
+            # outgoing and incoming track; replacing on one sighting resets the
+            # box (done → new → done) several times per blend. The locked song's
+            # hold clock keeps running — if the newcomer never confirms and the
+            # locked song never returns, the hold ends the run here just as a
+            # plain miss would.
+            self._music_pending_key = key
+            if self._music_last_match_monotonic is not None:
+                quiet_ms = (now - self._music_last_match_monotonic) * 1000
+                if quiet_ms >= max(0, settings.music_hold_ms):
+                    await self._end_music_run()
         else:
+            # Not active (first sighting opens immediately — nothing to protect),
+            # or the pending track matched twice in a row: (re)open the run.
+            self._music_last_match_monotonic = now
+            self._music_pending_key = None
             await self._open_music_run(match, key, at_ms)
 
     async def _open_music_run(self, match: MusicMatch, key: str, at_ms: int) -> None:
@@ -885,6 +915,7 @@ class Session:
         self._music_run_id = None
         self._music_track_key = None
         self._music_last_match_monotonic = None
+        self._music_pending_key = None
         if song_id is not None:
             try:
                 await self._send(SongDone(type="song.done", songId=song_id))

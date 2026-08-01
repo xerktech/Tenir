@@ -11,7 +11,10 @@ Caveats and how they're handled (see docs/music-id.md):
   ``off``/``stub``/``shazam`` factory keeps a paid provider a one-module drop-in.
 - The Rust fingerprinter + ffmpeg decode are blocking, so recognition runs in a
   worker thread (with its own event loop) — never on the caption loop.
-- Best-effort: any failure returns ``None`` and nothing is shown.
+- A clean no-match returns ``None``; a transient failure (network, a Shazam 429)
+  RAISES so callers can tell the two apart. The session's scan step catches and
+  counts it (captions are never touched); the music_eval harness backs off on it
+  instead of mistaking rate limiting for "no song playing" (XERK-187).
 
 The network + fingerprint path is excluded from coverage; the response mapper
 ``_parse_match`` is pure and unit-tested against a canned Shazam payload.
@@ -60,9 +63,11 @@ class ShazamMusicService:
         lyrics_endpoint: str,
         min_confidence: float = 0.5,
         window_seconds: float = 8.0,
+        identify_timeout: float = 15.0,
     ) -> None:
         self._min_confidence = min_confidence
         self._window_ms = int(window_seconds * 1000)
+        self._identify_timeout = identify_timeout
         self._lyrics = LrcLibLyrics(endpoint=lyrics_endpoint)
 
     @staticmethod
@@ -100,24 +105,31 @@ class ShazamMusicService:
     def _recognize_blocking(self, wav: bytes) -> dict | None:  # pragma: no cover - needs shazamio
         """Run shazamio in a worker thread with its own event loop. The Rust
         signature generation and ffmpeg decode block; keep them off the caption
-        loop entirely."""
+        loop entirely.
+
+        The recognize is capped by ``identify_timeout``: shazamio's HTTP stack
+        retries with no total deadline, and one call was observed taking 10+
+        minutes on a flaky upstream (XERK-187). ``wait_for`` runs inside this
+        worker's own loop, so the timeout genuinely cancels the HTTP task; the
+        resulting ``TimeoutError`` propagates like any transient failure."""
         import asyncio
 
         from shazamio import Shazam
 
         async def _run() -> dict:
-            return await Shazam().recognize(wav)
+            return await asyncio.wait_for(
+                Shazam().recognize(wav), timeout=self._identify_timeout
+            )
 
         return asyncio.run(_run())
 
-    async def identify(self, wav: bytes) -> MusicMatch | None:  # pragma: no cover - needs shazamio
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        """Recognize the window, or ``None`` on a clean no-match. Transient
+        failures propagate — every caller (the session scan, the eval harness)
+        handles them, and each needs to distinguish an error from silence."""
         import asyncio
 
-        try:
-            raw = await asyncio.to_thread(self._recognize_blocking, wav)
-        except Exception:
-            log.warning("shazam recognition failed", exc_info=True)
-            return None
+        raw = await asyncio.to_thread(self._recognize_blocking, wav)
         if not raw:
             return None
         match = self._parse_match(raw, window_ms=self._window_ms)
