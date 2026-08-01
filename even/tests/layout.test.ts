@@ -1,4 +1,5 @@
 import { getTextWidth, measureTextWrap } from "@evenrealities/pretext";
+import { lyricWindow } from "@tenir/client-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -44,6 +45,7 @@ import {
   SCREEN_W,
   SONG_BODY_LINES,
   SONG_ROWS,
+  songBody,
   songTitle,
   statusLine,
   tailCueBody,
@@ -804,6 +806,29 @@ describe("synced-lyric song box (XERK-184)", () => {
     // The box's pinned title row carries it with no countdown (a song box has none).
     const card = { title: songTitle("The Beatles", "Yesterday"), body: "line one" };
     expect(cueTitleLine(card)).toBe("The Beatles — Yesterday");
+  });
+
+  it("marks the line being sung with '>' — the lens stand-in for web/mobile's bold (XERK-189)", () => {
+    const lines = ["l0", "l1", "l2", "l3", "l4", "l5"].map((text, i) => ({ atMs: i * 1000, text }));
+    // Mid-song, lyricWindow seats the current line 2nd from the top (one context
+    // row above it) — the marker sits on that row, the rest stay space-indented
+    // in one column, and the marker HOLDS that row as the window slides.
+    expect(songBody(lyricWindow(lines, 1))).toBe("  l0\n> l1\n  l2\n  l3");
+    expect(songBody(lyricWindow(lines, 2))).toBe("  l1\n> l2\n  l3\n  l4");
+  });
+
+  it("marks no row before the song reaches its first line, matching the un-bolded opening", () => {
+    const lines = ["l0", "l1", "l2", "l3"].map((text, i) => ({ atMs: i * 1000, text }));
+    expect(songBody(lyricWindow(lines, -1))).toBe("  l0\n  l1\n  l2\n  l3");
+  });
+
+  it("keeps an instrumental gap's ♪ placeholder behind the marker column", () => {
+    expect(songBody({ lines: [{ atMs: 0, text: "" }, { atMs: 1000, text: "la" }], currentIndex: 0 }))
+      .toBe("> ♪\n  la");
+  });
+
+  it("shows the quiet ♪ ♪ ♪ marker, unprefixed, when no synced lyrics were found", () => {
+    expect(songBody({ lines: [], currentIndex: -1 })).toBe("♪ ♪ ♪");
   });
 
   it("reuses the cue box geometry: the title over up to SONG_BODY_LINES lyric rows", () => {

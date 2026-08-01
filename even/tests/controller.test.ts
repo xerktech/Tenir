@@ -1462,7 +1462,11 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
   const TR = { type: "translation" as const, segmentId: "s1", text: "hello", sourceLang: "es" as const };
   // "ARTIST — SONG NAME" — the box's pinned title, no countdown (a song has none).
   const TITLE = "The Beatles — Yesterday";
-  const win = (...texts: string[]) => texts.join("\n");
+  // The body as the lens paints it (XERK-189): the line being sung marked ">"
+  // — the stand-in for the bold highlight web/mobile use — and every other row
+  // space-indented so the lyrics stay in one column.
+  const win = (current: number, ...texts: string[]) =>
+    texts.map((t, i) => `${i === current ? ">" : " "} ${t}`).join("\n");
 
   const record = async (opts: { withPhone?: boolean } = {}) => {
     const t = await boot(opts);
@@ -1490,8 +1494,9 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     // Same popup shape as a cue: base 4 + the pinned title frame + the body.
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
     expect(t.text(C().menu)).toBe(TITLE);
-    // Offset 0: the window opens on the first four lines, the current one on top.
-    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+    // Offset 0: the window opens on the first four lines, the current one on top
+    // (clamped — mid-song it rides 2nd from the top), marked ">" (XERK-189).
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
   });
 
   it("scrolls the window to the line being sung as the song plays off the lens ticker", async () => {
@@ -1499,25 +1504,28 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50);
     // Offset 0: opens on the first lines (read straight off the just-built page).
-    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
 
     // Play the song out; the ticker repaints the body as the current line advances.
     // Past the last line the window clamps to the final four rows, so the result is
-    // stable regardless of exactly when in the 600ms ticker cadence we sample.
+    // stable regardless of exactly when in the 600ms ticker cadence we sample —
+    // and the ">" marker rides down to the last line with it (XERK-189).
     await vi.advanceTimersByTimeAsync(6000);
-    expect(t.text(C().cueBody)).toBe(win("line2", "line3", "line4", "line5"));
+    expect(t.text(C().cueBody)).toBe(win(3, "line2", "line3", "line4", "line5"));
   });
 
   it("re-anchors the scroll on song.sync so a drifted client jumps to the true line", async () => {
     const t = await record();
     t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50);
-    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
 
-    // A fresh anchor says the track is really 4s in: the window jumps at once.
+    // A fresh anchor says the track is really 4s in: the window jumps at once,
+    // the ">" marker following the current line (line4, one row of the window's
+    // end-clamp below its usual 2nd-from-top seat).
     t.api.handlers().onSongSync?.(SONG_SYNC(4000));
     await vi.advanceTimersByTimeAsync(50);
-    expect(t.text(C().cueBody)).toBe(win("line2", "line3", "line4", "line5"));
+    expect(t.text(C().cueBody)).toBe(win(2, "line2", "line3", "line4", "line5"));
   });
 
   it("shows the title with a quiet marker when no synced lyrics were found", async () => {
@@ -1583,7 +1591,7 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     t.api.handlers().onTranslationDone?.({ type: "translation.done" });
     await vi.advanceTimersByTimeAsync(50);
     expect(t.text(C().menu)).toBe(TITLE);
-    expect(bodyContainer(t)?.content).toBe(win("line0", "line1", "line2", "line3"));
+    expect(bodyContainer(t)?.content).toBe(win(0, "line0", "line1", "line2", "line3"));
   });
 
   it("holds a song behind the open menu and retakes the box when the menu closes", async () => {

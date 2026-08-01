@@ -72,6 +72,7 @@ import {
   menuText,
   occludedCaption,
   SONG_BODY_LINES,
+  songBody,
   songTitle,
   statusLine,
   tailCueBody,
@@ -282,16 +283,16 @@ export async function wireLens(
   // body. The body is the auto-scroll WINDOW around the line being sung now:
   // `currentLyricIndex(song, Date.now())` off the local clock, then `lyricWindow`
   // (LYRIC_LINES_BEFORE context line, the current line, LYRIC_LINES_AFTER upcoming
-  // — SONG_BODY_LINES rows). The current line sits `before` rows from the top, so
-  // as the clock advances the window slides and the lyrics scroll (repainted from
+  // — SONG_BODY_LINES rows). The current line sits `before` rows from the top —
+  // 2nd from the top mid-song, as on web/mobile — and is marked "> " (XERK-189),
+  // the lens stand-in for the bold highlight the HUD can't render (`songBody`).
+  // As the clock advances the window slides and the lyrics scroll (repainted from
   // the ticker, see `renderSongBody`). An empty-lyrics song shows the title over a
   // quiet ♪ marker, matching web/mobile. The title is "ARTIST — SONG NAME".
   const songCard = (): CueCard => {
     const song = state.song!;
     const win = lyricWindow(song.lines, currentLyricIndex(song, Date.now()));
-    const body =
-      win.lines.length === 0 ? "♪ ♪ ♪" : win.lines.map((l) => l.text || "♪").join("\n");
-    return { title: songTitle(song.artist, song.title), body };
+    return { title: songTitle(song.artist, song.title), body: songBody(win) };
   };
   /** The caption band's live text: full band, or masked under the popup box. */
   const liveCaption = () => {

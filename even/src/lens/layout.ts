@@ -35,7 +35,7 @@ import {
 } from "@evenrealities/even_hub_sdk";
 import { getTextWidth } from "@evenrealities/pretext";
 
-import { cueCountdownLabel } from "@tenir/client-core";
+import { cueCountdownLabel, type LyricWindow } from "@tenir/client-core";
 
 export const SCREEN_W = 576;
 export const SCREEN_H = 288;
@@ -497,6 +497,25 @@ export function cueTitleLine(cue: CueCard, secondsLeft?: number): string {
  */
 export function songTitle(artist: string, title: string): string {
   return `${artist} — ${title}`;
+}
+
+/**
+ * The song box's body rows (XERK-189): the lyric window with the line being sung
+ * marked "> " — the lens counterpart of the bolded current line on web/mobile.
+ * The HUD renders one weight, so bolding is impossible; the marker is the
+ * deliberate platform exception, in the same shape as the menu's "›" highlight.
+ * Every other row is indented by a space so the lyrics stay in one column and
+ * the marker reads as a cursor beside them — sitting on the 2nd row from the
+ * top mid-song, exactly where `lyricWindow` pins the current line everywhere
+ * (LYRIC_LINES_BEFORE context row above it). Before the song reaches its first
+ * line (`currentIndex` -1) no row is marked, matching the un-bolded opening
+ * lines on web/mobile; a song with no synced lyrics is the quiet ♪ ♪ ♪ marker.
+ */
+export function songBody(win: LyricWindow): string {
+  if (win.lines.length === 0) return "♪ ♪ ♪";
+  return win.lines
+    .map((l, i) => `${i === win.currentIndex ? ">" : " "} ${l.text || "♪"}`)
+    .join("\n");
 }
 
 /**
