@@ -817,6 +817,69 @@ describe("synced-lyric song box (XERK-184)", () => {
     expect(songBody(lyricWindow(lines, 2))).toBe("  l1\n> l2\n  l3\n  l4");
   });
 
+  describe("fits the window to the box so it never grows a scroll bar (XERK-191)", () => {
+    // A lyric wide enough to wrap to two physical rows: left unfitted, the
+    // repainted body would run past the body container's fixed height and the
+    // host would scroll it.
+    const wide =
+      "a ludicrously overlong lyric line that runs far past the width of the lens and wraps";
+    const mk = (texts: string[]) => texts.map((text, i) => ({ atMs: i * 1000, text }));
+    // Strip the two-character marker column and rejoin a line's rows.
+    const unmark = (rows: string[]) => rows.map((r) => r.slice(2)).join(" ");
+
+    it("wraps a wide CURRENT line whole, dropping upcoming rows instead of its words", () => {
+      const win = lyricWindow(mk(["l0", wide, "l2", "l3", "l4", "l5"]), 1);
+      const rows = songBody(win).split("\n");
+      // Exactly the box's rows: context, the wide line's two rows, one upcoming
+      // (the second upcoming line paid for the wrap).
+      expect(rows).toHaveLength(SONG_BODY_LINES);
+      expect(rows[0]).toBe("  l0");
+      expect(rows[1].startsWith("> a ludicrously")).toBe(true);
+      expect(rows[2].startsWith("  ")).toBe(true);
+      expect(rows[3]).toBe("  l2");
+      // Every word of the line being sung is on screen.
+      expect(unmark(rows.slice(1, 3))).toBe(wide);
+    });
+
+    it("keeps one row of context above the current line: a wide PREVIOUS line shows its tail", () => {
+      const win = lyricWindow(mk([wide, "l1", "l2", "l3", "l4"]), 1);
+      const rows = songBody(win).split("\n");
+      expect(rows).toHaveLength(SONG_BODY_LINES);
+      // The context row is the END of the wide line — the words just sung —
+      // and the current line still sits 2nd from the top.
+      expect(wide.endsWith(rows[0].slice(2))).toBe(true);
+      expect(rows[1]).toBe("> l1");
+      expect(rows.slice(2)).toEqual(["  l2", "  l3"]);
+    });
+
+    it("caps the not-yet-started opening preview at the box's rows", () => {
+      const win = lyricWindow(mk([wide, wide, "l2", "l3"]), -1);
+      const rows = songBody(win).split("\n");
+      expect(rows).toHaveLength(SONG_BODY_LINES);
+      expect(rows.every((r) => r.startsWith("  "))).toBe(true); // nothing marked yet
+    });
+
+    it("never exceeds the row count the box was built with, so repaints cannot overflow", () => {
+      const lines = mk(["l0", wide, "l2", wide, "l4", "l5", wide]);
+      // The box is built once (here at index 0); every later window must fit it.
+      const built = songBody(lyricWindow(lines, 0)).split("\n").length;
+      const page = buildCuePage(
+        CONTENTS,
+        { title: songTitle("A", "B"), body: songBody(lyricWindow(lines, 0)) },
+        undefined,
+        SONG_BODY_LINES,
+      );
+      expect(bodyOf(page).height).toBe(built * LINE_H);
+      for (let i = -1; i < lines.length; i++) {
+        const body = songBody(lyricWindow(lines, i));
+        const rows = body.split("\n");
+        expect(rows.length).toBeLessThanOrEqual(built);
+        // Re-wrapping at the box width adds no rows: each fitted row already fits.
+        expect(cueBodyLines(body)).toEqual(rows);
+      }
+    });
+  });
+
   it("marks no row before the song reaches its first line, matching the un-bolded opening", () => {
     const lines = ["l0", "l1", "l2", "l3"].map((text, i) => ({ atMs: i * 1000, text }));
     expect(songBody(lyricWindow(lines, -1))).toBe("  l0\n  l1\n  l2\n  l3");
