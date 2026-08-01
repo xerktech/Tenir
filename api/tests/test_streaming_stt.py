@@ -191,8 +191,8 @@ def test_start_offset_continues_segment_timeline() -> None:
 def test_partial_with_empty_text_is_suppressed() -> None:
     class EmptyEngine:
         def transcribe(
-        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
-    ) -> EngineResult:
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
             return EngineResult(text="   ", words=[], language=language)
 
     async def run() -> None:
@@ -215,8 +215,8 @@ def test_legacy_partial_with_empty_text_is_suppressed() -> None:
 
     class EmptyEngine:
         def transcribe(
-        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
-    ) -> EngineResult:
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
             return EngineResult(text="   ", words=[], language=language)
 
     async def run() -> None:
@@ -1226,6 +1226,124 @@ def test_final_falls_back_to_text_langid_when_engine_reports_none() -> None:
         finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].lang is not None and finals[0].lang.value == "es"
+
+    asyncio.run(run())
+
+
+# ----- dropped-turn recovery (XERK-174) -------------------------------------
+
+
+def test_final_recovers_last_stream_partial_when_offline_decode_is_empty() -> None:
+    """XERK-174: a turn the user watched word by word from the live stream must not
+    vanish when the offline final decode comes back empty. Instead of dropping the
+    turn (so the next turn's partial overwrites the orphaned text and it looks like
+    the words were never spoken), the last partial is surfaced as the final."""
+
+    class EmptyOfflineEngine:
+        """Offline decoder that blanks every whole-turn decode — the non-English
+        failure shape where the offline model drops a turn the stream transcribed."""
+
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            return EngineResult(text="", words=[], language=None)
+
+    async def run() -> None:
+        eng = EmptyOfflineEngine()
+        se = FakeStreamEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            stream_engine=se,
+        )
+        await t.warmup()  # open the stream off the caption path, as the session does
+        for _ in range(3):  # speech: three growing stream partials
+            await t.push(_pcm(100, amplitude=8000))
+        for _ in range(3):  # trailing silence closes the turn; offline decode is empty
+            await t.push(_pcm(100, amplitude=0))
+        msgs = _drain(t)
+
+        partials = [m for m in msgs if isinstance(m, CaptionPartial)]
+        finals = [m for m in msgs if isinstance(m, CaptionFinal)]
+        assert [p.text for p in partials] == ["p0", "p0 p1", "p0 p1 p2"]
+        # The turn survives: the final carries the last partial, not nothing.
+        assert len(finals) == 1
+        assert finals[0].text == "p0 p1 p2"
+        assert finals[0].words is None  # a recovered turn has no per-word timing
+        # Timing is still byte-derived from the segment, so the transcript stays ordered.
+        assert finals[0].startMs == 0 and finals[0].endMs == 600
+
+    asyncio.run(run())
+
+
+def test_final_recovers_partial_on_single_engine_empty_final() -> None:
+    """Same recovery on the offline-only path: the model transcribes the partials
+    (want_words=False) but blanks the whole-turn final decode (want_words=True). The
+    words shown live become the final, its language recovered from the text so live
+    translation still triggers, and the recovery is counted."""
+
+    spanish = "Ya es un planeta enano, no forma parte del Sistema Solar."
+
+    class BlankFinalEngine:
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+                return EngineResult(text="", words=[], language=None)
+            if want_words:  # the whole-turn final decode blanks the turn
+                return EngineResult(text="", words=[], language=None)
+            return EngineResult(text=spanish, words=[], language=None)
+
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        t = StreamingTranscriber(
+            BlankFinalEngine(),
+            language=None,
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):  # speech -> partials build the caption
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):  # trailing silence -> finalize; final decode is empty
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 1
+        assert finals[0].text == spanish
+        assert finals[0].words is None
+        # Language still resolves from the recovered text, so the run/translation
+        # trigger (CaptionFinal.lang) is preserved (XERK-160).
+        assert finals[0].lang is not None and finals[0].lang.value == "es"
+        assert metrics.snapshot()["counters"]["stage.stt.final_recovered"] == 1
+        metrics.reset()
+
+    asyncio.run(run())
+
+
+def test_silence_only_turn_is_still_dropped_not_recovered() -> None:
+    """The recovery must not resurrect a turn the user never saw: a turn with no
+    partial at all (pure silence, empty final) still emits nothing and counts no
+    recovery — only a turn that actually showed words is preserved."""
+
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        eng = FakeEngine()  # returns "" for silence
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=10000, silence_ms=10000, max_segment_ms=300
+        )
+        for _ in range(3):  # 300ms pure silence -> max-segment finalize, empty result
+            await t.push(_pcm(100, amplitude=0))
+        assert not _drain(t)  # nothing surfaced
+        assert metrics.snapshot()["counters"].get("stage.stt.final_recovered", 0) == 0
+        metrics.reset()
 
     asyncio.run(run())
 

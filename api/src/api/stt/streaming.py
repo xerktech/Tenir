@@ -154,6 +154,17 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        # The most recent non-empty partial text shown to the client for the in-flight
+        # turn, whatever its source (live stream or re-decode/agreement). If the
+        # whole-turn final decode comes back empty for a turn the user already watched
+        # being captioned word by word, this is surfaced as the final instead of
+        # dropping the turn — the "words appear, then the whole turn vanishes and the
+        # next one starts, as if never spoken" bug (XERK-174). It shows up most on
+        # non-English speech, where the offline final decoder and the live partial
+        # source are most likely to disagree (the offline decode blanks a turn the
+        # partial source transcribed — e.g. a session pinned to one language
+        # force-decoding another). Reset at every turn boundary.
+        self._turn_partial = ""
         # Segment times count audio bytes from here on. A resumed conversation
         # (a new Session on an existing conversation id) seeds this with the
         # duration already retained, so its segments continue the conversation's
@@ -348,6 +359,7 @@ class StreamingTranscriber:
         if not text or text == self._last_partial:
             return
         self._last_partial = text
+        self._turn_partial = text
         await self._queue.put(
             CaptionPartial(type="caption.partial", text=text, lang=_lang(self._language))
         )
@@ -376,6 +388,7 @@ class StreamingTranscriber:
             text = result.text.strip()
             if not text:
                 return
+            self._turn_partial = text
             lang = _lang(result.language or self._language)
             await self._queue.put(CaptionPartial(type="caption.partial", text=text, lang=lang))
             return
@@ -392,12 +405,17 @@ class StreamingTranscriber:
         caption = self._agreement.caption_text()
         if not caption:
             return
+        self._turn_partial = caption
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
     async def _finalize(self) -> None:
         result = await self._run_engine(stage="final", want_words=self._final_words)
         start = self._segment_start_ms
         end = start + _bytes_to_ms(len(self._buf))
+
+        # The last partial shown for this turn, captured before the per-turn state is
+        # reset below — the fallback if the whole-turn decode comes back empty.
+        fallback = self._turn_partial
 
         # Reset for the next segment before emitting so timing stays monotonic. The VAD
         # level window deliberately survives: it describes the *room*, which doesn't
@@ -408,6 +426,7 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        self._turn_partial = ""
         # The committed prefix belongs to the turn just closed; start the next turn's
         # word-by-word commit from scratch.
         if self._agreement is not None:
@@ -418,18 +437,40 @@ class StreamingTranscriber:
             await self._reset_stream()
 
         text = result.text.strip()
+        # An empty whole-turn decode used to drop the turn outright. But the client
+        # already painted this turn word by word from the live partials; dropping the
+        # final now makes those words vanish as the next turn overwrites them — the
+        # turn appears never to have been spoken (XERK-174). Most common on non-English
+        # speech, where the offline final decoder and the live partial source disagree.
+        # If we actually showed the user a partial this turn, surface it as the final so
+        # the words become a stable turn instead of disappearing; only a turn with no
+        # partial at all (true silence / no speech) is still dropped. A recovered turn
+        # has no reliable per-word timing, so it carries none — production runs with
+        # word timing off regardless.
+        recovered = False
         if not text:
-            return  # silence / no speech in this window — nothing to surface
+            text = fallback.strip()
+            if not text:
+                return  # silence / no speech in this window — nothing to surface
+            recovered = True
+            metrics.incr("stage.stt.final_recovered")
 
-        words = [
-            Word(
-                text=w.text,
-                startMs=max(0, start + int(w.start * 1000)),
-                endMs=max(0, start + int(w.end * 1000)),
-                confidence=w.probability,
+        words = (
+            None
+            if recovered
+            else (
+                [
+                    Word(
+                        text=w.text,
+                        startMs=max(0, start + int(w.start * 1000)),
+                        endMs=max(0, start + int(w.end * 1000)),
+                        confidence=w.probability,
+                    )
+                    for w in result.words
+                ]
+                or None
             )
-            for w in result.words
-        ] or None
+        )
         # The finalized turn's language, engine-reported first. The deployed
         # Parakeet server transcribes multilingual speech but reports no detected
         # language (the NeMo hypothesis exposes none — recorded on session
