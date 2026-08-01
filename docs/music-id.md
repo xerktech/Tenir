@@ -57,14 +57,29 @@ Where it appears:
    opens a **song run**: the api sends one `song` frame carrying the full synced
    lyrics and an anchor (`atMs` = the session-timeline position, `offsetMs` = the
    play position there). While the same track keeps matching, it re-identifies
-   and sends `song.sync` (a fresh anchor, no lyrics) to correct drift. When it
-   stops matching past the hold window (`music_hold_ms`) — or a different song
-   takes over — the run ends with `song.done`. A takeover is **debounced**
-   (XERK-187): a different track must match twice in a row to replace a locked
-   one, because crossfaded/DJ-blended windows flap between the outgoing and
-   incoming track and would otherwise reset the box several times per blend.
-   A live song run **suppresses cues** (gated in `session.py` beside the
-   translation flag); precedence when concurrent is translation > song > cue.
+   and sends `song.sync` (a fresh anchor, no lyrics) to correct drift. The run
+   ends with `song.done` in one of three ways: it **plays to its end** (song-end
+   prep, XERK-192), it **stops matching** past the hold window (`music_hold_ms`),
+   or a **different song takes over**. A takeover is **debounced** (XERK-187): a
+   different track must match twice in a row to replace a locked one, because
+   crossfaded/DJ-blended windows flap between the outgoing and incoming track and
+   would otherwise reset the box several times per blend. A live song run
+   **suppresses cues** (gated in `session.py` beside the translation flag);
+   precedence when concurrent is translation > song > cue.
+
+   **Song-end prep (XERK-192).** The hold alone left the box lingering on the last
+   lyric long after a song *finished* — the hold is deliberately long (it must
+   survive quiet mid-song passages that miss scans), so a track that simply ended
+   sat on screen until it expired. But the run already carries the full synced
+   lyrics and (usually) the track duration, so the session *knows* when the song
+   is over: on open (and each `song.sync`) it fixes an **end position** — the
+   reported duration, else the last lyric line plus `music_end_tail_ms` — and
+   schedules a precise `song.done` for that moment off the same anchor the scroll
+   uses. The hold now only covers a song **cut short**; a song **played to the end**
+   dismisses right when it ends. As that end nears (within `music_end_prep_ms`) the
+   scan also tightens from the slow locked cadence back to the search cadence, so
+   the **next** track is recognized and shown promptly rather than after one more
+   slow re-check — "either a new song, or the lyrics disappear quickly."
 4. **The scroll is client-driven** (`packages/client-core/src/captureSession.ts`).
    From the anchor, the client computes the song position at any moment as
    `offsetMs + (now - anchorAt)` and the current line as the last one whose
@@ -133,7 +148,8 @@ API_MUSIC_BACKEND=shazam docker compose up --build
 Tuning lives in `api/src/api/config.py` (`API_MUSIC_*`): `music_scan_interval_ms`,
 `music_scan_max_interval_ms`, `music_lock_interval_ms`, `music_hold_ms`,
 `music_min_confidence`, `music_identify_timeout_ms`, `music_window_seconds`,
-`music_lyrics_endpoint`. The defaults were tuned against real recorded sessions
+`music_end_tail_ms`, `music_end_prep_ms`, `music_lyrics_endpoint`. The defaults
+were tuned against real recorded sessions
 in XERK-187: the hold spans two failed lock-cadence re-checks (quiet passages
 routinely miss 1–3 consecutive scans mid-song), the search backoff decays to a
 minute-scale ceiling because Shazam rate-limits aggressive scanning from one IP,

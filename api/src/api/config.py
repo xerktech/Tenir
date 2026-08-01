@@ -182,6 +182,23 @@ class Settings(BaseSettings):
     # Seconds of the most-recent audio to fingerprint per scan. Landmark
     # recognition is reliable from ~5s; more only sharpens the match.
     music_window_seconds: float = 8.0
+    # Song-end prep (XERK-192). When a song has played to its end the box should
+    # clear promptly instead of lingering on the last lyric until the no-match hold
+    # (music_hold_ms) finally expires. The run carries the full synced lyrics and
+    # (usually) the track duration, so the session knows when the track is over and
+    # schedules a precise `song.done` for that moment. The hold still covers a song
+    # CUT SHORT (recognition stops matching early); this covers one that finishes.
+    #
+    # The song-time position treated as "the track is over": the recognizer's
+    # reported duration when it has one, else the last synced lyric line plus this
+    # tail (so the final line stays readable a beat before the box clears). Unused
+    # when a duration is known.
+    music_end_tail_ms: int = 4000
+    # How close (ms) to the song's end the scan tightens from the slow locked
+    # cadence (music_lock_interval_ms) back to the search cadence
+    # (music_scan_interval_ms), so the NEXT track is fingerprinted and shown quickly
+    # the moment this one ends rather than after one more slow locked re-check.
+    music_end_prep_ms: int = 20000
 
     # ---- Cue evidence retrieval (XERK-120) ---------------------------------------
     # The cue model's weights are frozen years back (measured on the previously
