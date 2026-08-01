@@ -242,6 +242,17 @@
       }
 
       /* ---- Session page: the running transcript (web UI's Live panel) ---- */
+      /* The Session page fills the content area as a flex column (XERK-195), so
+         its transcript box takes exactly the height left over after the header,
+         controls and the cue/song cards above it — rather than a fixed slice of
+         the viewport that the cards could push off the bottom. The page itself
+         never scrolls; only the transcript box does. History keeps its natural
+         flow, so `:not([hidden])` limits this to the Session page while it is up. */
+      #page-session:not([hidden]) {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
       /* The start/stop controls (XERK-116), the phone counterpart to the web
          Live panel's Record/Stop row. Sit between the header and the transcript
          so they never move as captions arrive. */
@@ -265,14 +276,20 @@
       .transcript li { padding: var(--space-2) 0; line-height: 1.55; }
       .transcript li + li { border-top: 1px solid var(--border); }
       .transcript li.partial { color: var(--text-muted); }
-      /* The running transcript scrolls inside its own bounded box that scales
-         with the viewport (XERK-103), so a long session never scrolls the page
-         and carries the cue card above it out of view. It auto-follows the
-         newest caption; the cue card stays pinned above. */
+      /* The running transcript scrolls inside its own bounded box (XERK-103), so
+         a long session never scrolls the page and carries the cue card above it
+         out of view. It flex-grows to fill the height left in the Session page's
+         column (XERK-195) — `min-height: 0` lets it shrink past its content so
+         the box stays inside the page instead of overflowing it — and its text
+         is a step smaller than the body default so more captions fit and the box
+         is never pushed off screen. It auto-follows the newest caption; the cue
+         card stays pinned above. */
       #session-text.transcript {
-        max-height: 55vh;
+        flex: 1;
+        min-height: 0;
         overflow-y: auto;
         overscroll-behavior: contain;
+        font-size: var(--text-sm);
       }
 
       /* Conversation and history transcript text is user-selectable so it can be
@@ -338,7 +355,7 @@
         font-weight: 700; font-size: var(--text-sm);
         color: var(--accent-strong);
       }
-      .session-cue-body { margin-top: 2px; line-height: 1.5; }
+      .session-cue-body { margin-top: 2px; line-height: 1.5; font-size: var(--text-sm); }
       /* Live-source attribution under the body (XERK-120): provenance, not
          content, so quieter than the body — same treatment as web/mobile. */
       .session-cue-source {
@@ -374,7 +391,7 @@
         font-size: var(--text-sm);
         color: var(--accent-strong);
       }
-      .session-song-body { margin-top: 2px; line-height: 1.5; }
+      .session-song-body { margin-top: 2px; line-height: 1.5; font-size: var(--text-sm); }
       /* Upcoming/past lines read quietly; the line being sung now lifts to full
          weight and colour so the eye lands on where the song is. */
       .session-song-line { color: var(--text-muted); }
