@@ -1,0 +1,19 @@
+<!-- Notification small icon: the Tenir "T" glyph + lumen dot as a flat white
+     silhouette on a transparent background (XERK-165). Shares the launcher icon's
+     geometry (web/public/favicon.svg scaled to the 108 viewport) but drops the dark
+     tile and the teal gradient — Android status-bar small icons use only the alpha
+     channel and tint the shape at draw time, so a full-colour launcher icon would
+     render as a solid white square. The glyph is inset within the viewport, giving
+     the icon the transparent padding notification icons expect. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M25.31,31.64 H82.69 V47.25 H61.81 V80.58 H46.20 V47.25 H25.31 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M24.05,60.33 a8.86,8.86 0 1,0 17.72,0 a8.86,8.86 0 1,0 -17.72,0 Z" />
+</vector>
