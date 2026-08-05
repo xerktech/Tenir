@@ -502,6 +502,34 @@ describe("UI bus", () => {
     c.stop();
   });
 
+  it("tenir:login succeeds without the URL global (XERK-216)", async () => {
+    // The real background JSContext (JSC / Zipline-QuickJS) has no `URL`.
+    // Before the fix, normalizeServerUrl caught the resulting throw and
+    // returned "", so a correct address still produced "Enter your server
+    // address" — the exact bug reported in XERK-216.
+    const savedUrl = Object.getOwnPropertyDescriptor(globalThis, "URL");
+    const savedParams = Object.getOwnPropertyDescriptor(globalThis, "URLSearchParams");
+    delete (globalThis as Record<string, unknown>).URL;
+    delete (globalThis as Record<string, unknown>).URLSearchParams;
+    try {
+      routes["/auth/login"] = () => ({ status: 200, body: { token: "tok-9" } });
+      routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+      const world = makeWorld();
+      const c = makeController(world);
+      await c.start();
+      expect(
+        await world.rpc("tenir:login", { serverUrl: "tenir.example.com", username: "ada", password: "pw" }),
+      ).toEqual({ ok: true, username: "ada" });
+      await flush();
+      expect(world.storage.get(SERVER_URL_KEY)).toBe("wss://tenir.example.com/ws");
+      expect(fetchCalls.some((f) => f.url === "https://tenir.example.com/auth/login")).toBe(true);
+      c.stop();
+    } finally {
+      if (savedUrl) Object.defineProperty(globalThis, "URL", savedUrl);
+      if (savedParams) Object.defineProperty(globalThis, "URLSearchParams", savedParams);
+    }
+  });
+
   it("tenir:logout clears the token + credentials and stops a running session", async () => {
     routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
     const world = makeWorld(AUTHED_SEED);

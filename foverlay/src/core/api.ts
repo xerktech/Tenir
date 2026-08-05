@@ -178,9 +178,11 @@ export function me(): Promise<Principal> {
 
 export const history = {
   list: (q?: string, limit = 50, offset = 0) => {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (q) params.set("q", q);
-    return request<ConversationSummary[]>("GET", `/conversations?${params.toString()}`);
+    // Hand-built query string — the background JSContext has no URLSearchParams
+    // (same bare-engine constraint as serverUrl.ts, XERK-216).
+    let params = `limit=${limit}&offset=${offset}`;
+    if (q) params += `&q=${encodeURIComponent(q)}`;
+    return request<ConversationSummary[]>("GET", `/conversations?${params}`);
   },
   get: (id: string) => request<Conversation>("GET", `/conversations/${id}`),
   remove: (id: string) => request<void>("DELETE", `/conversations/${id}`),
