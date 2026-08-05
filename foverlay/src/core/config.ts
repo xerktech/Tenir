@@ -7,7 +7,14 @@
  * let the user point at *their own* self-hosted instance with a server-URL field
  * (master plan §8.5). So the base URL is injected by the host rather than read
  * from `import.meta.env` here, keeping the core environment-agnostic.
+ *
+ * Like `serverUrl.ts`, the derivations avoid the WHATWG `URL` class: they run
+ * in the miniapp background JSContext (JSC / Zipline-QuickJS) where `URL`
+ * doesn't exist, and the silent `catch` fallbacks here would misroute every
+ * request to localhost (XERK-216).
  */
+
+import { splitUrl } from "./serverUrl";
 
 const DEFAULT_HTTP_BASE = "http://localhost:8080";
 
@@ -25,26 +32,17 @@ export function apiBaseUrl(): string {
 
 /** Derive the REST base from a WS URL (ws→http, drop a trailing /ws path). */
 export function httpBaseFromWs(wsUrl: string): string {
-  try {
-    const u = new URL(wsUrl);
-    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    u.pathname = u.pathname.replace(/\/ws$/, "");
-    u.search = "";
-    return u.toString().replace(/\/$/, "");
-  } catch {
-    return DEFAULT_HTTP_BASE;
-  }
+  const parts = splitUrl(wsUrl.trim());
+  if (!parts) return DEFAULT_HTTP_BASE;
+  const scheme = parts.scheme === "wss" ? "https" : "http";
+  const path = parts.path.replace(/\/ws$/, "").replace(/\/$/, "");
+  return `${scheme}://${parts.host}${path}`;
 }
 
 /** Derive the WS URL from a REST base (http→ws, append /ws). */
 export function wsFromHttpBase(httpBase: string): string {
-  try {
-    const u = new URL(httpBase);
-    u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
-    u.pathname = `${u.pathname.replace(/\/$/, "")}/ws`;
-    u.search = "";
-    return u.toString();
-  } catch {
-    return "ws://localhost:8080/ws";
-  }
+  const parts = splitUrl(httpBase.trim());
+  if (!parts) return "ws://localhost:8080/ws";
+  const scheme = parts.scheme === "https" ? "wss" : "ws";
+  return `${scheme}://${parts.host}${parts.path.replace(/\/$/, "")}/ws`;
 }

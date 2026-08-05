@@ -1,6 +1,6 @@
 /** Ported from upstream `packages/client-core/tests/serverUrl.test.ts` (vitest → bun:test). */
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import { displayServerUrl, isValidServerUrl, normalizeServerUrl } from "./serverUrl";
 
@@ -35,6 +35,46 @@ describe("normalizeServerUrl", () => {
     expect(normalizeServerUrl("")).toBe("");
     expect(normalizeServerUrl("   ")).toBe("");
     expect(normalizeServerUrl("wss://")).toBe("");
+    expect(normalizeServerUrl("not a url")).toBe("");
+    expect(normalizeServerUrl("example.com:notaport")).toBe("");
+  });
+
+  it("lowercases the scheme and host", () => {
+    expect(normalizeServerUrl("WSS://Tenir.Example.COM")).toBe("wss://tenir.example.com/ws");
+  });
+});
+
+// XERK-216 regression: the miniapp background JSContext (JSC / Zipline-QuickJS)
+// has no `URL` global. The old implementation caught the resulting throw and
+// returned "", so every login failed with "Enter your server address" no
+// matter what the user typed. These suites re-run the parsers with `URL`
+// removed to prove they no longer depend on it.
+describe("without the URL global (miniapp background JSContext)", () => {
+  let saved: PropertyDescriptor | undefined;
+
+  beforeAll(() => {
+    saved = Object.getOwnPropertyDescriptor(globalThis, "URL");
+    delete (globalThis as Record<string, unknown>).URL;
+  });
+
+  afterAll(() => {
+    if (saved) Object.defineProperty(globalThis, "URL", saved);
+  });
+
+  it("still normalizes a typed host", () => {
+    expect(normalizeServerUrl("tenir.example.com")).toBe("wss://tenir.example.com/ws");
+    expect(normalizeServerUrl("https://example.com")).toBe("wss://example.com/ws");
+    expect(isValidServerUrl("example.com:9000")).toBe(true);
+  });
+
+  it("still rejects unparseable input", () => {
+    expect(normalizeServerUrl("wss://")).toBe("");
+    expect(normalizeServerUrl("not a url")).toBe("");
+  });
+
+  it("still renders the display form", () => {
+    expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("localhost:8080");
   });
 });
 
