@@ -80,6 +80,11 @@ export const TRANSCRIPT_MAX_CHARS = 1200;
 // ≤1 Hz — the display pipeline coalesces, but we don't spam it (renders are
 // frame-deduped anyway).
 export const TICK_MS = 1000;
+// Re-issue the current HUD frame every this many ticks even when unchanged.
+// A "displayed" render ack means the host accepted the frame, NOT that the
+// glasses drew it — a frame lost further down the pipeline would otherwise
+// stay lost forever (XERK-216: the finished transcript stuck on the lens).
+export const FORCE_REPAINT_TICKS = 5;
 // Debounce for session-snapshot persistence (upstream persist.ts DEBOUNCE_MS).
 const PERSIST_DEBOUNCE_MS = 1500;
 
@@ -354,6 +359,12 @@ export class TenirController {
     this.cues = [];
     this.song = null;
     void this.clearSessionSnapshot(); // the session is over — nothing to resume
+    // Hard-clear before painting the idle frame: the wipe must not hinge on
+    // the display pipeline correctly diffing one text update — an explicit
+    // empty scene removes the transcript even where that diff is lost, and
+    // the forced ticker repaint restores the idle frame if this one drops.
+    this.lastFrameKey = "";
+    void this.session.display.render([]);
     this.renderHud();
     this.sendLive();
   }
@@ -513,11 +524,11 @@ export class TenirController {
     };
   }
 
-  private renderHud(): void {
+  private renderHud(opts: { force?: boolean } = {}): void {
     // No display, nothing to draw (hardware requirement is OPTIONAL).
     const frame = this.hudFrame();
     const key = `${frame.status}\u0000${frame.clock}\u0000${frame.caption}`;
-    if (key === this.lastFrameKey) return; // unchanged frame — skip the render
+    if (!opts.force && key === this.lastFrameKey) return; // unchanged frame — skip the render
     this.lastFrameKey = key;
     void this.session.display.render(hudElements(frame)).then((result) => {
       // render() never rejects — a frame that didn't reach the glasses comes
@@ -535,10 +546,13 @@ export class TenirController {
     if (this.ticker) return;
     this.ticker = setInterval(() => {
       this.tick += 1;
-      // The frame cache means this costs a render only when the clock minute
-      // turns over, the "listening" dots move, or a failed render needs
-      // retrying.
-      this.renderHud();
+      // Deduped tick renders cost a real render only when the clock minute
+      // turns over or the "listening" dots move. Every FORCE_REPAINT_TICKS
+      // the current frame is re-issued even when "unchanged": a "displayed"
+      // ack only means the host accepted the frame — not that the glasses
+      // drew it — so the HUD must converge on its own after a frame is lost
+      // anywhere down the pipeline (XERK-216).
+      this.renderHud({ force: this.tick % FORCE_REPAINT_TICKS === 0 });
     }, this.tickMs);
   }
 
@@ -589,22 +603,21 @@ export class TenirController {
     try {
       this.unsubs.push(
         this.session.onVisibilityChange((v) => {
-          if (v === "background") {
-            // Keep captioning (it's the app's purpose) but stop the animated
-            // ticker; caption frames still render as messages arrive.
-            this.stopTicker();
-          } else {
-            this.startTicker();
-            // While backgrounded another app may have owned and redrawn the
-            // display, so the frame cache no longer reflects the glasses —
-            // force a fresh render (this also brings the clock current).
-            this.lastFrameKey = "";
-            this.renderHud();
+          // The ticker deliberately keeps running while backgrounded — it is
+          // the HUD's heartbeat (clock + lost-frame repaints), and "background"
+          // is this app's NORMAL state: the phone sits in a pocket while the
+          // glasses HUD stays live. Stopping it froze the lens clock and left
+          // a lost stop-wipe stuck forever (XERK-216).
+          if (v === "foreground") {
+            // Another app may have owned and redrawn the display meanwhile —
+            // the frame cache no longer reflects the glasses, so force a
+            // fresh render (this also brings the clock current immediately).
+            this.renderHud({ force: true });
           }
         }),
       );
     } catch {
-      /* visibility not available — ticker just keeps running */
+      /* visibility not available — nothing to resync on */
     }
     const shutdown = () => {
       // Clean shutdown: end the session so the api finalizes + stores it, and

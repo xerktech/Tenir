@@ -64,6 +64,8 @@ interface FakeWorld {
   rendered: () => Array<{ id?: string; text?: string }>;
   openUi: () => void;
   renderCount: () => number;
+  /** Every scene accepted by the display, in order (blocked renders excluded). */
+  allRenders: () => Array<Array<{ id?: string; text?: string }>>;
   /** Make subsequent display.render calls report this status ("blocked" = frame never shown). */
   setRenderStatus: (status: "displayed" | "blocked") => void;
   emitVisibility: (v: "foreground" | "background") => void;
@@ -78,6 +80,7 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   const broadcastHandlers = new Map<string, (payload: never) => void>();
   const uiSent: Array<{ channel: string; payload: unknown }> = [];
   let lastScene: Array<{ id?: string; text?: string }> = [];
+  const acceptedRenders: Array<Array<{ id?: string; text?: string }>> = [];
   let renderStatus: "displayed" | "blocked" = "displayed";
   let renderCount = 0;
   let visHandler: ((v: "foreground" | "background") => void) | null = null;
@@ -121,7 +124,10 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       render: (elements: Array<{ id?: string; text?: string }>) => {
         renderCount += 1;
         // A blocked render never reaches the glasses — the previous scene stays.
-        if (renderStatus === "displayed") lastScene = elements;
+        if (renderStatus === "displayed") {
+          lastScene = elements;
+          acceptedRenders.push(elements);
+        }
         return Promise.resolve({ status: renderStatus });
       },
     },
@@ -156,6 +162,7 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       for (const cb of openHandlers) cb();
     },
     renderCount: () => renderCount,
+    allRenders: () => acceptedRenders,
     setRenderStatus: (status) => {
       renderStatus = status;
     },
@@ -680,6 +687,44 @@ describe("lens HUD staleness (XERK-216)", () => {
     nowValue = new Date(2026, 0, 1, 9, 31);
     await sleep(80);
     expect(element(world, "clock")).toBe("9:31 AM");
+    c.stop();
+  });
+
+  it("keeps ticking — and the clock current — while backgrounded", async () => {
+    // "background" is this app's normal state: the phone is pocketed while
+    // the glasses HUD stays live. The ticker must not stop with it.
+    let nowValue = new Date(2026, 0, 1, 9, 30);
+    const { world, c } = await signedIn({ now: () => nowValue, tickMs: 10 });
+    world.emitVisibility("background");
+    nowValue = new Date(2026, 0, 1, 9, 31);
+    await sleep(80);
+    expect(element(world, "clock")).toBe("9:31 AM");
+    c.stop();
+  });
+
+  it("stop hard-clears the lens before painting the idle frame", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    h.onConnectionChange?.("open");
+    h.onFinal?.({ type: "caption.final", segmentId: "s1", text: "hello world", startMs: 0, endMs: 1 });
+    const before = world.allRenders().length;
+    world.emitTouch("single_tap"); // stop the session
+    const after = world.allRenders().slice(before);
+    // The wipe is an explicit empty scene — not a diffed text update that a
+    // lossy pipeline can drop — followed by the idle frame.
+    expect(after[0]).toEqual([]);
+    expect(after[1]?.find((e) => e.id === "caption")?.text).toBe(IDLE_PROMPT);
+    expect(after[1]?.find((e) => e.id === "status")?.text).toBe("ready");
+    c.stop();
+  });
+
+  it("periodically re-issues an unchanged frame so the HUD self-heals", async () => {
+    const { world, c } = await signedIn({ tickMs: 10 });
+    await flush();
+    const before = world.renderCount();
+    await sleep(120); // > FORCE_REPAINT_TICKS ticks with an unchanged idle frame
+    expect(world.renderCount()).toBeGreaterThan(before);
     c.stop();
   });
 });
