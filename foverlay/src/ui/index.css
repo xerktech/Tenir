@@ -20,6 +20,18 @@
   box-sizing: border-box;
 }
 
+/*
+ * The page toggles every view with the `hidden` attribute (login ↔ app shell,
+ * session ↔ history, …). Author `display:` rules like `#login { display: flex }`
+ * override the browser's built-in `[hidden] { display: none }`, so without this
+ * guard a successful login left the login card on screen (XERK-216). Upstream
+ * even/index.html carries per-selector `…[hidden]` rules; one global
+ * `!important` rule covers them all.
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
