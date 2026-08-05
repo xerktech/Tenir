@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Tenir</title>
+    <link rel="stylesheet" href="./index.css" />
+  </head>
+  <body>
+    <!-- Login card (upstream even/index.html #login) -->
+    <section id="login" hidden>
+      <div class="login-card">
+        <h1 class="brand">Tenir</h1>
+        <p class="tagline">Live captions from your own server</p>
+        <form id="login-form" autocomplete="off">
+          <label for="server-url">Server</label>
+          <input id="server-url" type="text" placeholder="tenir.example.com" autocapitalize="none" autocorrect="off" spellcheck="false" />
+          <label for="username">Username</label>
+          <input id="username" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" />
+          <label for="password">Password</label>
+          <input id="password" type="password" />
+          <p id="login-error" class="form-error" role="alert"></p>
+          <button id="login-submit" type="submit" class="btn btn-primary">Log in</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Signed-in shell: Session / History pages + bottom nav -->
+    <section id="app" hidden>
+      <header class="app-header">
+        <div class="app-header-left">
+          <span class="brand-small">Tenir</span>
+          <span id="app-user" class="app-user"></span>
+        </div>
+        <div class="app-header-right">
+          <button id="open-web" type="button" class="btn btn-ghost">Web app</button>
+          <button id="sign-out" type="button" class="btn btn-ghost">Sign out</button>
+        </div>
+      </header>
+
+      <!-- Session page: live transcript mirror + Start/Stop (upstream phone/session.ts) -->
+      <main id="page-session" class="page">
+        <div class="session-head">
+          <span id="session-dot" class="live-dot" hidden></span>
+          <span id="session-badge" class="badge-neutral">idle</span>
+          <div id="session-controls" class="session-controls">
+            <button id="session-start" type="button" class="btn btn-primary">Start</button>
+            <button id="session-stop" type="button" class="btn btn-danger" hidden>Stop</button>
+          </div>
+        </div>
+        <div id="session-song" class="session-song" hidden></div>
+        <div id="session-empty" class="empty">
+          <p id="session-empty-title" class="empty-title">No session running</p>
+          <p id="session-empty-hint" class="empty-hint">Press Start, or tap your glasses, to begin a session.</p>
+        </div>
+        <ul id="session-text" class="session-text" hidden></ul>
+      </main>
+
+      <!-- History page: stored sessions (upstream phone/history.ts) -->
+      <main id="page-history" class="page" hidden>
+        <div id="history-list">
+          <form id="history-search" class="history-search">
+            <input id="history-query" type="search" placeholder="Search transcripts…" />
+            <button type="submit" class="btn btn-secondary">Search</button>
+          </form>
+          <div id="history-status"></div>
+          <ul id="history-rows" class="history-rows"></ul>
+        </div>
+        <div id="history-detail" hidden>
+          <div class="detail-head">
+            <button id="history-back" type="button" class="btn btn-secondary">‹ Back</button>
+            <button id="history-delete" type="button" class="btn btn-danger">Delete</button>
+          </div>
+          <p id="history-meta" class="muted"></p>
+          <label id="history-cue-toggle" class="cue-toggle" hidden>
+            <input id="history-cue-toggle-input" type="checkbox" checked />
+            Show cues
+          </label>
+          <div id="history-transcript" class="history-transcript"></div>
+          <!-- Audio playback/download is not ported: the WebView can't stream the
+               authenticated audio endpoint through the background fetch proxy. -->
+        </div>
+      </main>
+
+      <nav class="bottom-nav">
+        <button id="nav-session" type="button" class="nav-tab active">Session</button>
+        <button id="nav-history" type="button" class="nav-tab">History</button>
+      </nav>
+    </section>
+
+    <div id="app-toast" class="toast" role="status"></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
