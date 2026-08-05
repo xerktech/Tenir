@@ -1,0 +1,503 @@
+/*
+ * Tenir phone page — loosely ported from the upstream web UI's "Lumen" look
+ * (dark, accent green), plain CSS. Respects the host's safe-area insets via
+ * the injected --mentra-safe-* CSS vars.
+ */
+
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1c2230;
+  --border: #2b3242;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #3fdc97;
+  --accent-dim: #2a9d6d;
+  --danger: #e5534b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+}
+
+/* ---- login ---------------------------------------------------------------- */
+
+#login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--mentra-safe-top, 0px) + 24px) 20px calc(var(--mentra-safe-bottom, 0px) + 24px);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+}
+
+.brand {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.tagline {
+  margin: 4px 0 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#login-form label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+#login-form input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 15px;
+}
+
+#login-form input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.form-error {
+  display: none;
+  margin: 12px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.form-error.show {
+  display: block;
+}
+
+/* ---- buttons -------------------------------------------------------------- */
+
+.btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06281a;
+  font-weight: 600;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+}
+
+.btn-secondary {
+  background: var(--panel-2);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger.armed {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 6px 8px;
+}
+
+#login-submit {
+  width: 100%;
+  margin-top: 18px;
+  padding: 11px;
+}
+
+/* ---- app shell ------------------------------------------------------------ */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(var(--mentra-safe-top, 0px) + 10px) calc(var(--mentra-safe-right, 0px) + 14px) 10px
+    calc(var(--mentra-safe-left, 0px) + 16px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-small {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.app-user {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.page {
+  flex: 1;
+  padding: 14px calc(var(--mentra-safe-right, 0px) + 16px)
+    calc(var(--mentra-safe-bottom, 0px) + 76px) calc(var(--mentra-safe-left, 0px) + 16px);
+}
+
+/* ---- bottom nav ----------------------------------------------------------- */
+
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px calc(var(--mentra-safe-right, 0px) + 10px)
+    calc(var(--mentra-safe-bottom, 0px) + 6px) calc(var(--mentra-safe-left, 0px) + 10px);
+  gap: 8px;
+}
+
+.nav-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.nav-tab.active {
+  color: var(--accent);
+  background: var(--panel-2);
+  font-weight: 600;
+}
+
+/* ---- session page --------------------------------------------------------- */
+
+.session-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.badge-neutral,
+.badge-accent {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge-accent {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.session-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.session-song {
+  border: 1px solid var(--accent-dim);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.session-song .song-badge {
+  color: var(--accent);
+  margin-right: 6px;
+}
+
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 34px 16px;
+  text-align: center;
+}
+
+.empty-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.empty-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.session-text {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-text li {
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  line-height: 1.45;
+}
+
+.session-text li.partial {
+  color: var(--muted);
+  font-style: italic;
+  border-bottom: none;
+}
+
+.session-translation {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.session-translation-lang {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+/* ---- inline cues (session + history) -------------------------------------- */
+
+.cue-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 0;
+  font-size: 14px;
+  text-align: left;
+}
+
+.cue-inline-mark {
+  color: var(--accent);
+}
+
+.cue-inline-body {
+  margin: 2px 0 6px 18px;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent-dim);
+}
+
+.cue-inline-text {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cue-inline-source {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- history page --------------------------------------------------------- */
+
+.history-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.history-search input {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.history-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-item {
+  margin-bottom: 8px;
+}
+
+.history-open {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-when {
+  font-weight: 600;
+}
+
+.history-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cue-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.history-transcript .item {
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  line-height: 1.45;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.spinner-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- toast ---------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--mentra-safe-bottom, 0px) + 84px);
+  transform: translateX(-50%) translateY(8px);
+  background: var(--panel-2);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+  max-width: 88vw;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

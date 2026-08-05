@@ -1,0 +1,32 @@
+{
+  "packageName": "com.xerktech.tenir",
+  "version": "0.5.9",
+  "name": "Tenir",
+  "description": "Self-hosted live captions for the Even Realities G2. Streams mic PCM to your own Tenir server over WebSocket and renders live captions on the lens, with a phone page for sign-in, the live transcript, and conversation history.",
+  "type": "standard",
+  "sdkVersion": "0.3.0",
+  "minHostVersion": "1.42.0",
+  "port": 3180,
+  "entry": {
+    "background": "background/index.js",
+    "ui": "ui/index.html"
+  },
+  "permissions": [
+    {
+      "type": "MICROPHONE",
+      "description": "Streams microphone audio to your self-hosted Tenir server for live captioning"
+    }
+  ],
+  "hardwareRequirements": [
+    {
+      "type": "DISPLAY",
+      "level": "OPTIONAL",
+      "description": "Shows live captions on glasses with a display; the phone page works without one"
+    },
+    {
+      "type": "MICROPHONE",
+      "level": "REQUIRED",
+      "description": "Captures the speech that is captioned"
+    }
+  ]
+}

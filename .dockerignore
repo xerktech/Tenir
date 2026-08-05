@@ -21,5 +21,7 @@ docker-compose.yml
 # runs schema.sql on a fresh volume, so it can't be excluded from the context.
 scripts
 litellm
+# Self-contained Foverlay miniapp — the api image build never reads it.
+foverlay
 .env.example
 *.log

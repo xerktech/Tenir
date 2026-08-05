@@ -6,7 +6,7 @@
 
 "use strict";
 
-// The four release components. Tenir is an npm-workspace monorepo whose shared
+// The release components. Tenir is an npm-workspace monorepo whose shared
 // packages fan a single change out to several components:
 //   - api/**       -> the api image (api/Dockerfile, repo-root build context).
 //   - web/**       -> the web SPA is BAKED INTO the api image (a node build
@@ -23,7 +23,11 @@
 //                     (and the api image's web build stage) install from.
 // Over-building a shared change wastes runner time; under-building ships a
 // manifest that lies. We take the former.
-const COMPONENTS = ["api", "parakeet-stt", "nemotron-stt", "even", "mobile"];
+//   - foverlay/** is the exception: the Foverlay miniapp build of the Tenir G2
+//     client is fully self-contained (Bun, its own lockfile, vendored SDK
+//     tarballs — NOT an npm workspace member), so no shared prefix or root
+//     file fans out to it.
+const COMPONENTS = ["api", "parakeet-stt", "nemotron-stt", "even", "mobile", "foverlay"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
@@ -37,6 +41,7 @@ const PREFIX_MAP = [
   { prefix: "nemotron-stt/", components: ["nemotron-stt"] },
   { prefix: "even/", components: ["even"] },
   { prefix: "mobile/", components: ["mobile"] },
+  { prefix: "foverlay/", components: ["foverlay"] },
 ];
 
 // Repo-root files (no dir prefix) that still touch components: the npm workspace

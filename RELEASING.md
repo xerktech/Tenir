@@ -1,9 +1,11 @@
 # Releasing Tenir
 
-One release publishes **all four components** under a single
+One release publishes **all components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **Parakeet STT** image, the Even **glasses app**, and the Android
-**`.apk`**. Driven by `.github/workflows/release.yml`; the logic lives in
+UI), the **Parakeet STT** and **Nemotron STT** images, the Even **glasses
+app**, the Android **`.apk`**, and the **Foverlay miniapp `.zip`** (the Tenir
+client for the Foverlay app, bundled into that repo's
+`mobile/assets/miniapps/`). Driven by `.github/workflows/release.yml`; the logic lives in
 `.github/scripts/` (see its README). The Even build is **not a release
 asset**: its distribution channel is the Even Hub developer portal, uploaded
 by `build-even` right after packing (see "Even Hub dev-portal publish").
@@ -16,10 +18,12 @@ by `build-even` right after packing (see "Even Hub dev-portal publish").
   path read-only against the repo, so it can't re-trigger itself.
 - A minor/major bump is a deliberate manual act (see below) that edits `VERSION`.
 
-There is no committed version-sync into the manifests. The two artifacts that
+There is no committed version-sync into the manifests. The artifacts that
 version their *installs* by content are stamped at build time by `release.yml`:
-the Even `app.json` `version` (Even Hub keys sideloads on it) and the Android
-`versionName` + packed `versionCode` (see `.github/scripts/version.js`). The
+the Even `app.json` `version` (Even Hub keys sideloads on it), the Android
+`versionName` + packed `versionCode` (see `.github/scripts/version.js`), and
+the Foverlay `foverlay/miniapp.json` `version` (the host app keys
+bundled-miniapp updates on it). The
 `package.json`/`pyproject.toml`/FastAPI-banner versions are ordinary dev metadata
 and are not release-managed.
 
@@ -93,8 +97,8 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 `changes.test.js`) is:
 
 ```
-api/**  contract/**  packages/**  web/**  parakeet-stt/**  even/**  mobile/**
-package.json  package-lock.json
+api/**  contract/**  packages/**  web/**  parakeet-stt/**  nemotron-stt/**
+even/**  mobile/**  foverlay/**  package.json  package-lock.json
 ```
 
 `plan` diffs the merge against the previous release tag and decides, per
@@ -110,7 +114,9 @@ Because Tenir is an npm-workspace monorepo, a single change can fan out: a
 `contract/**` edit rebuilds the api image *and* both frontend bundles (it
 regenerates both the Pydantic models and the TS types); a `packages/**`,
 `web/**` or root-lockfile change rebuilds the api image too, because the api
-image bakes in the built web SPA.
+image bakes in the built web SPA. The **foverlay** component is the exception:
+it is self-contained (Bun, its own lockfile, vendored SDK tarballs — not a
+workspace member), so only `foverlay/**` changes rebuild it.
 
 The release notes render a **rebuilt vs carried** table from the attached
 `manifest.json`, which is the machine-readable source of truth.

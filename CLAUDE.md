@@ -32,8 +32,9 @@ Working conventions for Claude Code in this repository.
 
 Tests are a required part of every change, not a follow-up. CI is per-component:
 each component owns one **PR-gate** workflow under `.github/workflows/` (e.g.
-`api.yml`, `web.yml`) that runs its checks on PRs touching its dir (or the shared
-workspace). Publishing is unified — one `release.yml` cuts a single
+`api.yml`, `web.yml`, `foverlay.yml`) that runs its checks on PRs touching its
+dir (or the shared workspace; `foverlay/` is self-contained and gates only on
+its own dir). Publishing is unified — one `release.yml` cuts a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag carrying all components on push to `main` (see
 `RELEASING.md` and `.github/scripts/`). A change is not done until its checks are
 green.

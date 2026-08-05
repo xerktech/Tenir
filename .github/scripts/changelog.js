@@ -21,8 +21,9 @@ const COMPONENT_HEADING = {
   "nemotron-stt": "Nemotron STT",
   even: "Even",
   mobile: "Mobile",
+  foverlay: "Foverlay",
 };
-const HEADING_ORDER = ["API", "Parakeet STT", "Nemotron STT", "Even", "Mobile", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "Nemotron STT", "Even", "Mobile", "Foverlay", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
@@ -31,8 +32,9 @@ const COMPONENT_LABEL = {
   "nemotron-stt": "Nemotron STT (image)",
   even: "Even (Even Hub)",
   mobile: "Android (.apk)",
+  foverlay: "Foverlay (miniapp .zip)",
 };
-const TABLE_ORDER = ["api", "parakeet-stt", "nemotron-stt", "even", "mobile"];
+const TABLE_ORDER = ["api", "parakeet-stt", "nemotron-stt", "even", "mobile", "foverlay"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.
@@ -137,6 +139,8 @@ const INSTALL_DETAILS = [
   "- **Even**: published to the Even Hub developer portal (no release asset);",
   "  promote the build there, then update the app from the Even phone app.",
   "- **Android** (`.apk`): download below and install (enable \"install unknown apps\").",
+  "- **Foverlay** (`.zip`): the Tenir miniapp for the Foverlay app; bundled into that",
+  "  repo's `mobile/assets/miniapps/` (not user-installed from here).",
   "",
   "Carried components are unchanged since the version shown; their artifact name reflects the",
   "build it actually is. `manifest.json` (attached) is the machine-readable source of truth.",
