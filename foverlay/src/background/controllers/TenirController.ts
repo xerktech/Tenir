@@ -107,6 +107,8 @@ export interface TenirDeps {
   createClient?: (url: string, handlers: ApiHandlers) => CaptureClient;
   /** Clock override for tests. */
   now?: () => Date;
+  /** Ticker interval override for tests (default TICK_MS). */
+  tickMs?: number;
 }
 
 type Send = <C extends keyof Channels & string>(channel: C, payload: Channels[C]) => void;
@@ -126,6 +128,7 @@ interface TypedUi {
 export class TenirController {
   private readonly createClient: (url: string, handlers: ApiHandlers) => CaptureClient;
   private readonly now: () => Date;
+  private readonly tickMs: number;
 
   private started = false;
   private readonly unsubs: Array<() => void> = [];
@@ -169,6 +172,7 @@ export class TenirController {
   ) {
     this.createClient = deps.createClient ?? ((url, handlers) => new ApiClient(url, handlers));
     this.now = deps.now ?? (() => new Date());
+    this.tickMs = deps.tickMs ?? TICK_MS;
   }
 
   /** Idempotent — safe to call multiple times. */
@@ -515,7 +519,16 @@ export class TenirController {
     const key = `${frame.status}\u0000${frame.clock}\u0000${frame.caption}`;
     if (key === this.lastFrameKey) return; // unchanged frame — skip the render
     this.lastFrameKey = key;
-    void this.session.display.render(hudElements(frame));
+    void this.session.display.render(hudElements(frame)).then((result) => {
+      // render() never rejects — a frame that didn't reach the glasses comes
+      // back as status "blocked" (display arbitration / transient host
+      // failure). Drop the cache so the ticker retries the same frame,
+      // instead of treating it as on screen forever — a blocked render at
+      // stop left the finished transcript stuck on the lens (XERK-216).
+      if (result.status !== "displayed" && this.lastFrameKey === key) {
+        this.lastFrameKey = "";
+      }
+    });
   }
 
   private startTicker(): void {
@@ -523,9 +536,10 @@ export class TenirController {
     this.ticker = setInterval(() => {
       this.tick += 1;
       // The frame cache means this costs a render only when the clock minute
-      // turns over or the "listening" dots actually move.
+      // turns over, the "listening" dots move, or a failed render needs
+      // retrying.
       this.renderHud();
-    }, TICK_MS);
+    }, this.tickMs);
   }
 
   private stopTicker(): void {
@@ -581,6 +595,10 @@ export class TenirController {
             this.stopTicker();
           } else {
             this.startTicker();
+            // While backgrounded another app may have owned and redrawn the
+            // display, so the frame cache no longer reflects the glasses —
+            // force a fresh render (this also brings the clock current).
+            this.lastFrameKey = "";
             this.renderHud();
           }
         }),

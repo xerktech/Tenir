@@ -21,6 +21,7 @@ import {
   TOKEN_KEY,
   TenirController,
   type CaptureClient,
+  type TenirDeps,
 } from "./TenirController";
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,10 @@ interface FakeWorld {
   uiSent: Array<{ channel: string; payload: unknown }>;
   rendered: () => Array<{ id?: string; text?: string }>;
   openUi: () => void;
+  renderCount: () => number;
+  /** Make subsequent display.render calls report this status ("blocked" = frame never shown). */
+  setRenderStatus: (status: "displayed" | "blocked") => void;
+  emitVisibility: (v: "foreground" | "background") => void;
 }
 
 function makeWorld(seed: Record<string, string> = {}): FakeWorld {
@@ -73,6 +78,9 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   const broadcastHandlers = new Map<string, (payload: never) => void>();
   const uiSent: Array<{ channel: string; payload: unknown }> = [];
   let lastScene: Array<{ id?: string; text?: string }> = [];
+  let renderStatus: "displayed" | "blocked" = "displayed";
+  let renderCount = 0;
+  let visHandler: ((v: "foreground" | "background") => void) | null = null;
 
   const session = {
     storage: {
@@ -111,14 +119,19 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     },
     display: {
       render: (elements: Array<{ id?: string; text?: string }>) => {
-        lastScene = elements;
-        return Promise.resolve({ status: "displayed" });
+        renderCount += 1;
+        // A blocked render never reaches the glasses — the previous scene stays.
+        if (renderStatus === "displayed") lastScene = elements;
+        return Promise.resolve({ status: renderStatus });
       },
     },
     system: {
       openUrl: () => {},
     },
-    onVisibilityChange: () => () => {},
+    onVisibilityChange: (cb: (v: "foreground" | "background") => void) => {
+      visHandler = cb;
+      return () => {};
+    },
     onBeforeDisconnect: () => () => {},
     on: () => () => {},
   };
@@ -142,6 +155,11 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     openUi: () => {
       for (const cb of openHandlers) cb();
     },
+    renderCount: () => renderCount,
+    setRenderStatus: (status) => {
+      renderStatus = status;
+    },
+    emitVisibility: (v) => visHandler?.(v),
   };
 }
 
@@ -183,7 +201,7 @@ const AUTHED_SEED = {
   [CREDENTIALS_KEY]: JSON.stringify({ username: "ada", password: "pw" }),
 };
 
-function makeController(world: FakeWorld): TenirController {
+function makeController(world: FakeWorld, deps: Partial<TenirDeps> = {}): TenirController {
   return new TenirController(world.session, {
     createClient: (url, handlers) => {
       const client = new FakeClient(url, handlers);
@@ -191,6 +209,7 @@ function makeController(world: FakeWorld): TenirController {
       return client;
     },
     now: () => new Date(2026, 0, 1, 9, 30),
+    ...deps,
   });
 }
 
@@ -598,6 +617,69 @@ describe("UI bus", () => {
       ok: false,
       error: "Not signed in.",
     });
+    c.stop();
+  });
+});
+
+// XERK-216: a display.render can come back "blocked" (another app owns the
+// display / transient host failure) — the frame never reaches the glasses.
+// The controller must not cache such a frame as shown, or the finished
+// transcript stays stuck on the lens after stop and the clock freezes.
+describe("lens HUD staleness (XERK-216)", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const element = (world: FakeWorld, id: string) =>
+    world.rendered().find((e) => e.id === id)?.text ?? "";
+
+  async function signedIn(deps: Partial<TenirDeps> = {}) {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world, deps);
+    await c.start();
+    return { world, c };
+  }
+
+  it("retries a blocked render so stop wipes the transcript back to idle", async () => {
+    const { world, c } = await signedIn({ tickMs: 10 });
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    h.onConnectionChange?.("open");
+    h.onFinal?.({ type: "caption.final", segmentId: "s1", text: "hello world", startMs: 0, endMs: 1 });
+    expect(element(world, "caption").endsWith("hello world")).toBe(true);
+
+    // The render that should wipe the band gets blocked by the host.
+    world.setRenderStatus("blocked");
+    world.emitTouch("single_tap"); // stop the session
+    await flush();
+    expect(element(world, "caption").endsWith("hello world")).toBe(true); // stale on the glasses
+
+    // Once the display frees up, the ticker re-issues the idle frame.
+    world.setRenderStatus("displayed");
+    await sleep(80);
+    expect(element(world, "status")).toBe("ready");
+    expect(element(world, "caption")).toBe(IDLE_PROMPT);
+    c.stop();
+  });
+
+  it("re-renders on foreground restore even when the frame is unchanged", async () => {
+    const { world, c } = await signedIn();
+    await flush();
+    const before = world.renderCount();
+    world.emitVisibility("background");
+    world.emitVisibility("foreground");
+    // Another app may have redrawn the glasses while backgrounded — the same
+    // frame must be pushed again, not skipped by the frame cache.
+    expect(world.renderCount()).toBe(before + 1);
+    expect(element(world, "caption")).toBe(IDLE_PROMPT);
+    c.stop();
+  });
+
+  it("keeps the clock current via the ticker", async () => {
+    let nowValue = new Date(2026, 0, 1, 9, 30);
+    const { world, c } = await signedIn({ now: () => nowValue, tickMs: 10 });
+    expect(element(world, "clock")).toBe("9:30 AM");
+    nowValue = new Date(2026, 0, 1, 9, 31);
+    await sleep(80);
+    expect(element(world, "clock")).toBe("9:31 AM");
     c.stop();
   });
 });
