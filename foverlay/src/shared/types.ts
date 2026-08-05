@@ -33,11 +33,35 @@ export interface TenirCue {
   afterIndex: number;
 }
 
-/** The song currently recognized playing (XERK-184), phone-mirror form. */
+/** One time-synced lyric line (LRC): song-time offset and the text sung at it. */
+export interface TenirLyricLine {
+  atMs: number;
+  text: string;
+}
+
+/**
+ * The song currently recognized playing (XERK-184), phone-mirror form — the
+ * full `LiveSong`: the synced lyrics and the scroll anchor, so the phone card
+ * scrolls the same window the lens box does. `anchorAt` is a wall-clock epoch
+ * (background and WebView share the device clock).
+ */
 export interface TenirSong {
   id: string;
   title: string;
   artist: string;
+  lines: TenirLyricLine[];
+  anchorAt: number;
+  anchorOffsetMs: number;
+  durationMs?: number;
+}
+
+/**
+ * The cue currently up in the lens box (XERK-81), mirrored to the phone's live
+ * cue card. `shownAt` is the wall-clock epoch its TTL countdown runs from
+ * (XERK-110) — the UI derives seconds-left locally between broadcasts.
+ */
+export interface TenirActiveCue extends TenirCue {
+  shownAt: number;
 }
 
 /** Sign-in state as the phone page needs it. */
@@ -54,6 +78,9 @@ export interface TenirLiveState {
   connection: ConnectionState;
   segments: TenirSegment[];
   partial: string;
+  /** The cue currently up (XERK-81), or null — drives the phone's live cue card. */
+  activeCue: TenirActiveCue | null;
+  /** Released cues embedded in the transcript for review (XERK-108). */
   cues: TenirCue[];
   song: TenirSong | null;
 }

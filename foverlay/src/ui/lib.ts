@@ -38,6 +38,26 @@ export function liveTranscriptRows(segments: TenirSegment[], cues: TenirCue[]): 
   return rows;
 }
 
+/**
+ * Live-transcript auto-scroll geometry (XERK-103), ported from upstream
+ * `packages/client-core/src/scroll.ts`: the transcript box "sticks" to the
+ * bottom — following new text — only while the viewer is already there; once
+ * they scroll up to re-read, fresh captions stop yanking them back down.
+ */
+export interface ScrollGeometry {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/** Slack within which the box still counts as "at the bottom". */
+export const STICK_THRESHOLD_PX = 24;
+
+/** True when the box is scrolled to (or within `threshold` px of) the bottom. */
+export function isPinnedToBottom(g: ScrollGeometry, threshold = STICK_THRESHOLD_PX): boolean {
+  return g.scrollHeight - g.scrollTop - g.clientHeight <= threshold;
+}
+
 /** The in-session one-word state, honest about connectivity like the lens. */
 export function sessionStatus(connection: "connecting" | "open" | "closed"): string {
   if (connection === "connecting") return "connecting…";
