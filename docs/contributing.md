@@ -8,6 +8,8 @@ api/             FastAPI + WebSocket api (auth, sessions, history) — its Docke
 even/            Even G2 glasses client (Vite + TS) — live capture + lens render
 web/             self-hosted React SPA — history, live capture, status, users
 mobile/          React Native app (Android) — phone-mic capture + history
+foverlay/        Tenir miniapp for the Foverlay app (Bun, self-contained —
+                 vendored SDK tarballs, own lockfile, not a workspace member)
 packages/
   contract/      generated WS TS types — single source of truth
   client-core/   shared REST + WS client, auth, config, capture state machine

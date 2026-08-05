@@ -20,6 +20,10 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
   assert.deepEqual(C.componentsForPath("nemotron-stt/server.py"), ["nemotron-stt"]);
+  // foverlay/ is self-contained (vendored deps, own lockfile): no fan-out in
+  // either direction — shared dirs don't touch it, and it touches only itself.
+  assert.deepEqual(C.componentsForPath("foverlay/src/background/index.ts"), ["foverlay"]);
+  assert.deepEqual(C.componentsForPath("foverlay/package.json"), ["foverlay"]);
 });
 
 test("componentsForPath maps the root workspace manifest/lockfile to api + clients", () => {
@@ -45,6 +49,19 @@ test("detectChanges unions components across the diff", () => {
     "nemotron-stt": false,
     even: true,
     mobile: false,
+    foverlay: false,
+  });
+});
+
+test("a foverlay-only change builds only foverlay (no workspace fan-out)", () => {
+  const changed = C.detectChanges(["foverlay/src/core/ws.ts"], {});
+  assert.deepEqual(changed, {
+    api: false,
+    "parakeet-stt": false,
+    "nemotron-stt": false,
+    even: false,
+    mobile: false,
+    foverlay: true,
   });
 });
 
@@ -56,6 +73,7 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
     "nemotron-stt": false,
     even: false,
     mobile: false,
+    foverlay: false,
   });
 });
 

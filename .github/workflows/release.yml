@@ -1,9 +1,10 @@
 name: release
 
 # The unified release pipeline: ONE v<MAJOR>.<MINOR>.<PATCH> tag per release,
-# covering ALL four components (the api image — which bakes in the web SPA —,
-# the Parakeet STT image, the Even glasses app, and the Android .apk) + a
-# changelog. Replaces the per-component main-push publish jobs that used to live
+# covering ALL components (the api image — which bakes in the web SPA —, the
+# Parakeet and Nemotron STT images, the Even glasses app, the Android .apk, and
+# the Foverlay miniapp .zip) + a changelog. Replaces the per-component
+# main-push publish jobs that used to live
 # in api.yml, parakeet-stt.yml, even.yml and mobile.yml (now PR-only CI). See
 # RELEASING.md and .github/scripts/README.md. The Even .ehpk is NOT a release
 # asset: its distribution channel is the Even Hub developer portal, uploaded by
@@ -46,6 +47,7 @@ on:
       - "nemotron-stt/**"
       - "even/**"
       - "mobile/**"
+      - "foverlay/**"
       - "package.json"
       - "package-lock.json"
   workflow_dispatch:
@@ -98,6 +100,7 @@ jobs:
       build_nemotron_stt: ${{ steps.plan.outputs.build_nemotron_stt }}
       build_even: ${{ steps.plan.outputs.build_even }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
+      build_foverlay: ${{ steps.plan.outputs.build_foverlay }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
       sha: ${{ github.sha }}
     steps:
@@ -497,13 +500,62 @@ jobs:
           path: tenir-android-v${{ needs.plan.outputs.version }}.apk
           if-no-files-found: error
 
+  # ------------------------------------------------------- build: foverlay ----
+  # GitHub-hosted: a Bun build + a flat-zip pack, no docker cache to keep warm
+  # and nothing large on disk. Self-contained (vendored SDK tarballs + its own
+  # bun.lock, not an npm workspace member), so no root npm ci. The unified
+  # version is stamped into miniapp.json (the same way build-even stamps
+  # even/app.json) before the bundle is built and packed.
+  build-foverlay:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_foverlay == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.22"
+      - name: Install dependencies
+        working-directory: foverlay
+        run: bun install --frozen-lockfile
+      # Stamp the unified version into miniapp.json before building — the host
+      # app keys bundled-miniapp updates on it, so it MUST match the release.
+      - name: Stamp version, build, pack Foverlay miniapp
+        working-directory: foverlay
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("miniapp.json"));j.version=process.env.VERSION;fs.writeFileSync("miniapp.json",JSON.stringify(j,null,2)+"\n")'
+          bun run build
+          bun run pack -- --out "$GITHUB_WORKSPACE/tenir-foverlay-v${VERSION}.zip"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: asset-foverlay
+          path: tenir-foverlay-v${{ needs.plan.outputs.version }}.zip
+          if-no-files-found: error
+
   # --------------------------------------------------------------- publish ----
   # Runs last. Assembles manifest.json + release notes, carries unchanged assets
   # forward, and (unless dry_run) creates the tag + release. Runs unless a build
   # that was SUPPOSED to run failed (a skipped/carried component is fine).
   publish:
     needs:
-      [plan, bump, build-api, build-parakeet-stt, build-nemotron-stt, build-even, build-mobile]
+      [
+        plan,
+        bump,
+        build-api,
+        build-parakeet-stt,
+        build-nemotron-stt,
+        build-even,
+        build-mobile,
+        build-foverlay,
+      ]
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.bump.result != 'failure'
@@ -512,6 +564,7 @@ jobs:
       && needs.build-nemotron-stt.result != 'failure'
       && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'
+      && needs.build-foverlay.result != 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -526,11 +579,12 @@ jobs:
         with:
           node-version: "24"
       # Collect the built release assets into dist/ (flattened). The Android
-      # .apk is the only asset-* producer now (the .ehpk ships to the Even Hub
-      # portal from build-even), so only download when mobile actually built —
-      # a zero-match pattern must not be able to fail an even-only release.
+      # .apk and the Foverlay .zip are the only asset-* producers (the .ehpk
+      # ships to the Even Hub portal from build-even), so only download when
+      # one of them actually built — a zero-match pattern must not be able to
+      # fail an even-only release.
       - uses: actions/download-artifact@v5
-        if: needs.plan.outputs.build_mobile == 'true'
+        if: needs.plan.outputs.build_mobile == 'true' || needs.plan.outputs.build_foverlay == 'true'
         with:
           pattern: asset-*
           path: dist

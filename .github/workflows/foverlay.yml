@@ -1,0 +1,51 @@
+name: Foverlay
+
+# PR gate for the Foverlay miniapp build of the Tenir G2 client. Self-contained
+# (Bun + vendored SDK tarballs, not an npm workspace member), so its checks
+# depend only on foverlay/. On a PR: typecheck + test + build. Packing the .zip
+# and attaching it to a release happens in the unified release pipeline
+# (release.yml), which stamps the version into miniapp.json first.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'foverlay/**'
+      - '.github/workflows/foverlay.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Foverlay miniapp (typecheck + test + build)
+    # GitHub-hosted: a Bun install + build. No docker layer cache to keep warm and nothing large
+    # on disk, so self-hosting only added queue time behind the image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.22"
+
+      - name: Install dependencies
+        working-directory: foverlay
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: foverlay
+        run: bun run typecheck
+
+      - name: Test
+        working-directory: foverlay
+        run: bun test
+
+      - name: Build
+        working-directory: foverlay
+        run: bun run build

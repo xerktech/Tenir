@@ -55,6 +55,10 @@ function freshComponent(component, version, tag, opts) {
         release_tag: tag,
         built: true,
       };
+    case "foverlay":
+      // The Foverlay miniapp zip: a plain release asset, bundled into the
+      // Foverlay app's mobile/assets/miniapps/ by that repo.
+      return { version, kind: "asset", asset: `tenir-foverlay-v${version}.zip`, release_tag: tag, built: true };
     default:
       throw new Error(`unknown component ${component}`);
   }
