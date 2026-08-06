@@ -1,6 +1,6 @@
 // Pack the built miniapp into a FLAT zip: entries sit at the zip root
 // (miniapp.json, background/index.js, ui/index.html, ...), which is the
-// layout the Foverlay app expects for bundled miniapps in
+// layout the Veiller app expects for bundled miniapps in
 // mobile/assets/miniapps/.
 //
 // Usage: node scripts/pack.mjs [--version X.Y.Z] [--out path/to/file.zip]

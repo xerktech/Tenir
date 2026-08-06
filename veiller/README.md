@@ -1,8 +1,8 @@
-# foverlay — Tenir miniapp for the Foverlay app
+# veiller — Tenir miniapp for the Veiller app
 
-The Foverlay bundled-miniapp build of the Tenir Even G2 client (self-hosted
-live captions), ported from `even/` in Foverlay's XERK-211. It runs inside the
-Foverlay (MentraOS-derived) mobile app: a background bundle drives the glasses
+The Veiller bundled-miniapp build of the Tenir Even G2 client (self-hosted
+live captions), ported from `even/` in Veiller's XERK-211. It runs inside the
+Veiller (MentraOS-derived) mobile app: a background bundle drives the glasses
 HUD over the miniapp SDK, and a WebView page handles sign-in, the live
 transcript, and history.
 
@@ -28,7 +28,7 @@ stamped. The `miniapp.json` committed here carries a dev-default version.
 
 ## Vendored SDK tarballs
 
-`vendor/` holds two `bun pm pack` tarballs from the Foverlay monorepo so this
+`vendor/` holds two `bun pm pack` tarballs from the Veiller monorepo so this
 directory builds without access to that repo's workspace:
 
 - `mentra-miniapp-0.3.0-dev.1.tgz` — the `@mentra/miniapp` SDK with `dist/`
@@ -38,7 +38,7 @@ directory builds without access to that repo's workspace:
 - `mentra-cloud-protocol-0.1.0-dev.0.tgz` — the source-only
   `@mentra/cloud-protocol` package, wired in via an npm `overrides` entry.
 
-To regenerate them in the Foverlay monorepo:
+To regenerate them in the Veiller monorepo:
 
 1. `cd mobile/modules/miniapp && bun run build && bun pm pack`
 2. In the resulting tarball's `package.json`: rewrite the `workspace:*`
@@ -51,7 +51,7 @@ To regenerate them in the Foverlay monorepo:
 ## Develop
 
 ```sh
-cd foverlay
+cd veiller
 bun install
 bun run typecheck   # tsc --noEmit
 bun test
@@ -65,7 +65,7 @@ zipfile. `--version X.Y.Z` and `--out <path>` override the defaults.
 
 ## Releasing
 
-The release pipeline (`.github/workflows/release.yml`, `build-foverlay` job)
+The release pipeline (`.github/workflows/release.yml`, `build-veiller` job)
 stamps the release version into `miniapp.json`, builds, packs, and attaches
-`tenir-foverlay-v<version>.zip` to the GitHub release. That zip is bundled
-into the Foverlay app's `mobile/assets/miniapps/`.
+`tenir-veiller-v<version>.zip` to the GitHub release. That zip is bundled
+into the Veiller app's `mobile/assets/miniapps/`.
