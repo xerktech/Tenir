@@ -3,8 +3,8 @@
 One release publishes **all components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
 UI), the **Parakeet STT** and **Nemotron STT** images, the Even **glasses
-app**, the Android **`.apk`**, and the **Foverlay miniapp `.zip`** (the Tenir
-client for the Foverlay app, bundled into that repo's
+app**, the Android **`.apk`**, and the **Veiller miniapp `.zip`** (the Tenir
+client for the Veiller app, bundled into that repo's
 `mobile/assets/miniapps/`). Driven by `.github/workflows/release.yml`; the logic lives in
 `.github/scripts/` (see its README). The Even build is **not a release
 asset**: its distribution channel is the Even Hub developer portal, uploaded
@@ -22,7 +22,7 @@ There is no committed version-sync into the manifests. The artifacts that
 version their *installs* by content are stamped at build time by `release.yml`:
 the Even `app.json` `version` (Even Hub keys sideloads on it), the Android
 `versionName` + packed `versionCode` (see `.github/scripts/version.js`), and
-the Foverlay `foverlay/miniapp.json` `version` (the host app keys
+the Veiller `veiller/miniapp.json` `version` (the host app keys
 bundled-miniapp updates on it). The
 `package.json`/`pyproject.toml`/FastAPI-banner versions are ordinary dev metadata
 and are not release-managed.
@@ -98,7 +98,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 
 ```
 api/**  contract/**  packages/**  web/**  parakeet-stt/**  nemotron-stt/**
-even/**  mobile/**  foverlay/**  package.json  package-lock.json
+even/**  mobile/**  veiller/**  package.json  package-lock.json
 ```
 
 `plan` diffs the merge against the previous release tag and decides, per
@@ -114,9 +114,9 @@ Because Tenir is an npm-workspace monorepo, a single change can fan out: a
 `contract/**` edit rebuilds the api image *and* both frontend bundles (it
 regenerates both the Pydantic models and the TS types); a `packages/**`,
 `web/**` or root-lockfile change rebuilds the api image too, because the api
-image bakes in the built web SPA. The **foverlay** component is the exception:
+image bakes in the built web SPA. The **veiller** component is the exception:
 it is self-contained (Bun, its own lockfile, vendored SDK tarballs — not a
-workspace member), so only `foverlay/**` changes rebuild it.
+workspace member), so only `veiller/**` changes rebuild it.
 
 The release notes render a **rebuilt vs carried** table from the attached
 `manifest.json`, which is the machine-readable source of truth.

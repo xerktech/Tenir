@@ -31,14 +31,14 @@ auto-patch path is read-only against the repo and can't re-trigger itself. One
 tag namespace, `v<M>.<m>.<p>`, one release, all components (the api image
 — which bakes in the web SPA —, the Parakeet and Nemotron STT images, the Even
 glasses app — published to the Even Hub portal, not attached as a release
-asset —, the Android `.apk`, and the Foverlay miniapp `.zip`).
+asset —, the Android `.apk`, and the Veiller miniapp `.zip`).
 
 ## CLI I/O contract (for release.yml)
 
 - **`plan.js`** — in: `RELEASE_TYPE` (patch|minor|major), `FORCE_ALL`. out
   (`$GITHUB_OUTPUT`): `version`, `tag`, `prev_tag`, `changed` (json),
   `android_version_code`, `build_api`/`build_parakeet_stt`/`build_nemotron_stt`/
-  `build_even`/`build_mobile`/`build_foverlay`, `base_major`, `base_minor`.
+  `build_even`/`build_mobile`/`build_veiller`, `base_major`, `base_minor`.
 - **`publish.js`** — in: `VERSION_FULL`, `TAG`, `PREV_TAG`, `CHANGED` (json),
   `ANDROID_VERSION_CODE`, `COMMIT`, `RELEASED_AT`, `OUT_DIR`. out: writes
   `manifest.json`, `release-notes.md`, `carry-plan.json`; sets `carry`,
