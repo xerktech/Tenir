@@ -2,7 +2,7 @@
 
 One release publishes **all components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **Parakeet STT** and **Nemotron STT** images, the Even **glasses
+UI), the **Parakeet STT** image, the Even **glasses
 app**, the Android **`.apk`**, and the **Veiller miniapp `.zip`** (the Tenir
 client for the Veiller app, bundled into that repo's
 `mobile/assets/miniapps/`). Driven by `.github/workflows/release.yml`; the logic lives in
@@ -97,7 +97,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 `changes.test.js`) is:
 
 ```
-api/**  contract/**  packages/**  web/**  parakeet-stt/**  nemotron-stt/**
+api/**  contract/**  packages/**  web/**  parakeet-stt/**
 even/**  mobile/**  veiller/**  package.json  package-lock.json
 ```
 

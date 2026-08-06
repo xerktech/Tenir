@@ -19,7 +19,6 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("even/src/app.ts"), ["even"]);
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
-  assert.deepEqual(C.componentsForPath("nemotron-stt/server.py"), ["nemotron-stt"]);
   // veiller/ is self-contained (vendored deps, own lockfile): no fan-out in
   // either direction — shared dirs don't touch it, and it touches only itself.
   assert.deepEqual(C.componentsForPath("veiller/src/background/index.ts"), ["veiller"]);
@@ -46,7 +45,6 @@ test("detectChanges unions components across the diff", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
-    "nemotron-stt": false,
     even: true,
     mobile: false,
     veiller: false,
@@ -58,7 +56,6 @@ test("a veiller-only change builds only veiller (no workspace fan-out)", () => {
   assert.deepEqual(changed, {
     api: false,
     "parakeet-stt": false,
-    "nemotron-stt": false,
     even: false,
     mobile: false,
     veiller: true,
@@ -70,7 +67,6 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
-    "nemotron-stt": false,
     even: false,
     mobile: false,
     veiller: false,

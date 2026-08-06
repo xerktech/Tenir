@@ -111,30 +111,6 @@ def test_refresh_registers_model_servers_and_gateway(monkeypatch: pytest.MonkeyP
     assert comps["stt"].category == "model"
 
 
-def test_hybrid_backend_registers_parakeet_and_nemotron_lights(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Hybrid runs two model servers: Parakeet (finals) and Nemotron (streaming
-    # partials). Both get their own light, each probed at its direct /health.
-    monkeypatch.setattr(settings, "stt_backend", "hybrid")
-    monkeypatch.setattr(settings, "status_stt_url", "http://parakeet:8000")
-    monkeypatch.setattr(settings, "status_stream_url", "http://nemotron:8000")
-
-    probed: list[str] = []
-
-    async def _http(url: str) -> tuple[str, str]:
-        probed.append(url)
-        return st.READY, "ready"
-
-    monkeypatch.setattr(st, "_http_probe", _http)
-
-    comps = {c.id: c for c in asyncio.run(st.refresh())}
-    assert set(comps) == {"litellm", "stt", "stt_stream"}
-    assert comps["stt_stream"].category == "model"
-    assert comps["stt_stream"].state == st.STATE_READY
-    assert "http://nemotron:8000/health" in probed
-
-
 def test_gateway_fronted_models_mirror_gateway_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     # Split-host deploy (the default): no direct status_stt_url is configured because
     # the api has no route to the model server, so the light follows the one gateway

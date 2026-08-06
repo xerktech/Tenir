@@ -1,5 +1,11 @@
 # STT model selection — GPU benchmark results
 
+> **Superseded (2026-08).** This doc recommends and describes a hybrid Nemotron +
+> Parakeet path as implemented and the compose default. That hybrid was later
+> **removed** (see `stt-rtx4060-benchmark.md`): the `nemotron-stt/` server and the
+> `hybrid` backend no longer exist, and Tenir runs Parakeet-only for both partials
+> and finals. Kept as the dated record of the benchmark behind the original split.
+
 Empirical follow-up to `stt-model-selection.md` (PR #66 / XERK-115). That doc's
 model recommendation was reasoned from published numbers and explicitly flagged as
 "not verified — anything needing the GPU host." This is that verification, run on

@@ -50,7 +50,7 @@ the `API_AUTH_ADMIN_*` bootstrap admin to log in.
 | `API_AUTH_SECRET` | (insecure) | bearer-token HMAC secret; boot refuses the default |
 | `API_AUTH_ADMIN_USERNAME/_PASSWORD/_HOUSEHOLD` | — | bootstrap admin seeded at startup |
 | `API_AUTH_TOKEN_TTL_SECONDS` | `2592000` (30d) | token lifetime; tokens auto-renew on use, so this is the max idle time before re-login |
-| `API_STT_BACKEND` | `stub` | `stub` (model-free) / `parakeet` / `hybrid` |
+| `API_STT_BACKEND` | `stub` | `stub` (model-free) / `parakeet` |
 | `API_STT_MODEL` | `parakeet` | model alias sent to the gateway (litellm/config.yaml) |
 | `API_LITELLM_ENDPOINT` / `API_LITELLM_API_KEY` | `http://litellm:4000/v1` / "" | OpenAI-compatible base URL + key for STT |
 | `API_PERSISTENCE_BACKEND` | `memory` | `memory` / `postgres` / `off` |

@@ -7,7 +7,6 @@ const M = require("../manifest.js");
 const ALL_CHANGED = {
   api: true,
   "parakeet-stt": true,
-  "nemotron-stt": true,
   even: true,
   mobile: true,
   veiller: true,
@@ -31,7 +30,6 @@ test("first release: every component fresh and built", () => {
   assert.equal(m.schema, 1);
   assert.equal(m.components.api.ref, "ghcr.io/xerktech/tenir:0.1.0");
   assert.equal(m.components["parakeet-stt"].ref, "ghcr.io/xerktech/tenir-parakeet-stt:0.1.0");
-  assert.equal(m.components["nemotron-stt"].ref, "ghcr.io/xerktech/tenir-nemotron-stt:0.1.0");
   assert.equal(m.components.even.kind, "evenhub");
   assert.equal(m.components.even.package_id, "com.tenir.local");
   assert.equal(m.components.even.asset, undefined); // the portal is the channel, not a release asset
