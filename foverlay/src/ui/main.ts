@@ -24,7 +24,20 @@ import type {
   TenirCue,
   TenirLiveState,
 } from "../shared/types";
-import { formatDuration, liveTranscriptRows, segmentTiming, sessionStatus, timeline } from "./lib";
+import {
+  cueCountdownLabel,
+  cueSecondsLeft,
+  currentLyricIndex,
+  lyricWindow,
+} from "../core/live";
+import {
+  formatDuration,
+  isPinnedToBottom,
+  liveTranscriptRows,
+  segmentTiming,
+  sessionStatus,
+  timeline,
+} from "./lib";
 
 // ---------------------------------------------------------------------------
 // DOM handles
@@ -59,6 +72,7 @@ const els = {
   dot: byId("session-dot"),
   start: byId<HTMLButtonElement>("session-start"),
   stop: byId<HTMLButtonElement>("session-stop"),
+  cue: byId("session-cue"),
   song: byId("session-song"),
   empty: byId("session-empty"),
   emptyTitle: byId("session-empty-title"),
@@ -198,6 +212,10 @@ function showPage(page: Page): void {
   els.pageHistory.hidden = page !== "history";
   els.navSession.classList.toggle("active", page === "session");
   els.navHistory.classList.toggle("active", page === "history");
+  if (page === "session") els.navSession.setAttribute("aria-current", "page");
+  else els.navSession.removeAttribute("aria-current");
+  if (page === "history") els.navHistory.setAttribute("aria-current", "page");
+  else els.navHistory.removeAttribute("aria-current");
   if (page === "history") void refreshHistory();
 }
 
@@ -205,7 +223,7 @@ els.navSession.addEventListener("click", () => showPage("session"));
 els.navHistory.addEventListener("click", () => showPage("history"));
 
 // ---------------------------------------------------------------------------
-// Session page (upstream phone/session.ts, simplified)
+// Session page (upstream phone/session.ts)
 // ---------------------------------------------------------------------------
 
 let live: TenirLiveState = {
@@ -213,31 +231,45 @@ let live: TenirLiveState = {
   connection: "closed",
   segments: [],
   partial: "",
+  activeCue: null,
   cues: [],
   song: null,
 };
-// Which reviewed cues are expanded, by cue id — survives the wholesale
-// transcript rebuilds (upstream SessionPage.expanded).
-const expandedCues = new Set<string>();
+// Which reviewed cues are expanded, by cue id — held PER SURFACE (upstream
+// kept the session page's on the page and history used a modal), so expanding
+// a cue in history can't pre-expand it in the live transcript and a live
+// broadcast can't wipe the history view's state.
+const sessionExpanded = new Set<string>();
+const historyExpanded = new Set<string>();
 let wasRecording = false;
 
-function buildCueRow(cue: TenirCue): HTMLElement {
-  const open = expandedCues.has(cue.id);
+function buildCueRow(cue: TenirCue, expanded: Set<string>): HTMLElement {
+  const open = expanded.has(cue.id);
+  const bodyId = `cue-body-${cue.id}`;
   const li = document.createElement("li");
+  li.className = "session-cue-line";
   const button = make("button", "cue-inline") as HTMLButtonElement;
   button.type = "button";
+  button.setAttribute("aria-expanded", String(open));
+  button.setAttribute("aria-controls", bodyId);
+  button.title = open ? "Hide cue detail" : "Show cue detail";
   const caret = make("span", "cue-inline-caret", open ? "▾" : "▸");
+  caret.setAttribute("aria-hidden", "true");
   const mark = make("span", "cue-inline-mark", "✦");
+  mark.setAttribute("aria-hidden", "true");
   const title = make("span", "cue-inline-title", cue.title);
   button.append(caret, mark, title);
   const body = make("div", "cue-inline-body");
+  body.id = bodyId;
   body.appendChild(make("p", "cue-inline-text", cue.body));
   if (cue.source) body.appendChild(make("p", "cue-inline-source", cue.source));
   body.hidden = !open;
   button.addEventListener("click", () => {
-    const nowOpen = !expandedCues.has(cue.id);
-    if (nowOpen) expandedCues.add(cue.id);
-    else expandedCues.delete(cue.id);
+    const nowOpen = !expanded.has(cue.id);
+    if (nowOpen) expanded.add(cue.id);
+    else expanded.delete(cue.id);
+    button.setAttribute("aria-expanded", String(nowOpen));
+    button.title = nowOpen ? "Hide cue detail" : "Show cue detail";
     caret.textContent = nowOpen ? "▾" : "▸";
     body.hidden = !nowOpen;
   });
@@ -245,10 +277,98 @@ function buildCueRow(cue: TenirCue): HTMLElement {
   return li;
 }
 
-function isPinnedToBottom(): boolean {
-  const doc = document.scrollingElement;
-  if (!doc) return true;
-  return doc.scrollHeight - doc.scrollTop - doc.clientHeight <= 32;
+// ---- live cue card + song lyric card (XERK-81 / XERK-110 / XERK-184) -------
+// Both cards tick between `tenir:live` broadcasts: the cue's countdown and the
+// song's lyric window advance off the local clock (their anchors — shownAt /
+// anchorAt — are wall-clock epochs stamped by the background). Targeted
+// repaints only, so a tick never rebuilds the transcript underneath
+// (upstream tickCue/tickSong).
+const LIVE_TICK_MS = 250;
+let cueCountdownEl: HTMLElement | null = null;
+let songLinesEl: HTMLElement | null = null;
+let liveTicker: ReturnType<typeof setInterval> | null = null;
+
+function activeCueSeconds(): number {
+  return cueSecondsLeft(live.activeCue ? Date.now() - live.activeCue.shownAt : 0);
+}
+
+/** The live cue card (XERK-81): title + countdown (XERK-110) over the body. */
+function renderCueCard(): void {
+  const cue = live.recording ? live.activeCue : null;
+  if (!cue) {
+    els.cue.hidden = true;
+    els.cue.replaceChildren();
+    cueCountdownEl = null;
+    return;
+  }
+  const head = make("div", "session-cue-head");
+  const title = make("div", "session-cue-title", cue.title);
+  const countdown = make("div", "session-cue-countdown", cueCountdownLabel(activeCueSeconds()));
+  // Out of the accessibility tree: the card is an aria-live region, and a
+  // number changing every second would re-announce the whole cue each time.
+  countdown.setAttribute("aria-hidden", "true");
+  head.append(title, countdown);
+  const body = make("div", "session-cue-body", cue.body);
+  const children: HTMLElement[] = [head, body];
+  if (cue.source) children.push(make("div", "session-cue-source", cue.source));
+  els.cue.replaceChildren(...children);
+  els.cue.hidden = false;
+  cueCountdownEl = countdown;
+}
+
+/** Paint the current lyric window into the song card's body (XERK-184). */
+function paintLyrics(): void {
+  const song = live.recording ? live.song : null;
+  if (!song || !songLinesEl) return;
+  const win = lyricWindow(song.lines, currentLyricIndex(song, Date.now()));
+  const rows: HTMLElement[] =
+    win.lines.length === 0
+      ? [make("div", "session-song-line session-song-empty", "♪ ♪ ♪")]
+      : win.lines.map((ln, i) =>
+          make(
+            "div",
+            `session-song-line${i === win.currentIndex ? " current" : ""}`,
+            ln.text || "♪",
+          ),
+        );
+  songLinesEl.replaceChildren(...rows);
+}
+
+/** The recognized-song lyric card (XERK-190): "TITLE — ARTIST" + ♪ over the window. */
+function renderSongCard(): void {
+  const song = live.recording ? live.song : null;
+  if (!song) {
+    els.song.hidden = true;
+    els.song.replaceChildren();
+    songLinesEl = null;
+    return;
+  }
+  const head = make("div", "session-song-head");
+  const title = make("div", "session-song-title", `${song.title} — ${song.artist}`);
+  const badge = make("div", "session-song-badge", "♪");
+  badge.setAttribute("aria-hidden", "true");
+  head.append(title, badge);
+  const body = make("div", "session-song-body");
+  els.song.replaceChildren(head, body);
+  els.song.hidden = false;
+  songLinesEl = body;
+  paintLyrics();
+}
+
+/** Run the 250ms card ticker exactly while a cue or song card is on screen. */
+function syncLiveTicker(): void {
+  const need = live.recording && (live.activeCue !== null || live.song !== null);
+  if (need && !liveTicker) {
+    liveTicker = setInterval(() => {
+      if (cueCountdownEl && live.activeCue) {
+        cueCountdownEl.textContent = cueCountdownLabel(activeCueSeconds());
+      }
+      paintLyrics();
+    }, LIVE_TICK_MS);
+  } else if (!need && liveTicker) {
+    clearInterval(liveTicker);
+    liveTicker = null;
+  }
 }
 
 function renderSession(): void {
@@ -262,18 +382,12 @@ function renderSession(): void {
   els.start.hidden = live.recording;
   els.stop.hidden = !live.recording;
 
-  // The recognized song (XERK-184), phone-mirror form: title card only (the
-  // synced-lyric scroll is not ported).
-  if (live.recording && live.song) {
-    els.song.replaceChildren(
-      make("span", "song-badge", "♪"),
-      document.createTextNode(`${live.song.title} — ${live.song.artist}`),
-    );
-    els.song.hidden = false;
-  } else {
-    els.song.hidden = true;
-    els.song.replaceChildren();
-  }
+  // The private context cue (XERK-81) and the recognized song's synced lyrics
+  // (XERK-184): bordered cards pinned above the transcript, shown only while
+  // live and recording — the phone counterparts of the lens popup box.
+  renderCueCard();
+  renderSongCard();
+  syncLiveTicker();
 
   const hasText =
     live.recording && (live.segments.length > 0 || live.cues.length > 0 || live.partial !== "");
@@ -285,9 +399,12 @@ function renderSession(): void {
       ? "Captions appear here as they are heard."
       : "Press Start, or tap your glasses, to begin a session.";
     els.text.replaceChildren();
-    expandedCues.clear();
+    // Nothing on screen to keep open; forget any stale expand state.
+    sessionExpanded.clear();
   } else {
-    const pinned = isPinnedToBottom();
+    // Was the viewer following the live feed (at the bottom of the
+    // transcript's OWN scroll box, XERK-103) before this update?
+    const pinned = isPinnedToBottom(els.text);
     const frag = document.createDocumentFragment();
     for (const row of liveTranscriptRows(live.segments, live.cues)) {
       if (row.kind === "segment") {
@@ -310,7 +427,7 @@ function renderSession(): void {
         }
         frag.appendChild(li);
       } else {
-        frag.appendChild(buildCueRow(row.cue));
+        frag.appendChild(buildCueRow(row.cue, sessionExpanded));
       }
     }
     if (live.partial) {
@@ -320,12 +437,10 @@ function renderSession(): void {
       frag.appendChild(li);
     }
     els.text.replaceChildren(frag);
-    // Follow the newest caption only while already at the bottom; a viewer who
-    // scrolled up to re-read is left where they are.
-    if (pinned) {
-      const doc = document.scrollingElement;
-      if (doc) doc.scrollTop = doc.scrollHeight;
-    }
+    // Follow the newest caption inside the transcript's own scroll box, so
+    // the cue/song cards pinned above stay in view (XERK-103). Only stick
+    // while already at the bottom; a viewer who scrolled up is left alone.
+    if (pinned) els.text.scrollTop = els.text.scrollHeight;
   }
 
   // A session just started (possibly from the glasses): surface its live
@@ -467,15 +582,19 @@ function renderHistoryTranscript(conv: Conversation): void {
       }
       frag.appendChild(row);
     } else if (showCues) {
-      // Inline expandable cue (the upstream modal is not ported).
+      // Inline expandable cue (the upstream modal is not ported). History
+      // keeps its own expand-state set, so live broadcasts can't disturb it.
       frag.appendChild(
-        buildCueRow({
-          id: item.cue.cueId,
-          title: item.cue.title,
-          body: item.cue.body,
-          source: item.cue.source ?? undefined,
-          afterIndex: -1,
-        }),
+        buildCueRow(
+          {
+            id: item.cue.cueId,
+            title: item.cue.title,
+            body: item.cue.body,
+            source: item.cue.source ?? undefined,
+            afterIndex: -1,
+          },
+          historyExpanded,
+        ),
       );
     }
   }

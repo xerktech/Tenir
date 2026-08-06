@@ -244,7 +244,12 @@ describe("boot", () => {
     const c = makeController(world);
     await c.start();
     expect(c.authState().signedIn).toBe(false);
-    expect(c.hudFrame()).toEqual({ status: "not signed in", clock: "", caption: SIGN_IN_PROMPT });
+    expect(c.hudFrame()).toEqual({
+      status: "not signed in",
+      clock: "",
+      caption: SIGN_IN_PROMPT,
+      popup: null,
+    });
     // Taps do nothing while signed out.
     world.emitTouch("single_tap");
     expect(world.clients).toHaveLength(0);
@@ -262,7 +267,12 @@ describe("boot", () => {
       username: "ada",
       serverUrl: "h.example.com",
     });
-    expect(c.hudFrame()).toEqual({ status: "ready", clock: "9:30 AM", caption: IDLE_PROMPT });
+    expect(c.hudFrame()).toEqual({
+      status: "ready",
+      clock: "9:30 AM",
+      caption: IDLE_PROMPT,
+      popup: null,
+    });
     // The idle frame reached the display with stable element ids.
     expect(world.rendered().map((e) => e.id)).toEqual(["status", "clock", "caption"]);
     c.stop();
@@ -304,7 +314,7 @@ describe("session flow", () => {
     return { world, c };
   }
 
-  it("single tap starts a session, streams mic PCM, and a second tap stops it", async () => {
+  it("single tap starts a session; taps while recording do NOTHING (XERK-85)", async () => {
     const { world, c } = await signedIn();
     world.emitTouch("single_tap");
     expect(world.clients).toHaveLength(1);
@@ -322,15 +332,53 @@ describe("session flow", () => {
     expect(client.audio).toHaveLength(1);
     expect([...client.audio[0]]).toEqual([1, 2, 3, 4]);
 
-    world.emitTouch("single_tap"); // toggle off
+    // The upstream safety invariant: a brushed temple must not end a
+    // recording — bare taps while recording change nothing.
+    world.emitTouch("single_tap");
+    world.emitTouch("single_tap");
+    expect(client.stopped).toBe(0);
+    expect(c.liveState().recording).toBe(true);
+    c.stop();
+  });
+
+  it("a session ends only through the double-tap menu's confirmed Exit", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const client = world.clients[0];
+    client.handlers.onConnectionChange?.("open");
+
+    // Double tap: the Continue/Exit popup, Continue highlighted by default.
+    world.emitTouch("double_tap");
+    expect(c.hudFrame().popup?.text).toBe("› Continue\n  Exit session");
+    // Confirming Continue just dismisses the popup; the session records on.
+    world.emitTouch("single_tap");
+    expect(c.hudFrame().popup ?? null).toBeNull();
+    expect(c.liveState().recording).toBe(true);
+
+    // Double tap again, swipe down to Exit session, tap to confirm.
+    world.emitTouch("double_tap");
+    world.emitTouch("swipe_down");
+    expect(c.hudFrame().popup?.text).toBe("  Continue\n› Exit session");
+    world.emitTouch("single_tap");
     expect(client.stopped).toBe(1);
     expect(world.micActive()).toBe(0); // NEVER left subscribed after stop
     expect(c.liveState().recording).toBe(false);
     expect(c.hudFrame().caption).toBe(IDLE_PROMPT);
 
     // A chunk arriving after stop is dropped, not sent.
-    world.emitAudio(pcm);
-    expect(client.audio).toHaveLength(1);
+    world.emitAudio(new Uint8Array([1, 2]));
+    expect(client.audio).toHaveLength(0);
+    c.stop();
+  });
+
+  it("a second double tap dismisses the menu, same as Continue", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    world.emitTouch("double_tap");
+    expect(c.hudFrame().popup?.text).toContain("Continue");
+    world.emitTouch("double_tap");
+    expect(c.hudFrame().popup ?? null).toBeNull();
+    expect(c.liveState().recording).toBe(true);
     c.stop();
   });
 
@@ -348,7 +396,13 @@ describe("session flow", () => {
     expect(c.hudFrame().caption.endsWith("hello world")).toBe(true);
 
     h.onCue?.({ type: "cue", cueId: "q1", title: "T", body: "B", atMs: 0 });
-    expect(c.liveState().cues[0].afterIndex).toBe(0); // anchored after s0
+    // The cue goes UP in the box first (XERK-81), anchored after s0.
+    expect(c.liveState().activeCue?.afterIndex).toBe(0);
+    // Opening the menu embeds the showing cue for review (XERK-108).
+    world.emitTouch("double_tap");
+    expect(c.liveState().activeCue).toBeNull();
+    expect(c.liveState().cues[0].afterIndex).toBe(0);
+    world.emitTouch("double_tap"); // close the menu again
 
     for (let i = 1; i <= 65; i++) {
       h.onFinal?.({ type: "caption.final", segmentId: `s${i}`, text: `turn ${i}`, startMs: i, endMs: i + 1 });
@@ -367,6 +421,9 @@ describe("session flow", () => {
     h.onFinal?.({ type: "caption.final", segmentId: "s1", text: "hola", lang: "es", startMs: 0, endMs: 1 });
     h.onTranslation?.({ type: "translation", segmentId: "s1", text: "hello", sourceLang: "es" });
     expect(c.liveState().segments[0].translation).toBe("hello");
+    // The run also opens the on-lens box, titled with the source language.
+    expect(c.hudFrame().popup?.text).toContain("Translating Spanish → English");
+    expect(c.hudFrame().popup?.text).toContain("hello");
 
     h.onSong?.({
       type: "song",
@@ -377,23 +434,101 @@ describe("session flow", () => {
       offsetMs: 0,
       lines: [],
     });
-    expect(c.liveState().song).toEqual({ id: "sng", title: "Weird Fishes", artist: "Radiohead" });
+    // The full LiveSong — lines + anchor — reaches the phone mirror.
+    expect(c.liveState().song).toMatchObject({
+      id: "sng",
+      title: "Weird Fishes",
+      artist: "Radiohead",
+      lines: [],
+      anchorOffsetMs: 0,
+    });
+    expect(typeof c.liveState().song?.anchorAt).toBe("number");
+    // On the lens the song outranks the translation run (XERK-194) and an
+    // empty-lyrics song shows the quiet ♪ marker.
+    expect(c.hudFrame().popup?.text).toBe("Weird Fishes — Radiohead\n♪ ♪ ♪");
     h.onSongDone?.({ type: "song.done", songId: "sng" });
     expect(c.liveState().song).toBeNull();
+    // The still-live translation run retakes the box.
+    expect(c.hudFrame().popup?.text).toContain("Translating");
     c.stop();
   });
 
-  it("double tap clears the caption band but keeps the session recording", async () => {
+  it("scrolls the song box's lyric window and re-anchors on song.sync", async () => {
+    // The lyric scroll reads the REAL clock off its anchor (upstream
+    // currentLyricIndex(song, Date.now())): within this test only a few ms
+    // elapse, so the window moves exactly with the sync anchors.
     const { world, c } = await signedIn();
     world.emitTouch("single_tap");
     const h = world.clients[0].handlers;
-    h.onFinal?.({ type: "caption.final", segmentId: "s1", text: "hello", startMs: 0, endMs: 1 });
-    world.emitTouch("double_tap");
-    const live = c.liveState();
-    expect(live.segments).toHaveLength(0);
-    expect(live.recording).toBe(true);
-    expect(world.clients[0].stopped).toBe(0);
-    expect(world.micActive()).toBe(1);
+    h.onSong?.({
+      type: "song",
+      songId: "sng",
+      title: "Song",
+      artist: "Artist",
+      atMs: 0,
+      offsetMs: 0,
+      lines: [
+        { atMs: 0, text: "line zero" },
+        { atMs: 60000, text: "line one" },
+        { atMs: 120000, text: "line two" },
+      ],
+    });
+    // At offset 0 the first line is current.
+    expect(c.hudFrame().popup?.text).toContain("> line zero");
+    // A sync far into the track moves the current line at once.
+    h.onSongSync?.({ type: "song.sync", songId: "sng", atMs: 0, offsetMs: 120000 });
+    expect(c.hudFrame().popup?.text).toContain("> line two");
+    // A sync for some other (stale) run is ignored.
+    h.onSongSync?.({ type: "song.sync", songId: "other", atMs: 0, offsetMs: 0 });
+    expect(c.hudFrame().popup?.text).toContain("> line two");
+    c.stop();
+  });
+
+  it("keeps a translation whose turn rolled off the bounded window", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    // A translation for a segment that is NOT in the window any more must
+    // still reach the wearer via the box (upstream accumulates regardless).
+    h.onTranslation?.({ type: "translation", segmentId: "gone", text: "still shown", sourceLang: "fr" });
+    expect(c.hudFrame().popup?.text).toContain("still shown");
+    c.stop();
+  });
+
+  it("dismisses the translation box on translation.done, draining a queued cue", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    h.onTranslation?.({ type: "translation", segmentId: "s1", text: "uno", sourceLang: "es" });
+    // A cue arriving mid-run queues behind the box (XERK-102/XERK-160).
+    h.onCue?.({ type: "cue", cueId: "q1", title: "Queued", body: "B", atMs: 0 });
+    expect(c.liveState().activeCue).toBeNull();
+    h.onTranslationDone?.({ type: "translation.done" });
+    // The box frees and the queued cue pops with its countdown running.
+    expect(c.liveState().activeCue?.id).toBe("q1");
+    expect(c.hudFrame().popup?.text).toContain("Queued");
+    c.stop();
+  });
+
+  it("cue lifecycle: box + countdown, tap holds it open, menu embeds it", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    h.onCue?.({ type: "cue", cueId: "q1", title: "Employer", body: "Runs the marina.", atMs: 0 });
+    const shownAt = c.liveState().activeCue?.shownAt ?? 0;
+    expect(shownAt).toBeGreaterThan(0);
+    // The box shows title + countdown + body.
+    expect(c.hudFrame().popup?.text).toContain("Employer");
+    expect(c.hudFrame().popup?.text).toContain("10s");
+    expect(c.hudFrame().popup?.text).toContain("Runs the marina.");
+    // A second cue queues rather than clobbering the first (XERK-102).
+    h.onCue?.({ type: "cue", cueId: "q2", title: "Second", body: "B2", atMs: 0 });
+    expect(c.liveState().activeCue?.id).toBe("q1");
+    // Any tap or swipe on a live cue restarts its TTL (XERK-129).
+    await flush();
+    world.emitTouch("single_tap");
+    expect(c.liveState().activeCue?.shownAt ?? 0).toBeGreaterThanOrEqual(shownAt);
+    expect(c.liveState().recording).toBe(true); // and never stops the session
     c.stop();
   });
 
@@ -418,7 +553,10 @@ describe("session flow", () => {
     expect(live.recording).toBe(true);
     expect(live.segments).toEqual([{ id: "restored", text: "earlier text" }]);
 
-    world.emitTouch("single_tap"); // clean stop
+    // Clean stop through the menu's confirmed Exit (XERK-85).
+    world.emitTouch("double_tap");
+    world.emitTouch("swipe_down");
+    world.emitTouch("single_tap");
     await flush();
     expect(world.storage.has(SESSION_KEY)).toBe(false); // nothing to resume anymore
     c.stop();
@@ -655,7 +793,10 @@ describe("lens HUD staleness (XERK-216)", () => {
 
     // The render that should wipe the band gets blocked by the host.
     world.setRenderStatus("blocked");
-    world.emitTouch("single_tap"); // stop the session
+    // Stop through the menu's confirmed Exit (XERK-85).
+    world.emitTouch("double_tap");
+    world.emitTouch("swipe_down");
+    world.emitTouch("single_tap");
     await flush();
     expect(element(world, "caption").endsWith("hello world")).toBe(true); // stale on the glasses
 
@@ -708,8 +849,11 @@ describe("lens HUD staleness (XERK-216)", () => {
     const h = world.clients[0].handlers;
     h.onConnectionChange?.("open");
     h.onFinal?.({ type: "caption.final", segmentId: "s1", text: "hello world", startMs: 0, endMs: 1 });
+    // Walk the menu to Exit; capture the render log only for the stop itself.
+    world.emitTouch("double_tap");
+    world.emitTouch("swipe_down");
     const before = world.allRenders().length;
-    world.emitTouch("single_tap"); // stop the session
+    world.emitTouch("single_tap"); // confirm Exit — stop the session
     const after = world.allRenders().slice(before);
     // The wipe is an explicit empty scene — not a diffed text update that a
     // lossy pipeline can drop — followed by the idle frame.

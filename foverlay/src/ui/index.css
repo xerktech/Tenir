@@ -171,10 +171,14 @@ button {
 
 /* ---- app shell ------------------------------------------------------------ */
 
+/* Fixed full-viewport shell (upstream even/index.html): pages scroll inside
+   their own boxes, never the document — a growing transcript must not carry
+   the header, the cue/song cards, or the nav off screen (XERK-103). */
 #app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-header {
@@ -206,8 +210,34 @@ button {
 
 .page {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 14px calc(var(--mentra-safe-right, 0px) + 16px)
     calc(var(--mentra-safe-bottom, 0px) + 76px) calc(var(--mentra-safe-left, 0px) + 16px);
+}
+
+/* The session page lays out as a column so the transcript below the pinned
+   cards is the ONE scrolling box (XERK-103). */
+#page-session {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.page-subtitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.grow {
+  flex: 1;
 }
 
 /* ---- bottom nav ----------------------------------------------------------- */
@@ -288,17 +318,91 @@ button {
   gap: 8px;
 }
 
+/* ---- live cue card (XERK-81 / XERK-110 / XERK-120) ------------------------ */
+
+.session-cue {
+  border: 1px solid var(--accent-dim);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.session-cue-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.session-cue-title {
+  flex: 1;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.session-cue-countdown {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-cue-body {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.session-cue-source {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---- recognized-song lyric card (XERK-184 / XERK-190) --------------------- */
+
 .session-song {
   border: 1px solid var(--accent-dim);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 12px;
   font-size: 14px;
+  flex-shrink: 0;
 }
 
-.session-song .song-badge {
+.session-song-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.session-song-title {
+  flex: 1;
   color: var(--accent);
-  margin-right: 6px;
+  font-weight: 600;
+}
+
+.session-song-badge {
+  color: var(--accent);
+}
+
+.session-song-body {
+  margin-top: 6px;
+}
+
+.session-song-line {
+  color: var(--muted);
+  line-height: 1.5;
+  min-height: 1.5em;
+}
+
+.session-song-line.current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.session-song-empty {
+  color: var(--muted);
 }
 
 .empty {
@@ -319,16 +423,30 @@ button {
   font-size: 13px;
 }
 
+/* The transcript's OWN scroll box (XERK-103): it sticks to the bottom while
+   followed; the cards pinned above it never leave the screen. One size step
+   below body text so more captions fit (upstream XERK-195). */
 .session-text {
   list-style: none;
   margin: 0;
   padding: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: 13px;
 }
 
 .session-text li {
   padding: 6px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   line-height: 1.45;
+}
+
+/* A reviewed-cue row is a control, not a caption: no caption padding/divider. */
+.session-text li.session-cue-line {
+  padding: 2px 0;
+  border-bottom: none;
 }
 
 .session-text li.partial {
@@ -512,4 +630,46 @@ button {
 .toast.show {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+/* ---- login copy ----------------------------------------------------------- */
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- selection + motion (upstream XERK-104 / reduced-motion) -------------- */
+
+/* The host WebView can default the document to non-selectable; explicitly opt
+   the readable text back in so captions and cue bodies can be copied. */
+.session-text li,
+.session-cue-body,
+.session-cue-source,
+.session-song-line,
+.cue-inline-text,
+.cue-inline-source,
+.history-transcript .item,
+.history-meta,
+#history-meta {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
+  .spinner {
+    animation: none;
+  }
 }

@@ -2,25 +2,30 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tenir</title>
     <link rel="stylesheet" href="./index.css" />
   </head>
   <body>
     <!-- Login card (upstream even/index.html #login) -->
-    <section id="login" hidden>
+    <!-- Visible at boot (upstream even/index.html): the login card is on
+         screen immediately and hidden only once the auth snapshot resolves,
+         so the WebView never shows a blank page while the bridge opens. -->
+    <section id="login">
       <div class="login-card">
         <h1 class="brand">Tenir</h1>
         <p class="tagline">Live captions from your own server</p>
-        <form id="login-form" autocomplete="off">
+        <form id="login-form" autocomplete="on">
           <label for="server-url">Server</label>
-          <input id="server-url" type="text" placeholder="tenir.example.com" autocapitalize="none" autocorrect="off" spellcheck="false" />
+          <input id="server-url" type="text" inputmode="url" required placeholder="tenir.example.com" autocapitalize="none" autocorrect="off" spellcheck="false" />
+          <span class="field-hint">Your self-hosted server's address (reachable over HTTPS).</span>
           <label for="username">Username</label>
-          <input id="username" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" />
+          <input id="username" type="text" autocomplete="username" required placeholder="Your username" autocapitalize="none" autocorrect="off" spellcheck="false" />
           <label for="password">Password</label>
-          <input id="password" type="password" />
+          <input id="password" type="password" autocomplete="current-password" required placeholder="Your password" />
           <p id="login-error" class="form-error" role="alert"></p>
           <button id="login-submit" type="submit" class="btn btn-primary">Log in</button>
+          <p class="login-note">Log in to the household on your self-hosted instance. The glasses use the same sign-in and stay signed in.</p>
         </form>
       </div>
     </section>
@@ -41,26 +46,29 @@
       <!-- Session page: live transcript mirror + Start/Stop (upstream phone/session.ts) -->
       <main id="page-session" class="page">
         <div class="session-head">
-          <span id="session-dot" class="live-dot" hidden></span>
+          <h2 class="page-title grow">Session</h2>
+          <span id="session-dot" class="live-dot" aria-hidden="true" hidden></span>
           <span id="session-badge" class="badge-neutral">idle</span>
           <div id="session-controls" class="session-controls">
             <button id="session-start" type="button" class="btn btn-primary">Start</button>
             <button id="session-stop" type="button" class="btn btn-danger" hidden>Stop</button>
           </div>
         </div>
-        <div id="session-song" class="session-song" hidden></div>
+        <div id="session-cue" class="session-cue" aria-live="polite" hidden></div>
+        <div id="session-song" class="session-song" aria-live="polite" hidden></div>
         <div id="session-empty" class="empty">
           <p id="session-empty-title" class="empty-title">No session running</p>
           <p id="session-empty-hint" class="empty-hint">Press Start, or tap your glasses, to begin a session.</p>
         </div>
-        <ul id="session-text" class="session-text" hidden></ul>
+        <ul id="session-text" class="session-text" aria-live="polite" hidden></ul>
       </main>
 
       <!-- History page: stored sessions (upstream phone/history.ts) -->
       <main id="page-history" class="page" hidden>
         <div id="history-list">
+          <h2 class="page-title">History &amp; search</h2>
           <form id="history-search" class="history-search">
-            <input id="history-query" type="search" placeholder="Search transcripts…" />
+            <input id="history-query" type="text" placeholder="Search what you've heard…" />
             <button type="submit" class="btn btn-secondary">Search</button>
           </form>
           <div id="history-status"></div>
@@ -68,7 +76,8 @@
         </div>
         <div id="history-detail" hidden>
           <div class="detail-head">
-            <button id="history-back" type="button" class="btn btn-secondary">‹ Back</button>
+            <button id="history-back" type="button" class="btn btn-ghost">← History</button>
+            <h3 class="page-subtitle grow">Conversation detail</h3>
             <button id="history-delete" type="button" class="btn btn-danger">Delete</button>
           </div>
           <p id="history-meta" class="muted"></p>
@@ -82,8 +91,8 @@
         </div>
       </main>
 
-      <nav class="bottom-nav">
-        <button id="nav-session" type="button" class="nav-tab active">Session</button>
+      <nav class="bottom-nav" aria-label="Sections">
+        <button id="nav-session" type="button" class="nav-tab active" aria-current="page">Session</button>
         <button id="nav-history" type="button" class="nav-tab">History</button>
       </nav>
     </section>

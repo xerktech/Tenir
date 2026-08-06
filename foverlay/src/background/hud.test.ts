@@ -13,17 +13,32 @@ import {
   CAPTION_WRAP_W,
   CAPTION_Y,
   CLOCK_W,
+  CUE_ROWS,
+  CUE_TEXT_W,
   ELEMENT_IDS,
   IDLE_PROMPT,
   LINE_H,
+  MENU_H,
   SCREEN_H,
   SCREEN_W,
+  SONG_BODY_LINES,
+  TRANSLATION_ROWS,
+  cardPopup,
   clockText,
+  cueHeight,
+  cueRowRangeFor,
+  cueTitleLine,
   dots,
   fitCaption,
   fitCaptionRows,
   hudElements,
+  menuPopup,
+  menuText,
+  occludedCaption,
+  songBody,
+  songTitle,
   statusLine,
+  tailCueBody,
   wrapLines,
 } from "./hud";
 
@@ -35,8 +50,22 @@ describe("geometry", () => {
     expect(SCREEN_H).toBe(288);
     expect(LINE_H).toBe(40);
     expect(CAPTION_Y).toBe(40);
-    expect(CAPTION_H).toBe(248);
-    expect(CAPTION_LINES).toBe(6); // whole lines only — no half-line slot
+    // EXACTLY whole lines (upstream layout.ts): a taller band leaves a
+    // half-line slot the host would grow a scroll bar into.
+    expect(CAPTION_LINES).toBe(6);
+    expect(CAPTION_H).toBe(CAPTION_LINES * LINE_H);
+  });
+
+  it("sizes the popup boxes to whole caption-row boundaries", () => {
+    // The 2-row menu ends inside the 3rd 40px line (status + two caption
+    // rows), the same whole-row rule upstream sized its menu strip to.
+    expect(MENU_H).toBeLessThanOrEqual(3 * LINE_H);
+    expect(cueRowRangeFor(MENU_H)).toEqual([0, 1]);
+    // A full 5-row cue box masks five caption rows, leaving the last flowing.
+    expect(cueHeight(CUE_ROWS)).toBeLessThanOrEqual(SCREEN_H);
+    expect(cueRowRangeFor(cueHeight(CUE_ROWS))).toEqual([0, 4]);
+    // The 6-row translation box still fits the screen.
+    expect(cueHeight(TRANSLATION_ROWS)).toBeLessThanOrEqual(SCREEN_H);
   });
 
   it("keeps the widest clock inside its band", () => {
@@ -142,5 +171,120 @@ describe("hudElements", () => {
     const [status, clock, caption] = els;
     expect(status.box.x + status.box.w).toBeLessThanOrEqual(clock.box.x);
     expect(caption.box.y).toBe(CAPTION_Y);
+  });
+});
+
+// ---- popup layer (upstream even/tests/layout.test.ts slices) ----------------
+
+describe("menuText", () => {
+  it("marks the highlighted row with ›", () => {
+    expect(menuText("continue")).toBe("› Continue\n  Exit session");
+    expect(menuText("exit")).toBe("  Continue\n› Exit session");
+  });
+});
+
+describe("cueTitleLine", () => {
+  it("paints the countdown flush to the right edge", () => {
+    const row = cueTitleLine({ title: "Employer", body: "" }, 7);
+    expect(row.startsWith("Employer")).toBe(true);
+    expect(row.endsWith("7s")).toBe(true);
+    expect(measurer.measureText(row)).toBeLessThanOrEqual(CUE_TEXT_W);
+  });
+
+  it("trims a long title instead of pushing the countdown off the row", () => {
+    const row = cueTitleLine({ title: "word ".repeat(40), body: "" }, 10);
+    expect(row.endsWith("10s")).toBe(true);
+    expect(measurer.measureText(row)).toBeLessThanOrEqual(CUE_TEXT_W);
+  });
+
+  it("is the bare title without a countdown", () => {
+    expect(cueTitleLine({ title: "Song — Artist", body: "" })).toBe("Song — Artist");
+  });
+});
+
+describe("tailCueBody", () => {
+  it("returns a short body whole", () => {
+    expect(tailCueBody("one\ntwo")).toBe("one\ntwo");
+  });
+
+  it("keeps the LAST rows when the body overflows", () => {
+    const body = Array.from({ length: 9 }, (_, i) => `turn ${i}`).join("\n");
+    const kept = tailCueBody(body, 5).split("\n");
+    expect(kept).toHaveLength(5);
+    expect(kept[4]).toBe("turn 8");
+    expect(kept[0]).toBe("turn 4");
+  });
+});
+
+describe("songBody", () => {
+  const lines = (texts: string[]) => texts.map((text, i) => ({ atMs: i * 1000, text }));
+
+  it("marks the current line with > and indents the rest", () => {
+    const body = songBody({ lines: lines(["one", "two", "three", "four"]), currentIndex: 1 });
+    expect(body.split("\n")).toEqual(["  one", "> two", "  three", "  four"]);
+  });
+
+  it("shows the opening lines unmarked before the song starts", () => {
+    const body = songBody({ lines: lines(["one", "two", "three"]), currentIndex: -1 });
+    expect(body.split("\n")).toEqual(["  one", "  two", "  three"]);
+  });
+
+  it("renders ♪ for an instrumental gap and ♪ ♪ ♪ for no lyrics", () => {
+    expect(songBody({ lines: [], currentIndex: -1 })).toBe("♪ ♪ ♪");
+    const body = songBody({ lines: lines(["one", "", "three"]), currentIndex: 1 });
+    expect(body.split("\n")[1]).toBe("> ♪");
+  });
+
+  it("never exceeds the box and always keeps the current line's rows", () => {
+    const wide = "a very long lyric line that certainly wraps across multiple physical rows of the box";
+    const body = songBody({ lines: lines(["one", wide, "three", "four"]), currentIndex: 1 });
+    const rows = body.split("\n");
+    expect(rows.length).toBeLessThanOrEqual(SONG_BODY_LINES);
+    expect(rows.some((r) => r.startsWith("> "))).toBe(true);
+  });
+});
+
+describe("songTitle", () => {
+  it("reads TITLE — ARTIST", () => {
+    expect(songTitle("Radiohead", "Weird Fishes")).toBe("Weird Fishes — Radiohead");
+  });
+});
+
+describe("occludedCaption", () => {
+  it("masks exactly the covered rows and leaves the rest flowing", () => {
+    const text = Array.from({ length: CAPTION_LINES }, (_, i) => `row ${i}`).join("\n");
+    const rows = occludedCaption(text, 0, 1).split("\n");
+    expect(rows[0]).toBe("");
+    expect(rows[1]).toBe("");
+    expect(rows[2]).toBe("row 2");
+    expect(rows[CAPTION_LINES - 1]).toBe(`row ${CAPTION_LINES - 1}`);
+  });
+});
+
+describe("hudElements with a popup", () => {
+  it("adds the bordered box and its text on top of the base scene", () => {
+    const popup = cardPopup({ title: "Employer", body: "Runs the marina." }, { secondsLeft: 9 });
+    const els = hudElements({ status: "", clock: "", caption: "", popup });
+    expect(els.map((e) => e.id)).toEqual([
+      ELEMENT_IDS.status,
+      ELEMENT_IDS.clock,
+      ELEMENT_IDS.caption,
+      ELEMENT_IDS.popupBox,
+      ELEMENT_IDS.popupText,
+    ]);
+    const box = els[3];
+    expect(box.type).toBe("rect");
+    expect(box.box).toEqual({ x: 0, y: 0, w: SCREEN_W, h: cueHeight(popup.rows) });
+    const text = els[4];
+    expect(text.type).toBe("text");
+    if (text.type === "text") expect(text.text).toBe(popup.text);
+  });
+
+  it("shrinks the box to a short body (XERK-119)", () => {
+    const short = cardPopup({ title: "T", body: "one row" });
+    expect(short.rows).toBe(2);
+    const menu = menuPopup("continue");
+    expect(menu.rows).toBe(2);
+    expect(cueHeight(short.rows)).toBeLessThan(cueHeight(CUE_ROWS));
   });
 });
