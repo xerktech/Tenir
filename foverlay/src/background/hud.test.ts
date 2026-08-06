@@ -262,22 +262,24 @@ describe("occludedCaption", () => {
 });
 
 describe("hudElements with a popup", () => {
-  it("adds the bordered box and its text on top of the base scene", () => {
+  it("adds ONE bordered text container on top of the base scene", () => {
     const popup = cardPopup({ title: "Employer", body: "Runs the marina." }, { secondsLeft: 9 });
     const els = hudElements({ status: "", clock: "", caption: "", popup });
     expect(els.map((e) => e.id)).toEqual([
       ELEMENT_IDS.status,
       ELEMENT_IDS.clock,
       ELEMENT_IDS.caption,
-      ELEMENT_IDS.popupBox,
       ELEMENT_IDS.popupText,
     ]);
     const box = els[3];
-    expect(box.type).toBe("rect");
+    expect(box.type).toBe("text");
     expect(box.box).toEqual({ x: 0, y: 0, w: SCREEN_W, h: cueHeight(popup.rows) });
-    const text = els[4];
-    expect(text.type).toBe("text");
-    if (text.type === "text") expect(text.text).toBe(popup.text);
+    if (box.type === "text") {
+      expect(box.text).toBe(popup.text);
+      // The border rides the text container itself — the primitive the
+      // container-based G2 actually draws (a separate rect never rendered).
+      expect(box.style?.border).toBeGreaterThan(0);
+    }
   });
 
   it("shrinks the box to a short body (XERK-119)", () => {

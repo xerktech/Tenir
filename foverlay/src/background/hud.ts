@@ -50,7 +50,6 @@ export const ELEMENT_IDS = {
   status: "status",
   clock: "clock",
   caption: "caption",
-  popupBox: "popup-box",
   popupText: "popup-text",
 } as const;
 
@@ -403,26 +402,17 @@ export function hudElements(frame: HudFrame): HudElement[] {
     },
   ];
   if (frame.popup) {
-    const height = cueHeight(frame.popup.rows);
-    elements.push(
-      {
-        type: "rect",
-        id: ELEMENT_IDS.popupBox,
-        box: { x: 0, y: 0, w: SCREEN_W, h: height },
-        style: { border: CUE_BORDER },
-      },
-      {
-        type: "text",
-        id: ELEMENT_IDS.popupText,
-        box: {
-          x: CUE_PAD + CUE_BORDER,
-          y: CUE_PAD + CUE_BORDER,
-          w: SCREEN_W - 2 * (CUE_PAD + CUE_BORDER),
-          h: frame.popup.rows * LINE_H,
-        },
-        text: frame.popup.text,
-      },
-    );
+    // ONE bordered text container, the primitive the G2 actually draws
+    // (upstream rendered LVGL bordered text containers; a separate rect +
+    // inner text left the box borderless on-device — rects share the text
+    // pool on container-based devices and the border never rendered).
+    elements.push({
+      type: "text",
+      id: ELEMENT_IDS.popupText,
+      box: { x: 0, y: 0, w: SCREEN_W, h: cueHeight(frame.popup.rows) },
+      text: frame.popup.text,
+      style: { border: CUE_BORDER, radius: 10 },
+    });
   }
   return elements;
 }

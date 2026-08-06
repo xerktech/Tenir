@@ -249,6 +249,9 @@ export class TenirController {
   private tick = 0;
   private ticker: ReturnType<typeof setInterval> | null = null;
   private lastFrameKey = "";
+  // When the ticker last fired — a long gap means the host parked the
+  // JSContext (frozen timers) and the HUD must resync on wake (XERK-216).
+  private lastTickAt = 0;
 
   // ---- snapshot persistence -------------------------------------------------
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -925,20 +928,44 @@ export class TenirController {
       if (result.status !== "displayed" && this.lastFrameKey === key) {
         this.lastFrameKey = "";
       }
+      // A clamped/dropped element is NOT a success — say so, so an on-device
+      // report can name what the host degraded (e.g. the popup box).
+      const diag = result as { degraded?: boolean; dropped?: string[]; reason?: string };
+      if (diag.degraded || (diag.dropped && diag.dropped.length > 0)) {
+        console.warn(
+          `Tenir: render degraded (dropped: ${diag.dropped?.join(", ") ?? "none"}${
+            diag.reason ? `; ${diag.reason}` : ""
+          })`,
+        );
+      }
     });
   }
 
   private startTicker(): void {
     if (this.ticker) return;
+    this.lastTickAt = Date.now();
     this.ticker = setInterval(() => {
       this.tick += 1;
+      // Suspension detector (XERK-216): a host that parks the idle JSContext
+      // freezes this interval — the ready page's clock stops with it. On the
+      // first tick after a long gap, force a repaint so the clock (and
+      // anything else) snaps current the moment the context wakes.
+      const now = Date.now();
+      const gap = now - this.lastTickAt;
+      this.lastTickAt = now;
+      const wokeFromSuspension = gap > this.tickMs * 5;
+      if (wokeFromSuspension) {
+        console.warn(`Tenir: ticker gap of ${gap}ms — JSContext was likely suspended`);
+      }
       // Deduped tick renders cost a real render only when the clock minute
       // turns over or the "listening" dots move. Every FORCE_REPAINT_TICKS
       // the current frame is re-issued even when "unchanged": a "displayed"
       // ack only means the host accepted the frame — not that the glasses
       // drew it — so the HUD must converge on its own after a frame is lost
       // anywhere down the pipeline (XERK-216).
-      this.renderHud({ force: this.tick % FORCE_REPAINT_TICKS === 0 });
+      this.renderHud({
+        force: wokeFromSuspension || this.tick % FORCE_REPAINT_TICKS === 0,
+      });
     }, this.tickMs);
   }
 
@@ -960,6 +987,10 @@ export class TenirController {
 
   handleGesture(kind: string): void {
     if (!this.signedIn) return;
+    // Any gesture proves the JSContext is awake and the wearer is looking:
+    // resync the HUD first (cheap — the host diffs identical scenes), so a
+    // clock frozen through a suspension corrects at the first touch.
+    this.renderHud({ force: true });
     switch (kind) {
       case "single_tap":
         if (this.menu) {
@@ -1161,8 +1192,15 @@ export class TenirController {
   }
 
   private registerUiHandlers(): void {
-    // Full snapshot on every WebView open.
-    this.unsubs.push(this.ui.onOpen(() => this.ui.send("tenir:snapshot", this.snapshot())));
+    // Full snapshot on every WebView open — and a forced HUD resync: an
+    // opening WebView proves the JSContext just woke (or the user is active),
+    // so a clock frozen through a suspension corrects here too.
+    this.unsubs.push(
+      this.ui.onOpen(() => {
+        this.ui.send("tenir:snapshot", this.snapshot());
+        this.renderHud({ force: true });
+      }),
+    );
 
     this.unsubs.push(
       this.ui.handle("tenir:login", (payload: Channels["tenir:login"]["req"]) =>
