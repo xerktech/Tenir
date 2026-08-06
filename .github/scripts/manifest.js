@@ -37,8 +37,6 @@ function freshComponent(component, version, tag, opts) {
       return { version, kind: "image", ref: `ghcr.io/${owner}/tenir:${version}`, built: true };
     case "parakeet-stt":
       return { version, kind: "image", ref: `ghcr.io/${owner}/tenir-parakeet-stt:${version}`, built: true };
-    case "nemotron-stt":
-      return { version, kind: "image", ref: `ghcr.io/${owner}/tenir-nemotron-stt:${version}`, built: true };
     case "even":
       return {
         version,

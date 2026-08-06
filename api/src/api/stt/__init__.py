@@ -1,6 +1,5 @@
-"""Streaming STT seam: "stub" (model-free, CI/simulator), "parakeet" (one HTTP model
-via LiteLLM or a direct route), or "hybrid" (XERK-115: cache-aware streaming partials
-from Nemotron + offline finals from Parakeet)."""
+"""Streaming STT seam: "stub" (model-free, CI/simulator) or "parakeet" (one HTTP
+model via LiteLLM or a direct route)."""
 
 from __future__ import annotations
 
@@ -27,13 +26,13 @@ def make_transcriber(
     if backend == "stub":
         return StubTranscriber(start_offset_ms=start_offset_ms)
 
-    if backend in ("parakeet", "hybrid"):
+    if backend == "parakeet":
         # Imported lazily so the networked deps load only when actually selected.
         from api.stt.parakeet import ParakeetEngine
         from api.stt.streaming import StreamingTranscriber
 
-        # Offline engine: partials (parakeet backend) AND finals (both backends). On
-        # the hybrid path finals decode the whole turn here (Parakeet) for accuracy.
+        # One offline engine drives both partials (trailing-window re-decode on a
+        # cadence) and finals (whole-turn decode for the accurate stored transcript).
         offline = ParakeetEngine(
             # The caption hot path prefers a direct route to the model server and
             # falls back to the LiteLLM gateway (see Settings.stt_endpoint_url).
@@ -41,22 +40,6 @@ def make_transcriber(
             model=settings.stt_model,
             api_key=settings.stt_key,
         )
-
-        stream_engine = None
-        if backend == "hybrid":
-            # Live partials come from the cache-aware streaming server over a WS.
-            from api.stt.streaming_engine import NemotronWsEngine
-
-            if not settings.stt_stream_endpoint:
-                raise ValueError(
-                    "STT backend 'hybrid' needs stt_stream_endpoint "
-                    "(API_STT_STREAM_ENDPOINT) — the WebSocket root of the "
-                    "nemotron-stt server, e.g. ws://nemotron:8000"
-                )
-            stream_engine = NemotronWsEngine(
-                endpoint=settings.stt_stream_endpoint,
-                timeout=settings.stt_stream_open_timeout_ms / 1000,
-            )
 
         return StreamingTranscriber(
             offline,
@@ -71,10 +54,7 @@ def make_transcriber(
             vad_adaptive=settings.stt_vad_adaptive,
             vad_noise_ratio=settings.stt_vad_noise_ratio,
             vad_window_ms=settings.stt_vad_window_ms,
-            stream_engine=stream_engine,
             start_offset_ms=start_offset_ms,
             final_words=settings.stt_final_word_timestamps,
         )
-    raise ValueError(
-        f"unknown STT backend: {backend!r} (expected 'stub', 'parakeet' or 'hybrid')"
-    )
+    raise ValueError(f"unknown STT backend: {backend!r} (expected 'stub' or 'parakeet')")

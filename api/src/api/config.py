@@ -37,11 +37,9 @@ class Settings(BaseSettings):
     litellm_api_key: str = ""
 
     # STT backend selector: "stub" (model-free, CI/simulator) or "parakeet" (an
-    # OpenAI-compatible audio-transcription endpoint via the LiteLLM gateway).
-    #   "hybrid" — XERK-115: live partials from a cache-aware streaming model
-    #     (Nemotron, over a WebSocket — stt_stream_endpoint) while finals decode the
-    #     whole turn on the offline HTTP model (Parakeet — stt_endpoint_url). Low-
-    #     latency partials + accurate finals; see docs/stt-model-gpu-benchmark.md.
+    # OpenAI-compatible audio-transcription endpoint via the LiteLLM gateway). The
+    # parakeet backend drives both partials (trailing-window re-decode on a cadence)
+    # and finals (whole-turn decode) off the one HTTP model at stt_endpoint_url.
     stt_backend: str = "stub"
     # The model alias sent to the gateway (must match litellm/config.yaml).
     stt_model: str = "parakeet"
@@ -63,22 +61,6 @@ class Settings(BaseSettings):
     # Bearer key for the direct route. Usually empty: a model server behind the
     # gateway doesn't authenticate. Only read when stt_endpoint is set.
     stt_api_key: str = ""
-
-    # ---- hybrid streaming partials (XERK-115) -----------------------------------
-    # WebSocket root of the Nemotron cache-aware streaming server (the nemotron-stt
-    # service, e.g. "ws://nemotron:8000"). Only read when stt_backend == "hybrid":
-    # partials are driven through a persistent stream to this server, and finals still
-    # go to the offline model at stt_endpoint_url. http(s):// is accepted and coerced
-    # to ws(s)://. Empty with backend "hybrid" is a misconfiguration (no partials);
-    # the factory raises rather than silently dropping the live caption band.
-    stt_stream_endpoint: str = ""
-    # How long to wait for the streaming socket to connect before giving up on it for
-    # the session and staying on the re-decode partial path (XERK-128). The open runs
-    # off the caption path, so this only bounds how long a wedged/misconfigured stream
-    # server keeps us trying before we settle on Parakeet-only partials — captions
-    # themselves never wait on it. Kept short: on the single-host stack the stream
-    # server shares the api's network, so a healthy one connects in well under this.
-    stt_stream_open_timeout_ms: int = 4000
 
     # ---- Cues (XERK-81) ----------------------------------------------------------
     # Cues are private contextual info cards the api derives from the live
@@ -387,11 +369,6 @@ class Settings(BaseSettings):
     # real traffic takes. Set it only where the api can genuinely open a socket to
     # the server (the single-host compose stack does).
     status_stt_url: str = ""
-    # Direct health-probe URL for the Nemotron streaming server (hybrid partials).
-    # Same contract as status_stt_url — an HTTP /health URL (the WS server also serves
-    # GET /health), empty means "no direct route, mirror the gateway/overall probe".
-    # Only meaningful when stt_backend == "hybrid".
-    status_stream_url: str = ""
     # Direct health-probe URL for the cue LLM server, same contract as
     # status_stt_url: empty means the cue light mirrors the gateway probe (the api
     # reaches the model only through LiteLLM), and a value is used only where the api

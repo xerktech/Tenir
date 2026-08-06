@@ -18,11 +18,10 @@ class Transcriber(Protocol):
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
 
-        Called once at session start, off the caption hot path, so a backend that
-        has a cold-start cost (e.g. the hybrid path opening its streaming socket and
-        the server building a per-connection decoder) pays it before the first spoken
-        words rather than stalling the first caption behind it. Best-effort and
-        optional: a backend with no startup cost makes this a no-op, and a failed
+        Called once at session start, off the caption hot path, so a backend with a
+        cold-start cost pays it before the first spoken words rather than stalling
+        the first caption behind it. Best-effort and optional: a backend with no
+        startup cost makes this a no-op (both current backends do), and a failed
         warmup must degrade to the lazy path, never raise.
         """
         ...

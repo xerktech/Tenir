@@ -1,9 +1,10 @@
 """Session warms the transcriber at start, off the caption path (XERK-128).
 
-The reported symptom was a delay before captions start, then a burst carrying
-every word since the session began: the hybrid stream's per-session setup was
-paid inline on the first audio frame. The session now kicks that warmup off as a
-background task at start, so the first spoken words don't wait behind it.
+The session kicks the transcriber's `warmup()` off as a background task at start
+rather than paying any per-session startup cost inline on the first audio frame,
+so the first spoken words don't wait behind it. The current backends have no
+cold-start cost (warmup is a no-op), but the lifecycle — start it, cancel it on
+teardown, swallow its errors — is exercised here against a recording transcriber.
 """
 
 from __future__ import annotations

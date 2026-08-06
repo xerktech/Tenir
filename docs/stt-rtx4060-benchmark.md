@@ -1,5 +1,11 @@
 # STT on a small GPU — RTX 4060 deployment + benchmark vs the RTX 6000 Pro
 
+> **Superseded (2026-08).** The hybrid path this benchmark weighs was subsequently
+> **removed**: the Nemotron partials server (`nemotron-stt/`), the `hybrid` STT
+> backend, and the `--profile hybrid` compose service no longer exist. Tenir runs
+> Parakeet-only — one model for both partials (windowed re-decode) and finals. This
+> doc is kept as the dated record of the measurements that drove that decision.
+
 Follow-up to `stt-model-gpu-benchmark.md` (XERK-115). Both STT servers
 (`tenir-parakeet-stt`, `tenir-nemotron-stt`) were deployed to an 8 GB RTX 4060
 (TrueNAS, driver 570.x/CUDA 12.8) and benchmarked against the production

@@ -14,10 +14,9 @@ chat, …) was stripped back to; features return one at a time, slowly.
 ## What it does
 
 - **Streaming transcription** — phone, browser or glasses mic → real-time
-  captions from self-hosted STT: a cache-aware streaming model (NVIDIA Nemotron)
-  drives the low-latency live partials while an offline model (NVIDIA Parakeet)
-  decodes each finished turn for the accurate stored transcript (the *hybrid* path
-  — see `docs/stt-model-gpu-benchmark.md`)
+  captions from self-hosted STT: one offline model (NVIDIA Parakeet) drives both
+  the low-latency live partials (a bounded trailing-window re-decode on a cadence)
+  and the accurate stored transcript (a whole-turn decode on each finished turn)
 - **Live translations** — a turn spoken in another language is transcribed as
   spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): the
   glasses show the translation in the cue box, web/Android/the phone app show
@@ -73,27 +72,26 @@ Toolkit for the STT servers; everything else is CPU-only.
 | `app` | 8080 | ONE container: FastAPI api (`/health`, `/ws`, auth + history REST) **and** the built web UI, served same-origin — no CORS, no separate web container. Built from `api/Dockerfile` (repo-root context) |
 | `postgres-tenir` | 5432 | plain Postgres — transcripts, users (`schema.sql` applied on first boot) |
 | `litellm` | 4000 | LiteLLM gateway — the OpenAI-compatible front door the api uses for STT finals + cues; master-key auth, routing in `litellm/config.yaml` |
-| `parakeet` | 9401 | OpenAI-compatible NVIDIA Parakeet STT — offline model for accurate **finals** (multilingual + auto language detection), built from `parakeet-stt/Dockerfile` |
-| `nemotron` | 9402 | NVIDIA Nemotron cache-aware streaming STT — WebSocket `/v1/audio/stream` for low-latency **partials**, built from `nemotron-stt/Dockerfile` (hybrid backend only) |
+| `parakeet` | 9401 | OpenAI-compatible NVIDIA Parakeet STT — decodes both live **partials** and accurate **finals** (multilingual + auto language detection), built from `parakeet-stt/Dockerfile` |
 
 Retained audio lives on a bind mount (`API_AUDIO_DIR`, the "disk" audio
 backend). Smoke check once up: `curl localhost:8080/health`, then open
 `http://localhost:8080`.
 
-### Hybrid STT (partials vs finals)
+### STT (partials and finals)
 
-Live captions come from two models (`API_STT_BACKEND=hybrid`, the default):
+One model, `parakeet`, serves both caption flavours (`API_STT_BACKEND=parakeet`):
 
-- **Partials** stream from `nemotron` over a persistent WebSocket
-  (`API_STT_STREAM_ENDPOINT`). It's cache-aware, so each chunk costs ~one chunk of
-  compute regardless of turn length — the live band stays responsive.
-- **Finals** decode the whole finished turn on `parakeet`
-  (`API_STT_ENDPOINT`, else the gateway) for the accurate stored transcript.
+- **Partials** re-decode a bounded trailing window of the in-flight turn on a
+  cadence (`API_STT_PARTIAL_INTERVAL_MS`) so the live band stays responsive
+  regardless of turn length.
+- **Finals** decode the whole finished turn (`API_STT_ENDPOINT`, else the gateway)
+  for the accurate stored transcript.
 
-If `nemotron` is unreachable the api degrades to Parakeet-only re-decode partials
-rather than losing the live band. Set `API_STT_BACKEND=parakeet` for the single-model
-(Parakeet-only) path — then the `nemotron` service isn't needed. Rationale and the
-GPU benchmark behind the split: [`docs/stt-model-gpu-benchmark.md`](docs/stt-model-gpu-benchmark.md).
+A two-model "hybrid" variant (a separate NVIDIA Nemotron server streaming the
+partials) was evaluated and removed once the re-decode partial path was fast
+enough to match it without the extra GPU server and caption churn — see
+[`docs/stt-rtx4060-benchmark.md`](docs/stt-rtx4060-benchmark.md).
 
 ### The LiteLLM gateway
 
@@ -101,9 +99,10 @@ Finals and cues reach their model through a single **LiteLLM gateway**: one base
 URL + one key (`API_LITELLM_ENDPOINT`, `API_LITELLM_API_KEY`) instead of a
 per-model endpoint. Routing lives in [`litellm/config.yaml`](litellm/config.yaml):
 the alias the api sends (`API_STT_MODEL`, default `parakeet`) fans out to the
-real model the parakeet server serves. The Nemotron partials stream bypasses the
-gateway (WebSocket, direct). To split hosts, run the gateway + model servers on the
-GPU box and point the endpoints at it — no code changes, just env.
+real model the parakeet server serves. The caption hot path can also post straight
+to the model server (`API_STT_ENDPOINT`), bypassing the gateway. To split hosts,
+run the gateway + model servers on the GPU box and point the endpoints at it — no
+code changes, just env.
 
 ### Configuration
 
@@ -117,8 +116,8 @@ API_AUTH_TOKEN_TTL_SECONDS  token lifetime (default 30d); tokens auto-renew on u
                        so this is the max idle time before a device must re-login
 API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT finals + cues (…/v1)
 API_LITELLM_API_KEY    gateway key
-API_STT_BACKEND        hybrid (prod) | parakeet (Parakeet-only) | stub (dev/CI)
-API_STT_STREAM_ENDPOINT  WebSocket root of the Nemotron partials server (hybrid)
+API_STT_BACKEND        parakeet (prod) | stub (dev/CI)
+API_STT_ENDPOINT       direct /v1 route to the STT model (else falls back to the gateway)
 API_PERSISTENCE_BACKEND  postgres | memory | off
 API_AUDIO_BACKEND      disk | memory | off      (+ API_AUDIO_DIR)
 ```
