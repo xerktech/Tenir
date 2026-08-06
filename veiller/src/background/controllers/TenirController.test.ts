@@ -856,10 +856,13 @@ describe("lens HUD staleness (XERK-216)", () => {
     world.emitTouch("single_tap"); // confirm Exit — stop the session
     const after = world.allRenders().slice(before);
     // The wipe is an explicit empty scene — not a diffed text update that a
-    // lossy pipeline can drop — followed by the idle frame.
-    expect(after[0]).toEqual([]);
-    expect(after[1]?.find((e) => e.id === "caption")?.text).toBe(IDLE_PROMPT);
-    expect(after[1]?.find((e) => e.id === "status")?.text).toBe("ready");
+    // lossy pipeline can drop — followed by the idle frame. (A gesture also
+    // fires a wake-resync render first, so locate the wipe rather than
+    // assuming it is the first render.)
+    const wipeIdx = after.findIndex((scene) => scene.length === 0);
+    expect(wipeIdx).toBeGreaterThanOrEqual(0);
+    expect(after[wipeIdx + 1]?.find((e) => e.id === "caption")?.text).toBe(IDLE_PROMPT);
+    expect(after[wipeIdx + 1]?.find((e) => e.id === "status")?.text).toBe("ready");
     c.stop();
   });
 
@@ -869,6 +872,49 @@ describe("lens HUD staleness (XERK-216)", () => {
     const before = world.renderCount();
     await sleep(120); // > FORCE_REPAINT_TICKS ticks with an unchanged idle frame
     expect(world.renderCount()).toBeGreaterThan(before);
+    c.stop();
+  });
+});
+
+// The idle "ready" clock can freeze when the host parks the JSContext
+// (frozen timers) — no interval can fix that, so the HUD must resync on every
+// wake signal instead (XERK-216, round 2).
+describe("wake resync (XERK-216)", () => {
+  async function signedIn(deps: Partial<TenirDeps> = {}) {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world, deps);
+    await c.start();
+    return { world, c };
+  }
+
+  it("any gesture forces a repaint even when the frame is unchanged", async () => {
+    const { world, c } = await signedIn();
+    await flush();
+    const before = world.renderCount();
+    world.emitTouch("swipe_up"); // does nothing while idle — but must resync
+    expect(world.renderCount()).toBe(before + 1);
+    c.stop();
+  });
+
+  it("a WebView open forces a repaint alongside the snapshot", async () => {
+    const { world, c } = await signedIn();
+    await flush();
+    const before = world.renderCount();
+    world.openUi();
+    expect(world.renderCount()).toBe(before + 1);
+    expect(world.uiSent.some((m) => m.channel === "tenir:snapshot")).toBe(true);
+    c.stop();
+  });
+
+  it("paints a boot frame before storage/auth resolve", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    const started = c.start();
+    // Synchronously after start(): the "starting…" frame is already out.
+    expect(world.allRenders()[0]?.find((e) => e.id === "caption")?.text).toBe("starting…");
+    await started;
     c.stop();
   });
 });
