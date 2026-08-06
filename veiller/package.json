@@ -1,9 +1,9 @@
 {
-  "name": "tenir-foverlay",
+  "name": "tenir-veiller",
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "Foverlay bundled-miniapp build of the Tenir Even G2 client",
+  "description": "Veiller bundled-miniapp build of the Tenir Even G2 client",
   "scripts": {
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",

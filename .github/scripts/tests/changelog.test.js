@@ -44,12 +44,12 @@ test("a multi-component entry appears under each heading it touches", () => {
   assert.equal(groups.Even.length, 1);
 });
 
-test("a foverlay entry lands under the Foverlay heading, ordered before Other", () => {
+test("a veiller entry lands under the Veiller heading, ordered before Other", () => {
   const groups = CL.groupByComponent([
-    entry({ title: "miniapp thing", components: ["foverlay"] }),
+    entry({ title: "miniapp thing", components: ["veiller"] }),
     entry({ title: "chore", components: [] }),
   ]);
-  assert.deepEqual(Object.keys(groups), ["Foverlay", "Other"]);
+  assert.deepEqual(Object.keys(groups), ["Veiller", "Other"]);
 });
 
 test("a removed component name (web/sidecar-gpu) has no heading and lands in Other", () => {
@@ -84,7 +84,7 @@ test("renderComponentTable reads rebuilt/carried status straight from the manife
       "parakeet-stt": { version: "0.1.0", kind: "image", ref: "ghcr.io/x/tenir-parakeet-stt:0.1.0", built: false },
       even: { version: "0.1.0", kind: "evenhub", package_id: "com.tenir.local", built: false },
       mobile: { version: "0.1.1", kind: "asset", asset: "tenir-android-v0.1.1.apk", version_code: 10001, built: true },
-      foverlay: { version: "0.1.1", kind: "asset", asset: "tenir-foverlay-v0.1.1.zip", built: true },
+      veiller: { version: "0.1.1", kind: "asset", asset: "tenir-veiller-v0.1.1.zip", built: true },
     },
   };
   const table = CL.renderComponentTable(manifest);
@@ -92,7 +92,7 @@ test("renderComponentTable reads rebuilt/carried status straight from the manife
   assert.match(table, /Parakeet STT \(image\) \| 0\.1\.0 \| carried/);
   assert.match(table, /Even \(Even Hub\) \| 0\.1\.0 \| carried \| `com\.tenir\.local` \(Even Hub portal\)/);
   assert.match(table, /code 10001/);
-  assert.match(table, /Foverlay \(miniapp \.zip\) \| 0\.1\.1 \| rebuilt \| `tenir-foverlay-v0\.1\.1\.zip`/);
+  assert.match(table, /Veiller \(miniapp \.zip\) \| 0\.1\.1 \| rebuilt \| `tenir-veiller-v0\.1\.1\.zip`/);
   assert.ok(!table.includes("tenir-web"));
   assert.ok(!table.includes("sidecar"));
 });
