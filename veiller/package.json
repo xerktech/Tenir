@@ -8,7 +8,9 @@
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "pack": "node scripts/pack.mjs"
+    "pack": "node scripts/pack.mjs",
+    "sim": "bun run sim/walkthrough.ts",
+    "sim:phone": "bun run sim/phone-tour.ts"
   },
   "dependencies": {
     "@mentra/miniapp": "file:vendor/mentra-miniapp-0.3.0-dev.1.tgz"
@@ -17,7 +19,8 @@
     "@mentra/cloud-protocol": "file:vendor/mentra-cloud-protocol-0.1.0-dev.0.tgz"
   },
   "devDependencies": {
-    "typescript": "^5.6",
-    "bun-types": "^1.2.22"
+    "bun-types": "^1.2.22",
+    "playwright-core": "^1.62.1",
+    "typescript": "^5.6"
   }
 }
