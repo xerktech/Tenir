@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import Depends, Header, HTTPException
 
 from api.auth.tokens import AuthError, Principal, decode_token
+from api.auth.users import get_user_store
 from api.config import DEFAULT_AUTH_SECRET, settings
 
 
@@ -39,6 +40,22 @@ def _bearer(authorization: str | None) -> str | None:
     return None
 
 
+def principal_from_live_token(token: str) -> Principal:
+    """Decode a bearer token AND check the account behind it still exists.
+
+    Deleting a user has to end their access now, not whenever their token
+    happens to expire. Tokens are stateless and long-lived (30 days by default,
+    and sliding renewal keeps an active device's token fresh indefinitely), so
+    without this lookup a removed member kept full household access for up to a
+    month after being deleted (XERK-236). One store read per authenticated
+    request is the price of revocation actually revoking.
+    """
+    principal = principal_from_token(token)
+    if get_user_store().get_by_id(principal.user_id) is None:
+        raise AuthError("account no longer exists")
+    return principal
+
+
 def current_principal(
     authorization: str | None = Header(default=None),
 ) -> Principal:
@@ -47,7 +64,7 @@ def current_principal(
     if token is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
     try:
-        return principal_from_token(token)
+        return principal_from_live_token(token)
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -68,7 +85,7 @@ def principal_from_request(
     if tok is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
     try:
-        return principal_from_token(tok)
+        return principal_from_live_token(tok)
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 

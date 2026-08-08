@@ -13,8 +13,25 @@ from pathlib import Path
 from typing import Protocol
 
 
+def _reject_unsafe(label: str, part: str) -> None:
+    """Refuse a key segment that would not stay one path segment.
+
+    The disk backend turns the household into a directory, so a segment
+    carrying a separator or a ``..`` silently re-points the key at a DIFFERENT
+    household's object — still inside the store root, so a root-escape check
+    alone does not catch it. Callers pass a server-issued UUID and a
+    token-derived household, so anything else is a bug or an attack; raise
+    rather than sanitize, because rewriting a segment could collide two
+    distinct conversations onto one key (XERK-236).
+    """
+    if not part or part in (".", "..") or "/" in part or "\\" in part or "\x00" in part:
+        raise ValueError(f"unsafe {label} for audio key: {part!r}")
+
+
 def audio_key(household: str, conversation_id: str) -> str:
     """Object key for a conversation's full audio, namespaced by household."""
+    _reject_unsafe("household", household)
+    _reject_unsafe("conversation id", conversation_id)
     return f"{household}/{conversation_id}.wav"
 
 
@@ -71,11 +88,17 @@ class LocalDiskAudioStore:
         self._root = Path(root).resolve()
 
     def _path(self, key: str) -> Path:
-        # Resolve the key under root and refuse anything that escapes it (a "../"
-        # in a household/id must never reach outside the audio directory).
+        # Keys are exactly "{household}/{conversation_id}.wav". Checking only that
+        # the resolved path stays INSIDE root is not enough: "beta/../alpha/x.wav"
+        # never leaves the root and still lands in another household's directory,
+        # and `resolve()` collapses the ".." away before any depth check could see
+        # it (XERK-236). So validate the raw segments FIRST, then pin the depth.
+        parts = key.split("/")
+        if len(parts) != 2 or any(p in ("", ".", "..") or "\\" in p or "\x00" in p for p in parts):
+            raise ValueError(f"audio key is not household-scoped: {key!r}")
         path = (self._root / key).resolve()
-        if path != self._root and self._root not in path.parents:
-            raise ValueError(f"audio key escapes store root: {key!r}")
+        if path.parent.parent != self._root:
+            raise ValueError(f"audio key is not household-scoped: {key!r}")
         return path
 
     def put(self, key: str, data: bytes) -> None:

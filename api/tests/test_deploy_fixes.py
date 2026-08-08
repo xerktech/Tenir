@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api import registry
-from api.auth import Principal, issue_token, reset_user_store
+from api.auth import Principal, get_user_store, issue_token, reset_user_store
 from api.auth.deps import principal_from_request
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
@@ -41,7 +41,18 @@ def _enable_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _token(household: str, role: str = "member") -> str:
-    return issue_token(Principal("u", household, role), secret="test-secret", ttl_seconds=60)
+    """A token for a REAL user in ``household``.
+
+    The account has to exist: auth resolves the principal only if the user is
+    still in the store, so deleting a user revokes their token immediately
+    instead of leaving it live until expiry (XERK-236).
+    """
+    user = get_user_store().create(
+        f"u-{household}-{role}", "pw", household=household, role=role
+    )
+    return issue_token(
+        Principal(user.user_id, household, role), secret="test-secret", ttl_seconds=60
+    )
 
 
 # --- cross-household session-id collision ------------------------------------

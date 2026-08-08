@@ -102,6 +102,26 @@ def _same_text(a: str, b: str) -> bool:
     return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
 
 
+def is_valid_session_id(value: str) -> bool:
+    """Whether a client-supplied resume id is one the server could have issued.
+
+    The api mints session ids as uuid4 and nothing else, so a resume id that is
+    not a UUID did not come from us. This is a security boundary, not a
+    nicety: the id flows into the conversation key AND into the audio object
+    key (``{household}/{id}.wav``), so an id shaped like ``../other-household/
+    <their-id>`` addresses another household's retained audio — enough to read
+    its duration and, on session.end, to prepend and rewrite it. Accepting only
+    UUIDs removes the whole class (XERK-236).
+    """
+    try:
+        # Compared against the CANONICAL form, so only what uuid4() actually
+        # stringifies to passes — an uppercase or dash-stripped variant parses
+        # fine but is not an id we issued, and would miss the stored key anyway.
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 class Session:
     def __init__(
         self, send: Sender, *, session_id: str | None = None, household: str | None = None

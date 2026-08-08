@@ -25,6 +25,7 @@ from api.auth import (
     Principal,
     assert_secure_auth_config,
     get_user_store,
+    principal_from_live_token,
     principal_from_token,
     require_admin,
 )
@@ -44,7 +45,7 @@ from api.history import router as history_router
 from api.metrics import metrics
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session
+from api.session import Session, is_valid_session_id
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -205,7 +206,9 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
     if not token:
         return None
     try:
-        return principal_from_token(token)
+        # Same liveness check as the REST path: a deleted user's still-unexpired
+        # token must not open a capture socket either (XERK-236).
+        return principal_from_live_token(token)
     except AuthError:
         return None
 
@@ -218,7 +221,7 @@ def _ws_reject_reason(ws: WebSocket) -> str:
     if not token:
         return "missing token"
     try:
-        principal_from_token(token)
+        principal_from_live_token(token)
     except AuthError as exc:
         return str(exc)
     return "unknown"
@@ -282,6 +285,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 continue
 
             if isinstance(msg, SessionStart):
+                # A resume id the server could not have issued is not a resume id.
+                # It reaches the conversation store AND the audio object key
+                # ({household}/{id}.wav), so an id like "../other-hh/<their-id>"
+                # addresses another household's retained audio — it reads back as
+                # this session's resume offset and gets rewritten on session.end.
+                # Drop it and start fresh under a server id (XERK-236).
+                if msg.sessionId is not None and not is_valid_session_id(msg.sessionId):
+                    log.warning(
+                        "rejecting malformed resume id from household %s: %r",
+                        principal.household,
+                        msg.sessionId[:64],
+                    )
+                    metrics.incr("sessions.bad_resume_id")
+                    msg = msg.model_copy(update={"sessionId": None})
                 # Resume a still-live session if the client presents its id and the
                 # household matches: rebind to it, preserving the transcriber state,
                 # instead of starting fresh.

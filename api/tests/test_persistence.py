@@ -142,10 +142,34 @@ def test_disk_audio_store_ready_creates_root(tmp_path: Path) -> None:
 
 def test_disk_audio_store_rejects_keys_escaping_root(tmp_path: Path) -> None:
     store = LocalDiskAudioStore(tmp_path)
-    with pytest.raises(ValueError, match="escapes store root"):
+    with pytest.raises(ValueError, match="not household-scoped"):
         store.put("../evil.wav", b"x")
-    with pytest.raises(ValueError, match="escapes store root"):
+    with pytest.raises(ValueError, match="not household-scoped"):
         store.get("../../etc/passwd")
+
+
+def test_disk_audio_store_rejects_a_sideways_hop_between_households(tmp_path: Path) -> None:
+    """XERK-236 regression. "beta/../alpha/x.wav" never leaves the store root, so
+    a root-escape check alone lets one household address another's object."""
+    store = LocalDiskAudioStore(tmp_path)
+    store.put(audio_key("alpha", "victim"), b"alpha's recording")
+    for hop in ("beta/../alpha/victim.wav", "beta/../../alpha/victim.wav", "alpha/sub/x.wav"):
+        with pytest.raises(ValueError, match="not household-scoped"):
+            store.put(hop, b"clobbered")
+        with pytest.raises(ValueError, match="not household-scoped"):
+            store.get(hop)
+    assert store.get(audio_key("alpha", "victim")) == b"alpha's recording"
+
+
+def test_audio_key_refuses_segments_that_are_not_one_path_segment() -> None:
+    """XERK-236 regression: the key builder is the choke point, so it rejects any
+    segment that would re-point the key at another household's namespace."""
+    for bad in ("../alpha", "a/b", "a\\b", "..", ".", "", "a\x00b"):
+        with pytest.raises(ValueError, match="unsafe"):
+            audio_key("beta", bad)
+        with pytest.raises(ValueError, match="unsafe"):
+            audio_key(bad, "conv")
+    assert audio_key("beta", "conv") == "beta/conv.wav"
 
 
 def test_wav_roundtrip_preserves_pcm() -> None:

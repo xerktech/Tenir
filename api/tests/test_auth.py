@@ -326,13 +326,22 @@ def test_login_me_and_household_scoping(monkeypatch: pytest.MonkeyPatch) -> None
         get_conversation_store().create("acme", "conv-acme")
         listed = client.get("/conversations", headers=auth).json()
         assert [c["id"] for c in listed] == ["conv-acme"]
-        # A different household (different token) sees nothing.
+        # A different household (different token, real account) sees nothing.
+        other_user = get_user_store().create("otto", "longpassword", household="other")
         other = issue_token(
-            Principal("u2", "other", "member"), secret="test-secret", ttl_seconds=60
+            Principal(other_user.user_id, "other", "member"), secret="test-secret", ttl_seconds=60
         )
         assert (
             client.get("/conversations", headers={"Authorization": f"Bearer {other}"}).json()
             == []
+        )
+        # A well-signed token for an account that does not exist is not a login.
+        ghost = issue_token(
+            Principal("no-such-user", "acme", "admin"), secret="test-secret", ttl_seconds=60
+        )
+        assert (
+            client.get("/conversations", headers={"Authorization": f"Bearer {ghost}"}).status_code
+            == 401
         )
 
 
@@ -458,9 +467,12 @@ def test_env_admin_cannot_be_removed(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     from starlette.websockets import WebSocketDisconnect
 
+    from api.auth import get_user_store
+
     _enable_auth(monkeypatch)
+    user = get_user_store().create("wsuser", "longpassword", household="acme")
     token = issue_token(
-        Principal("u", "acme", "member"), secret="test-secret", ttl_seconds=60
+        Principal(user.user_id, "acme", "member"), secret="test-secret", ttl_seconds=60
     )
     with TestClient(app) as client:
         # No token -> the socket is accepted, then closed with 1008. The code must
@@ -591,21 +603,44 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.real_auth
-def test_renewal_denied_after_user_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A deleted user's still-valid token works until exp exactly as before, but must
-    NOT renew — sliding renewal must never extend access past the account's removal."""
+def test_deleted_user_token_is_revoked_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting a user must end their access NOW, not at their token's expiry.
+
+    XERK-236: tokens are stateless and last 30 days by default (and sliding
+    renewal keeps an active device's fresh indefinitely), so resolving them on
+    signature + exp alone let a removed member keep full household access for up
+    to a month. Every authenticated entry point — REST, the query-token audio
+    route and the WS handshake — now checks the account still exists.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    from api.auth import get_user_store
     from api.main import RENEWED_TOKEN_HEADER
 
     _enable_auth(monkeypatch)
     ttl = settings.auth_token_ttl_seconds
-    ghost = Principal("no-such-user", "acme", "member", username="ghost")
-    aged = issue_token(ghost, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
+    user = get_user_store().create("doomed", "longpassword", household="acme")
+    principal = Principal(user.user_id, "acme", "member", username="doomed")
+    # Aged past half its life, so a renewal would be due if one were allowed.
+    token = issue_token(principal, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
+    auth = {"Authorization": f"Bearer {token}"}
 
     with TestClient(app) as client:
-        r = client.get("/auth/me", headers={"Authorization": f"Bearer {aged}"})
-        # Token validity is untouched (signature + exp only), but no renewal is issued.
-        assert r.status_code == 200
+        assert client.get("/auth/me", headers=auth).status_code == 200
+
+        get_user_store().delete(user.user_id)
+
+        r = client.get("/auth/me", headers=auth)
+        assert r.status_code == 401
         assert RENEWED_TOKEN_HEADER not in r.headers
+        assert client.get("/conversations", headers=auth).status_code == 401
+        # The browser-navigation route (token in the query string) too.
+        assert client.get(f"/conversations/c1/audio?token={token}").status_code == 401
+        # And the capture socket: 1008, not an accepted session.
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(f"/ws?token={token}") as ws:
+                ws.receive_json()
+        assert excinfo.value.code == 1008
 
 
 
