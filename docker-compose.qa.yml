@@ -1,0 +1,63 @@
+# tenir — QA/dev overlay for the root stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.qa.yml up --build -d
+#
+# The root compose file is the SHAPE THIS PROJECT DEPLOYS: a Windows/TrueNAS host
+# with `C:/docker/tenir/...` bind mounts and a local GPU running the Parakeet
+# image. Neither holds on a Linux dev box or in a QA container, so this overlay
+# swaps them out and changes nothing else:
+#
+#   * bind mounts -> named volumes, so the stack runs anywhere and `down -v`
+#     leaves no droppings on the host,
+#   * the GPU `parakeet` service is dropped (`replicas: 0`) and the api points at
+#     whatever STT endpoint you give it — the real GPU box by default,
+#   * ports moved off the defaults so a QA stack can run beside a real one.
+#
+# Set API_STT_BACKEND=stub for a fully model-free run (no GPU, no network).
+# See qa.md.
+
+# Its own project, so a QA stack never adopts (or removes) a real stack's
+# containers, networks or volumes.
+name: tenir-qa
+
+services:
+  app:
+    # !override, not a plain list: compose MERGES port lists, so without it the
+    # stack would publish 8080 as well and collide with a real one.
+    ports: !override
+      - "${TENIR_QA_APP_PORT:-18080}:8080"
+    environment:
+      # Model-free by default so a QA run needs no GPU and no network. Point
+      # these at a real Parakeet server to exercise the true STT path:
+      #   API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://<host>:9401/v1 \
+      #   API_STATUS_STT_URL=http://<host>:9401 docker compose ... up -d
+      API_STT_BACKEND: ${API_STT_BACKEND:-stub}
+      API_STT_ENDPOINT: ${API_STT_ENDPOINT:-}
+      API_STATUS_STT_URL: ${API_STATUS_STT_URL:-}
+      API_LITELLM_ENDPOINT: ${API_LITELLM_ENDPOINT:-http://litellm:4000/v1}
+    volumes: !override
+      - qa-audio:/data/audio
+    depends_on:
+      parakeet: !reset null
+
+  postgres-tenir:
+    ports: !override
+      - "${TENIR_QA_PG_PORT:-15432}:5432"
+    volumes: !override
+      - qa-postgres:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+
+  litellm:
+    ports: !override
+      - "${TENIR_QA_LITELLM_PORT:-14000}:4000"
+
+  parakeet:
+    # No GPU in QA — the api talks to the real model server (or the stub).
+    # `replicas: 0` keeps the service defined (so `depends_on` resolves) but
+    # starts nothing.
+    deploy:
+      replicas: 0
+
+volumes:
+  qa-audio:
+  qa-postgres:

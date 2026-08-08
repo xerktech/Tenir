@@ -4,7 +4,8 @@ and the ingest pass (against httpx.MockTransport — no network)."""
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import httpx
 
@@ -84,10 +85,20 @@ def test_feed_urls_trims_and_dedupes() -> None:
     assert feed_urls("") == []
 
 
+# The parse tests above pin an exact pubDate, so _RSS keeps its fixed date. The
+# ingest pass also PRUNES (keep_days), so a feed for those tests has to stay
+# inside the window whenever the suite runs — a fixed date silently turns green
+# tests red once it ages past keep_days. Re-stamp it relative to now instead.
+_FRESH_RSS = _RSS.replace(
+    "Fri, 24 Jul 2026 09:12:00 GMT",
+    format_datetime(datetime.now(timezone.utc) - timedelta(days=1)),
+)
+
+
 def test_ingest_once_upserts_and_survives_a_dead_feed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "good.test":
-            return httpx.Response(200, text=_RSS)
+            return httpx.Response(200, text=_FRESH_RSS)
         return httpx.Response(500)
 
     store = InMemoryNewsStore()
