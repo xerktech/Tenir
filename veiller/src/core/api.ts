@@ -188,8 +188,21 @@ export async function login(
     { username, password },
     { baseUrl, auth: false },
   );
+  // Two round-trips, so the new token is only PROVISIONAL until `me()` confirms
+  // it (XERK-237). Storing it unconditionally meant a server that accepted the
+  // login and then rejected `/auth/me` destroyed the wearer's existing token on
+  // an attempt that reports failure — leaving the real server 401ing until a
+  // silent re-login healed it. Put the previous one back if the confirmation
+  // doesn't come.
+  const previous = getToken();
   setToken(out.token);
-  return me(baseUrl);
+  try {
+    return await me(baseUrl);
+  } catch (err) {
+    if (previous) setToken(previous);
+    else clearToken();
+    throw err;
+  }
 }
 
 /**

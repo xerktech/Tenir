@@ -1084,20 +1084,50 @@ describe("UI bus", () => {
       username: "a",
       password: "b",
     });
-    await flush();
+    try {
+      await flush();
 
-    // INSIDE the window: everything still addresses the real server.
+      // INSIDE the window: everything still addresses the real server.
+      const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+      expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+      await world.rpc("tenir:download", { id: "c1" });
+      expect(world.downloads.every((d) => d.url.startsWith("https://h.example.com/"))).toBe(true);
+      expect(c.authState().serverUrl).toBe("h.example.com");
+    } finally {
+      // Release even if an assertion above throws, so a failing test can't
+      // leave the stalled request pending behind it.
+      release();
+      c.stop();
+    }
+    expect(await inFlight).toEqual({ ok: false, error: "Incorrect username or password." });
+  });
+
+  // XERK-237: `login()` is two round-trips. Storing the new token between them
+  // meant a server that accepted `/auth/login` and then rejected `/auth/me`
+  // destroyed the wearer's existing token on an attempt that reports failure —
+  // the real server then 401s until a silent re-login heals it.
+  it("a half-successful login leaves the existing token intact", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    // Accepts the credentials, then refuses to confirm them.
+    routes["/auth/login"] = () => ({ status: 200, body: { token: "attacker-issued" } });
+    routes["/auth/me"] = () => ({ status: 401, body: { detail: "no" } });
+    expect(
+      await world.rpc("tenir:login", {
+        serverUrl: "attacker.example",
+        username: "a",
+        password: "b",
+      }),
+    ).toEqual({ ok: false, error: "Incorrect username or password." });
+
+    // The wearer's own token — and their working session — survive.
     const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
     expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
-    await world.rpc("tenir:download", { id: "c1" });
-    expect(world.downloads.every((d) => d.url.startsWith("https://h.example.com/"))).toBe(true);
-    expect(c.authState().serverUrl).toBe("h.example.com");
-
-    release();
-    expect(await inFlight).toEqual({ ok: false, error: "Incorrect username or password." });
-    // …and still afterwards.
-    const after = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
-    expect(after.url).toBe(url.url);
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-1");
     c.stop();
   });
 
