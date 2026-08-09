@@ -63,7 +63,7 @@ import {
   request,
 } from "../../core/api";
 import { clearToken, configureTokenStore, getToken } from "../../core/auth";
-import { configureApi, httpBaseFromWs } from "../../core/config";
+import { apiBaseUrl, configureApi, httpBaseFromWs } from "../../core/config";
 import { langName } from "../../core/lang";
 import {
   CUE_TTL_MS,
@@ -1339,7 +1339,7 @@ export class TenirController {
     // link reach it. Signed out there is nothing to play.
     this.unsubs.push(
       this.ui.handle("tenir:audio-url", ({ id }: Channels["tenir:audio-url"]["req"]) => {
-        if (!this.signedIn || !this.wsUrl) return { ok: false as const };
+        if (!this.signedIn || !this.wsUrl || !isConversationId(id)) return { ok: false as const };
         // The id is path-encoded (history.audioUrl) so a "../"-shaped one can't
         // steer the URL off the conversations route. The token rides this URL,
         // so it must only ever address the endpoint we mean.
@@ -1353,7 +1353,7 @@ export class TenirController {
       this.ui.handle(
         "tenir:download",
         async ({ id }: Channels["tenir:download"]["req"]) => {
-          if (!this.signedIn || !this.wsUrl) return { ok: false };
+          if (!this.signedIn || !this.wsUrl || !isConversationId(id)) return { ok: false };
           // The URL is minted HERE, from the conversation id, so the page can
           // never name the target (see the channel's doc comment). An
           // allow-list over a page-supplied URL looked equivalent but was not:
@@ -1388,16 +1388,30 @@ export class TenirController {
     if (!wsUrl) {
       return { ok: false, error: "Enter your server address, e.g. tenir.example.com" };
     }
-    // Persist the URL and repoint the REST client before the login call.
+    // Point the REST client at the candidate server for the duration of the
+    // attempt — the login has to reach the server the wearer typed — but keep
+    // the previous one to fall back to.
+    //
+    // A FAILED attempt must not leave the api pointed wherever the page named
+    // (XERK-237). The session stays signed in through a failed login, so every
+    // token-bearing URL minted afterwards — the audio clip, and the download
+    // handed to the host's sheet, which does NOT scheme-filter — would address
+    // that host instead, carrying the wearer's real bearer token. This is what
+    // made an allow-list on a page-supplied download URL unsafe: the page could
+    // move the base first and then satisfy the check.
+    const previousWsUrl = this.wsUrl;
+    const previousHttpBase = apiBaseUrl();
     this.wsUrl = wsUrl;
     configureApi({ httpBaseUrl: httpBaseFromWs(wsUrl) });
     try {
-      await this.session.storage.set(SERVER_URL_KEY, wsUrl);
-    } catch {
-      /* the URL just won't persist */
-    }
-    try {
       const principal = await login(payload.username.trim(), payload.password);
+      // Persist only once the server has actually accepted us, so a typo — or a
+      // hostile URL — is never what the next boot comes back to.
+      try {
+        await this.session.storage.set(SERVER_URL_KEY, wsUrl);
+      } catch {
+        /* the URL just won't persist */
+      }
       // Cache the credentials so the token's expiry never asks the user to
       // type them again — the app re-logs-in silently.
       this.credentials = { username: payload.username.trim(), password: payload.password };
@@ -1412,6 +1426,10 @@ export class TenirController {
       this.sendAuth();
       return { ok: true, username: principal.username };
     } catch (err) {
+      // Put the api back where it was: the attempt failed, so nothing about
+      // this session should now address the server it named (see above).
+      this.wsUrl = previousWsUrl;
+      configureApi({ httpBaseUrl: previousHttpBase });
       return { ok: false, error: describeLoginError(err) };
     }
   }
@@ -1435,6 +1453,16 @@ export class TenirController {
       return { ok: false, error: String(err) };
     }
   }
+}
+
+/**
+ * A usable conversation id: a non-empty string. The page is our own code, but
+ * these two channels turn an id into a URL that carries the wearer's token, so
+ * they check rather than assume — an empty id would otherwise address
+ * `/conversations//audio`.
+ */
+function isConversationId(id: unknown): id is string {
+  return typeof id === "string" && id.trim() !== "";
 }
 
 function parseCredentials(raw: string | null): Credentials | null {

@@ -73,9 +73,8 @@ interface FakeWorld {
   emitColorScheme: (s: "light" | "dark") => void;
   /** Clips handed to the host's download sheet. */
   downloads: Array<{ url: string; filename?: string; mimeType?: string }>;
-  setDownloadOk: (ok: boolean) => void;
   /** Stand in a specific host reply shape ({success} device / {ok} simulator). */
-  setDownloadReply: (reply: Record<string, unknown> | null) => void;
+  setDownloadReply: (reply: Record<string, unknown>) => void;
 }
 
 function makeWorld(seed: Record<string, string> = {}): FakeWorld {
@@ -93,10 +92,9 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   let visHandler: ((v: "foreground" | "background") => void) | null = null;
   let schemeHandler: ((s: "light" | "dark") => void) | null = null;
   const downloads: Array<{ url: string; filename?: string; mimeType?: string }> = [];
-  let downloadOk = true;
-  // Overrides the whole reply, so a test can stand in either the real host's
-  // `{success}` or the simulator's `{ok}`.
-  let downloadReply: Record<string, unknown> | null = null;
+  // The host reply to stand in: the real host's `{success}` or the
+  // simulator's `{ok}`. Defaults to a successful device-shaped reply.
+  let downloadReply: Record<string, unknown> = { success: true };
 
   const session = {
     storage: {
@@ -148,7 +146,7 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       openUrl: () => {},
       download: (opts: { url: string; filename?: string; mimeType?: string }) => {
         downloads.push(opts);
-        return Promise.resolve(downloadReply ?? { success: downloadOk });
+        return Promise.resolve(downloadReply);
       },
     },
     colorScheme: "dark" as "light" | "dark",
@@ -191,9 +189,6 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     emitVisibility: (v) => visHandler?.(v),
     emitColorScheme: (s) => schemeHandler?.(s),
     downloads,
-    setDownloadOk: (ok) => {
-      downloadOk = ok;
-    },
     setDownloadReply: (reply) => {
       downloadReply = reply;
     },
@@ -941,6 +936,12 @@ describe("UI bus", () => {
       "https://h.example.com/conversations/..%2F..%2Fetc%2Fpasswd/audio?token=tok-1",
     );
     expect(traversal.url).not.toContain("/../");
+    // An id that can't address a conversation is refused rather than turned
+    // into `/conversations//audio`.
+    expect(await world.rpc("tenir:audio-url", { id: "" })).toEqual({ ok: false });
+    expect(await world.rpc("tenir:audio-url", { id: "   " })).toEqual({ ok: false });
+    expect(await world.rpc("tenir:download", { id: "" })).toEqual({ ok: false });
+    expect(world.downloads).toEqual([]);
     c.stop();
 
     const out = makeWorld();
@@ -970,6 +971,45 @@ describe("UI bus", () => {
         mimeType: "audio/wav",
       },
     ]);
+    c.stop();
+  });
+
+  // XERK-237, the reason `tenir:download` mints its own URL is only half the
+  // fix: `tenir:login` used to re-point the api base BEFORE validating, and a
+  // failed login left it there while the session stayed signed in. The page
+  // could therefore name a host in one call and have every token-bearing URL
+  // minted afterwards — the clip, and the download handed to the host's sheet —
+  // address it. A failed login must leave the api exactly where it was.
+  it("a failed login cannot re-point the api at a server the page names", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    const before = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(before.url).toContain("https://h.example.com/");
+
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" } });
+    expect(
+      await world.rpc("tenir:login", {
+        serverUrl: "attacker.example",
+        username: "a",
+        password: "b",
+      }),
+    ).toEqual({ ok: false, error: "Incorrect username or password." });
+
+    // Still signed in to the ORIGINAL server, and still addressing it.
+    expect(c.authState().signedIn).toBe(true);
+    const after = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(after.url).toBe(before.url);
+    expect(after.url).not.toContain("attacker.example");
+    expect(c.authState().serverUrl).toBe("h.example.com");
+
+    await world.rpc("tenir:download", { id: "c1" });
+    expect(world.downloads.every((d) => !d.url.includes("attacker.example"))).toBe(true);
+    expect(world.downloads[0].url).toContain("https://h.example.com/");
+
+    // And a failed attempt never persists the URL it was given.
+    expect(world.storage.get(SERVER_URL_KEY)).toBe("wss://h.example.com/ws");
     c.stop();
   });
 

@@ -415,9 +415,15 @@ const STEPS: Step[] = [
         since.some((line) => line.includes("miniapp_download")),
         JSON.stringify(since),
       )
+      // The conversation, not the token: the simulator truncates a traced
+      // payload at 120 chars, and a longer host or a realistic JWT would push
+      // `?token=` past the cut and fail this spuriously. That the URL carries
+      // the token is asserted above (on the `<audio src>`) and pinned exactly
+      // in TenirController.test.ts; what only the tour can show is that the
+      // RIGHT conversation reached the host.
       check(
-        "the host was handed the api's own clip URL",
-        since.some((line) => /\/conversations\/conv-audio\/audio\?token=/.test(line)),
+        "the host was handed this conversation's clip",
+        since.some((line) => line.includes("/conversations/conv-audio/audio")),
         JSON.stringify(since),
       )
       const toast = await ctx.page.evaluate(() => {

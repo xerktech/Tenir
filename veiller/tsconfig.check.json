@@ -13,6 +13,14 @@
   // Tests and harnesses run under Bun, so they need its globals (`Bun.serve`,
   // `import.meta.dir`, `bun:test`) — which the shipped bundle deliberately
   // does not.
+  //
+  // ORDER MATTERS. Tests import from `src/`, so those files are pulled in here
+  // WITH Bun's globals in scope — on its own this config would happily accept a
+  // `Bun.*` call in shipped browser code, which the WebView has no such thing
+  // for. `bun run typecheck` therefore runs the narrow config FIRST and only
+  // then this one (`tsc --noEmit && tsc --noEmit -p tsconfig.check.json`); the
+  // narrow pass is what rejects a Bun global in `src/`. Don't reorder them, and
+  // don't drop the first pass.
   "compilerOptions": { "types": ["bun-types"] },
   "include": ["src/**/*", "sim/**/*", "build.ts"],
   "exclude": ["dist", "node_modules"]

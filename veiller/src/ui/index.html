@@ -121,10 +121,10 @@
                    bar (XERK-67). The retained clip is fetched straight from the
                    api over https with the bearer token as a query param (the
                    endpoint accepts it there), so no cross-origin fetch is
-                   involved; "Save audio" hands the same URL to the host's
-                   download sheet, the miniapp counterpart of upstream's
-                   `<a download>` (XERK-237) — same label, since to the wearer
-                   it does the same thing. -->
+                   involved. "Download audio.wav" is upstream's `<a download>`;
+                   the WebView has no filesystem, so it asks the background to
+                   put the clip through the host's download sheet — passing the
+                   conversation id, never a URL (XERK-237). -->
               <audio class="audio-player-el" id="history-audio-el" controls preload="metadata"></audio>
               <button class="link" id="history-audio-link" type="button">Download audio.wav</button>
             </div>
