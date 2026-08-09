@@ -401,6 +401,16 @@ const STEPS: Step[] = [
       })
       check("the browser loads the clip's metadata", ok.loaded, JSON.stringify(ok))
 
+      // Actually press the button — a save that quietly reports failure looks
+      // exactly like a broken one to the wearer.
+      await ctx.page.click("#history-audio-link")
+      await ctx.page.waitForTimeout(500)
+      const toast = await ctx.page.evaluate(() => {
+        const el = document.getElementById("app-toast")
+        return {shown: el?.classList.contains("show") ?? false, text: el?.textContent ?? ""}
+      })
+      check("saving the clip does not report a failure", !toast.shown, JSON.stringify(toast))
+
       await ctx.page.click("#history-back")
       const stillSrc = await ctx.page.locator("#history-audio-el").getAttribute("src")
       check("leaving the detail releases the clip", !stillSrc, String(stillSrc))
@@ -409,32 +419,49 @@ const STEPS: Step[] = [
   },
 
   {
-    title: "The page follows the host's light/dark scheme",
+    title: "The host's scheme reaches the page, and both palettes render",
     run: async (ctx) => {
       // XERK-237: upstream follows `prefers-color-scheme`; here the host says
-      // which it is, and the page must repaint — it shipped dark-only before.
-      const bg = () =>
-        ctx.page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+      // which it is. The page shipped dark-only, so there are two things to
+      // check — that the host's choice ARRIVES, and that each palette renders.
+      const bg = () => ctx.page.evaluate(() => getComputedStyle(document.body).backgroundColor)
       const themeAttr = () =>
         ctx.page.evaluate(() => document.documentElement.getAttribute("data-theme"))
 
+      // The simulator's host reports "dark" in its CONNECT_ACK and injects no
+      // `window.MentraOS`, so a `data-theme` on the page can only have come
+      // down the `tenir:color-scheme` channel from the background — i.e. this
+      // asserts the delivery path, not just the stylesheet. (The background
+      // half — session.colorScheme and onColorSchemeChange — is covered by
+      // TenirController.test.ts, which the simulator can't drive: it hardcodes
+      // dark and exposes no way to push a change.)
+      check("the host's scheme reaches the page", (await themeAttr()) === "dark", String(await themeAttr()))
       const darkBg = await bg()
-      check("starts on the host's scheme", (await themeAttr()) !== null, String(await themeAttr()))
 
-      // The background broadcasts the scheme; drive the channel the way it does.
-      await ctx.page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme", "light")
-      })
+      // From here on this is a STYLESHEET check: force each palette and look
+      // at what it paints.
+      await ctx.page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"))
       const lightBg = await bg()
       check("light and dark paint different backgrounds", darkBg !== lightBg, `${darkBg} vs ${lightBg}`)
-      check(
-        "the light palette is actually light",
-        /^rgb\((2\d\d|1\d\d), /.test(lightBg),
-        lightBg,
-      )
-      await ctx.page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme", "dark")
+      check("the light palette is actually light", /^rgb\((2\d\d|1\d\d), /.test(lightBg), lightBg)
+
+      // Text has to survive the swap: a token that only exists in the dark
+      // block would leave the light page unreadable.
+      const contrast = await ctx.page.evaluate(() => {
+        const lum = (c: string) => {
+          const [r, g, b] = (c.match(/\d+/g) ?? ["0", "0", "0"]).map(Number).map((v) => {
+            const s = v / 255
+            return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+          })
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+        const style = getComputedStyle(document.body)
+        const [a, b] = [lum(style.color), lum(style.backgroundColor)].sort((x, y) => y - x)
+        return (a + 0.05) / (b + 0.05)
       })
+      check("body text stays legible in light mode", contrast >= 4.5, `contrast ${contrast.toFixed(2)}:1`)
+
+      await ctx.page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"))
       check("dark comes back", (await bg()) === darkBg, `${await bg()} vs ${darkBg}`)
     },
   },

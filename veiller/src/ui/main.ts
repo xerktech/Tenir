@@ -580,9 +580,11 @@ async function showAudio(conv: Conversation): Promise<void> {
   }
   try {
     const res = await mentra.request("tenir:audio-url", { id: conv.id });
-    // A slower round-trip must not resurrect the player over a conversation the
-    // viewer has since left.
-    if (!res.ok || !res.url || currentConversation?.id !== conv.id) {
+    // A reply for a conversation the viewer has already left is stale: drop it
+    // and leave whatever is on screen now alone. Tearing the player down here
+    // would take out the CURRENT conversation's audio, not this one's.
+    if (currentConversation?.id !== conv.id) return;
+    if (!res.ok || !res.url) {
       stopAudio();
       els.historyAudio.hidden = true;
       return;
@@ -771,7 +773,15 @@ function applyColorScheme(scheme: "light" | "dark"): void {
   document.documentElement.setAttribute("data-theme", scheme);
 }
 
-const bootScheme = window.MentraOS?.colorScheme;
+// The host injects its globals under `MentraOS`, aliased from `Veiller`; the
+// simulator injects only the latter. Read both, so the first paint is right
+// wherever the page runs — and so this seed is actually exercised by the
+// harnesses rather than being dead outside a real phone.
+const globals = window as unknown as {
+  MentraOS?: { colorScheme?: string };
+  Veiller?: { colorScheme?: string };
+};
+const bootScheme = globals.MentraOS?.colorScheme ?? globals.Veiller?.colorScheme;
 if (bootScheme === "light" || bootScheme === "dark") applyColorScheme(bootScheme);
 
 mentra.on("tenir:color-scheme", ({ scheme }) => {

@@ -192,7 +192,9 @@ export const history = {
    * Without it the request 401s.
    */
   audioUrl: (id: string) => {
-    const url = `${apiBaseUrl()}/conversations/${id}/audio`;
+    // The id is encoded as a path segment: this URL carries the bearer token,
+    // so a "../"-shaped id must not be able to point it somewhere else.
+    const url = `${apiBaseUrl()}/conversations/${encodeURIComponent(id)}/audio`;
     const token = getToken();
     return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   },

@@ -74,6 +74,8 @@ interface FakeWorld {
   /** Clips handed to the host's download sheet. */
   downloads: Array<{ url: string; filename?: string; mimeType?: string }>;
   setDownloadOk: (ok: boolean) => void;
+  /** Stand in a specific host reply shape ({success} device / {ok} simulator). */
+  setDownloadReply: (reply: Record<string, unknown> | null) => void;
 }
 
 function makeWorld(seed: Record<string, string> = {}): FakeWorld {
@@ -92,6 +94,9 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   let schemeHandler: ((s: "light" | "dark") => void) | null = null;
   const downloads: Array<{ url: string; filename?: string; mimeType?: string }> = [];
   let downloadOk = true;
+  // Overrides the whole reply, so a test can stand in either the real host's
+  // `{success}` or the simulator's `{ok}`.
+  let downloadReply: Record<string, unknown> | null = null;
 
   const session = {
     storage: {
@@ -143,7 +148,7 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       openUrl: () => {},
       download: (opts: { url: string; filename?: string; mimeType?: string }) => {
         downloads.push(opts);
-        return Promise.resolve({ success: downloadOk });
+        return Promise.resolve(downloadReply ?? { success: downloadOk });
       },
     },
     colorScheme: "dark" as "light" | "dark",
@@ -188,6 +193,9 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     downloads,
     setDownloadOk: (ok) => {
       downloadOk = ok;
+    },
+    setDownloadReply: (reply) => {
+      downloadReply = reply;
     },
   };
 }
@@ -924,6 +932,15 @@ describe("UI bus", () => {
       ok: true,
       url: "https://h.example.com/conversations/conv1/audio?token=tok-1",
     });
+    // The id is path-encoded: this URL carries the bearer token, so a
+    // traversal-shaped id must not be able to steer it off the route.
+    const traversal = (await world.rpc("tenir:audio-url", { id: "../../etc/passwd" })) as {
+      url: string;
+    };
+    expect(traversal.url).toBe(
+      "https://h.example.com/conversations/..%2F..%2Fetc%2Fpasswd/audio?token=tok-1",
+    );
+    expect(traversal.url).not.toContain("/../");
     c.stop();
 
     const out = makeWorld();
@@ -954,9 +971,54 @@ describe("UI bus", () => {
     ]);
     // A sheet the wearer cancels is reported, not swallowed.
     world.setDownloadOk(false);
-    expect(await world.rpc("tenir:download", { url: "u", filename: "audio.wav" })).toEqual({
-      ok: false,
-    });
+    expect(
+      await world.rpc("tenir:download", {
+        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
+        filename: "audio.wav",
+      }),
+    ).toEqual({ ok: false });
+    c.stop();
+  });
+
+  // The host's download sheet does NOT scheme-filter the way openUrl does, so
+  // an unchecked URL from the WebView would be arbitrary network/file egress
+  // carrying the wearer's token.
+  it("tenir:download refuses any URL that is not the api's own", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    for (const url of [
+      "https://attacker.example/collect?stolen=1",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      // A look-alike host that merely shares the api's prefix.
+      "https://h.example.com.evil.test/conversations/c1/audio",
+      "",
+    ]) {
+      expect(await world.rpc("tenir:download", { url, filename: "audio.wav" })).toEqual({
+        ok: false,
+      });
+    }
+    expect(world.downloads).toEqual([]); // nothing ever reached the host
+    c.stop();
+  });
+
+  // The real host answers {success}; the simulator answers {ok}. Accepting
+  // only one means the harness and the device disagree about whether saving
+  // worked — and the wearer gets a failure toast over a successful save.
+  it("tenir:download accepts either host reply shape", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    const url = "https://h.example.com/conversations/c1/audio?token=tok-1";
+    world.setDownloadReply({ ok: true });
+    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: true });
+    world.setDownloadReply({ success: true });
+    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: true });
+    world.setDownloadReply({ success: false, cancelled: true });
+    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: false });
     c.stop();
   });
 

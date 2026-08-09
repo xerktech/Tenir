@@ -63,7 +63,7 @@ import {
   request,
 } from "../../core/api";
 import { clearToken, configureTokenStore, getToken } from "../../core/auth";
-import { configureApi, httpBaseFromWs } from "../../core/config";
+import { apiBaseUrl, configureApi, httpBaseFromWs } from "../../core/config";
 import { langName } from "../../core/lang";
 import {
   CUE_TTL_MS,
@@ -1340,6 +1340,9 @@ export class TenirController {
     this.unsubs.push(
       this.ui.handle("tenir:audio-url", ({ id }: Channels["tenir:audio-url"]["req"]) => {
         if (!this.signedIn || !this.wsUrl) return { ok: false as const };
+        // The id is path-encoded (history.audioUrl) so a "../"-shaped one can't
+        // steer the URL off the conversations route. The token rides this URL,
+        // so it must only ever address the endpoint we mean.
         return { ok: true as const, url: history.audioUrl(id) };
       }),
     );
@@ -1350,9 +1353,23 @@ export class TenirController {
       this.ui.handle(
         "tenir:download",
         async ({ url, filename, mimeType }: Channels["tenir:download"]["req"]) => {
+          if (!this.signedIn) return { ok: false };
+          // Only ever the api's own clip URL. The host's download sheet does
+          // NOT scheme-filter the way `openUrl` does, so an unchecked URL from
+          // the WebView would be arbitrary network/file egress carrying the
+          // wearer's token. The page has no business naming any other target:
+          // it downloads the URL the background itself just minted.
+          if (!isOwnApiUrl(url)) {
+            console.warn("Tenir: refusing to download a URL outside the api");
+            return { ok: false };
+          }
           try {
             const res = await this.session.system.download({ url, filename, mimeType });
-            return { ok: Boolean(res?.success) };
+            // The real host answers `{success}`; the miniapp simulator answers
+            // `{ok}`. Accept either, so the same code path is exercised on a
+            // device and in the harness rather than only ever on a device.
+            const done = res as { success?: boolean; ok?: boolean } | undefined;
+            return { ok: Boolean(done?.success ?? done?.ok) };
           } catch (err) {
             console.warn("Tenir: download failed", err);
             return { ok: false };
@@ -1417,6 +1434,19 @@ export class TenirController {
       return { ok: false, error: String(err) };
     }
   }
+}
+
+/**
+ * Is this one of our own api's URLs? Guards `tenir:download`, whose only
+ * legitimate argument is a URL the background minted from `apiBaseUrl()`.
+ * Compared as a path-boundary prefix, so a look-alike host
+ * ("https://api.example.com.evil.test/…") can't pass by sharing a prefix.
+ */
+function isOwnApiUrl(url: string): boolean {
+  if (typeof url !== "string") return false;
+  const base = apiBaseUrl().replace(/\/$/, "");
+  if (!base) return false;
+  return url === base || url.startsWith(`${base}/`);
 }
 
 function parseCredentials(raw: string | null): Credentials | null {

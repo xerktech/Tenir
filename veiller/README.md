@@ -27,8 +27,17 @@ Three differences remain, each forced by the host rather than chosen:
 | `prefers-color-scheme` picks light or dark | The host reports its scheme (`session.colorScheme`), which the page stamps on `<html data-theme>` | The WebView's media query does not track the phone's setting |
 | An idle double-tap exits the app | Does nothing | The miniapp host has no self-exit API |
 
+One thing was *removed* for parity rather than added: a Veiller-only "Web app"
+header button, which opened the server's own web UI through `system.openUrl`.
+Upstream has no such control, so it read as a divergence; nothing else offered
+it and no other surface depends on it.
+
 Anything else that differs is a bug. When a feature changes on either side, it
 ships on both in the same effort — see the repo's `CLAUDE.md`.
+
+The simulator harnesses in `sim/` are the only thing that drives the built
+bundle against a real host and a real browser, and CI does not run them (it is
+typecheck + test + build). Run both by hand for any change here.
 
 ## Layout
 
