@@ -13,6 +13,12 @@ on:
     paths:
       - 'api/**'
       - 'contract/**'
+      # Shipped inside the api image and applied on boot; tests/test_pg_schema_apply.py
+      # covers it, so a schema-only change must run this gate (XERK-236).
+      - 'schema.sql'
+      # The stack the api is deployed as. No gate ran on these at all before.
+      - 'docker-compose*.yml'
+      - 'litellm/config.yaml'
       - 'web/**'
       - 'packages/**'
       - 'package.json'

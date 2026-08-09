@@ -48,12 +48,19 @@ const PREFIX_MAP = [
 const FILE_MAP = {
   "package.json": ["api", "even", "mobile"],
   "package-lock.json": ["api", "even", "mobile"],
+  // schema.sql SHIPS INSIDE the api image (api/Dockerfile COPYs it to
+  // /srv/schema.sql) and SqlConversationStore applies it idempotently on every
+  // pool open — that is how an existing Postgres data dir gains an additive
+  // table or column. A schema-only merge therefore has to rebuild and republish
+  // api; before this it mapped to no component, so it cut no release and the
+  // change never reached a running deployment (XERK-236).
+  "schema.sql": ["api"],
 };
 
 // Which components a single changed path touches. Anything matching no prefix or
 // file (VERSION, CHANGELOG.md, .github/**, README.md, docker-compose.yml,
-// schema.sql, Makefile, ...) returns [] and is surfaced as "Other" in the
-// changelog — never dropped, never a build.
+// Makefile, ...) returns [] and is surfaced as "Other" in the changelog — never
+// dropped, never a build.
 function componentsForPath(p) {
   const s = String(p).replace(/^\.?\/+/, "");
   for (const { prefix, components } of PREFIX_MAP) {

@@ -94,10 +94,13 @@ test("release.yml's push paths cover exactly the component trigger paths", () =>
     path.join(__dirname, "..", "..", "workflows", "release.yml"),
     "utf8",
   );
-  const block = yml.match(/\n {2}push:\n {4}branches: \[main\]\n {4}paths:\n((?: {6}- ".*"\n)+)/);
+  // Entries, comments and blank lines, up to the next key at 2-space indent.
+  // Matching only `- "…"` lines would stop at the first comment and silently
+  // drop everything after it — hiding the drift this test exists to catch.
+  const block = yml.match(/\n {2}push:\n {4}branches: \[main\]\n {4}paths:\n((?:(?: {6}.*)?\n)+)/);
   assert.ok(block, "release.yml has no push:main paths: block in the expected shape");
 
-  const globs = [...block[1].matchAll(/- "(.*)"/g)].map((m) => m[1]);
+  const globs = [...block[1].matchAll(/^ {6}- "(.*)"$/gm)].map((m) => m[1]);
   const expected = C.componentTriggerPaths();
   assert.deepEqual(globs.slice().sort(), expected.slice().sort());
 });

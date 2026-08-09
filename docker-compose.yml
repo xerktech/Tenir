@@ -106,16 +106,34 @@ services:
       API_STATUS_LLM_URL: ${API_STATUS_LLM_URL:-}
     volumes:
       # Retained full audio (the "disk" audio backend). Bind-mounted so it survives
-      # container recreation.
-      - "C:/docker/tenir/audio:/data/audio"
+      # container recreation. The default is this project's Windows deploy host;
+      # override TENIR_DATA_DIR on any other host — the literal path made the
+      # whole stack unstartable on Linux/macOS ("invalid volume specification"),
+      # so `docker compose up` from the README could not work there at all
+      # (XERK-236). docker-compose.qa.yml swaps these for named volumes.
+      - "${TENIR_DATA_DIR:-C:/docker/tenir}/audio:/data/audio"
     depends_on:
       postgres-tenir:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      # /ready, not /health: /health is pure liveness and answered "ok" with
+      # Postgres down, so the container reported healthy while every login hung
+      # 30 s and then 500ed — and autoheal and any `depends_on: service_healthy`
+      # consumer saw green (XERK-236). /ready probes the real backends.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready')"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # The api waits up to ~15 s finalizing a live session on shutdown; docker's
+    # default 10 s SIGKILLs it mid-persist, which stranded the conversation and
+    # lost its audio.
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   postgres-tenir:
     # Transcripts + users. Plain Postgres — no pgvector needed anymore.
@@ -125,9 +143,15 @@ services:
       POSTGRES_PASSWORD: tenir
       POSTGRES_DB: tenir
     ports:
-      - "5432:5432"
+      # LOOPBACK ONLY. This published on 0.0.0.0 with the hardcoded tenir/tenir
+      # credentials and no TLS, so every household's transcripts and the users
+      # table (password hashes) were readable and writable by anything on the
+      # LAN — confirmed by connecting from another host (XERK-236). Nothing
+      # outside this compose network needs it; services reach it by service
+      # name. Set TENIR_PG_BIND=0.0.0.0 to deliberately expose it.
+      - "${TENIR_PG_BIND:-127.0.0.1}:5432:5432"
     volumes:
-      - "C:/docker/tenir/postgres:/var/lib/postgresql/data"
+      - "${TENIR_DATA_DIR:-C:/docker/tenir}/postgres:/var/lib/postgresql/data"
       # Applied once on first boot of an empty data dir.
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
@@ -135,6 +159,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   litellm:
     # OpenAI-compatible gateway fronting the parakeet STT server, so the api uses
@@ -144,7 +174,9 @@ services:
     image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
-      - "4000:4000"
+      # Loopback only, same reasoning as Postgres: the gateway's master key has
+      # a shipped default and the api reaches it by service name (XERK-236).
+      - "${TENIR_LITELLM_BIND:-127.0.0.1}:4000:4000"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     environment:
@@ -155,6 +187,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # ----- GPU model server (needs the NVIDIA Container Toolkit) -----------------
 
@@ -172,7 +210,7 @@ services:
     volumes:
       # Whole /root/.cache so the HF hub cache AND NeMo's torch cache persist — the
       # ~2.4 GB weights download once.
-      - "C:/docker/tenir/parakeet:/root/.cache"
+      - "${TENIR_DATA_DIR:-C:/docker/tenir}/parakeet:/root/.cache"
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       PARAKEET_MODEL: ${PARAKEET_MODEL:-nvidia/parakeet-tdt-0.6b-v3}
@@ -215,7 +253,7 @@ services:
     ports:
       - "9300:11434"
     volumes:
-      - "C:/docker/tenir/ollama-cue:/root/.ollama"
+      - "${TENIR_DATA_DIR:-C:/docker/tenir}/ollama-cue:/root/.ollama"
     environment:
       # Cue prompts are ~2.5k tokens (system prompt + turn window + avoid list);
       # 16384 matches the eval and leaves ample room (translations are far smaller).

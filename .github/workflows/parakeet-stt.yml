@@ -32,7 +32,7 @@ jobs:
       # Dockerfile are expected and non-blocking.
       - name: Lint parakeet-stt/Dockerfile
         run: |
-          docker run --rm -i hadolint/hadolint:latest \
+          docker run --rm -i hadolint/hadolint:2.14.0 \
             hadolint --failure-threshold error - < parakeet-stt/Dockerfile
 
   test:
