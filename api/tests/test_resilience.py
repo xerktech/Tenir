@@ -103,6 +103,12 @@ def test_ws_audio_error_is_isolated_not_fatal(monkeypatch: pytest.MonkeyPatch) -
         def current_send(self):
             return self._send
 
+        def on_disconnect(self, fn) -> None:
+            # The WS endpoint registers how to drop the socket, so an account
+            # deletion can revoke a live capture rather than only finalize the
+            # session behind it (XERK-236).
+            self._closer = fn
+
         async def start(self, **_kwargs) -> None:
             from api.contract import SessionReady
 

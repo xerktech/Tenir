@@ -442,7 +442,47 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
 - **`make` may not be installed** even though `make gen` is the documented
   contract workflow. Run the two commands from the `Makefile` directly. CI's
   `contract-drift` job regenerates and diffs, so drift is caught regardless.
-- The GPU Parakeet server (`10.10.10.22:9401`) was **down** throughout the first
-  pass, and this box has no NVIDIA toolkit — so the real STT path, real cues,
-  real translation and real music ID went unexercised. Everything was driven on
-  the `stub` backends. Plan for that.
+- **The GPU model servers are on TWO different hosts.** Parakeet STT is on
+  **TrueNAS, `10.10.10.20:9401`** (`GET /health` → `{"status":"ok","model":
+  "nvidia/parakeet-tdt-0.6b-v3"}`; it serves `/v1/audio/transcriptions` but NOT
+  `/v1/models`, so probe `/health`). The cue/translation LLM is on
+  `10.10.10.22:9402` (Ollama, `gpt-oss:120b`). The workspace CLAUDE.md lists STT
+  at `.22:9401`, which is wrong — that port is closed there.
+
+  Point the QA stack at the real models with:
+
+  ```bash
+  API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://10.10.10.20:9401/v1 \
+  API_STATUS_STT_URL=http://10.10.10.20:9401 \
+  API_CUE_BACKEND=openai API_TRANSLATION_BACKEND=openai \
+  API_LITELLM_ENDPOINT=http://10.10.10.22:9402/v1 \
+  API_LLM_MODEL=gpt-oss:120b API_TRANSLATION_MODEL=gpt-oss:120b \
+    docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
+  ```
+
+  Bypassing the gateway like this makes the `litellm` and `llm` status lights
+  read `HTTP 404` — Ollama serves no `/health/liveliness`. That is the
+  documented consequence of a direct route, not a fault.
+
+### Testing a REAL model needs real speech
+
+Silence is enough for the `stub` backend and useless against Parakeet, which
+correctly returns nothing for it. Synthesize speech instead — never use the
+household's retained audio, which is private family conversation:
+
+```bash
+uv pip install piper-tts
+# voices: huggingface.co/rhasspy/piper-voices  (en_US-lessac-medium, es_ES-davefx-medium)
+```
+
+Piper emits 22 kHz mono; resample to the 16 kHz s16le the WS contract expects.
+Stream it in 100 ms frames at wall-clock pace, with ~1.2 s of silence between
+turns so each one endpoints. Measured on this stack: first partial well under
+3 s, one final per spoken turn, ~3 % word error against the script (the only
+miss was the proper noun "Tenir" → "Tenure").
+
+**Write the test text in correct orthography.** Dropping a diacritic to keep the
+source ASCII ("manana" for "mañana") is faithfully transcribed as the wrong
+word, and `stt/langid.py` then can't reach its evidence floor — so the turn
+comes back `lang=None`, no translation fires, and it looks like a product bug.
+It is not; it is the fixture.

@@ -148,4 +148,4 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
     for session in registry.active():
         if session.user_id == user_id:
             registry.unregister(session)
-            await session.close()
+            await session.revoke("account deleted")

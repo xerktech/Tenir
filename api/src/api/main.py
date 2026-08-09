@@ -364,6 +364,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     metrics.incr("sessions.start_errors")
                     await send(_err("internal", "could not start session"))
                     continue
+                # Let an account deletion drop this socket, not just finalize
+                # the session behind it (XERK-236).
+                new_session.on_disconnect(
+                    lambda: ws.close(code=1008, reason="account removed")
+                )
                 session = new_session
                 registry.register(session)
                 metrics.incr("sessions.started")

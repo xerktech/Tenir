@@ -230,6 +230,12 @@ class Session:
         # removed member kept recording into the household for as long as they
         # held the socket open.
         self.user_id = user_id
+        # How to drop this session's transport. Closing the Session alone is not
+        # enough: the WS handler is parked in receive() and keeps feeding audio
+        # into a session that is already finalized, so a revoked account went on
+        # streaming until it chose to hang up. Set by the WS endpoint that owns
+        # the socket; None for a Session driven directly (tests, tooling).
+        self._disconnect: Callable[[], Awaitable[None]] | None = None
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -1077,6 +1083,25 @@ class Session:
                 )
                 metrics.incr("music.send_errors")
         metrics.incr("music.done")
+
+    def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
+        """Register how to drop this session's transport (see ``revoke``)."""
+        self._disconnect = fn
+
+    async def revoke(self, reason: str) -> None:
+        """Finalize the session AND close its socket — the account is gone.
+
+        Order matters: close() first, so everything captured up to this moment
+        is persisted, THEN drop the transport so nothing further can be sent
+        (XERK-236).
+        """
+        await self.close()
+        if self._disconnect is not None:
+            try:
+                await self._disconnect()
+            except Exception:
+                log.warning("session %s could not close its socket", self.session_id)
+        log.info("session %s revoked: %s", self.session_id, reason)
 
     async def close(self) -> None:
         if self._closed:

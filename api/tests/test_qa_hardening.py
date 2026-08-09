@@ -278,3 +278,82 @@ def test_lifespan_sweeps_stale_rows_and_installs_redaction() -> None:
             isinstance(f, RedactTokensFilter)
             for f in logging.getLogger("uvicorn.access").filters
         )
+
+
+# --- deleting an account must end its live capture, not just its next request --
+
+
+def test_revoke_finalizes_then_drops_the_transport() -> None:
+    """Auth is checked at the WS handshake only, so a removed member kept
+    recording into the household for as long as they held the socket open.
+    Closing the Session alone is not enough either — the handler stays parked in
+    receive() and goes on feeding audio into a finalized session, so the
+    transport has to go too. Order matters: persist first, THEN hang up, or the
+    revoked member loses what they had already said (XERK-236).
+    """
+    order: list[str] = []
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, household="hh", user_id="u-1")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+        for _ in range(20):
+            await session.on_audio(b"\x11\x22" * 1600)
+        await asyncio.sleep(0.2)
+
+        async def closer() -> None:
+            order.append("socket-closed")
+
+        session.on_disconnect(closer)
+        await session.revoke("account deleted")
+
+        conv = get_conversation_store().get("hh", session.session_id)
+        assert conv is not None
+        order.insert(0, f"conversation-{conv.status}")
+        assert session.is_closed
+        # Their audio is kept — revocation ends access, it does not destroy data.
+        assert get_audio_store().get(audio_key("hh", session.session_id))
+
+    asyncio.run(run())
+    assert order == ["conversation-ready", "socket-closed"], order
+
+
+def test_revoke_survives_a_socket_that_will_not_close() -> None:
+    """A transport that raises on close must not stop the revocation."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, household="hh", user_id="u-1")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+
+        async def bad_closer() -> None:
+            raise RuntimeError("socket already gone")
+
+        session.on_disconnect(bad_closer)
+        await session.revoke("account deleted")  # does not raise
+        assert session.is_closed
+
+    asyncio.run(run())
+
+
+def test_the_ws_endpoint_registers_a_disconnect_for_every_session() -> None:
+    """`revoke()` can only drop a socket the endpoint told it about — so pin the
+    wiring, not just the method (the QA gate's M7/M12 lesson)."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from api import registry
+    from api.main import app
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
+        sid = ws.receive_json()["sessionId"]
+        session = registry.get(sid)
+        assert session is not None
+        assert session._disconnect is not None, "the endpoint never registered a closer"
+        assert session.user_id is not None, "the session does not know whose it is"

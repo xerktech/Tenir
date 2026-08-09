@@ -70,7 +70,7 @@ def rest_tests(client: httpx.Client, headers: dict) -> None:
     check("conversations: 401 without token", r.status_code == 401, str(r.status_code))
 
 
-async def ws_test(token: str) -> str | None:
+async def ws_test(token: str, stt_backend: str) -> str | None:
     session_id = None
     got_final = False
     async with websockets.connect(f"{WS}?token={token}") as ws:
@@ -92,7 +92,23 @@ async def ws_test(token: str) -> str | None:
             pass
 
         await ws.send(json.dumps({"type": "session.end"}))
-    check("ws: caption.final received", got_final)
+    # Only the stub transcribes silence. A real model correctly returns nothing
+    # for it, so demanding a final here made this script — whose whole job is to
+    # smoke-test the DEPLOYED stack, which runs parakeet — report a failure for
+    # the backend working exactly as designed. Assert what is actually true of
+    # each backend instead of pretending silence is speech (XERK-236).
+    if stt_backend == "stub":
+        check("ws: caption.final received", got_final)
+    else:
+        check(
+            f"ws: audio accepted by the {stt_backend} backend (silence yields no caption)",
+            not got_final,
+            "a real STT backend transcribed silence — unexpected",
+        )
+        print(
+            f"  NOTE  {stt_backend} is a real model: this script sends silence, so it "
+            "exercises the capture path but not transcription accuracy."
+        )
     return session_id
 
 
@@ -124,7 +140,8 @@ def main() -> None:
         token = login(client)
         headers = {"Authorization": f"Bearer {token}"}
         rest_tests(client, headers)
-        session_id = asyncio.run(ws_test(token))
+        stt_backend = client.get(f"{BASE}/health").json().get("stt_backend", "stub")
+        session_id = asyncio.run(ws_test(token, stt_backend))
         persistence_tests(client, headers, session_id)
 
     print(f"\n{passed} passed, {failed} failed")
