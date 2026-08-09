@@ -42,7 +42,9 @@ from api.contract import (
     SessionStart,
 )
 from api.history import router as history_router
+from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
+from api.persistence import get_conversation_store
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
 from api.session import Session, is_valid_session_id
@@ -59,6 +61,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # import) so merely importing the app — codegen, tests, --help — never trips it,
     # and so it runs once per process rather than per import.
     assert_secure_auth_config()
+    # Redact query-string bearer tokens from the access log before anything can
+    # be logged (XERK-236): the WS handshake and the audio download both carry
+    # the token in the URL, and uvicorn logs the full request line.
+    install_log_redaction()
     # Surface backend reachability at boot so a misconfigured/unreachable Postgres
     # or audio dir is visible immediately, not mid-session (it stays non-fatal:
     # connections are lazy and may still be warming up).
@@ -66,6 +72,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     for name, status in checks.items():
         if status != "ok":
             log.warning("backend %s not ready at startup: %s", name, status)
+    # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
+    # reboot or a stop that overruns the grace period leaves rows stuck "live",
+    # and nothing ever came back for them — they showed as permanently recording
+    # in every client's history (XERK-236). Sweep them once here, before any new
+    # session can register, so a restart heals the previous process's mess.
+    conversations = get_conversation_store()
+    if conversations is not None:
+        try:
+            swept = await asyncio.to_thread(conversations.finish_stale)
+            if swept:
+                log.warning("finalized %d conversation(s) left live by a previous run", swept)
+        except Exception:
+            log.exception("could not finalize stale conversations at startup")
     # Seed the component-status cache once at boot (so GET /status answers
     # immediately) and keep it fresh on a background loop.
     status_task: asyncio.Task[None] | None = None

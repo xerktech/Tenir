@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Insecure placeholder signing secret. Fine for the no-auth simulator/CI default,
@@ -374,6 +375,40 @@ class Settings(BaseSettings):
     # reaches the model only through LiteLLM), and a value is used only where the api
     # can open a socket straight to the model server.
     status_llm_url: str = ""
+
+    # The selectors below are validated at import like the persistence and audio
+    # ones already were. STT was the odd one out: an unknown value booted a
+    # container that reported "healthy" and served /status clean, then failed
+    # EVERY session with a generic "could not start session" — the misconfigured
+    # selector only surfaced deep in a server-side traceback (XERK-236).
+    @field_validator("stt_backend")
+    @classmethod
+    def _known_stt_backend(cls, value: str) -> str:
+        if value not in ("stub", "parakeet"):
+            raise ValueError(f"unknown STT backend: {value!r} (expected 'stub' or 'parakeet')")
+        return value
+
+    # Durations and intervals: zero and negative are never meaningful and each
+    # fails in a way that looks like something else (XERK-236). Notably
+    # API_AUTH_TOKEN_TTL_SECONDS=0 issued a token from /auth/login that was
+    # already expired on the next request — a total lockout that reads as an
+    # auth bug — and API_STATUS_PROBE_INTERVAL_SECONDS=0 left /status reporting
+    # a green "ready" with an empty component list, having probed nothing.
+    @field_validator(
+        "auth_token_ttl_seconds",
+        "session_resume_grace_seconds",
+        "stt_partial_interval_ms",
+        "stt_max_segment_ms",
+        "cue_rss_keep_days",
+        "cue_rss_interval_seconds",
+        "status_probe_interval_seconds",
+        "status_probe_timeout_seconds",
+    )
+    @classmethod
+    def _must_be_positive(cls, value: float, info: ValidationInfo) -> float:
+        if value <= 0:
+            raise ValueError(f"{info.field_name} must be greater than 0 (got {value})")
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:

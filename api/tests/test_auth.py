@@ -24,6 +24,7 @@ from api.auth import (
 )
 from api.auth.tokens import AuthError
 from api.auth.users import DuplicateUser, InMemoryUserStore
+from conftest import TEST_AUTH_SECRET
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
 
@@ -49,8 +50,20 @@ def test_assert_secure_auth_config_blocks_default_secret(
 def test_assert_secure_auth_config_allows_overridden_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "auth_secret", "a-real-strong-secret")
+    monkeypatch.setattr(settings, "auth_secret", "a-real-strong-secret-of-adequate-length")
     assert_secure_auth_config()  # does not raise
+
+
+def test_assert_secure_auth_config_blocks_empty_and_short_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-236: only the literal default was refused, so API_AUTH_SECRET="" —
+    or any one-character value — booted, and an empty HMAC key makes an admin
+    token for any household trivially forgeable."""
+    for weak in ("", "   ", "x", "a-real-strong-secret"):
+        monkeypatch.setattr(settings, "auth_secret", weak)
+        with pytest.raises(RuntimeError, match="API_AUTH_SECRET"):
+            assert_secure_auth_config()
 
 
 # --- password hashing --------------------------------------------------------
@@ -286,7 +299,7 @@ def test_get_user_store_selects_sql_backend(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def _enable_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_secret", "test-secret")
+    monkeypatch.setattr(settings, "auth_secret", TEST_AUTH_SECRET)
 
 
 @pytest.mark.real_auth
@@ -329,7 +342,7 @@ def test_login_me_and_household_scoping(monkeypatch: pytest.MonkeyPatch) -> None
         # A different household (different token, real account) sees nothing.
         other_user = get_user_store().create("otto", "longpassword", household="other")
         other = issue_token(
-            Principal(other_user.user_id, "other", "member"), secret="test-secret", ttl_seconds=60
+            Principal(other_user.user_id, "other", "member"), secret=TEST_AUTH_SECRET, ttl_seconds=60
         )
         assert (
             client.get("/conversations", headers={"Authorization": f"Bearer {other}"}).json()
@@ -337,7 +350,7 @@ def test_login_me_and_household_scoping(monkeypatch: pytest.MonkeyPatch) -> None
         )
         # A well-signed token for an account that does not exist is not a login.
         ghost = issue_token(
-            Principal("no-such-user", "acme", "admin"), secret="test-secret", ttl_seconds=60
+            Principal("no-such-user", "acme", "admin"), secret=TEST_AUTH_SECRET, ttl_seconds=60
         )
         assert (
             client.get("/conversations", headers={"Authorization": f"Bearer {ghost}"}).status_code
@@ -472,7 +485,7 @@ def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_auth(monkeypatch)
     user = get_user_store().create("wsuser", "longpassword", household="acme")
     token = issue_token(
-        Principal(user.user_id, "acme", "member"), secret="test-secret", ttl_seconds=60
+        Principal(user.user_id, "acme", "member"), secret=TEST_AUTH_SECRET, ttl_seconds=60
     )
     with TestClient(app) as client:
         # No token -> the socket is accepted, then closed with 1008. The code must
@@ -502,7 +515,7 @@ def test_ws_expired_token_closes_1008(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_auth(monkeypatch)
     expired = issue_token(
         Principal("u", "acme", "member"),
-        secret="test-secret",
+        secret=TEST_AUTH_SECRET,
         ttl_seconds=60,
         now=time.time() - 3600,  # minted an hour ago, 60s TTL -> long expired
     )
@@ -575,9 +588,9 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
     ttl = settings.auth_token_ttl_seconds
     principal = Principal(user.user_id, "acme", "member", username="maya")
     aged = issue_token(
-        principal, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl
+        principal, secret=TEST_AUTH_SECRET, ttl_seconds=ttl, now=time.time() - 0.6 * ttl
     )
-    young = issue_token(principal, secret="test-secret", ttl_seconds=ttl)
+    young = issue_token(principal, secret=TEST_AUTH_SECRET, ttl_seconds=ttl)
 
     with TestClient(app) as client:
         # Past half-life: 200 + a renewed token with a later expiry. The Origin
@@ -590,7 +603,7 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
         assert r.status_code == 200
         fresh = r.headers.get(RENEWED_TOKEN_HEADER)
         assert fresh is not None
-        assert decode_token(fresh, secret="test-secret") == principal
+        assert decode_token(fresh, secret=TEST_AUTH_SECRET) == principal
         assert _token_exp(fresh) > _token_exp(aged)
         exposed = r.headers.get("access-control-expose-headers", "")
         assert RENEWED_TOKEN_HEADER.lower() in exposed.lower()
@@ -622,7 +635,7 @@ def test_deleted_user_token_is_revoked_immediately(monkeypatch: pytest.MonkeyPat
     user = get_user_store().create("doomed", "longpassword", household="acme")
     principal = Principal(user.user_id, "acme", "member", username="doomed")
     # Aged past half its life, so a renewal would be due if one were allowed.
-    token = issue_token(principal, secret="test-secret", ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
+    token = issue_token(principal, secret=TEST_AUTH_SECRET, ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
     auth = {"Authorization": f"Bearer {token}"}
 
     with TestClient(app) as client:

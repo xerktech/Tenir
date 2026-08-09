@@ -6,6 +6,10 @@ import pytest
 
 from api import registry
 
+# Long enough to satisfy the boot guard's minimum (XERK-236: an empty or
+# one-character API_AUTH_SECRET used to boot, which makes tokens forgeable).
+TEST_AUTH_SECRET = "test-secret-0123456789abcdef0123456789"
+
 
 @pytest.fixture(autouse=True)
 def _auth(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,7 +28,7 @@ def _auth(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> No
     from api.config import settings
     from api.main import app
 
-    monkeypatch.setattr(settings, "auth_secret", "test-secret")
+    monkeypatch.setattr(settings, "auth_secret", TEST_AUTH_SECRET)
     if request.node.get_closest_marker("real_auth"):
         yield
         return

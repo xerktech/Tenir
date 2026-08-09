@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from api import registry
 from api.auth import Principal, get_user_store, issue_token, reset_user_store
 from api.auth.deps import principal_from_request
+from conftest import TEST_AUTH_SECRET
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
 from api.persistence import get_audio_store, get_conversation_store
@@ -37,7 +38,7 @@ def _reset() -> None:
 
 
 def _enable_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_secret", "test-secret")
+    monkeypatch.setattr(settings, "auth_secret", TEST_AUTH_SECRET)
 
 
 def _token(household: str, role: str = "member") -> str:
@@ -51,7 +52,7 @@ def _token(household: str, role: str = "member") -> str:
         f"u-{household}-{role}", "pw", household=household, role=role
     )
     return issue_token(
-        Principal(user.user_id, household, role), secret="test-secret", ttl_seconds=60
+        Principal(user.user_id, household, role), secret=TEST_AUTH_SECRET, ttl_seconds=60
     )
 
 

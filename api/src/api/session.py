@@ -1072,9 +1072,17 @@ class Session:
         if self._closed:
             return
         self._closed = True
-        if self._grace_task is not None:
-            self._grace_task.cancel()
-            self._grace_task = None
+        # Cancel the pending grace task — UNLESS this close IS the grace task
+        # finalizing. _grace_close() calls close(), so cancelling blindly
+        # cancelled the currently-running task: the CancelledError landed at the
+        # first await below (the pump join) and _persist() never ran, so a
+        # dropped-and-never-resumed session stayed "live" forever and its whole
+        # retained audio buffer was thrown away (XERK-236). That is exactly the
+        # path even/ documents as the safety net for an abnormal exit.
+        grace = self._grace_task
+        self._grace_task = None
+        if grace is not None and grace is not asyncio.current_task():
+            grace.cancel()
         # A still-running warmup would race the flush/close below (both drive the same
         # stream session): cancel it so teardown owns the transcriber cleanly.
         if self._warmup is not None:
