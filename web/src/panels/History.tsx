@@ -97,9 +97,17 @@ export function HistoryPanel(): JSX.Element {
       .remove(id)
       .then(() => {
         if (selected?.id === id) setSelected(null);
+        notify("Conversation deleted");
         reload();
       })
-      .catch((e) => notify(errText(e), "err"));
+      // A failed delete used to leave the row sitting there for good — the row
+      // is only ever removed by a successful reload, so a 404 (already deleted
+      // elsewhere) left a phantom that could never be cleared. Reload either
+      // way (XERK-236).
+      .catch((e) => {
+        notify(errText(e), "err");
+        reload();
+      });
 
   // Opening a conversation shows its transcript on its own page, replacing the
   // list. It used to render inline at the bottom of the list, below the fold,
@@ -184,8 +192,18 @@ export function HistoryPanel(): JSX.Element {
                 <td className="history-col-status">{c.status}</td>
                 <td className="history-col-actions">
                   {/* Destructive actions arm on the first click and commit on the
-                      second (Turma's two-step pattern) — no confirm dialog. */}
-                  <ConfirmButton confirmLabel="Confirm delete" onConfirm={() => void remove(c.id)}>
+                      second (Turma's two-step pattern) — no confirm dialog.
+                      A conversation that is still LIVE is the one being recorded
+                      right now: deleting it took the row out from under the
+                      running session, so every word spoken afterwards was
+                      silently discarded and the session could not be saved
+                      (XERK-236). Stop it first. */}
+                  <ConfirmButton
+                    confirmLabel="Confirm delete"
+                    disabled={c.status === "live"}
+                    title={c.status === "live" ? "Stop the recording before deleting it" : undefined}
+                    onConfirm={() => void remove(c.id)}
+                  >
                     Delete
                   </ConfirmButton>
                 </td>

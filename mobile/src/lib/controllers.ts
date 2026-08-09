@@ -31,7 +31,20 @@ export interface AuthController extends AsyncState<Principal | null> {
 
 export function useAuth(): AuthController {
   // null = not logged in yet (the api 401s /auth/me without a valid token).
-  const state = useAsync<Principal | null>(() => me().catch(() => null));
+  //
+  // Only an AUTH failure means that. Swallowing every error here collapsed a
+  // NetworkError into "not logged in", so a self-hosted server being briefly
+  // unreachable dropped the user onto the empty "Set up Tenir" screen with no
+  // hint that the server was down — their token was fine all along, and
+  // relaunching once the server was back signed them straight in. It reads as
+  // the app forgetting the login, and trains people to retype their password
+  // (XERK-236). Let a transport failure surface as an error instead.
+  const state = useAsync<Principal | null>(() =>
+    me().catch((e) => {
+      if (e instanceof NetworkError) throw e;
+      return null;
+    }),
+  );
   const signIn = useCallback(
     async (username: string, password: string) => {
       await login(username, password);

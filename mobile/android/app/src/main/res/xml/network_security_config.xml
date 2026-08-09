@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tenir talks to a server the USER hosts and names — typically a box on their own
+  LAN, reached over plain HTTP because there is no certificate for 10.0.0.x and
+  no reason to demand one. The project's own quick start is `docker compose up`
+  on :8080 over http, and mobile/src/config.ts seeds ws://localhost:8080/ws.
+
+  Android blocks cleartext by default from API 28, and the release build declared
+  neither this file nor usesCleartextTraffic — only the debug manifest did. So
+  the release APK that CI publishes (and that the in-app updater installs) could
+  not reach the documented default deployment at all: sign-in failed with a bare
+  "could not reach the server" and no request ever left the device. Invisible in
+  development, because `npm run android` builds debug (XERK-236).
+
+  Cleartext is therefore permitted, deliberately: the server is arbitrary
+  user-supplied infrastructure, so we cannot pin it and cannot require TLS
+  without breaking the product's primary deployment. An https:// server URL is
+  still validated normally against the system trust store — this only stops the
+  platform refusing http:// outright.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

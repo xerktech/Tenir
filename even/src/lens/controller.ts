@@ -492,7 +492,12 @@ export async function wireLens(
     // Reconnects (e.g. after a re-login) replace the previous client; the
     // session id is kept so the api resumes the same conversation.
     client?.stop();
-    reauthAttempted = false;
+    // NOT reset here — see veiller/src/background/controllers/TenirController.ts.
+    // The unauthorized handler calls connect() after a silent re-login, so
+    // clearing the one-shot guard on every connect re-armed it every time round
+    // the loop, giving an unbounded backoff-free re-login storm against a
+    // server that keeps saying no. onReady resets it: an actual session is the
+    // only proof the re-auth worked (XERK-236).
     state.connection = "connecting";
     client = createClient(config.apiWsUrl, {
       onConnectionChange: (s) => {
@@ -535,6 +540,17 @@ export async function wireLens(
       onSongDone: (m) => finishSong(m),
       onError: (m) => {
         console.warn("api error", m.code, m.message);
+        // Anything that is not a recoverable auth failure has to stop the
+        // capture. Dropping these left the lens reading "listening…" with the
+        // mic held and PCM streaming into a socket that has no session — which
+        // is exactly what the api sends when a session fails to start
+        // (error{internal}, e.g. the STT backend down). Nothing was recorded
+        // and nothing said so (XERK-236). `fatal` additionally means ws.ts has
+        // stopped reconnecting, so "retrying" would be a lie.
+        if (m.code !== "unauthorized" && (m.fatal || !state.sessionId)) {
+          stopSession();
+          return;
+        }
         if (m.code === "unauthorized") {
           // Expired/revoked token: re-login silently with the cached credentials
           // and reconnect. Only if that fails does the wearer get sent to the phone.

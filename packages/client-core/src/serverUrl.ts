@@ -43,15 +43,22 @@ export function isValidServerUrl(input: string): boolean {
 
 /**
  * Render a server URL in the friendly, host-only form people actually type — the
- * inverse of {@link normalizeServerUrl} for display. Strips the `ws(s)://` scheme
- * and the default `/ws` endpoint path so `wss://tenir.example.com/ws` shows as
- * `tenir.example.com`, while a non-default port or path is preserved so the value
- * still round-trips back through `normalizeServerUrl` (e.g.
- * `ws://localhost:8080/ws` → `localhost:8080`, `wss://host/api/ws` → `host/api/ws`).
+ * inverse of {@link normalizeServerUrl} for display. Strips the default `/ws`
+ * endpoint path, and the scheme when it is the `wss://` that `normalizeServerUrl`
+ * would infer anyway, so `wss://tenir.example.com/ws` shows as
+ * `tenir.example.com`. A non-default port or path is preserved.
  *
- * Used to seed the setup / settings server field so the user sees `tenir.example.com`
- * rather than the internal `wss://…/ws` form. Returns the trimmed input unchanged
- * when it can't be parsed as a URL (it's already a bare host).
+ * An INSECURE `ws://` keeps its scheme, because dropping it does not round-trip:
+ * a bare host normalizes back to `wss://`. That silently upgraded every
+ * plain-HTTP self-hosted server — the Settings screen showed `10.0.0.5:8080`,
+ * and pressing Connect without editing anything saved `wss://10.0.0.5:8080/ws`
+ * and signed the user out. The seeded first-run value (`ws://localhost:8080/ws`)
+ * had the same trap (XERK-236).
+ *
+ * Used to seed the setup / settings server field so the user sees
+ * `tenir.example.com` rather than the internal `wss://…/ws` form. Returns the
+ * trimmed input unchanged when it can't be parsed as a URL (it's already a bare
+ * host).
  */
 export function displayServerUrl(input: string): string {
   const s = input.trim();
@@ -60,7 +67,9 @@ export function displayServerUrl(input: string): string {
     const u = new URL(s);
     if (!u.host) return s;
     const path = u.pathname === "/ws" || u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
-    return `${u.host}${path}`;
+    // ws:/http: are the insecure pair; wss:/https: are what a bare host implies.
+    const insecure = u.protocol === "ws:" || u.protocol === "http:";
+    return `${insecure ? "ws://" : ""}${u.host}${path}`;
   } catch {
     return s;
   }

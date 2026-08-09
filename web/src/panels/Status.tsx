@@ -10,6 +10,7 @@
 import { getStatus, NetworkError, type ComponentState, type SystemStatus } from "@tenir/client-core";
 import { useEffect, useState } from "react";
 
+import { errText } from "../lib/toast";
 import { Spinner, StatusLight } from "../ui";
 
 const POLL_MS = 4000;
@@ -35,6 +36,7 @@ function overallLight(overall: SystemStatus["overall"]): ComponentState {
 export function StatusPanel(): JSX.Element {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -45,10 +47,16 @@ export function StatusPanel(): JSX.Element {
         if (!alive) return;
         setStatus(next);
         setUnreachable(false);
+        setFailure(null);
       } catch (err) {
         if (!alive) return;
         // A NetworkError means the api itself is unreachable — show the system down.
         setUnreachable(err instanceof NetworkError);
+        // Anything else (a 500 from /status, a 401, a malformed body) used to
+        // leave `status` null, so the panel fell through to "no components are
+        // configured to monitor" — reassurance, on the one screen that exists
+        // to report that something is wrong (XERK-236). Keep the reason.
+        setFailure(err instanceof NetworkError ? null : errText(err));
       } finally {
         if (alive) setLoaded(true);
       }
@@ -77,6 +85,18 @@ export function StatusPanel(): JSX.Element {
         <div className="status-banner">
           <StatusLight state="down" />
           <span>Can&apos;t reach the server — it may be down, or the server URL may be wrong.</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (failure != null && status == null) {
+    return (
+      <section>
+        <h2>System status</h2>
+        <div className="status-banner">
+          <StatusLight state="down" />
+          <span>Could not read system status — {failure}</span>
         </div>
       </section>
     );

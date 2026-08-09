@@ -614,7 +614,18 @@ export class CaptureSession {
       onSongSync: (m) =>
         this.dispatch({ type: "songSync", songId: m.songId, offsetMs: m.offsetMs, now: Date.now() }),
       onSongDone: (m) => this.dispatch({ type: "songDone", songId: m.songId }),
-      onError: (m) => this.dispatch({ type: "error", message: m.message }),
+      onError: (m) => {
+        this.dispatch({ type: "error", message: m.message });
+        // A fatal error means the socket is gone for good — ws.ts has already
+        // set `fatal` and stopped reconnecting. Recording an error string is
+        // not enough: `running` stayed true, so the UI kept showing Stop/Pause
+        // and a live "recording" indicator, and the MICROPHONE STAYED OPEN
+        // indefinitely on a session that no longer exists. For a product whose
+        // promise is "recorded and stored", believing you are being recorded
+        // while nothing is captured is the worst possible failure (XERK-236).
+        // Tear the capture down so every client's normal "stopped" path runs.
+        if (m.fatal) void this.stop();
+      },
     });
     this.client = client;
 

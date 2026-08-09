@@ -478,7 +478,13 @@ export class TenirController {
     // session id is kept so the api resumes the same conversation.
     this.client?.stop();
     this.teardownMic();
-    this.reauthAttempted = false;
+    // NOT reset here. connect() is what the unauthorized handler calls after a
+    // silent re-login, so clearing the one-shot guard on every connect re-armed
+    // it every time round the loop: a server that keeps rejecting the token
+    // produced an unbounded, backoff-free re-login + reconnect storm (167
+    // logins in 15 s against a real api; ~5000 in 10 s with no network
+    // latency). It is reset in onReady instead — a session that actually
+    // started is the only proof the re-auth worked (XERK-236).
     this.connection = "connecting";
     this.client = this.createClient(this.wsUrl!, this.buildHandlers());
     this.renderHud();
@@ -528,6 +534,16 @@ export class TenirController {
       onSongDone: (m) => this.finishSong(m),
       onError: (m) => {
         console.warn("Tenir: api error", m.code, m.message);
+        // Anything that is not a recoverable auth failure has to reach the
+        // wearer. Dropping these left the lens reading "listening…" with the
+        // mic held and PCM streaming into a socket that has no session — which
+        // is what the api actually sends when a session fails to start
+        // (error{internal}, e.g. the STT backend being down). Nothing recorded,
+        // nothing said (XERK-236).
+        if (m.code !== "unauthorized" && (m.fatal || !this.sessionId)) {
+          this.stopSession();
+          return;
+        }
         if (m.code === "unauthorized") {
           // Expired/revoked token: re-login silently with the cached
           // credentials and reconnect. Only if that fails does the wearer get

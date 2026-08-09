@@ -63,6 +63,9 @@ describe("displayServerUrl", () => {
     // must show `tenir.example.com`, not `wss://tenir.example.com/ws`. Exercises the
     // React Native URL polyfill.
     expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
-    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("localhost:8080");
+    // An insecure ws:// keeps its scheme: without it the value normalizes back
+    // to wss:// and silently signs the user out of a plain-HTTP server
+    // (XERK-236).
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("ws://localhost:8080");
   });
 });

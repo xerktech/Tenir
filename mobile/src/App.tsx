@@ -119,7 +119,18 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
   if (auth.loading) return <FullScreenSpinner />;
 
   if (!auth.data) {
-    return <SetupScreen initialServerUrl={displayServerUrl(wsUrl)} onConnect={connectAndSignIn} />;
+    return (
+      <SetupScreen
+        initialServerUrl={displayServerUrl(wsUrl)}
+        onConnect={connectAndSignIn}
+        // A transport failure is NOT "signed out": say the server is
+        // unreachable instead of presenting an empty login as if the session
+        // had been forgotten (XERK-236). Retry re-runs /auth/me, so a token
+        // that was valid all along signs straight back in.
+        unreachable={auth.error != null}
+        onRetry={auth.reload}
+      />
+    );
   }
 
   const principal = auth.data;

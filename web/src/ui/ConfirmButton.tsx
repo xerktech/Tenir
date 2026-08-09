@@ -18,6 +18,8 @@ export interface ConfirmButtonProps {
   /** Fired by the second (confirming) click. */
   onConfirm: () => void;
   disabled?: boolean;
+  /** Native tooltip — worth setting when `disabled` needs explaining. */
+  title?: string;
   /** How long the armed state lasts before quietly expiring. */
   disarmAfterMs?: number;
 }
@@ -27,6 +29,7 @@ export function ConfirmButton({
   confirmLabel,
   onConfirm,
   disabled,
+  title,
   disarmAfterMs = 4000,
 }: ConfirmButtonProps): JSX.Element {
   const [armed, setArmed] = useState(false);
@@ -53,7 +56,13 @@ export function ConfirmButton({
   };
 
   return (
-    <Button variant="danger" className={armed ? "armed" : ""} disabled={disabled} onClick={click}>
+    <Button
+      variant="danger"
+      className={armed ? "armed" : ""}
+      disabled={disabled}
+      title={title}
+      onClick={click}
+    >
       {armed ? confirmLabel : children}
     </Button>
   );

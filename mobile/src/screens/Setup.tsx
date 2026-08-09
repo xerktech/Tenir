@@ -20,11 +20,18 @@ import { Button, Card, Field, Heading, Muted, Screen } from "../ui/components";
 export function SetupScreen({
   initialServerUrl,
   onConnect,
+  unreachable = false,
+  onRetry,
 }: {
   /** Server URL to pre-fill (the persisted choice, or the default seed). */
   initialServerUrl: string;
   /** Apply the normalized server URL, then sign in; rejects on a bad URL/credentials. */
   onConnect: (serverUrl: string, username: string, password: string) => Promise<void>;
+  /** The stored session could not be checked because the server is unreachable
+   *  — the user may well still be signed in (XERK-236). */
+  unreachable?: boolean;
+  /** Re-check the stored session. */
+  onRetry?: () => void;
 }): JSX.Element {
   const notify = useNotify();
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
@@ -53,7 +60,17 @@ export function SetupScreen({
 
   return (
     <Screen>
-      <Heading>Set up Tenir</Heading>
+      <Heading>{unreachable ? "Can't reach your server" : "Set up Tenir"}</Heading>
+      {unreachable && (
+        <Card>
+          <Muted>
+            Your Tenir server didn&apos;t answer, so we couldn&apos;t check whether you&apos;re
+            still signed in. If it&apos;s just offline, you don&apos;t need to sign in again —
+            start it and retry.
+          </Muted>
+          {onRetry && <Button title="Retry" onPress={onRetry} />}
+        </Card>
+      )}
       <Card>
         <Muted>Enter your Tenir server address, then sign in.</Muted>
         <Field label="Server" placeholder="tenir.example.com" value={serverUrl} onChangeText={setServerUrl} />
