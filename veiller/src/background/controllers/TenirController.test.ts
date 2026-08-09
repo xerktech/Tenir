@@ -580,6 +580,75 @@ describe("session flow", () => {
     c.stop();
   });
 
+  it("re-logs in ONCE however many times the server keeps rejecting (XERK-236)", async () => {
+    // `connect()` used to reset the one-shot `reauthAttempted` guard, and the
+    // unauthorized handler calls `connect()` after a silent re-login — so the
+    // guard was re-armed every time round the loop. Against a real api that was
+    // 167 logins + 167 socket upgrades in 15 s, backoff-free, while the lens sat
+    // on "connecting to server…" and the wearer was told nothing.
+    let logins = 0;
+    routes["/auth/login"] = () => {
+      logins += 1;
+      return { status: 200, body: { token: `tok-${logins}` } };
+    };
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    for (let i = 0; i < 20; i += 1) {
+      world.clients[world.clients.length - 1].handlers.onError?.({
+        type: "error",
+        code: "unauthorized",
+        message: "rejected",
+        fatal: true,
+      });
+      await flush();
+    }
+    expect(logins).toBe(1);
+    expect(world.clients.length).toBeLessThanOrEqual(2);
+    c.stop();
+  });
+
+  it("stops the capture on a non-auth error when the session never started (XERK-236)", async () => {
+    // What the api really sends when Session()/start() raises — e.g. the STT
+    // backend is down. `session.ready` never follows, so the lens read
+    // "listening…" with the mic held and PCM going into a socket with no
+    // session: nothing recorded, and nothing said so.
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    expect(world.micActive()).toBe(1);
+    world.clients[0].handlers.onError?.({
+      type: "error",
+      code: "internal",
+      message: "could not start session",
+      fatal: false,
+    });
+    await flush();
+    expect(c.liveState().recording).toBe(false);
+    expect(world.micActive()).toBe(0); // the microphone is released
+    expect(world.clients[0].stopped).toBe(1);
+    c.stop();
+  });
+
+  it("leaves a healthy running session alone on a transient error (XERK-236)", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    world.clients[0].handlers.onReady?.({
+      type: "session.ready",
+      sessionId: "s-1",
+      resumed: false,
+    });
+    await flush();
+    world.clients[0].handlers.onError?.({
+      type: "error",
+      code: "bad_request",
+      message: "could not parse message",
+      fatal: false,
+    });
+    await flush();
+    expect(c.liveState().recording).toBe(true);
+    expect(world.clients[0].stopped).toBe(0);
+    c.stop();
+  });
+
   it("disables when the silent re-login is rejected too", async () => {
     routes["/auth/login"] = () => ({ status: 401, body: { detail: "bad creds" } });
     const { world, c } = await signedIn();

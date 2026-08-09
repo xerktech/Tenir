@@ -1,4 +1,4 @@
-import type { Lang, LyricLine, MicSource } from "@tenir/contract";
+import type { ErrorMessage, Lang, LyricLine, MicSource } from "@tenir/contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiHandlers } from "../src/ws";
@@ -831,5 +831,52 @@ describe("CaptureSession song handlers (XERK-184)", () => {
 
     refs.client!.handlers.onSongDone?.({ type: "song.done", songId: "s1" });
     expect(session.getState().song).toBeNull();
+  });
+});
+
+describe("a fatal error must end the capture, not just record a string (XERK-236)", () => {
+  const fatal = (message = "connection rejected — please sign in again"): ErrorMessage => ({
+    type: "error",
+    code: "unauthorized",
+    message,
+    fatal: true,
+  });
+
+  it("stops the microphone and drops out of the recording state", async () => {
+    const { session, audio, refs } = harness();
+    await session.start();
+    expect(session.getState().running).toBe(true);
+    expect(audio.stopped).toBe(false);
+
+    // ws.ts has already given up reconnecting by the time this lands.
+    refs.client!.handlers.onError?.(fatal());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Previously: running stayed true, so every client kept showing Stop/Pause
+    // and a live "recording" indicator while the MIC STAYED OPEN on a session
+    // that no longer existed — the user believes they are being recorded and
+    // nothing is captured.
+    expect(audio.stopped).toBe(true);
+    expect(session.getState().running).toBe(false);
+    expect(session.getState().error).toContain("sign in again");
+    // The dead session id must not be resumed by the next Record press.
+    expect(refs.cleared).toBe(true);
+  });
+
+  it("leaves a non-fatal error alone — the session is still healthy", async () => {
+    const { session, audio, refs } = harness();
+    await session.start();
+    const nonFatal: ErrorMessage = {
+      type: "error",
+      code: "bad_request",
+      message: "could not parse message",
+      fatal: false,
+    };
+    refs.client!.handlers.onError?.(nonFatal);
+    await Promise.resolve();
+    expect(audio.stopped).toBe(false);
+    expect(session.getState().running).toBe(true);
+    expect(session.getState().error).toContain("could not parse");
   });
 });

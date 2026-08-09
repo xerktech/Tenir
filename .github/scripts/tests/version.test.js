@@ -83,3 +83,33 @@ test("assertStrictlyGreatest rejects a regression against legacy namespaces", ()
   // 0.1.0 is at/below a published legacy tag -> the regression the guard blocks
   assert.throws(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 0 }, ["even-v0.1.5"]));
 });
+
+// The comment on version.compare says "NOT lexical — v0.3.10 > v0.3.9", but
+// nothing pinned it: swapping the numeric compare for a string compare left
+// the whole 42-test suite green (XERK-236). A lexical compare picks v0.1.9 as
+// the latest over v0.1.29, so previousReleaseTag hands the release the WRONG
+// diff range (deciding which components rebuild) and assertStrictlyGreatest
+// refuses a legitimate release. Two-digit patch numbers are where it bites,
+// which is why the single-digit tags in the rest of this file never caught it.
+test("compare orders by NUMBER, not lexically, once a field goes double-digit", () => {
+  const v = (major, minor, patch) => ({ major, minor, patch });
+  assert.ok(V.compare(v(0, 3, 10), v(0, 3, 9)) > 0, "0.3.10 > 0.3.9");
+  assert.ok(V.compare(v(0, 10, 0), v(0, 9, 9)) > 0, "0.10.0 > 0.9.9");
+  assert.ok(V.compare(v(10, 0, 0), v(9, 9, 9)) > 0, "10.0.0 > 9.9.9");
+  assert.equal(V.compare(v(1, 2, 3), v(1, 2, 3)), 0);
+
+  // The property the release pipeline actually relies on: sorting tags by
+  // compare puts the genuinely newest last.
+  const sorted = ["v0.1.1", "v0.1.9", "v0.1.10", "v0.1.29"]
+    .map(V.parseTag)
+    .sort(V.compare)
+    .map(V.format);
+  assert.deepEqual(sorted, ["0.1.1", "0.1.9", "0.1.10", "0.1.29"]);
+});
+
+test("nextPatch and assertStrictlyGreatest survive double-digit patch lines", () => {
+  const tags = ["v0.1.1", "v0.1.9", "v0.1.10", "v0.1.29"];
+  assert.equal(V.nextPatch(tags, { major: 0, minor: 1 }), 30);
+  assert.throws(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 10 }, tags));
+  assert.doesNotThrow(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 30 }, tags));
+});

@@ -16,8 +16,9 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api import registry
-from api.auth import Principal, issue_token, reset_user_store
+from api.auth import Principal, get_user_store, issue_token, reset_user_store
 from api.auth.deps import principal_from_request
+from conftest import TEST_AUTH_SECRET
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
 from api.persistence import get_audio_store, get_conversation_store
@@ -37,11 +38,22 @@ def _reset() -> None:
 
 
 def _enable_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_secret", "test-secret")
+    monkeypatch.setattr(settings, "auth_secret", TEST_AUTH_SECRET)
 
 
 def _token(household: str, role: str = "member") -> str:
-    return issue_token(Principal("u", household, role), secret="test-secret", ttl_seconds=60)
+    """A token for a REAL user in ``household``.
+
+    The account has to exist: auth resolves the principal only if the user is
+    still in the store, so deleting a user revokes their token immediately
+    instead of leaving it live until expiry (XERK-236).
+    """
+    user = get_user_store().create(
+        f"u-{household}-{role}", "pw", household=household, role=role
+    )
+    return issue_token(
+        Principal(user.user_id, household, role), secret=TEST_AUTH_SECRET, ttl_seconds=60
+    )
 
 
 # --- cross-household session-id collision ------------------------------------
@@ -138,15 +150,15 @@ def test_audio_download_accepts_query_token(monkeypatch: pytest.MonkeyPatch) -> 
     _enable_auth(monkeypatch)
     convs = get_conversation_store()
     audio = get_audio_store()
-    convs.create("acme", "c1")
-    convs.set_audio_key("acme", "c1", "acme/c1.wav")
-    audio.put("acme/c1.wav", b"RIFFdata")
+    convs.create("acme", "11111111-1111-4111-8111-111111111111")
+    convs.set_audio_key("acme", "11111111-1111-4111-8111-111111111111", "acme/11111111-1111-4111-8111-111111111111.wav")
+    audio.put("acme/11111111-1111-4111-8111-111111111111.wav", b"RIFFdata")
 
     with TestClient(app) as client:
         # No credentials at all -> 401 (plain navigation can't set a header).
-        assert client.get("/conversations/c1/audio").status_code == 401
+        assert client.get("/conversations/11111111-1111-4111-8111-111111111111/audio").status_code == 401
         # The token in the query param authenticates the download.
-        r = client.get(f"/conversations/c1/audio?token={_token('acme')}")
+        r = client.get(f"/conversations/11111111-1111-4111-8111-111111111111/audio?token={_token('acme')}")
         assert r.status_code == 200 and r.content == b"RIFFdata"
 
 

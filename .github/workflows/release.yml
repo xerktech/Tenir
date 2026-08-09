@@ -49,6 +49,7 @@ on:
       - "veiller/**"
       - "package.json"
       - "package-lock.json"
+      - "schema.sql"
   workflow_dispatch:
     inputs:
       release_type:
@@ -179,13 +180,19 @@ jobs:
           NEW_VERSION: ${{ needs.plan.outputs.version }}
           BASE_MAJOR: ${{ needs.plan.outputs.base_major }}
           BASE_MINOR: ${{ needs.plan.outputs.base_minor }}
+          # changelog-cli wants the line being CLOSED (pre-bump), not the one
+          # being opened. Passing the bumped base built a start tag that does
+          # not exist yet, so the range was empty and every minor rollup read
+          # "_No changes._" — see CHANGELOG.md 0.2.0 through 0.6.0 (XERK-236).
+          PREV_BASE_MAJOR: ${{ needs.plan.outputs.prev_base_major }}
+          PREV_BASE_MINOR: ${{ needs.plan.outputs.prev_base_minor }}
         run: |
           set -euo pipefail
           # The version file holds MAJOR.MINOR only; the bumped base is version
           # minus its patch.
           printf '%s.%s' "$BASE_MAJOR" "$BASE_MINOR" > VERSION
           DATE="$(date -u +%Y-%m-%d)" NEW_VERSION="$NEW_VERSION" \
-            BASE_MAJOR="$BASE_MAJOR" BASE_MINOR="$BASE_MINOR" \
+            BASE_MAJOR="$PREV_BASE_MAJOR" BASE_MINOR="$PREV_BASE_MINOR" \
             node .github/scripts/changelog-cli.js
       # The default-branch ruleset forbids a direct `git push origin HEAD:main`,
       # so land the bump the sanctioned way: push a short-lived branch, open a

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import Principal, current_principal
 from api.auth.deps import principal_from_request
+from api.session import is_valid_session_id
 from api.persistence import (
     Conversation,
     ConversationStatus,
@@ -144,6 +145,12 @@ def _store():
 
 
 def _require(household: str, conversation_id: str) -> Conversation:
+    # A conversation id is always a server-issued uuid4. Anything else cannot
+    # match a row, and handing it to the store is how a NUL byte in the path
+    # (`/conversations/<uuid>%00`) reached psycopg and came back as a 500 with a
+    # traceback instead of a 404 (XERK-236). Reject the shape, don't query it.
+    if not is_valid_session_id(conversation_id):
+        raise HTTPException(status_code=404, detail="conversation not found")
     conv = _store().get(household, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="conversation not found")

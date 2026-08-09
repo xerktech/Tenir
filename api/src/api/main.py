@@ -25,6 +25,7 @@ from api.auth import (
     Principal,
     assert_secure_auth_config,
     get_user_store,
+    principal_from_live_token,
     principal_from_token,
     require_admin,
 )
@@ -41,10 +42,12 @@ from api.contract import (
     SessionStart,
 )
 from api.history import router as history_router
+from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
+from api.persistence import get_conversation_store
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session
+from api.session import Session, is_valid_session_id
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -58,6 +61,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # import) so merely importing the app — codegen, tests, --help — never trips it,
     # and so it runs once per process rather than per import.
     assert_secure_auth_config()
+    # Redact query-string bearer tokens from the access log before anything can
+    # be logged (XERK-236): the WS handshake and the audio download both carry
+    # the token in the URL, and uvicorn logs the full request line.
+    install_log_redaction()
     # Surface backend reachability at boot so a misconfigured/unreachable Postgres
     # or audio dir is visible immediately, not mid-session (it stays non-fatal:
     # connections are lazy and may still be warming up).
@@ -65,6 +72,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     for name, status in checks.items():
         if status != "ok":
             log.warning("backend %s not ready at startup: %s", name, status)
+    # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
+    # reboot or a stop that overruns the grace period leaves rows stuck "live",
+    # and nothing ever came back for them — they showed as permanently recording
+    # in every client's history (XERK-236). Sweep them once here, before any new
+    # session can register, so a restart heals the previous process's mess.
+    conversations = get_conversation_store()
+    if conversations is not None:
+        try:
+            swept = await asyncio.to_thread(conversations.finish_stale)
+            if swept:
+                log.warning("finalized %d conversation(s) left live by a previous run", swept)
+        except Exception:
+            log.exception("could not finalize stale conversations at startup")
     # Seed the component-status cache once at boot (so GET /status answers
     # immediately) and keep it fresh on a background loop.
     status_task: asyncio.Task[None] | None = None
@@ -205,7 +225,9 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
     if not token:
         return None
     try:
-        return principal_from_token(token)
+        # Same liveness check as the REST path: a deleted user's still-unexpired
+        # token must not open a capture socket either (XERK-236).
+        return principal_from_live_token(token)
     except AuthError:
         return None
 
@@ -218,7 +240,7 @@ def _ws_reject_reason(ws: WebSocket) -> str:
     if not token:
         return "missing token"
     try:
-        principal_from_token(token)
+        principal_from_live_token(token)
     except AuthError as exc:
         return str(exc)
     return "unknown"
@@ -282,6 +304,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 continue
 
             if isinstance(msg, SessionStart):
+                # A resume id the server could not have issued is not a resume id.
+                # It reaches the conversation store AND the audio object key
+                # ({household}/{id}.wav), so an id like "../other-hh/<their-id>"
+                # addresses another household's retained audio — it reads back as
+                # this session's resume offset and gets rewritten on session.end.
+                # Drop it and start fresh under a server id (XERK-236).
+                if msg.sessionId is not None and not is_valid_session_id(msg.sessionId):
+                    log.warning(
+                        "rejecting malformed resume id from household %s: %r",
+                        principal.household,
+                        msg.sessionId[:64],
+                    )
+                    metrics.incr("sessions.bad_resume_id")
+                    msg = msg.model_copy(update={"sessionId": None})
                 # Resume a still-live session if the client presents its id and the
                 # household matches: rebind to it, preserving the transcriber state,
                 # instead of starting fresh.
@@ -314,7 +350,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # backend outage doesn't 500 the connection.
                 try:
                     new_session = Session(
-                        send, session_id=requested_id, household=principal.household
+                        send,
+                        session_id=requested_id,
+                        household=principal.household,
+                        user_id=principal.user_id,
                     )
                     await new_session.start(
                         mic_source=msg.micSource,
@@ -325,6 +364,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     metrics.incr("sessions.start_errors")
                     await send(_err("internal", "could not start session"))
                     continue
+                # Let an account deletion drop this socket, not just finalize
+                # the session behind it (XERK-236).
+                new_session.on_disconnect(
+                    lambda: ws.close(code=1008, reason="account removed")
+                )
                 session = new_session
                 registry.register(session)
                 metrics.incr("sessions.started")

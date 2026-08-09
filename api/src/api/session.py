@@ -102,9 +102,34 @@ def _same_text(a: str, b: str) -> bool:
     return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
 
 
+def is_valid_session_id(value: str) -> bool:
+    """Whether a client-supplied resume id is one the server could have issued.
+
+    The api mints session ids as uuid4 and nothing else, so a resume id that is
+    not a UUID did not come from us. This is a security boundary, not a
+    nicety: the id flows into the conversation key AND into the audio object
+    key (``{household}/{id}.wav``), so an id shaped like ``../other-household/
+    <their-id>`` addresses another household's retained audio — enough to read
+    its duration and, on session.end, to prepend and rewrite it. Accepting only
+    UUIDs removes the whole class (XERK-236).
+    """
+    try:
+        # Compared against the CANONICAL form, so only what uuid4() actually
+        # stringifies to passes — an uppercase or dash-stripped variant parses
+        # fine but is not an id we issued, and would miss the stored key anyway.
+        return str(uuid.UUID(value)) == value
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 class Session:
     def __init__(
-        self, send: Sender, *, session_id: str | None = None, household: str | None = None
+        self,
+        send: Sender,
+        *,
+        session_id: str | None = None,
+        household: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         self._send = send
         self.session_id = session_id or str(uuid.uuid4())
@@ -200,6 +225,17 @@ class Session:
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
         self._household = household or settings.household_id
+        # Who opened the socket, so deleting an account can end its live captures
+        # (XERK-236). Auth is checked at the handshake only, so without this a
+        # removed member kept recording into the household for as long as they
+        # held the socket open.
+        self.user_id = user_id
+        # How to drop this session's transport. Closing the Session alone is not
+        # enough: the WS handler is parked in receive() and keeps feeding audio
+        # into a session that is already finalized, so a revoked account went on
+        # streaming until it chose to hang up. Set by the WS endpoint that owns
+        # the socket; None for a Session driven directly (tests, tooling).
+        self._disconnect: Callable[[], Awaitable[None]] | None = None
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -1048,13 +1084,40 @@ class Session:
                 metrics.incr("music.send_errors")
         metrics.incr("music.done")
 
+    def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
+        """Register how to drop this session's transport (see ``revoke``)."""
+        self._disconnect = fn
+
+    async def revoke(self, reason: str) -> None:
+        """Finalize the session AND close its socket — the account is gone.
+
+        Order matters: close() first, so everything captured up to this moment
+        is persisted, THEN drop the transport so nothing further can be sent
+        (XERK-236).
+        """
+        await self.close()
+        if self._disconnect is not None:
+            try:
+                await self._disconnect()
+            except Exception:
+                log.warning("session %s could not close its socket", self.session_id)
+        log.info("session %s revoked: %s", self.session_id, reason)
+
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._grace_task is not None:
-            self._grace_task.cancel()
-            self._grace_task = None
+        # Cancel the pending grace task — UNLESS this close IS the grace task
+        # finalizing. _grace_close() calls close(), so cancelling blindly
+        # cancelled the currently-running task: the CancelledError landed at the
+        # first await below (the pump join) and _persist() never ran, so a
+        # dropped-and-never-resumed session stayed "live" forever and its whole
+        # retained audio buffer was thrown away (XERK-236). That is exactly the
+        # path even/ documents as the safety net for an abnormal exit.
+        grace = self._grace_task
+        self._grace_task = None
+        if grace is not None and grace is not asyncio.current_task():
+            grace.cancel()
         # A still-running warmup would race the flush/close below (both drive the same
         # stream session): cancel it so teardown owns the transcriber cleanly.
         if self._warmup is not None:
@@ -1124,6 +1187,25 @@ class Session:
         if self._conversations is None:
             return
         # Persist retained audio, then point the conversation at it.
+        #
+        # Guarded as a whole: audio retention is best-effort, but FINALIZING the
+        # conversation is not. Anything raising in here — an unwritable audio
+        # dir, a full disk, or audio_key() rejecting an unusual household name —
+        # used to propagate out of close() and skip finish() below, leaving the
+        # session stuck "live" forever on top of having lost its audio
+        # (XERK-236). Losing the recording is bad; losing the recording AND the
+        # record of it is worse.
+        try:
+            await self._persist_audio()
+        except Exception:
+            log.exception("session %s could not retain audio", self.session_id)
+            metrics.incr("audio.persist_errors")
+        await asyncio.to_thread(
+            self._conversations.finish, self._household, self.session_id, status="ready"
+        )
+
+    async def _persist_audio(self) -> None:
+        """Flush the retained full-session audio to the audio store."""
         if self._audio_store is not None and self._full_audio:
             key = audio_key(self._household, self.session_id)
             pcm = bytes(self._full_audio)
@@ -1143,6 +1225,3 @@ class Session:
                 self._conversations.set_audio_key, self._household, self.session_id, key
             )
             self._full_audio.clear()
-        await asyncio.to_thread(
-            self._conversations.finish, self._household, self.session_id, status="ready"
-        )

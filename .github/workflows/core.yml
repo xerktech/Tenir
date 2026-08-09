@@ -11,6 +11,9 @@ on:
       - 'package-lock.json'
       - '.github/workflows/core.yml'
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

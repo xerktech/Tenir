@@ -381,3 +381,33 @@ class SqlConversationStore:
         with self._ensure_pool().connection() as conn:
             rows = conn.execute("SELECT DISTINCT household FROM conversations").fetchall()
         return [r[0] for r in rows]
+
+    def finish_stale(self) -> int:  # pragma: no cover - requires a live database
+        """Close out conversations left ``live`` by a previous process (XERK-236).
+
+        Only a graceful shutdown finalizes live sessions; an OOM kill, a host
+        reboot or an overrun stop leaves the row `live` with no `ended_at`, and
+        nothing ever came back for it — so it showed as permanently recording in
+        every client's history. `ended_at` falls back to the last segment's
+        wall-clock end, else the row's own start, so the duration a client
+        renders is the best available truth rather than "now".
+        """
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                UPDATE conversations
+                   SET status = 'ready',
+                       ended_at = COALESCE(
+                           ended_at,
+                           started_at + (
+                               (SELECT MAX(end_ms) FROM segments
+                                 WHERE segments.conversation_id = conversations.id)
+                               * INTERVAL '1 millisecond'
+                           ),
+                           started_at
+                       )
+                 WHERE status = 'live'
+             RETURNING id
+                """
+            ).fetchall()
+        return len(rows)

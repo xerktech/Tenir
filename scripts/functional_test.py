@@ -6,21 +6,23 @@ checks the session persisted. Not part of CI — a manual end-to-end check of th
 running stack.
 
 Credentials come from TENIR_USERNAME / TENIR_PASSWORD (defaults match the
-compose bootstrap-admin envs, so set those or these).
+compose bootstrap-admin envs, so set those or these). TENIR_BASE points it at a
+stack on another host/port — e.g. the QA overlay's :18080 (see qa.md).
 """
 
 import asyncio
 import json
 import os
 import sys
+import time
 
 import httpx
 import websockets
 
 # 127.0.0.1, not "localhost": on Windows the latter resolves to ::1 first and the
 # published port is IPv4-only, which hangs the WS TCP connect.
-BASE = "http://127.0.0.1:8080"
-WS = "ws://127.0.0.1:8080/ws"
+BASE = os.environ.get("TENIR_BASE", "http://127.0.0.1:8080").rstrip("/")
+WS = BASE.replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/ws"
 
 USERNAME = os.environ.get("TENIR_USERNAME", "admin")
 PASSWORD = os.environ.get("TENIR_PASSWORD", "")
@@ -68,7 +70,7 @@ def rest_tests(client: httpx.Client, headers: dict) -> None:
     check("conversations: 401 without token", r.status_code == 401, str(r.status_code))
 
 
-async def ws_test(token: str) -> str | None:
+async def ws_test(token: str, stt_backend: str) -> str | None:
     session_id = None
     got_final = False
     async with websockets.connect(f"{WS}?token={token}") as ws:
@@ -90,7 +92,23 @@ async def ws_test(token: str) -> str | None:
             pass
 
         await ws.send(json.dumps({"type": "session.end"}))
-    check("ws: caption.final received", got_final)
+    # Only the stub transcribes silence. A real model correctly returns nothing
+    # for it, so demanding a final here made this script — whose whole job is to
+    # smoke-test the DEPLOYED stack, which runs parakeet — report a failure for
+    # the backend working exactly as designed. Assert what is actually true of
+    # each backend instead of pretending silence is speech (XERK-236).
+    if stt_backend == "stub":
+        check("ws: caption.final received", got_final)
+    else:
+        check(
+            f"ws: audio accepted by the {stt_backend} backend (silence yields no caption)",
+            not got_final,
+            "a real STT backend transcribed silence — unexpected",
+        )
+        print(
+            f"  NOTE  {stt_backend} is a real model: this script sends silence, so it "
+            "exercises the capture path but not transcription accuracy."
+        )
     return session_id
 
 
@@ -101,8 +119,18 @@ def persistence_tests(client: httpx.Client, headers: dict, session_id: str | Non
     r = client.get(f"{BASE}/conversations/{session_id}", headers=headers)
     check("persistence: conversation stored", r.status_code == 200, r.text[:160])
     if r.status_code == 200:
-        conv = r.json()
-        check("persistence: status ready", conv.get("status") == "ready", conv.get("status"))
+        # `session.end` is finalized server-side (audio flush + store write, both
+        # offloaded to threads) after the frame is read, so a GET issued the
+        # instant the socket closes legitimately races it and still reads "live".
+        # Poll briefly rather than asserting on the first read.
+        status = r.json().get("status")
+        deadline = time.monotonic() + 5.0
+        while status != "ready" and time.monotonic() < deadline:
+            time.sleep(0.1)
+            status = client.get(f"{BASE}/conversations/{session_id}", headers=headers).json().get(
+                "status"
+            )
+        check("persistence: status ready", status == "ready", status)
     r = client.delete(f"{BASE}/conversations/{session_id}", headers=headers)
     check("persistence: delete", r.status_code == 204, str(r.status_code))
 
@@ -112,7 +140,8 @@ def main() -> None:
         token = login(client)
         headers = {"Authorization": f"Bearer {token}"}
         rest_tests(client, headers)
-        session_id = asyncio.run(ws_test(token))
+        stt_backend = client.get(f"{BASE}/health").json().get("stt_backend", "stub")
+        session_id = asyncio.run(ws_test(token, stt_backend))
         persistence_tests(client, headers, session_id)
 
     print(f"\n{passed} passed, {failed} failed")

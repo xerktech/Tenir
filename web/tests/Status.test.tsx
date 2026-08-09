@@ -3,13 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { StatusPanel } from "../src/panels/Status";
 
-const { getStatus, NetworkError } = vi.hoisted(() => ({
+const { getStatus, NetworkError, ApiError } = vi.hoisted(() => ({
   getStatus: vi.fn(),
   NetworkError: class NetworkError extends Error {},
+  // The panel now renders the failure reason via errText(), which needs ApiError.
+  ApiError: class ApiError extends Error {
+    status = 500;
+  },
 }));
 
 vi.mock("@tenir/client-core", () => ({
   NetworkError,
+  ApiError,
   getStatus: () => getStatus(),
 }));
 
@@ -47,5 +52,26 @@ describe("StatusPanel", () => {
     await waitFor(() =>
       expect(screen.getByText(/No components are configured/)).toBeInTheDocument(),
     );
+  });
+
+  it("reports a non-network API failure instead of claiming nothing is monitored (XERK-236)", async () => {
+    // /status returning 500 is the ONE case a status page exists for. The catch
+    // only set `unreachable` for NetworkError, so any other error left `status`
+    // null and the panel fell through to the "all good, nothing configured"
+    // copy — reassurance, on the screen that reports trouble.
+    getStatus.mockRejectedValue(new Error("500: boom"));
+    render(<StatusPanel />);
+    await waitFor(() =>
+      expect(screen.getByText(/Could not read system status/)).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/No components are configured to monitor/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still shows the server-unreachable banner for a NetworkError", async () => {
+    getStatus.mockRejectedValue(new NetworkError("down"));
+    render(<StatusPanel />);
+    await waitFor(() => expect(screen.getByText(/Can.t reach the server/)).toBeInTheDocument());
   });
 });

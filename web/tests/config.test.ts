@@ -2,14 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Stub the client-core symbols web/src/config.ts touches so importing the module
 // (which configures the REST client as a side effect) is inert.
-const { configureApi, setToken } = vi.hoisted(() => ({ configureApi: vi.fn(), setToken: vi.fn() }));
-vi.mock("@tenir/client-core", () => ({ configureApi, setToken }));
+const { configureApi, setToken, getToken } = vi.hoisted(() => ({
+  configureApi: vi.fn(),
+  setToken: vi.fn(),
+  // Signed out by default; the takeover tests below stub a stored token.
+  getToken: vi.fn(() => null as string | null),
+}));
+vi.mock("@tenir/client-core", () => ({ configureApi, setToken, getToken }));
 
 afterEach(() => {
   vi.resetModules();
   vi.unstubAllEnvs();
   configureApi.mockClear();
   setToken.mockClear();
+  getToken.mockReset();
+  getToken.mockReturnValue(null);
 });
 
 describe("web api config", () => {
@@ -64,6 +71,28 @@ describe("adoptTokenFromUrl (XERK-82: Even G2 phone page hand-over)", () => {
     expect(setToken).toHaveBeenCalledWith("abc/123");
     // The fragment (with the token) is removed from the address bar/history.
     expect(history.replaceState).toHaveBeenCalledWith(null, "", "/");
+  });
+
+  it("refuses to replace a session that is already signed in (XERK-236)", async () => {
+    // Any link — a chat message, an <img src>, a redirect — carrying #token=
+    // used to silently swap the signed-in account: the victim's history
+    // vanished, everything they recorded afterwards landed in the attacker's
+    // household, and the fragment was scrubbed so nothing looked wrong.
+    getToken.mockReturnValue("the-victims-own-token");
+    const { adoptTokenFromUrl } = await import("../src/config");
+    const { win, history } = fakeWin("#token=attacker-token");
+    adoptTokenFromUrl(win);
+    expect(setToken).not.toHaveBeenCalled();
+    // The token is still scrubbed from the address bar rather than left on show.
+    expect(history.replaceState).toHaveBeenCalledWith(null, "", "/");
+  });
+
+  it("#token=garbage cannot destroy a working session", async () => {
+    getToken.mockReturnValue("the-victims-own-token");
+    const { adoptTokenFromUrl } = await import("../src/config");
+    const { win } = fakeWin("#token=not-a-real-token");
+    adoptTokenFromUrl(win);
+    expect(setToken).not.toHaveBeenCalled();
   });
 
   it("does nothing when the fragment carries no token", async () => {

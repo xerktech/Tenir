@@ -339,4 +339,45 @@ describe("HistoryPanel", () => {
     expect(within(bodyRows[0]).getByText("20")).toBeInTheDocument();
     expect(within(bodyRows[1]).getByText("5")).toBeInTheDocument();
   });
+
+  it("refuses to delete a conversation that is still recording (XERK-236)", async () => {
+    // Deleting the live row took it out from under the running session: capture
+    // carried on, every word spoken afterwards was discarded, and the session
+    // could not be saved. Stop it first.
+    list.mockResolvedValue([summary({ id: "live-1", status: "live" })]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("live")).toBeInTheDocument());
+
+    const del = screen.getByRole("button", { name: "Delete" });
+    expect(del).toBeDisabled();
+    expect(del).toHaveAttribute("title", "Stop the recording before deleting it");
+    fireEvent.click(del);
+    fireEvent.click(del);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("still allows deleting a finished conversation", async () => {
+    list.mockResolvedValue([summary({ id: "done-1", status: "ready" })]);
+    remove.mockResolvedValue(undefined);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("ready")).toBeInTheDocument());
+    const del = screen.getByRole("button", { name: "Delete" });
+    expect(del).not.toBeDisabled();
+    fireEvent.click(del);                                   // arm
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("done-1"));
+  });
+
+  it("reloads after a FAILED delete so no phantom row is left behind", async () => {
+    // The row only ever disappeared on a successful reload, so a 404 (already
+    // deleted elsewhere) left a row that could never be cleared.
+    list.mockResolvedValue([summary({ id: "gone-1", status: "ready" })]);
+    remove.mockRejectedValue(new Error("404: conversation not found"));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("ready")).toBeInTheDocument());
+    list.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(list).toHaveBeenCalled());
+  });
 });

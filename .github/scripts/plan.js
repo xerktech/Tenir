@@ -48,6 +48,15 @@ function main() {
     release_type: releaseType,
     base_major: base.major,
     base_minor: base.minor,
+    // The line being CLOSED, i.e. the pre-bump base. For a patch this is the
+    // same line; for a minor/major it is the previous one. The CHANGELOG rollup
+    // needs this, not the bumped base — it rolls up "everything since the start
+    // of the line we are closing", and pointing it at the line being OPENED
+    // gave a start tag that does not exist yet, an empty range, and a
+    // "_No changes._" section. Every minor rollup from 0.2.0 to 0.6.0 is empty
+    // for exactly that reason (XERK-236).
+    prev_base_major: baseRaw.major,
+    prev_base_minor: baseRaw.minor,
     android_version_code: androidVersionCode,
     changed: JSON.stringify(changed),
     force_all: forceAll,

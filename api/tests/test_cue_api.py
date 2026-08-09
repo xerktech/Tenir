@@ -24,13 +24,13 @@ def _reset_store() -> None:
 
 def test_history_detail_includes_cues_inline() -> None:
     convs = get_conversation_store()
-    convs.create("default", "c1", mic_source="phone-microphone", source_lang="en")
-    convs.add_segment("default", "c1", Segment("c1-s1", "how far is the sun", 0, 2000, lang="en"))
-    convs.add_cue("default", "c1", Cue("cue-1", "Sun", "About 150 million km away.", 1500))
-    convs.finish("default", "c1", status="ready")
+    convs.create("default", "11111111-1111-4111-8111-111111111111", mic_source="phone-microphone", source_lang="en")
+    convs.add_segment("default", "11111111-1111-4111-8111-111111111111", Segment("c1-s1", "how far is the sun", 0, 2000, lang="en"))
+    convs.add_cue("default", "11111111-1111-4111-8111-111111111111", Cue("cue-1", "Sun", "About 150 million km away.", 1500))
+    convs.finish("default", "11111111-1111-4111-8111-111111111111", status="ready")
 
     with TestClient(app) as client:
-        detail = client.get("/conversations/c1").json()
+        detail = client.get("/conversations/11111111-1111-4111-8111-111111111111").json()
         assert len(detail["cues"]) == 1
         cue = detail["cues"][0]
         assert cue["cueId"] == "cue-1"
@@ -43,11 +43,11 @@ def test_history_detail_includes_cues_inline() -> None:
 
 def test_history_detail_has_empty_cues_by_default() -> None:
     convs = get_conversation_store()
-    convs.create("default", "c2")
-    convs.add_segment("default", "c2", Segment("c2-s1", "just talking", 0, 1000))
-    convs.finish("default", "c2", status="ready")
+    convs.create("default", "22222222-2222-4222-8222-222222222222")
+    convs.add_segment("default", "22222222-2222-4222-8222-222222222222", Segment("c2-s1", "just talking", 0, 1000))
+    convs.finish("default", "22222222-2222-4222-8222-222222222222", status="ready")
     with TestClient(app) as client:
-        assert client.get("/conversations/c2").json()["cues"] == []
+        assert client.get("/conversations/22222222-2222-4222-8222-222222222222").json()["cues"] == []
 
 
 def test_live_session_pushes_cue_frame(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,13 +79,13 @@ def test_history_detail_carries_cue_source() -> None:
     # XERK-120: a grounded cue's attribution survives into history; an ungrounded
     # one serializes with source null.
     convs = get_conversation_store()
-    convs.create("default", "c3")
-    convs.add_segment("default", "c3", Segment("c3-s1", "who is the PM", 0, 1000))
+    convs.create("default", "33333333-3333-4333-8333-333333333333")
+    convs.add_segment("default", "33333333-3333-4333-8333-333333333333", Segment("c3-s1", "who is the PM", 0, 1000))
     convs.add_cue(
-        "default", "c3", Cue("cue-g", "PM", "Andy Burnham took office.", 900, source="BBC News")
+        "default", "33333333-3333-4333-8333-333333333333", Cue("cue-g", "PM", "Andy Burnham took office.", 900, source="BBC News")
     )
-    convs.add_cue("default", "c3", Cue("cue-u", "Sun", "150M km away.", 950))
-    convs.finish("default", "c3", status="ready")
+    convs.add_cue("default", "33333333-3333-4333-8333-333333333333", Cue("cue-u", "Sun", "150M km away.", 950))
+    convs.finish("default", "33333333-3333-4333-8333-333333333333", status="ready")
     with TestClient(app) as client:
-        cues = client.get("/conversations/c3").json()["cues"]
+        cues = client.get("/conversations/33333333-3333-4333-8333-333333333333").json()["cues"]
         assert {c["cueId"]: c["source"] for c in cues} == {"cue-g": "BBC News", "cue-u": None}

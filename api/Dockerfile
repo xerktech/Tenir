@@ -70,5 +70,19 @@ COPY schema.sql ./schema.sql
 # The built web UI, served statically by the api (API_WEB_DIR defaults here).
 COPY --from=webbuild /app/web/dist /srv/web
 
+# Drop the setuptools build tree and the second copy of the source the wheel
+# build leaves at the workdir: `import api` resolves from site-packages, so
+# these are dead weight and extra scan surface in the runtime image.
+RUN rm -rf /srv/build /srv/src /srv/tenir_api.egg-info
+
+# NOTE: this image still runs as root, deliberately, for now. Dropping to a
+# normal user is the right end state, but API_AUDIO_DIR is a pre-existing
+# root-owned bind mount on every deployed host: switching the runtime uid makes
+# the api unable to write retained audio until an operator chowns that directory
+# by hand, and a silent failure there loses recordings. Doing it safely needs an
+# entrypoint that fixes ownership before dropping privileges, plus a release
+# note — tracked as a follow-up in qa.md rather than smuggled into a QA pass
+# (XERK-236). The /ready probe now catches exactly this class of breakage.
+
 EXPOSE 8080
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]

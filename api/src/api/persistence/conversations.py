@@ -58,6 +58,7 @@ class ConversationStore(Protocol):
     ) -> list[Conversation]: ...
     def delete(self, household: str, conversation_id: str) -> bool: ...
     def households(self) -> list[str]: ...
+    def finish_stale(self) -> int: ...
 
 
 class InMemoryConversationStore:
@@ -212,3 +213,26 @@ class InMemoryConversationStore:
         """Every household with at least one conversation (readiness probe)."""
         with self._lock:
             return list(self._by_household.keys())
+
+    def finish_stale(self) -> int:
+        """Close out conversations left ``live`` by a previous process.
+
+        A graceful shutdown finalizes every registered session, but an OOM kill,
+        a host reboot or a stop that overruns the grace period does not — and
+        nothing ever revisited those rows, so each one stayed ``live`` forever:
+        permanently "recording" in every client's history, never exportable, its
+        audio gone with the process (XERK-236). Called once at startup, before
+        any new session can register. In-memory rows never survive a restart, so
+        this is a no-op here and real work only in the SQL store.
+        """
+        with self._lock:
+            stale = [
+                conv
+                for convs in self._by_household.values()
+                for conv in convs.values()
+                if conv.status == "live"
+            ]
+            for conv in stale:
+                conv.status = "ready"
+                conv.ended_at = conv.ended_at or utcnow()
+            return len(stale)

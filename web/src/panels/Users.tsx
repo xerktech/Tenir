@@ -11,7 +11,7 @@ type Role = "member" | "admin";
 
 export function UsersPanel({ me }: { me: Principal }): JSX.Element {
   const notify = useNotify();
-  const { data, loading, reload } = useAsync(() => users.list());
+  const { data, loading, error, reload } = useAsync(() => users.list());
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -86,7 +86,18 @@ export function UsersPanel({ me }: { me: Principal }): JSX.Element {
       </div>
 
       {loading && <Spinner />}
-      {data?.length === 0 && <EmptyState title="No users yet." hint="Add a household member above." />}
+      {/* A failed roster load used to render as nothing at all — no list, no
+          message, no retry — which an admin reads as "my household is empty".
+          Same treatment History already gives it (XERK-236). */}
+      {!loading && error != null && (
+        <div>
+          <EmptyState title="Could not load users" hint={errText(error)} />
+          <Button onClick={reload}>Retry</Button>
+        </div>
+      )}
+      {error == null && data?.length === 0 && (
+        <EmptyState title="No users yet." hint="Add a household member above." />
+      )}
       {data?.map((u) => (
         <UserRow key={u.userId} user={u} isSelf={u.userId === me.userId} onRemove={remove(u)} />
       ))}

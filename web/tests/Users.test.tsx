@@ -119,4 +119,27 @@ describe("UsersPanel", () => {
     // The armed button names the commitment instead of firing it.
     expect(screen.getByRole("button", { name: "Confirm remove" })).toBeInTheDocument();
   });
+
+  it("surfaces a failed roster load with a retry, instead of a blank page (XERK-236)", async () => {
+    // The panel dropped `error` from useAsync entirely, so any load failure
+    // rendered no list, no message and no retry — which an admin reads as
+    // "my household is empty".
+    list.mockRejectedValue(new Error("500: boom"));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("Could not load users")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    // And it must not be mistaken for the genuinely-empty state.
+    expect(screen.queryByText("No users yet.")).not.toBeInTheDocument();
+
+    list.mockResolvedValue([{ userId: "u2", username: "bob", role: "member", isEnvAdmin: false }]);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("bob")).toBeInTheDocument());
+  });
+
+  it("still shows the empty state when the roster really is empty", async () => {
+    list.mockResolvedValue([]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("No users yet.")).toBeInTheDocument());
+    expect(screen.queryByText("Could not load users")).not.toBeInTheDocument();
+  });
 });

@@ -15,6 +15,16 @@
 api/tests
 docs
 docker-compose.yml
+docker-compose.qa.yml
+# Secrets. .env is git-ignored but WAS still shipped to the daemon in every
+# build context (verified: a `COPY . /ctx` probe found /ctx/.env). Nothing in
+# the build reads it, and one future `COPY . .` would bake it into a layer
+# (XERK-236).
+.env
+.env.*
+!.env.example
+# The Android release keystore — likewise never read by this image build.
+mobile/android/app/*.keystore
 # NOTE: schema.sql is intentionally NOT ignored — the api image bakes it in
 # (api/Dockerfile) and applies it idempotently on Postgres pool open, so an
 # existing data dir gains additively-added tables (e.g. `cues`). Postgres only
@@ -23,5 +33,4 @@ scripts
 litellm
 # Self-contained Veiller miniapp — the api image build never reads it.
 veiller
-.env.example
 *.log

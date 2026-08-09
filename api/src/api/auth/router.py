@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from api import registry
 from api.auth.deps import current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
 from api.auth.users import DuplicateUser, get_user_store
@@ -124,7 +125,7 @@ def create_user(body: CreateUserIn, admin: Principal = Depends(require_admin)) -
 
 
 @router.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -> None:
+async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -> None:
     # An admin can't delete their own account (avoids locking yourself out mid-session).
     if user_id == admin.user_id:
         raise HTTPException(status_code=400, detail="you cannot remove your own account")
@@ -140,3 +141,11 @@ def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -> None
         # deleting it just resurrects on restart — refuse rather than mislead.
         raise HTTPException(status_code=409, detail="the env-managed admin cannot be removed")
     store.delete(user_id)
+    # Auth is checked at the WS handshake only, so a live capture socket keeps
+    # recording into the household after its account is gone. Close them here so
+    # "removed" means removed on every surface (XERK-236). Each session is
+    # finalized normally, so nothing already captured is lost.
+    for session in registry.active():
+        if session.user_id == user_id:
+            registry.unregister(session)
+            await session.revoke("account deleted")

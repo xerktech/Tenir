@@ -51,9 +51,25 @@ describe("isValidServerUrl", () => {
 });
 
 describe("displayServerUrl", () => {
-  it("strips the ws(s):// scheme and default /ws path", () => {
+  it("strips the wss:// scheme and default /ws path", () => {
     expect(displayServerUrl("wss://tenir.example.com/ws")).toBe("tenir.example.com");
-    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("localhost:8080");
+  });
+
+  it("keeps an insecure ws:// scheme so the value round-trips (XERK-236)", () => {
+    // Dropping it displayed `localhost:8080`, which normalizes BACK to wss://.
+    // So pressing Connect in Settings without editing anything silently
+    // upgraded a plain-HTTP self-hosted server and signed the user out.
+    expect(displayServerUrl("ws://localhost:8080/ws")).toBe("ws://localhost:8080");
+    expect(normalizeServerUrl(displayServerUrl("ws://localhost:8080/ws"))).toBe(
+      "ws://localhost:8080/ws",
+    );
+    expect(normalizeServerUrl(displayServerUrl("ws://10.0.0.5:8080/ws"))).toBe(
+      "ws://10.0.0.5:8080/ws",
+    );
+    // The secure form still round-trips too, via the bare-host wss:// default.
+    expect(normalizeServerUrl(displayServerUrl("wss://tenir.example.com/ws"))).toBe(
+      "wss://tenir.example.com/ws",
+    );
   });
 
   it("preserves a non-default port and path so it round-trips", () => {

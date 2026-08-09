@@ -11,6 +11,7 @@ from __future__ import annotations
 from api.auth.deps import (
     assert_secure_auth_config,
     current_principal,
+    principal_from_live_token,
     principal_from_token,
     require_admin,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "get_user_store",
     "hash_password",
     "issue_token",
+    "principal_from_live_token",
     "principal_from_token",
     "require_admin",
     "reset_user_store",
