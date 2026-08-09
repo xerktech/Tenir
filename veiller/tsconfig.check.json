@@ -1,0 +1,27 @@
+{
+  // The WIDER typecheck: the app plus everything that verifies it.
+  //
+  // `tsconfig.json` deliberately excludes tests (bun runs them with its own
+  // types) and never covered `sim/` at all, so test and harness code — which
+  // is where a parity regression gets caught — was typechecked by nothing. A
+  // stale fake or a harness calling a method that no longer exists would only
+  // surface at runtime, in a suite nobody runs on every PR.
+  //
+  // `bun run typecheck` runs both: the app config for the shipped bundle, this
+  // one for the whole tree.
+  "extends": "./tsconfig.json",
+  // Tests and harnesses run under Bun, so they need its globals (`Bun.serve`,
+  // `import.meta.dir`, `bun:test`) — which the shipped bundle deliberately
+  // does not.
+  //
+  // ORDER MATTERS. Tests import from `src/`, so those files are pulled in here
+  // WITH Bun's globals in scope — on its own this config would happily accept a
+  // `Bun.*` call in shipped browser code, which the WebView has no such thing
+  // for. `bun run typecheck` therefore runs the narrow config FIRST and only
+  // then this one (`tsc --noEmit && tsc --noEmit -p tsconfig.check.json`); the
+  // narrow pass is what rejects a Bun global in `src/`. Don't reorder them, and
+  // don't drop the first pass.
+  "compilerOptions": { "types": ["bun-types"] },
+  "include": ["src/**/*", "sim/**/*", "build.ts"],
+  "exclude": ["dist", "node_modules"]
+}

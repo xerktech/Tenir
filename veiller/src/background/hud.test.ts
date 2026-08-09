@@ -23,8 +23,11 @@ import {
   SCREEN_W,
   SONG_BODY_LINES,
   TRANSLATION_ROWS,
+  MORE_MARKER,
   cardPopup,
   clockText,
+  cueBodyLines,
+  cueBodyMaxOffset,
   cueHeight,
   cueRowRangeFor,
   cueTitleLine,
@@ -199,6 +202,50 @@ describe("cueTitleLine", () => {
 
   it("is the bare title without a countdown", () => {
     expect(cueTitleLine({ title: "Song — Artist", body: "" })).toBe("Song — Artist");
+  });
+});
+
+// XERK-237: upstream gives a long cue body its own host-scrolled container, so
+// the wearer can read past the box. The scene API has no scrollable container,
+// so the body is paged by the app instead — and must never be silently clipped.
+describe("cardPopup body paging", () => {
+  const long = Array.from({ length: 10 }, (_, i) => `Row ${i} with enough words to fill it out.`).join(" ");
+  const bodyRows = () => cueBodyLines(long);
+
+  it("reports how far a body can be paged, and 0 for one that fits", () => {
+    expect(cueBodyMaxOffset("short body")).toBe(0);
+    expect(cueBodyMaxOffset(long)).toBe(bodyRows().length - 4);
+    expect(cueBodyMaxOffset(long)).toBeGreaterThan(0);
+  });
+
+  it("renders the window at the given offset", () => {
+    const rows = bodyRows();
+    const at = (offset: number) => cardPopup({ title: "T", body: long }, { bodyOffset: offset })
+      .text.split("\n")
+      .slice(1);
+    expect(at(0)).toEqual(rows.slice(0, 4));
+    expect(at(2)).toEqual(rows.slice(2, 6));
+  });
+
+  it("clamps the offset to the body, so it can never be paged off its box", () => {
+    const rows = bodyRows();
+    const last = cardPopup({ title: "T", body: long }, { bodyOffset: 999 }).text.split("\n").slice(1);
+    expect(last).toEqual(rows.slice(rows.length - 4));
+    const first = cardPopup({ title: "T", body: long }, { bodyOffset: -5 }).text.split("\n").slice(1);
+    expect(first).toEqual(rows.slice(0, 4));
+  });
+
+  it("marks the title row while rows remain below, and stops at the end", () => {
+    expect(cardPopup({ title: "T", body: long }, { bodyOffset: 0 }).text).toContain(MORE_MARKER);
+    expect(cardPopup({ title: "T", body: long }, { bodyOffset: 999 }).text).not.toContain(MORE_MARKER);
+    // A body that fits was never scrollable upstream either — no marker.
+    expect(cardPopup({ title: "T", body: "short" }).text).not.toContain(MORE_MARKER);
+  });
+
+  it("keeps the box no taller than the window, whatever the offset", () => {
+    for (const offset of [0, 1, 3, 999]) {
+      expect(cardPopup({ title: "T", body: long }, { bodyOffset: offset }).rows).toBe(CUE_ROWS);
+    }
   });
 });
 

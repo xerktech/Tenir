@@ -10,6 +10,35 @@ It is fully self-contained: no workspace deps on `@tenir/*` (the wire protocol
 is ported under `src/core/`), and it is deliberately **not** a member of the
 root npm workspace — it uses Bun and its own `bun.lock`.
 
+## Parity with `even/`
+
+`even/` is the reference implementation: this miniapp is the same product on a
+different host, and the two are held at feature and visual parity (XERK-237).
+The phone page is a faithful port of `even/index.html` — the same Lumen tokens,
+class names, structure and copy, the same bundled Inter / Space Grotesk faces,
+and both the light and dark palettes. `src/ui/css.test.ts` asserts the parts
+that silently drifted before; `sim/phone-tour.ts` walks the rendered page.
+
+Three differences remain, each forced by the host rather than chosen:
+
+| Upstream | Here | Why |
+|---|---|---|
+| A long cue body scrolls in a host-scrolled container (XERK-133) | The app pages it on swipes, with a `▾` marker in place of the scroll bar | `session.display.render` is replace-the-frame; there is no scrollable container |
+| `prefers-color-scheme` picks light or dark | The host reports its scheme (`session.colorScheme`), which the page stamps on `<html data-theme>` | The WebView's media query does not track the phone's setting |
+| An idle double-tap exits the app | Does nothing | The miniapp host has no self-exit API |
+
+One thing was *removed* for parity rather than added: a Veiller-only "Web app"
+header button, which opened the server's own web UI through `system.openUrl`.
+Upstream has no such control, so it read as a divergence; nothing else offered
+it and no other surface depends on it.
+
+Anything else that differs is a bug. When a feature changes on either side, it
+ships on both in the same effort — see the repo's `CLAUDE.md`.
+
+The simulator harnesses in `sim/` are the only thing that drives the built
+bundle against a real host and a real browser, and CI does not run them (it is
+typecheck + test + build). Run both by hand for any change here.
+
 ## Layout
 
 - `src/background/` — JSContext entry (glasses HUD, mic streaming)

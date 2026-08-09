@@ -215,6 +215,18 @@ export function cueBodyLines(body: string): string[] {
   return wrapLines(body, CUE_TEXT_W);
 }
 
+/** The marker that says a paged cue body has more rows below (see cueTitleLine). */
+export const MORE_MARKER = "▾";
+
+/**
+ * The furthest a cue body can be paged down (XERK-237): the row index at which
+ * the last `maxLines` rows are on screen. 0 when the body already fits, so a
+ * short cue can never be scrolled off its own box.
+ */
+export function cueBodyMaxOffset(body: string, maxLines = CUE_BODY_LINES): number {
+  return Math.max(0, cueBodyLines(body).length - maxLines);
+}
+
 /**
  * The pinned title row of a cue box (XERK-112): the title wrapped to a single
  * row, with the countdown to auto-dismissal (XERK-110) flush to the right edge.
@@ -222,11 +234,22 @@ export function cueBodyLines(body: string): string[] {
  * trimmed instead of pushing the row over the edge; omitted (no countdown) the
  * row is the title alone.
  */
-export function cueTitleLine(card: CueCard, secondsLeft?: number): string {
+export function cueTitleLine(
+  card: CueCard,
+  secondsLeft?: number,
+  moreBelow = false,
+): string {
   const countdown = secondsLeft == null ? "" : cueCountdownLabel(secondsLeft);
-  const reserved = countdown ? getTextWidth(countdown) + getTextWidth(" ") : 0;
+  // "▾" says the body runs past the box (XERK-237). Upstream needs no such
+  // marker: its body sits in a container the HOST scrolls, and the host draws
+  // its own native scroll bar to advertise the overflow. The scene API has no
+  // scrollable container, so the body is paged by the app instead and this
+  // marker stands in for that scroll bar — the same kind of documented
+  // platform stand-in as the "> " current-lyric marker in `songBody`.
+  const right = `${moreBelow ? `${MORE_MARKER} ` : ""}${countdown}`;
+  const reserved = right ? getTextWidth(right) + getTextWidth(" ") : 0;
   const titleLine = wrapLines(card.title, CUE_TEXT_W - reserved)[0] ?? card.title;
-  return rowWithRightEdge(titleLine, countdown, CUE_TEXT_W);
+  return rowWithRightEdge(titleLine, right, CUE_TEXT_W);
 }
 
 /**
@@ -323,16 +346,26 @@ export interface HudPopup {
   rows: number;
 }
 
-/** A popup from a cue-shaped card: pinned title row over the body rows. */
+/**
+ * A popup from a cue-shaped card: pinned title row over the body rows.
+ *
+ * A body longer than the box is PAGED rather than clipped (XERK-237).
+ * Upstream hands its overflow to a host-scrolled container (XERK-133); the
+ * scene API has no scrollable container, so `bodyOffset` — advanced by the
+ * wearer's swipes in TenirController — picks which window of rows renders,
+ * and the title row carries a "▾" while more remain. The offset is clamped
+ * here, so a caller can never page a body off its own box.
+ */
 export function cardPopup(
   card: CueCard,
-  opts: { secondsLeft?: number; bodyLines?: number } = {},
+  opts: { secondsLeft?: number; bodyLines?: number; bodyOffset?: number } = {},
 ): HudPopup {
   const maxLines = opts.bodyLines ?? CUE_BODY_LINES;
-  // Read-from-the-top body, capped to the box (the scene API has no
-  // host-native scroll to hand overflow to — a documented platform exception).
-  const body = cueBodyLines(card.body).slice(0, maxLines);
-  const text = [cueTitleLine(card, opts.secondsLeft), ...body].join("\n");
+  const rows = cueBodyLines(card.body);
+  const maxOffset = Math.max(0, rows.length - maxLines);
+  const offset = Math.min(Math.max(opts.bodyOffset ?? 0, 0), maxOffset);
+  const body = rows.slice(offset, offset + maxLines);
+  const text = [cueTitleLine(card, opts.secondsLeft, offset < maxOffset), ...body].join("\n");
   return { text, rows: 1 + body.length };
 }
 

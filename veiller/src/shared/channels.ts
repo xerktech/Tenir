@@ -31,6 +31,12 @@ export interface Channels {
   "tenir:auth": TenirAuthState;
   /** Live session mirror update (captions, connection, cues, song). */
   "tenir:live": TenirLiveState;
+  /**
+   * The host's colour scheme (XERK-237). Upstream's phone page follows
+   * `prefers-color-scheme`; this WebView is told by the host instead, so the
+   * background forwards it here and on every change.
+   */
+  "tenir:color-scheme": { scheme: "light" | "dark" };
 
   // ── UI → background ────────────────────────────────────────────────────
 
@@ -44,8 +50,24 @@ export interface Channels {
   "tenir:stop": Rpc<Record<string, never>, { ok: boolean }>;
   /** Proxied authenticated REST call (history list/detail/delete). */
   "tenir:fetch": Rpc<ProxyFetchRequest, ProxyFetchResult>;
-  /** Open a URL in the system browser (e.g. the server's web app). */
-  "tenir:open-url": { url: string };
+  /**
+   * The playable URL of a conversation's retained audio (XERK-237): the api
+   * endpoint with the bearer token as a query param, which is how upstream's
+   * `<audio src>` / download link reach it too. Minted on demand rather than
+   * broadcast, so the token isn't carried in every live update.
+   */
+  "tenir:audio-url": Rpc<{ id: string }, { ok: boolean; url?: string }>;
+  /**
+   * Save a conversation's retained clip through the host's download sheet.
+   *
+   * Takes the conversation id, NOT a URL: the background mints the URL itself,
+   * so the page can never name the target. The host's download sheet does not
+   * scheme-filter the way `openUrl` does, and the URL carries the wearer's
+   * bearer token — a URL argument would be arbitrary network/file egress with
+   * the token attached, and no allow-list can be anchored safely while the page
+   * can also re-point the api base through `tenir:login`.
+   */
+  "tenir:download": Rpc<{ id: string }, { ok: boolean }>;
 }
 
 declare global {

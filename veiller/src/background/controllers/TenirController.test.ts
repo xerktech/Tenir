@@ -69,6 +69,12 @@ interface FakeWorld {
   /** Make subsequent display.render calls report this status ("blocked" = frame never shown). */
   setRenderStatus: (status: "displayed" | "blocked") => void;
   emitVisibility: (v: "foreground" | "background") => void;
+  /** The host flipped between light and dark (XERK-237). */
+  emitColorScheme: (s: "light" | "dark") => void;
+  /** Clips handed to the host's download sheet. */
+  downloads: Array<{ url: string; filename?: string; mimeType?: string }>;
+  /** Stand in a specific host reply shape ({success} device / {ok} simulator). */
+  setDownloadReply: (reply: Record<string, unknown>) => void;
 }
 
 function makeWorld(seed: Record<string, string> = {}): FakeWorld {
@@ -84,6 +90,11 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   let renderStatus: "displayed" | "blocked" = "displayed";
   let renderCount = 0;
   let visHandler: ((v: "foreground" | "background") => void) | null = null;
+  let schemeHandler: ((s: "light" | "dark") => void) | null = null;
+  const downloads: Array<{ url: string; filename?: string; mimeType?: string }> = [];
+  // The host reply to stand in: the real host's `{success}` or the
+  // simulator's `{ok}`. Defaults to a successful device-shaped reply.
+  let downloadReply: Record<string, unknown> = { success: true };
 
   const session = {
     storage: {
@@ -133,9 +144,18 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     },
     system: {
       openUrl: () => {},
+      download: (opts: { url: string; filename?: string; mimeType?: string }) => {
+        downloads.push(opts);
+        return Promise.resolve(downloadReply);
+      },
     },
+    colorScheme: "dark" as "light" | "dark",
     onVisibilityChange: (cb: (v: "foreground" | "background") => void) => {
       visHandler = cb;
+      return () => {};
+    },
+    onColorSchemeChange: (cb: (s: "light" | "dark") => void) => {
+      schemeHandler = cb;
       return () => {};
     },
     onBeforeDisconnect: () => () => {},
@@ -167,6 +187,11 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       renderStatus = status;
     },
     emitVisibility: (v) => visHandler?.(v),
+    emitColorScheme: (s) => schemeHandler?.(s),
+    downloads,
+    setDownloadReply: (reply) => {
+      downloadReply = reply;
+    },
   };
 }
 
@@ -176,6 +201,8 @@ type Route = (init?: RequestInit) => {
   status: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Hold the response open until this settles — an attacker-paced server. */
+  wait?: Promise<void>;
 };
 
 const realFetch = globalThis.fetch;
@@ -189,6 +216,7 @@ function stubFetch(): void {
     const key = Object.keys(routes).find((k) => u.includes(k));
     if (!key) throw new TypeError(`unroutable fetch: ${u}`);
     const out = routes[key](init);
+    if (out.wait) await out.wait;
     const headers = new Map(Object.entries(out.headers ?? {}));
     return {
       ok: out.status >= 200 && out.status < 300,
@@ -532,6 +560,56 @@ describe("session flow", () => {
     c.stop();
   });
 
+  it("pages a long cue body on swipes instead of stranding its tail (XERK-237)", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    // A body far longer than the box's four rows: upstream hands the overflow
+    // to a host-scrolled container, which the scene API has no equivalent for.
+    const body = Array.from({ length: 12 }, (_, i) => `Row number ${i + 1} of the cue body.`).join(" ");
+    h.onCue?.({ type: "cue", cueId: "long", title: "Long", body, atMs: 0 });
+
+    const popup = () => c.hudFrame().popup?.text ?? "";
+    const rowsOf = (text: string) => text.split("\n").slice(1); // drop the title row
+    const first = rowsOf(popup());
+    expect(first.length).toBe(4); // the box still renders exactly four body rows
+    expect(popup()).toContain("Row number 1");
+    expect(popup()).toContain("▾"); // and says there is more below
+
+    // Swiping down pages the window on; the tail is reachable.
+    for (let i = 0; i < 20; i++) world.emitTouch("swipe_down");
+    const atEnd = popup();
+    expect(atEnd).toContain("Row number 12");
+    expect(atEnd).not.toContain("Row number 1 "); // the top rows have scrolled off
+    expect(atEnd).not.toContain("▾"); // nothing left below, so no marker
+
+    // Swiping up walks it back, and can never page above the first row.
+    for (let i = 0; i < 40; i++) world.emitTouch("swipe_up");
+    expect(rowsOf(popup())).toEqual(first);
+
+    // Paging still counts as touching the cue, so it keeps buying time (XERK-129).
+    expect(c.liveState().activeCue?.id).toBe("long");
+    expect(c.liveState().recording).toBe(true);
+    c.stop();
+  });
+
+  it("a promoted cue starts at the top of its own body (XERK-237)", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    const long = Array.from({ length: 12 }, (_, i) => `Alpha ${i + 1} padding words here.`).join(" ");
+    h.onCue?.({ type: "cue", cueId: "a", title: "A", body: long, atMs: 0 });
+    world.emitTouch("swipe_down");
+    world.emitTouch("swipe_down");
+    // A queued cue takes the box when the menu opens and closes over the first.
+    h.onCue?.({ type: "cue", cueId: "b", title: "B", body: "Short body.", atMs: 0 });
+    world.emitTouch("double_tap"); // menu opens, embedding cue A
+    world.emitTouch("double_tap"); // menu closes, promoting cue B
+    expect(c.liveState().activeCue?.id).toBe("b");
+    expect(c.hudFrame().popup?.text).toContain("Short body.");
+    c.stop();
+  });
+
   it("ignores other gestures", async () => {
     const { world, c } = await signedIn();
     world.emitTouch("swipe_up");
@@ -676,12 +754,17 @@ describe("UI bus", () => {
     await c.start();
     world.uiSent.length = 0;
     world.openUi();
-    expect(world.uiSent).toHaveLength(1);
     expect(world.uiSent[0].channel).toBe("tenir:snapshot");
     expect(world.uiSent[0].payload).toMatchObject({
       auth: { signedIn: true, username: "ada" },
       live: { recording: false, connection: "closed" },
     });
+    // …and the host's colour scheme alongside it (XERK-237), so a WebView
+    // opened after a scheme change doesn't paint in the stale palette.
+    expect(world.uiSent.map((m) => m.channel)).toEqual([
+      "tenir:snapshot",
+      "tenir:color-scheme",
+    ]);
     c.stop();
   });
 
@@ -831,6 +914,296 @@ describe("UI bus", () => {
       ok: false,
       error: "Not signed in.",
     });
+    c.stop();
+  });
+
+  // XERK-237: history audio is upstream's `<audio src>` + download link. The
+  // WebView can't fetch the authenticated endpoint cross-origin, but it doesn't
+  // need to — the api takes the bearer token as a query param on this route, so
+  // the background hands the page a plain playable URL.
+  it("tenir:audio-url mints a token-bearing clip URL, and refuses signed out", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    expect(await world.rpc("tenir:audio-url", { id: "conv1" })).toEqual({
+      ok: true,
+      url: "https://h.example.com/conversations/conv1/audio?token=tok-1",
+    });
+    // The id is path-encoded: this URL carries the bearer token, so a
+    // traversal-shaped id must not be able to steer it off the route.
+    const traversal = (await world.rpc("tenir:audio-url", { id: "../../etc/passwd" })) as {
+      url: string;
+    };
+    expect(traversal.url).toBe(
+      "https://h.example.com/conversations/..%2F..%2Fetc%2Fpasswd/audio?token=tok-1",
+    );
+    expect(traversal.url).not.toContain("/../");
+    // An id that can't address a conversation is refused rather than turned
+    // into `/conversations//audio`.
+    expect(await world.rpc("tenir:audio-url", { id: "" })).toEqual({ ok: false });
+    expect(await world.rpc("tenir:audio-url", { id: "   " })).toEqual({ ok: false });
+    expect(await world.rpc("tenir:download", { id: "" })).toEqual({ ok: false });
+    expect(world.downloads).toEqual([]);
+    c.stop();
+
+    const out = makeWorld();
+    const c2 = makeController(out);
+    await c2.start();
+    expect(await out.rpc("tenir:audio-url", { id: "conv1" })).toEqual({ ok: false });
+    c2.stop();
+  });
+
+  // The page hands over a conversation id and nothing else: the background
+  // mints the URL. The host's download sheet does NOT scheme-filter the way
+  // openUrl does, and the URL carries the bearer token — so a page-supplied URL
+  // would be arbitrary network/file egress with the token attached. An
+  // allow-list over one looked equivalent but was not: `tenir:login` re-points
+  // the api base even when the login FAILS, so the page could move the base and
+  // then satisfy the check.
+  it("tenir:download mints the clip URL itself from the conversation id", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    expect(world.downloads).toEqual([
+      {
+        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
+        filename: "audio.wav",
+        mimeType: "audio/wav",
+      },
+    ]);
+    c.stop();
+  });
+
+  // XERK-237, the reason `tenir:download` mints its own URL is only half the
+  // fix: `tenir:login` used to re-point the api base BEFORE validating, and a
+  // failed login left it there while the session stayed signed in. The page
+  // could therefore name a host in one call and have every token-bearing URL
+  // minted afterwards — the clip, and the download handed to the host's sheet —
+  // address it. A failed login must leave the api exactly where it was.
+  it("a failed login cannot re-point the api at a server the page names", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    const before = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(before.url).toContain("https://h.example.com/");
+
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" } });
+    expect(
+      await world.rpc("tenir:login", {
+        serverUrl: "attacker.example",
+        username: "a",
+        password: "b",
+      }),
+    ).toEqual({ ok: false, error: "Incorrect username or password." });
+
+    // Still signed in to the ORIGINAL server, and still addressing it.
+    expect(c.authState().signedIn).toBe(true);
+    const after = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(after.url).toBe(before.url);
+    expect(after.url).not.toContain("attacker.example");
+    expect(c.authState().serverUrl).toBe("h.example.com");
+
+    await world.rpc("tenir:download", { id: "c1" });
+    expect(world.downloads.every((d) => !d.url.includes("attacker.example"))).toBe(true);
+    expect(world.downloads[0].url).toContain("https://h.example.com/");
+
+    // And a failed attempt never persists the URL it was given.
+    expect(world.storage.get(SERVER_URL_KEY)).toBe("wss://h.example.com/ws");
+    c.stop();
+  });
+
+  // XERK-237: a login carries no authority worth proving, and attaching the
+  // bearer token handed the wearer's live credential to whatever server was
+  // named — turning a mistyped or hostile address into a token leak rather than
+  // just a failed sign-in. It is also what made the whole re-point class worth
+  // anything to an attacker.
+  it("never sends the bearer token to the server a login names", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    fetchCalls.length = 0;
+
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" } });
+    await world.rpc("tenir:login", { serverUrl: "attacker.example", username: "a", password: "b" });
+
+    const loginCalls = fetchCalls.filter((f) => f.url.includes("/auth/login"));
+    expect(loginCalls).toHaveLength(1);
+    expect(loginCalls[0].url).toBe("https://attacker.example/auth/login");
+    const headers = (loginCalls[0].init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(JSON.stringify(headers)).not.toContain("tok-1");
+    c.stop();
+  });
+
+  // The api's renewal middleware runs after the route with NO status check, so
+  // an aged-but-valid token is renewed on authenticated 404s too. The guard is
+  // "did this request present a token", not "did it succeed" — gating on
+  // success would silently drop those (XERK-168).
+  it("still adopts a renewed token from an authenticated non-2xx response", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    routes["/conversations/gone"] = () => ({
+      status: 404,
+      body: { detail: "not found" },
+      headers: { "x-renewed-token": "tok-fresh" },
+    });
+    expect(await world.rpc("tenir:fetch", { path: "/conversations/gone" })).toEqual({
+      ok: false,
+      error: "404: not found",
+      status: 404,
+    });
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-fresh");
+    c.stop();
+  });
+
+  // An UNAUTHENTICATED response used to be able to replace the wearer's token,
+  // so a failed login against a named server left the real server 401ing.
+  it("does not adopt a renewed token from a rejected response", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    routes["/auth/login"] = () => ({
+      status: 401,
+      body: { detail: "nope" },
+      headers: { "x-renewed-token": "attacker-token" },
+    });
+    await world.rpc("tenir:login", { serverUrl: "attacker.example", username: "a", password: "b" });
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-1");
+
+    // The clip URL still carries the ORIGINAL token, against the original host.
+    const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+    c.stop();
+  });
+
+  // XERK-237: restoring the base after a failed login was a ROLLBACK, not
+  // isolation — the attempt still moved the module-level api base while it was
+  // in flight, and the server it named decides how long that is. Acting inside
+  // that window reached the same token-bearing download. The attempt now
+  // carries its base explicitly and moves nothing shared until it succeeds.
+  it("a login in flight cannot move the api base out from under other handlers", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    // A server that holds the login open for as long as it likes.
+    let release!: () => void;
+    const stalled = new Promise<void>((r) => (release = r));
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" }, wait: stalled });
+
+    const inFlight = world.rpc("tenir:login", {
+      serverUrl: "attacker.example",
+      username: "a",
+      password: "b",
+    });
+    try {
+      await flush();
+
+      // INSIDE the window: everything still addresses the real server.
+      const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+      expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+      await world.rpc("tenir:download", { id: "c1" });
+      expect(world.downloads.every((d) => d.url.startsWith("https://h.example.com/"))).toBe(true);
+      expect(c.authState().serverUrl).toBe("h.example.com");
+    } finally {
+      // Release even if an assertion above throws, so a failing test can't
+      // leave the stalled request pending behind it.
+      release();
+      c.stop();
+    }
+    expect(await inFlight).toEqual({ ok: false, error: "Incorrect username or password." });
+  });
+
+  // XERK-237: `login()` is two round-trips. Storing the new token between them
+  // meant a server that accepted `/auth/login` and then rejected `/auth/me`
+  // destroyed the wearer's existing token on an attempt that reports failure —
+  // the real server then 401s until a silent re-login heals it.
+  it("a half-successful login leaves the existing token intact", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    // Accepts the credentials, then refuses to confirm them.
+    routes["/auth/login"] = () => ({ status: 200, body: { token: "attacker-issued" } });
+    routes["/auth/me"] = () => ({ status: 401, body: { detail: "no" } });
+    expect(
+      await world.rpc("tenir:login", {
+        serverUrl: "attacker.example",
+        username: "a",
+        password: "b",
+      }),
+    ).toEqual({ ok: false, error: "Incorrect username or password." });
+
+    // The wearer's own token — and their working session — survive.
+    const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-1");
+    c.stop();
+  });
+
+  it("tenir:download refuses while signed out, and never reaches the host", async () => {
+    const world = makeWorld();
+    const c = makeController(world);
+    await c.start();
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: false });
+    expect(world.downloads).toEqual([]);
+    c.stop();
+  });
+
+  // The real host answers {success}; the miniapp simulator answers {ok}.
+  // Accepting only one means the harness and the device disagree about whether
+  // saving worked — and the wearer gets a failure toast over a good save.
+  it("tenir:download accepts either host reply shape", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    world.setDownloadReply({ ok: true }); // the simulator's shape
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    world.setDownloadReply({ success: true }); // the device's shape
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    // A sheet the wearer cancels still SUCCEEDED as far as the host is
+    // concerned ({success:true, cancelled:true}) — so no failure is reported.
+    world.setDownloadReply({ success: true, cancelled: true });
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    // A genuine failure is reported rather than swallowed.
+    world.setDownloadReply({ success: false });
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: false });
+    c.stop();
+  });
+
+  // XERK-237: upstream's phone page follows `prefers-color-scheme`; this one is
+  // told the host's choice, so it has to arrive and to keep arriving.
+  it("forwards the host colour scheme on open and on every change", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    world.uiSent.length = 0;
+    world.openUi();
+    expect(world.uiSent.find((m) => m.channel === "tenir:color-scheme")?.payload).toEqual({
+      scheme: "dark",
+    });
+
+    world.uiSent.length = 0;
+    (world.session as unknown as { colorScheme: string }).colorScheme = "light";
+    world.emitColorScheme("light");
+    expect(world.uiSent).toEqual([{ channel: "tenir:color-scheme", payload: { scheme: "light" } }]);
     c.stop();
   });
 });

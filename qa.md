@@ -219,9 +219,18 @@ Self-contained: Bun, vendored SDK tarballs, its own lockfile — **not** an npm
 workspace member, so root-level `npm run test` does not cover it.
 
 The simulator harnesses in `veiller/sim/` walk the whole miniapp off-hardware
-(`walkthrough.ts` = the lens over 20 steps, `phone-tour.ts` = the phone page in a
-browser, `fake-server.ts` = a scriptable Tenir server). Both exit non-zero on a
-finding.
+(`walkthrough.ts` = the lens over 21 steps, `phone-tour.ts` = the phone page in a
+browser over 13, `fake-server.ts` = a scriptable Tenir server). Both exit
+non-zero on a finding.
+
+They are **not** in CI (`veiller.yml` is typecheck + test + build; the sims need
+a Veiller checkout for the simulator), so run them by hand for any change to
+`veiller/` — they are the only thing that exercises the built bundle against a
+real host and a real browser.
+
+On a headless box the phone tour needs Chromium's shared libraries
+(`libnspr4`, `libnss3`, `libasound2`); without root, `apt-get download` them and
+point `LD_LIBRARY_PATH` at the extracted `usr/lib/x86_64-linux-gnu`.
 
 ```bash
 export VEILLER_REPO=~/git/Veiller     # see the gotcha below

@@ -8,6 +8,8 @@
         "@mentra/miniapp": "file:vendor/mentra-miniapp-0.3.0-dev.1.tgz",
       },
       "devDependencies": {
+        "@fontsource/inter": "^5.1.0",
+        "@fontsource/space-grotesk": "^5.1.0",
         "bun-types": "^1.2.22",
         "playwright-core": "^1.62.1",
         "typescript": "^5.6",
@@ -18,6 +20,10 @@
     "@mentra/cloud-protocol": "file:vendor/mentra-cloud-protocol-0.1.0-dev.0.tgz",
   },
   "packages": {
+    "@fontsource/inter": ["@fontsource/inter@5.3.0", "", {}, "sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g=="],
+
+    "@fontsource/space-grotesk": ["@fontsource/space-grotesk@5.3.0", "", {}, "sha512-ksnGizDPXIDuvqcTYTSrmZ+evx9sDlS8rp7+42BQ7wU+spt3twEoXfbJz672C+5CLg6VeUQwRy5RXshWb67LcQ=="],
+
     "@mentra/cloud-protocol": ["@mentra/cloud-protocol@vendor/mentra-cloud-protocol-0.1.0-dev.0.tgz", { "dependencies": { "zod": "^3.24.1" } }, "sha512-KW1+/kYd5umAfxyyta8pjpk1DmcITnSKlNpimrQTmswAXMB7Dm6H0kQeyG+Hw2GG0ApJpcuwbccaHyueyKzPxw=="],
 
     "@mentra/miniapp": ["@mentra/miniapp@vendor/mentra-miniapp-0.3.0-dev.1.tgz", { "dependencies": { "@mentra/cloud-protocol": "*", "@mentra/types": "1.0.0-beta.2", "eventemitter3": "^5.0.1" }, "peerDependencies": { "react": ">=18.0.0" }, "optionalPeers": ["react"] }, "sha512-XkBB5Ta2clUEQcMdg6b+pN56m+DtfZ8ek0JNJUONhxBf2K+oCg7tHZ0EBPDXZbyDRNqgSl1IP18lk1NHC3sZ1w=="],

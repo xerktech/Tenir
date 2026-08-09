@@ -6,8 +6,8 @@ built bundle against the app's real host and display pipeline.
 
 | File | What it covers |
 |---|---|
-| `walkthrough.ts` | The glasses. 20 steps over sign-in, capture, captions, cues, translation runs, songs, the Continue/Exit menu, reconnect, token expiry, backgrounding, history, sign-out — printing the lens after each one. |
-| `phone-tour.ts` | The phone page, in a real browser: the DOM, the `veiller.request` round-trips, and the live cards — with the lens shown alongside, since the two must agree. |
+| `walkthrough.ts` | The glasses. 21 steps over sign-in, capture, captions, cues (including paging a long cue body), translation runs, songs, the Continue/Exit menu, reconnect, token expiry, backgrounding, history, sign-out — printing the lens after each one. |
+| `phone-tour.ts` | The phone page, in a real browser: the DOM, the `veiller.request` round-trips, the live cards, the history cue popup, the retained-audio player, and the light/dark scheme — with the lens shown alongside, since the two must agree. |
 | `fake-server.ts` | A Tenir server that speaks the real REST + `/ws` contract but takes its cues from the test, so a translation run or a revoked token happens on command. |
 
 ## Running them

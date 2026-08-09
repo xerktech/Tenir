@@ -164,3 +164,94 @@ describe("status", () => {
     expect(calls[0].url).toBe("http://gw/status");
   });
 });
+
+// XERK-237. Tenir is self-hosted, so the server address is a user-typed field
+// (mobile Setup/Settings, the web + glasses login). That makes a mistyped or
+// phished address an ordinary mistake — and it must cost the user nothing more
+// than a failed sign-in.
+describe("a login must not leak or destroy the existing token", () => {
+  it("never sends the bearer token to the server being logged into", async () => {
+    setToken("tok-real");
+    mockFetch((call) =>
+      call.url.endsWith("/auth/login")
+        ? json({ token: "tok-new" })
+        : json({ userId: "u", username: "ada", household: "h", role: "member" }),
+    );
+
+    await login("ada", "pw");
+
+    const loginCall = calls.find((c) => c.url.endsWith("/auth/login"))!;
+    const headers = (loginCall.init.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(JSON.stringify(headers)).not.toContain("tok-real");
+    // The confirmation call is authenticated, with the NEW token.
+    const meCall = calls.find((c) => c.url.endsWith("/auth/me"))!;
+    expect((meCall.init.headers as Record<string, string>).Authorization).toBe("Bearer tok-new");
+  });
+
+  it("does not adopt a renewed token from a rejected response", async () => {
+    setToken("tok-real");
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ detail: "nope" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json", "x-renewed-token": "tok-attacker" },
+        }),
+    );
+
+    await expect(login("ada", "wrong")).rejects.toBeInstanceOf(ApiError);
+    expect(getToken()).toBe("tok-real");
+  });
+
+  it("restores the previous token when the login is accepted but unconfirmed", async () => {
+    setToken("tok-real");
+    // Accepts the credentials, then refuses to confirm them.
+    mockFetch((call) =>
+      call.url.endsWith("/auth/login") ? json({ token: "tok-attacker" }) : json({ detail: "no" }, 401),
+    );
+
+    await expect(login("ada", "pw")).rejects.toBeInstanceOf(ApiError);
+    expect(getToken()).toBe("tok-real");
+  });
+
+  it("leaves no token behind when a first-time login is unconfirmed", async () => {
+    clearToken();
+    mockFetch((call) =>
+      call.url.endsWith("/auth/login") ? json({ token: "tok-attacker" }) : json({ detail: "no" }, 401),
+    );
+
+    await expect(login("ada", "pw")).rejects.toBeInstanceOf(ApiError);
+    expect(getToken()).toBeNull();
+  });
+
+  it("still renews the token from an accepted response (XERK-168)", async () => {
+    setToken("tok-1");
+    mockFetch(
+      () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "x-renewed-token": "tok-2" },
+        }),
+    );
+
+    await history.list();
+    expect(getToken()).toBe("tok-2");
+  });
+
+  // The api's renewal middleware runs after the route with NO status check, so
+  // an aged-but-valid token is renewed on authenticated 404s and 422s too.
+  // Gating adoption on `res.ok` would silently drop those (XERK-168/XERK-237).
+  it("still renews the token from an authenticated NON-2xx response", async () => {
+    setToken("tok-aged");
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ detail: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json", "x-renewed-token": "tok-fresh" },
+        }),
+    );
+
+    await expect(history.get("gone")).rejects.toBeInstanceOf(ApiError);
+    expect(getToken()).toBe("tok-fresh");
+  });
+});

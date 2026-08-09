@@ -335,12 +335,165 @@ const STEPS: Step[] = [
       check("detail shows the turns", detail.includes("First turn of the conversation"), detail.slice(0, 400))
       check("detail shows the embedded cue", detail.includes("Distance"), detail.slice(0, 400))
 
+      // A stored cue opens the detail POPUP, as upstream does — not an inline
+      // expansion (XERK-237).
+      await ctx.page.locator("#history-transcript .cue-inline").first().click()
+      await ctx.page.waitForSelector("#history-cue-popup", {state: "visible"})
+      check(
+        "the cue popup shows the cue body",
+        (await ctx.page.locator("#history-cue-popup-body").innerText()).includes("150 million"),
+      )
+      await ctx.page.locator("#history-cue-popup-close").click()
+      check("the popup closes again", !(await ctx.page.locator("#history-cue-popup").isVisible()))
+
       // Delete is deliberately two-step (arm, then confirm).
       await ctx.page.click("#history-delete")
       await ctx.page.waitForTimeout(200)
       await ctx.page.click("#history-delete")
       await ctx.page.waitForTimeout(800)
       check("conversation deleted server-side", ctx.server.conversations.length === 0)
+    },
+  },
+
+  {
+    title: "A conversation with retained audio gets a working player",
+    run: async (ctx) => {
+      // XERK-237: upstream's history detail plays and downloads the retained
+      // clip. The WebView can't fetch the authenticated endpoint cross-origin,
+      // but `<audio src>` is plain media navigation and the api takes the token
+      // as a query param — so the player has to actually load something.
+      ctx.server.conversations = [
+        {
+          id: "conv-audio",
+          status: "final",
+          micSource: "g2-microphone",
+          sourceLang: "en",
+          startedAt: new Date("2026-01-03T09:00:00Z").toISOString(),
+          endedAt: new Date("2026-01-03T09:00:30Z").toISOString(),
+          durationMs: 30_000,
+          segmentCount: 1,
+          hasAudio: true,
+          segments: [{segmentId: "s1", text: "A recorded turn", startMs: 0, endMs: 400, lang: "en"}],
+          cues: [],
+        },
+      ]
+      await ctx.page.click("#nav-history")
+      await ctx.page.waitForSelector(".history-item", {state: "visible"})
+      await ctx.page.locator(".history-item .history-open").first().click()
+      await ctx.page.waitForSelector("#history-audio", {state: "visible"})
+      check("the player is shown for a conversation with audio", await ctx.page.locator("#history-audio").isVisible())
+
+      const src = await ctx.page.locator("#history-audio-el").getAttribute("src")
+      check("the clip URL carries the bearer token", Boolean(src && /\/audio\?token=/.test(src)), String(src))
+
+      // The element must actually load it — a 401 or a bad URL would leave
+      // readyState at 0 and the duration NaN.
+      const ok = await ctx.page.evaluate(async () => {
+        const el = document.getElementById("history-audio-el") as HTMLAudioElement
+        if (!el) return {loaded: false, duration: 0}
+        await new Promise<void>((resolve) => {
+          if (el.readyState >= 1) return resolve()
+          el.addEventListener("loadedmetadata", () => resolve(), {once: true})
+          el.addEventListener("error", () => resolve(), {once: true})
+          setTimeout(resolve, 4000)
+        })
+        return {loaded: el.readyState >= 1, duration: el.duration}
+      })
+      check("the browser loads the clip's metadata", ok.loaded, JSON.stringify(ok))
+
+      // Actually press the button. Both halves matter: the request has to REACH
+      // the host (a dead button is silent, and silence would pass a
+      // no-toast-appeared check on its own), and it must not report a failure.
+      const before = ctx.sim.host.trace.length
+      await ctx.page.click("#history-audio-link")
+      await ctx.page.waitForTimeout(500)
+      const since = ctx.sim.host.trace
+        .slice(before)
+        .map((e) => `${e.text} ${e.detail ? JSON.stringify(e.detail) : ""}`)
+      check(
+        "the clip reaches the host's download sheet",
+        since.some((line) => line.includes("miniapp_download")),
+        JSON.stringify(since),
+      )
+      // The conversation, not the token: the simulator truncates a traced
+      // payload at 120 chars, and a longer host or a realistic JWT would push
+      // `?token=` past the cut and fail this spuriously. That the URL carries
+      // the token is asserted above (on the `<audio src>`) and pinned exactly
+      // in TenirController.test.ts; what only the tour can show is that the
+      // RIGHT conversation reached the host.
+      check(
+        "the host was handed this conversation's clip",
+        since.some((line) => line.includes("/conversations/conv-audio/audio")),
+        JSON.stringify(since),
+      )
+      const toast = await ctx.page.evaluate(() => {
+        const el = document.getElementById("app-toast")
+        return {shown: el?.classList.contains("show") ?? false, text: el?.textContent ?? ""}
+      })
+      check("saving the clip does not report a failure", !toast.shown, JSON.stringify(toast))
+
+      await ctx.page.click("#history-back")
+      const stillSrc = await ctx.page.locator("#history-audio-el").getAttribute("src")
+      check("leaving the detail releases the clip", !stillSrc, String(stillSrc))
+      ctx.server.conversations = []
+    },
+  },
+
+  {
+    title: "The host's scheme reaches the page, and both palettes render",
+    run: async (ctx) => {
+      // XERK-237: upstream follows `prefers-color-scheme`; here the host says
+      // which it is. The page shipped dark-only, so there are two things to
+      // check — that the host's choice ARRIVES, and that each palette renders.
+      const bg = () => ctx.page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+      const themeAttr = () =>
+        ctx.page.evaluate(() => document.documentElement.getAttribute("data-theme"))
+
+      // Drive a REAL host scheme change, the whole way through: the phone's
+      // `miniapp_color_scheme_change` envelope → session.colorScheme →
+      // onColorSchemeChange → the `tenir:color-scheme` broadcast → the page's
+      // `data-theme`. Asserting the boot value alone would prove nothing —
+      // the simulator injects `window.Veiller.colorScheme` too, so the page's
+      // boot seed produces the same "dark" without the channel working at all.
+      const setHostScheme = async (scheme: "light" | "dark") => {
+        ctx.sim.host.push({payload: {type: "miniapp_color_scheme_change", colorScheme: scheme}})
+        await ctx.sim.settle()
+        await ctx.page.waitForTimeout(250)
+      }
+
+      await setHostScheme("light")
+      check("a host scheme change reaches the page", (await themeAttr()) === "light", String(await themeAttr()))
+      const lightBgFromHost = await bg()
+      await setHostScheme("dark")
+      check("and back again", (await themeAttr()) === "dark", String(await themeAttr()))
+      const darkBg = await bg()
+      check("the two schemes actually paint differently", lightBgFromHost !== darkBg, `${lightBgFromHost} vs ${darkBg}`)
+
+      // From here on this is a STYLESHEET check: force each palette and look
+      // at what it paints.
+      await ctx.page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"))
+      const lightBg = await bg()
+      check("light and dark paint different backgrounds", darkBg !== lightBg, `${darkBg} vs ${lightBg}`)
+      check("the light palette is actually light", /^rgb\((2\d\d|1\d\d), /.test(lightBg), lightBg)
+
+      // Text has to survive the swap: a token that only exists in the dark
+      // block would leave the light page unreadable.
+      const contrast = await ctx.page.evaluate(() => {
+        const lum = (c: string) => {
+          const [r, g, b] = (c.match(/\d+/g) ?? ["0", "0", "0"]).map(Number).map((v) => {
+            const s = v / 255
+            return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+          })
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+        const style = getComputedStyle(document.body)
+        const [a, b] = [lum(style.color), lum(style.backgroundColor)].sort((x, y) => y - x)
+        return (a + 0.05) / (b + 0.05)
+      })
+      check("body text stays legible in light mode", contrast >= 4.5, `contrast ${contrast.toFixed(2)}:1`)
+
+      await ctx.page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"))
+      check("dark comes back", (await bg()) === darkBg, `${await bg()} vs ${darkBg}`)
     },
   },
 

@@ -35,8 +35,20 @@ export class NetworkError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { ...authHeader() };
+interface RequestOptions {
+  /**
+   * Send the bearer token. Default true; `/auth/login` opts out (see `login`).
+   */
+  auth?: boolean;
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = opts.auth === false ? {} : { ...authHeader() };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
@@ -55,8 +67,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   // one to every authenticated response. Adopting it here — the one request path
   // every frontend shares — is what keeps a device logged in until it explicitly
   // logs out, instead of being bounced to the login screen when the token expires.
-  const renewed = res.headers.get("x-renewed-token");
-  if (renewed) setToken(renewed);
+  // Only from a request that PRESENTED a token (XERK-237). Adopting it off ANY
+  // response let an unauthenticated one — a login against a mistyped or hostile
+  // address — hand back a replacement the device stored, leaving the real server
+  // 401ing. Gating on `res.ok` instead would also have worked for that, but it
+  // quietly broke the renewal above: the api's middleware runs after the route
+  // with no status check, so an aged-but-valid token is renewed on authenticated
+  // 404s and 422s too, and those renewals must still be taken.
+  if (opts.auth !== false) {
+    const renewed = res.headers.get("x-renewed-token");
+    if (renewed) setToken(renewed);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -158,10 +179,33 @@ export interface SystemStatus {
 
 // ---- auth -------------------------------------------------------------------
 
+/**
+ * Sign in. The credentials are the ONLY thing sent (XERK-237): the bearer token
+ * is deliberately withheld, because a login carries no authority worth proving
+ * and attaching it handed the user's live token to whatever server the
+ * (user-typed, self-hosted) address named — turning a mistyped or phished
+ * address into a credential leak rather than just a failed sign-in.
+ *
+ * Two round-trips, so the new token is only PROVISIONAL until `me()` confirms
+ * it: a server that accepts `/auth/login` and then rejects `/auth/me` must not
+ * destroy the token the user already had on an attempt that reports failure.
+ */
 export async function login(username: string, password: string): Promise<Principal> {
-  const out = await request<{ token: string }>("POST", "/auth/login", { username, password });
+  const out = await request<{ token: string }>(
+    "POST",
+    "/auth/login",
+    { username, password },
+    { auth: false },
+  );
+  const previous = getToken();
   setToken(out.token);
-  return me();
+  try {
+    return await me();
+  } catch (err) {
+    if (previous) setToken(previous);
+    else clearToken();
+    throw err;
+  }
 }
 
 /**

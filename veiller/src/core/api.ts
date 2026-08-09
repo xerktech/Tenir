@@ -8,12 +8,10 @@
  * JSContext (no CORS), where the polyfilled `fetch` supports string bodies —
  * which is all this client ever sends.
  *
- * Not ported: the household-admin `users` roster, `getStatus`, and
- * `history.audioUrl` (audio playback/download needs a browser; the miniapp
- * phone page skips it).
+ * Not ported: the household-admin `users` roster and `getStatus`.
  */
 
-import { authHeader, clearToken, setToken } from "./auth";
+import { authHeader, clearToken, getToken, setToken } from "./auth";
 import { apiBaseUrl } from "./config";
 
 export class ApiError extends Error {
@@ -46,12 +44,32 @@ export class NetworkError extends Error {
  * controller's proxied-fetch RPC can reuse the exact same path — including the
  * sliding-token renewal below — for arbitrary history endpoints.
  */
-export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { ...authHeader() };
+export interface RequestOptions {
+  /**
+   * Send this request to an explicit base instead of the configured one, WITHOUT
+   * touching the global (XERK-237). `configureApi` is a module-level singleton
+   * every other handler reads, so pointing it at a candidate server for the
+   * duration of a login left a window — as long as that server cared to keep the
+   * request open — in which unrelated handlers minted token-bearing URLs against
+   * it. Passing the base explicitly means nothing shared moves until the server
+   * has actually been accepted.
+   */
+  baseUrl?: string;
+  /** Send the bearer token. Default true; `/auth/login` opts out (see `login`). */
+  auth?: boolean;
+}
+
+export async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = opts.auth === false ? {} : { ...authHeader() };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
-    res = await fetch(`${apiBaseUrl()}${path}`, {
+    res = await fetch(`${opts.baseUrl ?? apiBaseUrl()}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -66,8 +84,17 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   // fresh one to every authenticated response. Adopting it here — the one
   // request path — is what keeps a device logged in until it explicitly logs
   // out, instead of being bounced to the login screen when the token expires.
-  const renewed = res.headers.get("x-renewed-token");
-  if (renewed) setToken(renewed);
+  // Only from a request that PRESENTED a token (XERK-237). Adopting it off any
+  // response let an unauthenticated one — a login against whatever server was
+  // named — hand back a replacement the device stored, leaving the real server
+  // 401ing. Gating on `res.ok` instead would also have worked for that, but it
+  // quietly broke XERK-168: the api's renewal middleware runs after the route
+  // with no status check, so an aged-but-valid token is renewed on authenticated
+  // 404s and 422s too, and those renewals must still be taken.
+  if (opts.auth !== false) {
+    const renewed = res.headers.get("x-renewed-token");
+    if (renewed) setToken(renewed);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -142,10 +169,43 @@ export interface Conversation extends ConversationSummary {
 
 // ---- auth -------------------------------------------------------------------
 
-export async function login(username: string, password: string): Promise<Principal> {
-  const out = await request<{ token: string }>("POST", "/auth/login", { username, password });
+/**
+ * Sign in, optionally against an explicit base rather than the configured one
+ * (XERK-237) — so a login attempt at a server the user has just typed doesn't
+ * have to move global state that every other handler reads.
+ *
+ * The credentials are the ONLY thing sent: the bearer token is deliberately
+ * withheld (`auth: false`). A login carries no authority worth proving, and
+ * attaching it handed the wearer's live token to whatever server was named —
+ * which is what made a mistyped or hostile address a token leak rather than
+ * just a failed sign-in.
+ */
+export async function login(
+  username: string,
+  password: string,
+  baseUrl?: string,
+): Promise<Principal> {
+  const out = await request<{ token: string }>(
+    "POST",
+    "/auth/login",
+    { username, password },
+    { baseUrl, auth: false },
+  );
+  // Two round-trips, so the new token is only PROVISIONAL until `me()` confirms
+  // it (XERK-237). Storing it unconditionally meant a server that accepted the
+  // login and then rejected `/auth/me` destroyed the wearer's existing token on
+  // an attempt that reports failure — leaving the real server 401ing until a
+  // silent re-login healed it. Put the previous one back if the confirmation
+  // doesn't come.
+  const previous = getToken();
   setToken(out.token);
-  return me();
+  try {
+    return await me(baseUrl);
+  } catch (err) {
+    if (previous) setToken(previous);
+    else clearToken();
+    throw err;
+  }
 }
 
 /**
@@ -170,8 +230,8 @@ export function logout(): void {
   clearToken();
 }
 
-export function me(): Promise<Principal> {
-  return request<Principal>("GET", "/auth/me");
+export function me(baseUrl?: string): Promise<Principal> {
+  return request<Principal>("GET", "/auth/me", undefined, { baseUrl });
 }
 
 // ---- history ----------------------------------------------------------------
@@ -186,4 +246,18 @@ export const history = {
   },
   get: (id: string) => request<Conversation>("GET", `/conversations/${id}`),
   remove: (id: string) => request<void>("DELETE", `/conversations/${id}`),
+  /**
+   * The retained clip's URL (upstream `client-core`'s `history.audioUrl`).
+   * Audio is opened by plain navigation — an `<audio src>` or the host's
+   * download sheet — neither of which can set an Authorization header, so the
+   * token rides as `?token=` (the api accepts it there for this endpoint).
+   * Without it the request 401s.
+   */
+  audioUrl: (id: string) => {
+    // The id is encoded as a path segment: this URL carries the bearer token,
+    // so a "../"-shaped id must not be able to point it somewhere else.
+    const url = `${apiBaseUrl()}/conversations/${encodeURIComponent(id)}/audio`;
+    const token = getToken();
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  },
 };

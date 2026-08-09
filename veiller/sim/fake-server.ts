@@ -13,7 +13,7 @@
  * reads (durations, word timings, audio retention) is omitted.
  */
 
-import type {ServerSocket} from "bun"
+import type {ServerWebSocket} from "bun"
 
 export interface FakeServerOptions {
   username?: string
@@ -26,7 +26,7 @@ export interface FakeServerOptions {
 }
 
 interface Session {
-  ws: ServerSocket<unknown>
+  ws: ServerWebSocket<unknown>
   sessionId: string
   /** Bytes of PCM the client has streamed — proof the mic path is live. */
   audioBytes: number
@@ -63,7 +63,9 @@ export class FakeTenirServer {
 
   get port(): number {
     if (!this.server) throw new Error("FakeTenirServer is not started")
-    return this.server.port
+    const {port} = this.server
+    if (typeof port !== "number") throw new Error("FakeTenirServer has no port")
+    return port
   }
 
   /** What a user would type into the miniapp's server field. */
@@ -107,7 +109,7 @@ export class FakeTenirServer {
           }
         },
         message(ws, message) {
-          self.onSocketMessage(ws as ServerSocket<unknown>, message)
+          self.onSocketMessage(ws as ServerWebSocket<unknown>, message)
         },
         close(ws) {
           const session = self.sessions.find((s) => s.ws === ws)
@@ -131,7 +133,14 @@ export class FakeTenirServer {
     const authed = () => {
       const header = req.headers.get("authorization") ?? ""
       const token = header.replace(/^Bearer\s+/i, "")
-      return token && this.tokens.includes(token)
+      return Boolean(token && this.tokens.includes(token))
+    }
+    // The audio endpoint is reached by plain navigation — an `<audio src>` or
+    // the OS download sheet — neither of which can set a header, so the real
+    // api accepts the token as a query param on this one route (XERK-237).
+    const authedByQuery = () => {
+      const token = url.searchParams.get("token") ?? ""
+      return Boolean(token && this.tokens.includes(token))
     }
 
     if (url.pathname === "/auth/login" && req.method === "POST") {
@@ -156,6 +165,21 @@ export class FakeTenirServer {
         username: this.opts.username,
         household: "home",
         role: "member",
+      })
+    }
+
+    // Retained audio: token in the query, a real (if tiny) WAV in the body, so
+    // the page's `<audio>` element gets something it can actually load.
+    const audio = /^\/conversations\/([^/]+)\/audio$/.exec(url.pathname)
+    if (audio) {
+      if (!authed() && !authedByQuery()) {
+        return Response.json({detail: "unauthorized"}, {status: 401})
+      }
+      const found = this.conversations.find((c) => c.id === audio[1])
+      if (!found) return Response.json({detail: "not found"}, {status: 404})
+      return new Response(silentWav().buffer as ArrayBuffer, {
+        status: 200,
+        headers: {"content-type": "audio/wav"},
       })
     }
 
@@ -194,7 +218,7 @@ export class FakeTenirServer {
   // WebSocket
   // ===========================================================================
 
-  private onSocketMessage(ws: ServerSocket<unknown>, message: string | Buffer): void {
+  private onSocketMessage(ws: ServerWebSocket<unknown>, message: string | Buffer): void {
     if (typeof message !== "string") {
       const session = this.sessions.find((s) => s.ws === ws)
       if (session) session.audioBytes += message.byteLength
@@ -283,4 +307,32 @@ export class FakeTenirServer {
     session.ended = true
     session.ws.close(code, "dropped")
   }
+}
+
+/**
+ * A minimal, valid 16 kHz mono s16le WAV: a 44-byte header over a few
+ * milliseconds of silence. Real enough that a browser's `<audio>` element
+ * loads and reports a duration, small enough to keep the harness quick.
+ */
+function silentWav(samples = 800): Uint8Array {
+  const dataBytes = samples * 2
+  const buf = new ArrayBuffer(44 + dataBytes)
+  const view = new DataView(buf)
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i))
+  }
+  ascii(0, "RIFF")
+  view.setUint32(4, 36 + dataBytes, true)
+  ascii(8, "WAVE")
+  ascii(12, "fmt ")
+  view.setUint32(16, 16, true) // PCM chunk size
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, 1, true) // mono
+  view.setUint32(24, 16000, true) // sample rate
+  view.setUint32(28, 16000 * 2, true) // byte rate
+  view.setUint16(32, 2, true) // block align
+  view.setUint16(34, 16, true) // bits per sample
+  ascii(36, "data")
+  view.setUint32(40, dataBytes, true)
+  return new Uint8Array(buf)
 }
