@@ -44,12 +44,32 @@ export class NetworkError extends Error {
  * controller's proxied-fetch RPC can reuse the exact same path — including the
  * sliding-token renewal below — for arbitrary history endpoints.
  */
-export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { ...authHeader() };
+export interface RequestOptions {
+  /**
+   * Send this request to an explicit base instead of the configured one, WITHOUT
+   * touching the global (XERK-237). `configureApi` is a module-level singleton
+   * every other handler reads, so pointing it at a candidate server for the
+   * duration of a login left a window — as long as that server cared to keep the
+   * request open — in which unrelated handlers minted token-bearing URLs against
+   * it. Passing the base explicitly means nothing shared moves until the server
+   * has actually been accepted.
+   */
+  baseUrl?: string;
+  /** Send the bearer token. Default true; `/auth/login` opts out (see `login`). */
+  auth?: boolean;
+}
+
+export async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = opts.auth === false ? {} : { ...authHeader() };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
-    res = await fetch(`${apiBaseUrl()}${path}`, {
+    res = await fetch(`${opts.baseUrl ?? apiBaseUrl()}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -64,8 +84,14 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   // fresh one to every authenticated response. Adopting it here — the one
   // request path — is what keeps a device logged in until it explicitly logs
   // out, instead of being bounced to the login screen when the token expires.
-  const renewed = res.headers.get("x-renewed-token");
-  if (renewed) setToken(renewed);
+  // Only from a response the server actually accepted (XERK-237). Adopting it
+  // off any response let a REJECTED request replace the wearer's live token —
+  // so a failed login against a server the page named came back with a
+  // replacement the device stored, leaving the real server 401ing.
+  if (res.ok) {
+    const renewed = res.headers.get("x-renewed-token");
+    if (renewed) setToken(renewed);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -140,10 +166,30 @@ export interface Conversation extends ConversationSummary {
 
 // ---- auth -------------------------------------------------------------------
 
-export async function login(username: string, password: string): Promise<Principal> {
-  const out = await request<{ token: string }>("POST", "/auth/login", { username, password });
+/**
+ * Sign in, optionally against an explicit base rather than the configured one
+ * (XERK-237) — so a login attempt at a server the user has just typed doesn't
+ * have to move global state that every other handler reads.
+ *
+ * The credentials are the ONLY thing sent: the bearer token is deliberately
+ * withheld (`auth: false`). A login carries no authority worth proving, and
+ * attaching it handed the wearer's live token to whatever server was named —
+ * which is what made a mistyped or hostile address a token leak rather than
+ * just a failed sign-in.
+ */
+export async function login(
+  username: string,
+  password: string,
+  baseUrl?: string,
+): Promise<Principal> {
+  const out = await request<{ token: string }>(
+    "POST",
+    "/auth/login",
+    { username, password },
+    { baseUrl, auth: false },
+  );
   setToken(out.token);
-  return me();
+  return me(baseUrl);
 }
 
 /**
@@ -168,8 +214,8 @@ export function logout(): void {
   clearToken();
 }
 
-export function me(): Promise<Principal> {
-  return request<Principal>("GET", "/auth/me");
+export function me(baseUrl?: string): Promise<Principal> {
+  return request<Principal>("GET", "/auth/me", undefined, { baseUrl });
 }
 
 // ---- history ----------------------------------------------------------------

@@ -201,6 +201,8 @@ type Route = (init?: RequestInit) => {
   status: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Hold the response open until this settles — an attacker-paced server. */
+  wait?: Promise<void>;
 };
 
 const realFetch = globalThis.fetch;
@@ -214,6 +216,7 @@ function stubFetch(): void {
     const key = Object.keys(routes).find((k) => u.includes(k));
     if (!key) throw new TypeError(`unroutable fetch: ${u}`);
     const out = routes[key](init);
+    if (out.wait) await out.wait;
     const headers = new Map(Object.entries(out.headers ?? {}));
     return {
       ok: out.status >= 200 && out.status < 300,
@@ -1010,6 +1013,91 @@ describe("UI bus", () => {
 
     // And a failed attempt never persists the URL it was given.
     expect(world.storage.get(SERVER_URL_KEY)).toBe("wss://h.example.com/ws");
+    c.stop();
+  });
+
+  // XERK-237: a login carries no authority worth proving, and attaching the
+  // bearer token handed the wearer's live credential to whatever server was
+  // named — turning a mistyped or hostile address into a token leak rather than
+  // just a failed sign-in. It is also what made the whole re-point class worth
+  // anything to an attacker.
+  it("never sends the bearer token to the server a login names", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    fetchCalls.length = 0;
+
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" } });
+    await world.rpc("tenir:login", { serverUrl: "attacker.example", username: "a", password: "b" });
+
+    const loginCalls = fetchCalls.filter((f) => f.url.includes("/auth/login"));
+    expect(loginCalls).toHaveLength(1);
+    expect(loginCalls[0].url).toBe("https://attacker.example/auth/login");
+    const headers = (loginCalls[0].init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(JSON.stringify(headers)).not.toContain("tok-1");
+    c.stop();
+  });
+
+  // A REJECTED response used to be able to replace the wearer's token, so a
+  // failed login against a named server left the real server 401ing.
+  it("does not adopt a renewed token from a rejected response", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    routes["/auth/login"] = () => ({
+      status: 401,
+      body: { detail: "nope" },
+      headers: { "x-renewed-token": "attacker-token" },
+    });
+    await world.rpc("tenir:login", { serverUrl: "attacker.example", username: "a", password: "b" });
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-1");
+
+    // The clip URL still carries the ORIGINAL token, against the original host.
+    const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+    c.stop();
+  });
+
+  // XERK-237: restoring the base after a failed login was a ROLLBACK, not
+  // isolation — the attempt still moved the module-level api base while it was
+  // in flight, and the server it named decides how long that is. Acting inside
+  // that window reached the same token-bearing download. The attempt now
+  // carries its base explicitly and moves nothing shared until it succeeds.
+  it("a login in flight cannot move the api base out from under other handlers", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    // A server that holds the login open for as long as it likes.
+    let release!: () => void;
+    const stalled = new Promise<void>((r) => (release = r));
+    routes["/auth/login"] = () => ({ status: 401, body: { detail: "nope" }, wait: stalled });
+
+    const inFlight = world.rpc("tenir:login", {
+      serverUrl: "attacker.example",
+      username: "a",
+      password: "b",
+    });
+    await flush();
+
+    // INSIDE the window: everything still addresses the real server.
+    const url = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(url.url).toBe("https://h.example.com/conversations/c1/audio?token=tok-1");
+    await world.rpc("tenir:download", { id: "c1" });
+    expect(world.downloads.every((d) => d.url.startsWith("https://h.example.com/"))).toBe(true);
+    expect(c.authState().serverUrl).toBe("h.example.com");
+
+    release();
+    expect(await inFlight).toEqual({ ok: false, error: "Incorrect username or password." });
+    // …and still afterwards.
+    const after = (await world.rpc("tenir:audio-url", { id: "c1" })) as { url: string };
+    expect(after.url).toBe(url.url);
     c.stop();
   });
 

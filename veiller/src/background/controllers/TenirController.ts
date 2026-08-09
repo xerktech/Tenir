@@ -63,7 +63,7 @@ import {
   request,
 } from "../../core/api";
 import { clearToken, configureTokenStore, getToken } from "../../core/auth";
-import { apiBaseUrl, configureApi, httpBaseFromWs } from "../../core/config";
+import { configureApi, httpBaseFromWs } from "../../core/config";
 import { langName } from "../../core/lang";
 import {
   CUE_TTL_MS,
@@ -1388,25 +1388,21 @@ export class TenirController {
     if (!wsUrl) {
       return { ok: false, error: "Enter your server address, e.g. tenir.example.com" };
     }
-    // Point the REST client at the candidate server for the duration of the
-    // attempt — the login has to reach the server the wearer typed — but keep
-    // the previous one to fall back to.
-    //
-    // A FAILED attempt must not leave the api pointed wherever the page named
-    // (XERK-237). The session stays signed in through a failed login, so every
-    // token-bearing URL minted afterwards — the audio clip, and the download
-    // handed to the host's sheet, which does NOT scheme-filter — would address
-    // that host instead, carrying the wearer's real bearer token. This is what
-    // made an allow-list on a page-supplied download URL unsafe: the page could
-    // move the base first and then satisfy the check.
-    const previousWsUrl = this.wsUrl;
-    const previousHttpBase = apiBaseUrl();
-    this.wsUrl = wsUrl;
-    configureApi({ httpBaseUrl: httpBaseFromWs(wsUrl) });
+    // The attempt goes to the candidate server EXPLICITLY, without moving any
+    // shared state (XERK-237). `configureApi` is a module-level singleton that
+    // every other handler reads, so pointing it at the candidate for the
+    // duration of the login opened a window — as wide as that server cared to
+    // keep the request open — in which `tenir:audio-url` and `tenir:download`
+    // minted token-bearing URLs against it. Restoring afterwards was a
+    // rollback, not isolation. Nothing shared moves until the server has
+    // actually accepted us.
+    const httpBase = httpBaseFromWs(wsUrl);
     try {
-      const principal = await login(payload.username.trim(), payload.password);
-      // Persist only once the server has actually accepted us, so a typo — or a
-      // hostile URL — is never what the next boot comes back to.
+      const principal = await login(payload.username.trim(), payload.password, httpBase);
+      // Accepted: adopt the server, and only now persist it — so a typo, or a
+      // hostile address, is never what the next boot comes back to.
+      this.wsUrl = wsUrl;
+      configureApi({ httpBaseUrl: httpBase });
       try {
         await this.session.storage.set(SERVER_URL_KEY, wsUrl);
       } catch {
@@ -1426,10 +1422,7 @@ export class TenirController {
       this.sendAuth();
       return { ok: true, username: principal.username };
     } catch (err) {
-      // Put the api back where it was: the attempt failed, so nothing about
-      // this session should now address the server it named (see above).
-      this.wsUrl = previousWsUrl;
-      configureApi({ httpBaseUrl: previousHttpBase });
+      // Nothing to undo: the attempt never touched the configured server.
       return { ok: false, error: describeLoginError(err) };
     }
   }
