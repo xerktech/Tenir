@@ -1,4 +1,4 @@
-import type { Lang, LyricLine, MicSource } from "@tenir/contract";
+import type { ErrorMessage, Lang, LyricLine, MicSource } from "@tenir/contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiHandlers } from "../src/ws";
@@ -835,8 +835,12 @@ describe("CaptureSession song handlers (XERK-184)", () => {
 });
 
 describe("a fatal error must end the capture, not just record a string (XERK-236)", () => {
-  const fatal = (message = "connection rejected — please sign in again") =>
-    ({ type: "error" as const, code: "unauthorized", message, fatal: true });
+  const fatal = (message = "connection rejected — please sign in again"): ErrorMessage => ({
+    type: "error",
+    code: "unauthorized",
+    message,
+    fatal: true,
+  });
 
   it("stops the microphone and drops out of the recording state", async () => {
     const { session, audio, refs } = harness();
@@ -863,12 +867,13 @@ describe("a fatal error must end the capture, not just record a string (XERK-236
   it("leaves a non-fatal error alone — the session is still healthy", async () => {
     const { session, audio, refs } = harness();
     await session.start();
-    refs.client!.handlers.onError?.({
+    const nonFatal: ErrorMessage = {
       type: "error",
       code: "bad_request",
       message: "could not parse message",
       fatal: false,
-    });
+    };
+    refs.client!.handlers.onError?.(nonFatal);
     await Promise.resolve();
     expect(audio.stopped).toBe(false);
     expect(session.getState().running).toBe(true);

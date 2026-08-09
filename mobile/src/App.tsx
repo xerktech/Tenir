@@ -37,6 +37,8 @@ import { LiveScreen } from "./screens/Live";
 import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
 import { StatusScreen } from "./screens/Status";
+import { getToken } from "@tenir/client-core";
+
 import { displayServerUrl, normalizeServerUrl } from "./lib/serverUrl";
 import { requestUpdateCheck } from "./lib/useUpdater";
 import { saveLastTab, saveServerUrl } from "./storage";
@@ -127,7 +129,11 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
         // unreachable instead of presenting an empty login as if the session
         // had been forgotten (XERK-236). Retry re-runs /auth/me, so a token
         // that was valid all along signs straight back in.
-        unreachable={auth.error != null}
+        //
+        // Gated on there BEING a stored token: on a genuine first run there is
+        // no session to have lost, and telling a brand-new user they may still
+        // be signed in is wrong on the first screen they ever see.
+        unreachable={auth.error != null && getToken() != null}
         onRetry={auth.reload}
       />
     );

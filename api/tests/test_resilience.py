@@ -93,7 +93,7 @@ def test_ws_audio_error_is_isolated_not_fatal(monkeypatch: pytest.MonkeyPatch) -
     """A throwing audio frame is counted and the socket stays open."""
 
     class FakeSession:
-        def __init__(self, send, *, session_id=None, household=None) -> None:
+        def __init__(self, send, *, session_id=None, household=None, user_id=None) -> None:
             self._send = send
             self.session_id = session_id or "fake"
             self.household = household

@@ -350,7 +350,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # backend outage doesn't 500 the connection.
                 try:
                     new_session = Session(
-                        send, session_id=requested_id, household=principal.household
+                        send,
+                        session_id=requested_id,
+                        household=principal.household,
+                        user_id=principal.user_id,
                     )
                     await new_session.start(
                         mic_source=msg.micSource,

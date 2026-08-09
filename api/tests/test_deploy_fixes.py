@@ -150,15 +150,15 @@ def test_audio_download_accepts_query_token(monkeypatch: pytest.MonkeyPatch) -> 
     _enable_auth(monkeypatch)
     convs = get_conversation_store()
     audio = get_audio_store()
-    convs.create("acme", "c1")
-    convs.set_audio_key("acme", "c1", "acme/c1.wav")
-    audio.put("acme/c1.wav", b"RIFFdata")
+    convs.create("acme", "11111111-1111-4111-8111-111111111111")
+    convs.set_audio_key("acme", "11111111-1111-4111-8111-111111111111", "acme/11111111-1111-4111-8111-111111111111.wav")
+    audio.put("acme/11111111-1111-4111-8111-111111111111.wav", b"RIFFdata")
 
     with TestClient(app) as client:
         # No credentials at all -> 401 (plain navigation can't set a header).
-        assert client.get("/conversations/c1/audio").status_code == 401
+        assert client.get("/conversations/11111111-1111-4111-8111-111111111111/audio").status_code == 401
         # The token in the query param authenticates the download.
-        r = client.get(f"/conversations/c1/audio?token={_token('acme')}")
+        r = client.get(f"/conversations/11111111-1111-4111-8111-111111111111/audio?token={_token('acme')}")
         assert r.status_code == 200 and r.content == b"RIFFdata"
 
 

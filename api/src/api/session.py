@@ -124,7 +124,12 @@ def is_valid_session_id(value: str) -> bool:
 
 class Session:
     def __init__(
-        self, send: Sender, *, session_id: str | None = None, household: str | None = None
+        self,
+        send: Sender,
+        *,
+        session_id: str | None = None,
+        household: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         self._send = send
         self.session_id = session_id or str(uuid.uuid4())
@@ -220,6 +225,11 @@ class Session:
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
         self._household = household or settings.household_id
+        # Who opened the socket, so deleting an account can end its live captures
+        # (XERK-236). Auth is checked at the handshake only, so without this a
+        # removed member kept recording into the household for as long as they
+        # held the socket open.
+        self.user_id = user_id
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -1152,6 +1162,25 @@ class Session:
         if self._conversations is None:
             return
         # Persist retained audio, then point the conversation at it.
+        #
+        # Guarded as a whole: audio retention is best-effort, but FINALIZING the
+        # conversation is not. Anything raising in here — an unwritable audio
+        # dir, a full disk, or audio_key() rejecting an unusual household name —
+        # used to propagate out of close() and skip finish() below, leaving the
+        # session stuck "live" forever on top of having lost its audio
+        # (XERK-236). Losing the recording is bad; losing the recording AND the
+        # record of it is worse.
+        try:
+            await self._persist_audio()
+        except Exception:
+            log.exception("session %s could not retain audio", self.session_id)
+            metrics.incr("audio.persist_errors")
+        await asyncio.to_thread(
+            self._conversations.finish, self._household, self.session_id, status="ready"
+        )
+
+    async def _persist_audio(self) -> None:
+        """Flush the retained full-session audio to the audio store."""
         if self._audio_store is not None and self._full_audio:
             key = audio_key(self._household, self.session_id)
             pcm = bytes(self._full_audio)
@@ -1171,6 +1200,3 @@ class Session:
                 self._conversations.set_audio_key, self._household, self.session_id, key
             )
             self._full_audio.clear()
-        await asyncio.to_thread(
-            self._conversations.finish, self._household, self.session_id, status="ready"
-        )

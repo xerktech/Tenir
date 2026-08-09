@@ -18,15 +18,35 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import unquote
 
-# `token=` up to the next separator, in a request line or any other logged text.
-_TOKEN_RE = re.compile(r"([?&]token=)[^\s&\"']+")
-_REDACTED = r"\1<redacted>"
+# Any query parameter, so the NAME can be normalized before deciding. Matching
+# the literal "token=" was not enough: Starlette percent-decodes query keys, so
+# `?%74oken=<jwt>` authenticated exactly like `?token=` and sailed past the
+# filter into the log in cleartext. The control was one URL-encoding from
+# useless (XERK-236).
+_PARAM_RE = re.compile(r"(?P<sep>[?&])(?P<key>[^=&\s\"']+)=(?P<value>[^\s&\"']*)")
+
+
+def _is_token_key(key: str) -> bool:
+    # Percent-decoded and case-folded, because that is how the server reads it.
+    return unquote(key).casefold() == "token"
 
 
 def redact_tokens(text: str) -> str:
-    """Replace every ``token=<value>`` with ``token=<redacted>``."""
-    return _TOKEN_RE.sub(_REDACTED, text)
+    """Replace every query-string ``token=<value>`` with ``token=<redacted>``.
+
+    Matches on the DECODED parameter name, so encoded spellings are caught too.
+    The key is left exactly as written — the log should still show what the
+    client actually sent.
+    """
+
+    def sub(m: re.Match[str]) -> str:
+        if not _is_token_key(m["key"]):
+            return m[0]
+        return f"{m['sep']}{m['key']}=<redacted>"
+
+    return _PARAM_RE.sub(sub, text)
 
 
 class RedactTokensFilter(logging.Filter):
@@ -35,17 +55,23 @@ class RedactTokensFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # The access logger formats with %-args, so the token lives in the args,
         # not yet in record.msg. Redact both: other loggers pass whole strings.
-        if isinstance(record.msg, str) and "token=" in record.msg:
+        #
+        # The cheap pre-check is `"="`, NOT `"token="`. Guarding on the literal
+        # spelling reintroduced the exact bypass this filter exists to close:
+        # `?%74oken=` carries a token but does not contain the substring
+        # "token=", so the record was skipped before the (correct) regex ever
+        # ran (XERK-236).
+        if isinstance(record.msg, str) and "=" in record.msg:
             record.msg = redact_tokens(record.msg)
         if record.args:
             if isinstance(record.args, tuple):
                 record.args = tuple(
-                    redact_tokens(a) if isinstance(a, str) and "token=" in a else a
+                    redact_tokens(a) if isinstance(a, str) and "=" in a else a
                     for a in record.args
                 )
             elif isinstance(record.args, dict):
                 record.args = {
-                    k: redact_tokens(v) if isinstance(v, str) and "token=" in v else v
+                    k: redact_tokens(v) if isinstance(v, str) and "=" in v else v
                     for k, v in record.args.items()
                 }
         return True

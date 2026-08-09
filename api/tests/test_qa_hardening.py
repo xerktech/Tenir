@@ -118,6 +118,41 @@ def test_redact_tokens_scrubs_query_string_credentials() -> None:
     assert redact_tokens("nothing to see") == "nothing to see"
 
 
+def test_redaction_survives_an_encoded_or_odd_cased_parameter_name() -> None:
+    """Starlette percent-decodes query KEYS, so `?%74oken=` authenticates exactly
+    like `?token=`. Matching the literal string let a live 30-day admin token
+    through into the log in cleartext — one URL-encoding from useless."""
+    assert redact_tokens("/ws?%74oken=abc.def") == "/ws?%74oken=<redacted>"
+    assert redact_tokens("/x?%74%6Fken=abc") == "/x?%74%6Fken=<redacted>"
+    assert redact_tokens("/x?TOKEN=abc") == "/x?TOKEN=<redacted>"
+    assert redact_tokens("/x?ToKeN=abc&q=1") == "/x?ToKeN=<redacted>&q=1"
+    # A parameter that merely CONTAINS "token" is not one, and is left alone.
+    assert redact_tokens("/x?refresh_token_hint=abc") == "/x?refresh_token_hint=abc"
+
+
+def test_log_redaction_is_actually_installed_on_the_access_logger() -> None:
+    """The filter working is useless if nothing attaches it — install() is the
+    part that does the work, and it was covered by nothing."""
+    from api.logging_filters import install
+
+    for name in ("uvicorn.access", "uvicorn.error", "api"):
+        logging.getLogger(name).filters = [
+            f for f in logging.getLogger(name).filters if not isinstance(f, RedactTokensFilter)
+        ]
+    install()
+    for name in ("uvicorn.access", "uvicorn.error", "api"):
+        attached = logging.getLogger(name).filters
+        assert any(isinstance(f, RedactTokensFilter) for f in attached), name
+    install()  # idempotent — no duplicate filters on a re-run
+    assert (
+        sum(
+            isinstance(f, RedactTokensFilter)
+            for f in logging.getLogger("uvicorn.access").filters
+        )
+        == 1
+    )
+
+
 def test_redaction_filter_scrubs_the_uvicorn_access_record() -> None:
     """uvicorn formats with %-args, so the token is in record.args, not msg."""
     record = logging.LogRecord(
@@ -132,6 +167,29 @@ def test_redaction_filter_scrubs_the_uvicorn_access_record() -> None:
     assert RedactTokensFilter().filter(record) is True
     assert "secret-token-value" not in record.getMessage()
     assert "token=<redacted>" in record.getMessage()
+
+
+@pytest.mark.parametrize("key", ["token", "%74oken", "%74%6Fken", "TOKEN"])
+def test_redaction_filter_catches_encoded_parameter_names_end_to_end(key: str) -> None:
+    """Through the FILTER, not just redact_tokens().
+
+    The first fix corrected the regex but left a `"token=" in arg` fast-path
+    guard in the filter, so `?%74oken=` was skipped before the regex ever ran —
+    the bypass survived in the running container while the function's own unit
+    test passed. Exercise the whole path (XERK-236).
+    """
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("1.2.3.4:5", "GET", f"/ws?{key}=super-secret-jwt", "1.1", 200),
+        exc_info=None,
+    )
+    assert RedactTokensFilter().filter(record) is True
+    assert "super-secret-jwt" not in record.getMessage()
+    assert "<redacted>" in record.getMessage()
 
 
 # --- config that must not boot ------------------------------------------------
@@ -164,7 +222,6 @@ def test_unknown_stt_backend_is_refused_at_config_time() -> None:
     "field",
     [
         "auth_token_ttl_seconds",
-        "session_resume_grace_seconds",
         "stt_partial_interval_ms",
         "stt_max_segment_ms",
         "cue_rss_keep_days",
@@ -179,3 +236,35 @@ def test_non_positive_durations_are_refused(field: str, value: int) -> None:
     probe interval 0 left /status a falsely-green page with nothing probed."""
     with pytest.raises(ValueError, match=field):
         Settings(**{field: value})
+
+
+def test_zero_resume_grace_is_allowed_because_it_means_something() -> None:
+    """0 disables resume — config.py documents it and session.detach() has an
+    explicit branch for it. Sweeping it into the "must be positive" list would
+    refuse a legitimate deployment and orphan that branch as dead code."""
+    assert Settings(session_resume_grace_seconds=0).session_resume_grace_seconds == 0
+    with pytest.raises(ValueError, match="session_resume_grace_seconds"):
+        Settings(session_resume_grace_seconds=-1)
+
+
+# --- the startup wiring, not just the functions ------------------------------
+
+
+def test_lifespan_sweeps_stale_rows_and_installs_redaction() -> None:
+    """M7/M12 from the QA gate: `finish_stale()` and `install()` were both
+    correct and both unreachable-if-unwired. Pin the wiring, not just the parts."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    store = get_conversation_store()
+    store.create("hh", "left-live-by-a-crash")
+    assert store.get("hh", "left-live-by-a-crash").status == "live"
+
+    logging.getLogger("uvicorn.access").filters = []
+    with TestClient(app):
+        assert store.get("hh", "left-live-by-a-crash").status == "ready"
+        assert any(
+            isinstance(f, RedactTokensFilter)
+            for f in logging.getLogger("uvicorn.access").filters
+        )

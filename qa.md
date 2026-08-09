@@ -287,6 +287,12 @@ adb shell am start -n com.tenir/.MainActivity
   check the suite goes red. Do it in a scratch copy (`cp -r` + symlink
   `node_modules`), or with an in-memory vitest transform plugin — never edit the
   repo.
+- **Check exit codes, not tail output.** `npm run typecheck 2>&1 | tail -5` swallows
+  the exit status, and a broken typecheck looks identical to a clean one. The
+  first pass shipped a red `Core`/`Web` gate that way. Run
+  `npm run typecheck > /dev/null 2>&1; echo $?`. Same for vitest: a suite can
+  report "292 passed" and still exit 1 on an unhandled rejection (a fake bridge
+  missing a method), so read `Errors N` as well as `Tests N`.
 - **Container logs** via Portainer (`~/.claude/bin/portainer-logs <node> <container>`).
 - **`docker compose --dry-run up --build`** shows what a command *would* do
   before you pay for it.
@@ -312,6 +318,17 @@ security-relevant mediums). Each was reproduced; none is speculative.
   delete and recreate a user.
 - **Conversation detail is not a route** on web: Back exits it, refresh loses
   it, it cannot be linked. `web/src/lib/route.ts` only routes tabs.
+
+### Deliberately not done
+
+- **The api container healthcheck probes `/health` (liveness), not `/ready`.**
+  `/health` answering "ok" with Postgres down is a real reporting gap, and
+  switching it to `/ready` is the obvious fix — don't. This host runs `autoheal`
+  in `AUTOHEAL_CONTAINER_LABEL=all` mode, so "unhealthy" means "restart me", and
+  a readiness-based healthcheck turned a Postgres blip (including watchtower
+  updating `postgres:16` in place) into an api restart loop every ~60-75 s,
+  each bounce killing live captures and their in-memory audio. `GET /ready` and
+  the `/status` page report the degradation honestly; use those.
 
 ### Security follow-ups
 

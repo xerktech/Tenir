@@ -116,11 +116,23 @@ services:
       postgres-tenir:
         condition: service_healthy
     healthcheck:
-      # /ready, not /health: /health is pure liveness and answered "ok" with
-      # Postgres down, so the container reported healthy while every login hung
-      # 30 s and then 500ed — and autoheal and any `depends_on: service_healthy`
-      # consumer saw green (XERK-236). /ready probes the real backends.
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready')"]
+      # LIVENESS, deliberately — /health, not /ready.
+      #
+      # /health answering "ok" while Postgres is down is a real reporting gap
+      # (logins hang 30 s then 500), and the obvious fix is to probe /ready
+      # instead. Don't: this host runs `autoheal` in AUTOHEAL_CONTAINER_LABEL=all
+      # mode, so "unhealthy" means "restart me". Pointing the healthcheck at a
+      # readiness signal turned a Postgres blip — including watchtower updating
+      # postgres:16 in place — into an api restart loop, ~60-75 s apart for the
+      # length of the outage, and every bounce kills the live captures and their
+      # in-memory audio buffers. That is the exact loss the grace-window and
+      # stale-sweep fixes in this ticket exist to prevent (XERK-236).
+      #
+      # A container healthcheck answers "should this process be killed"; the api
+      # is perfectly alive with its database away and recovers on its own. Use
+      # GET /ready for load-balancer readiness and the /status page for the
+      # operator-facing truth — both report the degradation honestly.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 10s
       timeout: 5s
       retries: 5

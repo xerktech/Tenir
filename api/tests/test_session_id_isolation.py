@@ -73,7 +73,14 @@ def _capture(
         ready = ws.receive_json()
         for _ in range(chunks):
             ws.send_bytes(_voice(freq))
+        # Bounded by a real deadline, not just a frame count: if a regression
+        # stops the server sending anything, receive_json() blocks forever and
+        # the whole CI job dies on its timeout instead of reporting a failure
+        # (XERK-236 QA gate).
+        deadline = time.monotonic() + 20.0
         for _ in range(80):
+            if time.monotonic() > deadline:
+                raise AssertionError("timed out waiting for caption.final")
             if ws.receive_json()["type"] == "caption.final":
                 break
         # session.end is handled inline by the WS loop, but nothing is sent back;
@@ -82,6 +89,8 @@ def _capture(
         ws.send_text(json.dumps({"type": "session.end"}))
         ws.send_text(json.dumps({"type": "ping", "t": 1}))
         for _ in range(80):
+            if time.monotonic() > deadline + 20.0:
+                raise AssertionError("timed out waiting for the pong after session.end")
             if ws.receive_json()["type"] == "pong":
                 break
 

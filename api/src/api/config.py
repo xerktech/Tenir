@@ -396,7 +396,6 @@ class Settings(BaseSettings):
     # a green "ready" with an empty component list, having probed nothing.
     @field_validator(
         "auth_token_ttl_seconds",
-        "session_resume_grace_seconds",
         "stt_partial_interval_ms",
         "stt_max_segment_ms",
         "cue_rss_keep_days",
@@ -408,6 +407,17 @@ class Settings(BaseSettings):
     def _must_be_positive(cls, value: float, info: ValidationInfo) -> float:
         if value <= 0:
             raise ValueError(f"{info.field_name} must be greater than 0 (got {value})")
+        return value
+
+    # Not in the list above: 0 is a MEANING here, not a mistake — it disables
+    # resume, and session.detach()/`_grace_close` handle it explicitly
+    # ("finalize on the next loop turn"). Refusing it would break an operator
+    # who deliberately turned resume off, and orphan that branch as dead code.
+    @field_validator("session_resume_grace_seconds")
+    @classmethod
+    def _must_not_be_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"session_resume_grace_seconds must be 0 or more (got {value})")
         return value
 
     @property
