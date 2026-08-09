@@ -950,18 +950,19 @@ describe("UI bus", () => {
     c2.stop();
   });
 
-  it("tenir:download hands the clip to the host's download sheet", async () => {
+  // The page hands over a conversation id and nothing else: the background
+  // mints the URL. The host's download sheet does NOT scheme-filter the way
+  // openUrl does, and the URL carries the bearer token — so a page-supplied URL
+  // would be arbitrary network/file egress with the token attached. An
+  // allow-list over one looked equivalent but was not: `tenir:login` re-points
+  // the api base even when the login FAILS, so the page could move the base and
+  // then satisfy the check.
+  it("tenir:download mints the clip URL itself from the conversation id", async () => {
     routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
     const world = makeWorld(AUTHED_SEED);
     const c = makeController(world);
     await c.start();
-    expect(
-      await world.rpc("tenir:download", {
-        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
-        filename: "audio.wav",
-        mimeType: "audio/wav",
-      }),
-    ).toEqual({ ok: true });
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
     expect(world.downloads).toEqual([
       {
         url: "https://h.example.com/conversations/c1/audio?token=tok-1",
@@ -969,56 +970,37 @@ describe("UI bus", () => {
         mimeType: "audio/wav",
       },
     ]);
-    // A sheet the wearer cancels is reported, not swallowed.
-    world.setDownloadOk(false);
-    expect(
-      await world.rpc("tenir:download", {
-        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
-        filename: "audio.wav",
-      }),
-    ).toEqual({ ok: false });
     c.stop();
   });
 
-  // The host's download sheet does NOT scheme-filter the way openUrl does, so
-  // an unchecked URL from the WebView would be arbitrary network/file egress
-  // carrying the wearer's token.
-  it("tenir:download refuses any URL that is not the api's own", async () => {
-    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
-    const world = makeWorld(AUTHED_SEED);
+  it("tenir:download refuses while signed out, and never reaches the host", async () => {
+    const world = makeWorld();
     const c = makeController(world);
     await c.start();
-    for (const url of [
-      "https://attacker.example/collect?stolen=1",
-      "file:///etc/passwd",
-      "javascript:alert(1)",
-      // A look-alike host that merely shares the api's prefix.
-      "https://h.example.com.evil.test/conversations/c1/audio",
-      "",
-    ]) {
-      expect(await world.rpc("tenir:download", { url, filename: "audio.wav" })).toEqual({
-        ok: false,
-      });
-    }
-    expect(world.downloads).toEqual([]); // nothing ever reached the host
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: false });
+    expect(world.downloads).toEqual([]);
     c.stop();
   });
 
-  // The real host answers {success}; the simulator answers {ok}. Accepting
-  // only one means the harness and the device disagree about whether saving
-  // worked — and the wearer gets a failure toast over a successful save.
+  // The real host answers {success}; the miniapp simulator answers {ok}.
+  // Accepting only one means the harness and the device disagree about whether
+  // saving worked — and the wearer gets a failure toast over a good save.
   it("tenir:download accepts either host reply shape", async () => {
     routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
     const world = makeWorld(AUTHED_SEED);
     const c = makeController(world);
     await c.start();
-    const url = "https://h.example.com/conversations/c1/audio?token=tok-1";
-    world.setDownloadReply({ ok: true });
-    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: true });
-    world.setDownloadReply({ success: true });
-    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: true });
-    world.setDownloadReply({ success: false, cancelled: true });
-    expect(await world.rpc("tenir:download", { url, filename: "a.wav" })).toEqual({ ok: false });
+    world.setDownloadReply({ ok: true }); // the simulator's shape
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    world.setDownloadReply({ success: true }); // the device's shape
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    // A sheet the wearer cancels still SUCCEEDED as far as the host is
+    // concerned ({success:true, cancelled:true}) — so no failure is reported.
+    world.setDownloadReply({ success: true, cancelled: true });
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: true });
+    // A genuine failure is reported rather than swallowed.
+    world.setDownloadReply({ success: false });
+    expect(await world.rpc("tenir:download", { id: "c1" })).toEqual({ ok: false });
     c.stop();
   });
 

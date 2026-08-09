@@ -472,9 +472,6 @@ els.stop.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 let currentConversation: Conversation | null = null;
-// The open conversation's audio URL, kept so "Save audio.wav" can hand the
-// same URL to the host's download sheet.
-let audioUrl: string | null = null;
 let deleteArmed = false;
 let disarmTimer: ReturnType<typeof setTimeout> | null = null;
 let listReq = 0;
@@ -589,10 +586,12 @@ async function showAudio(conv: Conversation): Promise<void> {
       els.historyAudio.hidden = true;
       return;
     }
-    audioUrl = res.url;
     els.historyAudioEl.src = res.url;
     els.historyAudio.hidden = false;
   } catch {
+    // Same staleness rule as the success path: a rejected reply for a
+    // conversation the viewer has left must not tear down the one they are on.
+    if (currentConversation?.id !== conv.id) return;
     stopAudio();
     els.historyAudio.hidden = true;
   }
@@ -605,7 +604,6 @@ function stopAudio(): void {
     /* no media implementation */
   }
   els.historyAudioEl.removeAttribute("src");
-  audioUrl = null;
 }
 
 function renderHistoryTranscript(conv: Conversation): void {
@@ -727,16 +725,15 @@ els.cuePopup.addEventListener("click", () => closeCuePopup());
 els.cuePopupClose.addEventListener("click", () => closeCuePopup());
 els.cuePopupCard.addEventListener("click", (e) => e.stopPropagation());
 
-// "Save audio.wav" — upstream is an `<a download>`; the WebView has no
-// filesystem, so the host's download sheet takes the same URL instead.
+// "Download audio.wav" — upstream is an `<a download>`; the WebView has no
+// filesystem, so the host's download sheet does it instead. The background is
+// handed the conversation id, not a URL: it mints the token-bearing URL itself
+// so this page can never name the download target.
 els.historyAudioLink.addEventListener("click", () => {
-  if (!audioUrl) return;
+  const id = currentConversation?.id;
+  if (!id) return;
   void mentra
-    .request("tenir:download", {
-      url: audioUrl,
-      filename: "audio.wav",
-      mimeType: "audio/wav",
-    })
+    .request("tenir:download", { id })
     .then((res) => {
       if (!res.ok) toast("Could not save the audio.");
     })

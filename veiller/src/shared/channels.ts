@@ -57,8 +57,17 @@ export interface Channels {
    * broadcast, so the token isn't carried in every live update.
    */
   "tenir:audio-url": Rpc<{ id: string }, { ok: boolean; url?: string }>;
-  /** Hand a URL to the host's download sheet (the retained audio clip). */
-  "tenir:download": Rpc<{ url: string; filename: string; mimeType?: string }, { ok: boolean }>;
+  /**
+   * Save a conversation's retained clip through the host's download sheet.
+   *
+   * Takes the conversation id, NOT a URL: the background mints the URL itself,
+   * so the page can never name the target. The host's download sheet does not
+   * scheme-filter the way `openUrl` does, and the URL carries the wearer's
+   * bearer token — a URL argument would be arbitrary network/file egress with
+   * the token attached, and no allow-list can be anchored safely while the page
+   * can also re-point the api base through `tenir:login`.
+   */
+  "tenir:download": Rpc<{ id: string }, { ok: boolean }>;
 }
 
 declare global {

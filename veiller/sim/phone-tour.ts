@@ -401,10 +401,25 @@ const STEPS: Step[] = [
       })
       check("the browser loads the clip's metadata", ok.loaded, JSON.stringify(ok))
 
-      // Actually press the button — a save that quietly reports failure looks
-      // exactly like a broken one to the wearer.
+      // Actually press the button. Both halves matter: the request has to REACH
+      // the host (a dead button is silent, and silence would pass a
+      // no-toast-appeared check on its own), and it must not report a failure.
+      const before = ctx.sim.host.trace.length
       await ctx.page.click("#history-audio-link")
       await ctx.page.waitForTimeout(500)
+      const since = ctx.sim.host.trace
+        .slice(before)
+        .map((e) => `${e.text} ${e.detail ? JSON.stringify(e.detail) : ""}`)
+      check(
+        "the clip reaches the host's download sheet",
+        since.some((line) => line.includes("miniapp_download")),
+        JSON.stringify(since),
+      )
+      check(
+        "the host was handed the api's own clip URL",
+        since.some((line) => /\/conversations\/conv-audio\/audio\?token=/.test(line)),
+        JSON.stringify(since),
+      )
       const toast = await ctx.page.evaluate(() => {
         const el = document.getElementById("app-toast")
         return {shown: el?.classList.contains("show") ?? false, text: el?.textContent ?? ""}
@@ -428,15 +443,25 @@ const STEPS: Step[] = [
       const themeAttr = () =>
         ctx.page.evaluate(() => document.documentElement.getAttribute("data-theme"))
 
-      // The simulator's host reports "dark" in its CONNECT_ACK and injects no
-      // `window.MentraOS`, so a `data-theme` on the page can only have come
-      // down the `tenir:color-scheme` channel from the background — i.e. this
-      // asserts the delivery path, not just the stylesheet. (The background
-      // half — session.colorScheme and onColorSchemeChange — is covered by
-      // TenirController.test.ts, which the simulator can't drive: it hardcodes
-      // dark and exposes no way to push a change.)
-      check("the host's scheme reaches the page", (await themeAttr()) === "dark", String(await themeAttr()))
+      // Drive a REAL host scheme change, the whole way through: the phone's
+      // `miniapp_color_scheme_change` envelope → session.colorScheme →
+      // onColorSchemeChange → the `tenir:color-scheme` broadcast → the page's
+      // `data-theme`. Asserting the boot value alone would prove nothing —
+      // the simulator injects `window.Veiller.colorScheme` too, so the page's
+      // boot seed produces the same "dark" without the channel working at all.
+      const setHostScheme = async (scheme: "light" | "dark") => {
+        ctx.sim.host.push({payload: {type: "miniapp_color_scheme_change", colorScheme: scheme}})
+        await ctx.sim.settle()
+        await ctx.page.waitForTimeout(250)
+      }
+
+      await setHostScheme("light")
+      check("a host scheme change reaches the page", (await themeAttr()) === "light", String(await themeAttr()))
+      const lightBgFromHost = await bg()
+      await setHostScheme("dark")
+      check("and back again", (await themeAttr()) === "dark", String(await themeAttr()))
       const darkBg = await bg()
+      check("the two schemes actually paint differently", lightBgFromHost !== darkBg, `${lightBgFromHost} vs ${darkBg}`)
 
       // From here on this is a STYLESHEET check: force each palette and look
       // at what it paints.

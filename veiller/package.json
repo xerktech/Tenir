@@ -6,7 +6,7 @@
   "description": "Veiller bundled-miniapp build of the Tenir Even G2 client",
   "scripts": {
     "build": "bun run build.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.check.json",
     "test": "bun test",
     "pack": "node scripts/pack.mjs",
     "sim": "bun run sim/walkthrough.ts",

@@ -142,12 +142,12 @@ describe("ApiClient", () => {
   });
 
   it("routes cue / translation / song frames to their handlers", () => {
-    const onCue = mock(() => {});
-    const onTranslation = mock(() => {});
+    const onCue = mock((_m: unknown) => {});
+    const onTranslation = mock((_m: unknown) => {});
     const onTranslationDone = mock(() => {});
-    const onSong = mock(() => {});
-    const onSongSync = mock(() => {});
-    const onSongDone = mock(() => {});
+    const onSong = mock((_m: unknown) => {});
+    const onSongSync = mock((_m: unknown) => {});
+    const onSongDone = mock((_m: unknown) => {});
     const client = new ApiClient("ws://h/ws", {
       onCue,
       onTranslation,
@@ -265,7 +265,7 @@ describe("ApiClient", () => {
   });
 
   it("does not reconnect after a 1008 policy close, and surfaces an auth error", () => {
-    const onError = mock(() => {});
+    const onError = mock((_m: unknown) => {});
     const client = new ApiClient("ws://h/ws", { onError });
     client.start({ micSource: "g2-microphone" });
     instances[0].open();
@@ -276,7 +276,7 @@ describe("ApiClient", () => {
   });
 
   it("stops reconnecting after a fatal error message", () => {
-    const onError = mock(() => {});
+    const onError = mock((_m: unknown) => {});
     const client = new ApiClient("ws://h/ws", { onError });
     client.start({ micSource: "g2-microphone" });
     instances[0].open();

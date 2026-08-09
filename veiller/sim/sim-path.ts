@@ -79,6 +79,19 @@ export interface SimulatorInstance {
     activeSubscriptions(): string[]
     storageSnapshot(): Record<string, string>
     unimplemented: string[]
+    /** Everything that crossed the bridge, newest last — proof a request was actually made. */
+    trace: Array<{at: number; kind: string; text: string; detail?: unknown}>
+    /**
+     * Send a raw response envelope to the background, the way the phone does.
+     *
+     * `push` is `private` in the simulator's TypeScript but a plain method at
+     * runtime, and it is the ONLY way to drive host-originated events that
+     * aren't subscription streams — `emit` sends a subscription-gated EVENT
+     * envelope, which the SDK never matches against `miniapp_color_scheme_change`
+     * and friends. Declared here so the harnesses can exercise those paths
+     * (XERK-237); if the simulator ever exposes a sanctioned setter, prefer it.
+     */
+    push(envelope: {payload: unknown; requestId?: string}): void
   }
   glasses: {
     currentRevision(): number

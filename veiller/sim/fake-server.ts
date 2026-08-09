@@ -13,7 +13,7 @@
  * reads (durations, word timings, audio retention) is omitted.
  */
 
-import type {ServerSocket} from "bun"
+import type {ServerWebSocket} from "bun"
 
 export interface FakeServerOptions {
   username?: string
@@ -26,7 +26,7 @@ export interface FakeServerOptions {
 }
 
 interface Session {
-  ws: ServerSocket<unknown>
+  ws: ServerWebSocket<unknown>
   sessionId: string
   /** Bytes of PCM the client has streamed — proof the mic path is live. */
   audioBytes: number
@@ -63,7 +63,9 @@ export class FakeTenirServer {
 
   get port(): number {
     if (!this.server) throw new Error("FakeTenirServer is not started")
-    return this.server.port
+    const {port} = this.server
+    if (typeof port !== "number") throw new Error("FakeTenirServer has no port")
+    return port
   }
 
   /** What a user would type into the miniapp's server field. */
@@ -107,7 +109,7 @@ export class FakeTenirServer {
           }
         },
         message(ws, message) {
-          self.onSocketMessage(ws as ServerSocket<unknown>, message)
+          self.onSocketMessage(ws as ServerWebSocket<unknown>, message)
         },
         close(ws) {
           const session = self.sessions.find((s) => s.ws === ws)
@@ -175,7 +177,7 @@ export class FakeTenirServer {
       }
       const found = this.conversations.find((c) => c.id === audio[1])
       if (!found) return Response.json({detail: "not found"}, {status: 404})
-      return new Response(silentWav(), {
+      return new Response(silentWav().buffer as ArrayBuffer, {
         status: 200,
         headers: {"content-type": "audio/wav"},
       })
@@ -216,7 +218,7 @@ export class FakeTenirServer {
   // WebSocket
   // ===========================================================================
 
-  private onSocketMessage(ws: ServerSocket<unknown>, message: string | Buffer): void {
+  private onSocketMessage(ws: ServerWebSocket<unknown>, message: string | Buffer): void {
     if (typeof message !== "string") {
       const session = this.sessions.find((s) => s.ws === ws)
       if (session) session.audioBytes += message.byteLength
