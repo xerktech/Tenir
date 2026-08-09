@@ -20,7 +20,7 @@ uv venv --python 3.12 .venv && VIRTUAL_ENV=.venv uv pip install -e './api[dev]'
 (cd veiller && bun install --frozen-lockfile)
 
 # 1. the cheap gates
-(cd api && ../.venv/bin/pytest -q)            # 465 tests, 85 % coverage gate
+(cd api && ../.venv/bin/pytest -q)            # 467 tests, 85 % coverage gate
 npm run typecheck && npm run test && npm run build
 (cd veiller && bun run typecheck && bun test && bun run build)
 node --test .github/scripts/tests/*.test.js   # release-pipeline scripts
