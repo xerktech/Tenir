@@ -84,11 +84,14 @@ export async function request<T>(
   // fresh one to every authenticated response. Adopting it here — the one
   // request path — is what keeps a device logged in until it explicitly logs
   // out, instead of being bounced to the login screen when the token expires.
-  // Only from a response the server actually accepted (XERK-237). Adopting it
-  // off any response let a REJECTED request replace the wearer's live token —
-  // so a failed login against a server the page named came back with a
-  // replacement the device stored, leaving the real server 401ing.
-  if (res.ok) {
+  // Only from a request that PRESENTED a token (XERK-237). Adopting it off any
+  // response let an unauthenticated one — a login against whatever server was
+  // named — hand back a replacement the device stored, leaving the real server
+  // 401ing. Gating on `res.ok` instead would also have worked for that, but it
+  // quietly broke XERK-168: the api's renewal middleware runs after the route
+  // with no status check, so an aged-but-valid token is renewed on authenticated
+  // 404s and 422s too, and those renewals must still be taken.
+  if (opts.auth !== false) {
     const renewed = res.headers.get("x-renewed-token");
     if (renewed) setToken(renewed);
   }

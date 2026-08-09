@@ -237,4 +237,21 @@ describe("a login must not leak or destroy the existing token", () => {
     await history.list();
     expect(getToken()).toBe("tok-2");
   });
+
+  // The api's renewal middleware runs after the route with NO status check, so
+  // an aged-but-valid token is renewed on authenticated 404s and 422s too.
+  // Gating adoption on `res.ok` would silently drop those (XERK-168/XERK-237).
+  it("still renews the token from an authenticated NON-2xx response", async () => {
+    setToken("tok-aged");
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ detail: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json", "x-renewed-token": "tok-fresh" },
+        }),
+    );
+
+    await expect(history.get("gone")).rejects.toBeInstanceOf(ApiError);
+    expect(getToken()).toBe("tok-fresh");
+  });
 });

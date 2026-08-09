@@ -1040,8 +1040,33 @@ describe("UI bus", () => {
     c.stop();
   });
 
-  // A REJECTED response used to be able to replace the wearer's token, so a
-  // failed login against a named server left the real server 401ing.
+  // The api's renewal middleware runs after the route with NO status check, so
+  // an aged-but-valid token is renewed on authenticated 404s too. The guard is
+  // "did this request present a token", not "did it succeed" — gating on
+  // success would silently drop those (XERK-168).
+  it("still adopts a renewed token from an authenticated non-2xx response", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+
+    routes["/conversations/gone"] = () => ({
+      status: 404,
+      body: { detail: "not found" },
+      headers: { "x-renewed-token": "tok-fresh" },
+    });
+    expect(await world.rpc("tenir:fetch", { path: "/conversations/gone" })).toEqual({
+      ok: false,
+      error: "404: not found",
+      status: 404,
+    });
+    await flush();
+    expect(world.storage.get(TOKEN_KEY)).toBe("tok-fresh");
+    c.stop();
+  });
+
+  // An UNAUTHENTICATED response used to be able to replace the wearer's token,
+  // so a failed login against a named server left the real server 401ing.
   it("does not adopt a renewed token from a rejected response", async () => {
     routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
     const world = makeWorld(AUTHED_SEED);
