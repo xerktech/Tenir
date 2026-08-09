@@ -31,6 +31,12 @@ export interface Channels {
   "tenir:auth": TenirAuthState;
   /** Live session mirror update (captions, connection, cues, song). */
   "tenir:live": TenirLiveState;
+  /**
+   * The host's colour scheme (XERK-237). Upstream's phone page follows
+   * `prefers-color-scheme`; this WebView is told by the host instead, so the
+   * background forwards it here and on every change.
+   */
+  "tenir:color-scheme": { scheme: "light" | "dark" };
 
   // ── UI → background ────────────────────────────────────────────────────
 
@@ -44,8 +50,15 @@ export interface Channels {
   "tenir:stop": Rpc<Record<string, never>, { ok: boolean }>;
   /** Proxied authenticated REST call (history list/detail/delete). */
   "tenir:fetch": Rpc<ProxyFetchRequest, ProxyFetchResult>;
-  /** Open a URL in the system browser (e.g. the server's web app). */
-  "tenir:open-url": { url: string };
+  /**
+   * The playable URL of a conversation's retained audio (XERK-237): the api
+   * endpoint with the bearer token as a query param, which is how upstream's
+   * `<audio src>` / download link reach it too. Minted on demand rather than
+   * broadcast, so the token isn't carried in every live update.
+   */
+  "tenir:audio-url": Rpc<{ id: string }, { ok: boolean; url?: string }>;
+  /** Hand a URL to the host's download sheet (the retained audio clip). */
+  "tenir:download": Rpc<{ url: string; filename: string; mimeType?: string }, { ok: boolean }>;
 }
 
 declare global {

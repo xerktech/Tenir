@@ -8,12 +8,10 @@
  * JSContext (no CORS), where the polyfilled `fetch` supports string bodies —
  * which is all this client ever sends.
  *
- * Not ported: the household-admin `users` roster, `getStatus`, and
- * `history.audioUrl` (audio playback/download needs a browser; the miniapp
- * phone page skips it).
+ * Not ported: the household-admin `users` roster and `getStatus`.
  */
 
-import { authHeader, clearToken, setToken } from "./auth";
+import { authHeader, clearToken, getToken, setToken } from "./auth";
 import { apiBaseUrl } from "./config";
 
 export class ApiError extends Error {
@@ -186,4 +184,16 @@ export const history = {
   },
   get: (id: string) => request<Conversation>("GET", `/conversations/${id}`),
   remove: (id: string) => request<void>("DELETE", `/conversations/${id}`),
+  /**
+   * The retained clip's URL (upstream `client-core`'s `history.audioUrl`).
+   * Audio is opened by plain navigation — an `<audio src>` or the host's
+   * download sheet — neither of which can set an Authorization header, so the
+   * token rides as `?token=` (the api accepts it there for this endpoint).
+   * Without it the request 401s.
+   */
+  audioUrl: (id: string) => {
+    const url = `${apiBaseUrl()}/conversations/${id}/audio`;
+    const token = getToken();
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  },
 };

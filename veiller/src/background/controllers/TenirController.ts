@@ -34,13 +34,20 @@
  *
  * The lens popup layer (menu, cue, translation, song/lyrics — one shared box,
  * precedence menu > song > translation > cue, XERK-194) is ported in full; see
- * the popup section below and hud.ts for the geometry. Still not ported:
- * audio download links in history (needs a browser), the host-scrolled cue
- * body (the scene API has no native scroll — long cue bodies clip to the box),
- * the idle double-tap app exit (no host API), and the foreground-exit-only
- * resume heuristic — replaced by a simpler persisted `{sessionId, transcript}`
- * snapshot: present on start ⇒ the JSContext died mid-session ⇒ resume; a
- * clean stop (or clean host shutdown) clears it.
+ * the popup section below and hud.ts for the geometry.
+ *
+ * Where this still differs from upstream, and why (XERK-237 closed the rest):
+ *
+ *   - A long cue body is PAGED by the app on swipes rather than scrolled by
+ *     the host (XERK-133): the scene API is replace-the-frame with no
+ *     scrollable container. Every word is still reachable, and the title row
+ *     carries a "▾" in place of the host's scroll bar (see hud.ts).
+ *   - The idle double-tap does not exit the app — the miniapp host exposes no
+ *     self-exit API. Upstream's `shutDownPageContainer` has no counterpart.
+ *   - Resume uses a simpler persisted `{sessionId, transcript}` snapshot in
+ *     place of upstream's foreground-exit-only heuristic: present on start ⇒
+ *     the JSContext died mid-session ⇒ resume; a clean stop (or clean host
+ *     shutdown) clears it.
  */
 
 import type { MiniappSession, TouchData, UnsubscribeFn } from "@mentra/miniapp/background";
@@ -50,6 +57,7 @@ import {
   ApiError,
   NetworkError,
   describeLoginError,
+  history,
   login,
   me,
   request,
@@ -87,6 +95,7 @@ import {
   TRANSLATION_BODY_LINES,
   cardPopup,
   clockText,
+  cueBodyMaxOffset,
   cueHeight,
   cueRowRangeFor,
   cueTitleLine,
@@ -160,6 +169,12 @@ interface TranslationRun {
 /** The cue currently up in the box, with its transcript anchor + TTL start. */
 interface ActiveCue extends TenirCue {
   shownAt: number;
+  /**
+   * First body row rendered in the box (XERK-237). Upstream's long cue bodies
+   * are scrolled by the host; the scene API has no scrollable container, so a
+   * swipe pages this instead. Always 0 for a body that fits.
+   */
+  bodyOffset: number;
 }
 
 /** Persisted mid-session snapshot so a JSContext restart can resume. */
@@ -612,7 +627,7 @@ export class TenirController {
       if (this.cueQueue.length > MAX_QUEUED_CUES) this.cueQueue.shift();
       return;
     }
-    this.cue = { ...anchored, shownAt: Date.now() };
+    this.cue = { ...anchored, shownAt: Date.now(), bodyOffset: 0 };
     this.startCueTimer();
     this.renderHud();
     this.sendLive();
@@ -632,8 +647,27 @@ export class TenirController {
   /** Pop the next queued cue into the box (or leave it free). */
   private promoteQueuedCue(): void {
     const next = this.cueQueue.shift() ?? null;
-    this.cue = next ? { ...next, shownAt: Date.now() } : null;
+    // A promoted cue starts at the top of its own body, never inheriting the
+    // page the previous cue was left on (XERK-237).
+    this.cue = next ? { ...next, shownAt: Date.now(), bodyOffset: 0 } : null;
     if (this.cue) this.startCueTimer();
+  }
+
+  /**
+   * Page the active cue's body (XERK-237): `delta` rows down (+1) or up (−1),
+   * clamped to the body. Upstream lets the host scroll the body container and
+   * merely resets the TTL; the scene API has no scrollable container, so the
+   * app moves the window itself. Returns true when the window actually moved,
+   * so the caller can tell a page apart from a swipe at either end (both still
+   * count as touching the cue, and so still buy it more time — XERK-129).
+   */
+  private pageCueBody(delta: number): boolean {
+    if (!this.cue) return false;
+    const max = cueBodyMaxOffset(this.cue.body);
+    const next = Math.min(Math.max(this.cue.bodyOffset + delta, 0), max);
+    if (next === this.cue.bodyOffset) return false;
+    this.cue.bodyOffset = next;
+    return true;
   }
 
   /**
@@ -888,7 +922,10 @@ export class TenirController {
     }
     if (this.cue) {
       const card: CueCard = { title: this.cue.title, body: this.cue.body };
-      return cardPopup(card, { secondsLeft: this.cueCountdown() });
+      return cardPopup(card, {
+        secondsLeft: this.cueCountdown(),
+        bodyOffset: this.cue.bodyOffset,
+      });
     }
     return null;
   }
@@ -1039,16 +1076,24 @@ export class TenirController {
         }
         break;
       case "swipe_up":
-        // Swipe up: highlight the menu's top row (Continue); on a cue, reset
-        // its countdown (XERK-133). Translation/song boxes are left alone.
+        // Swipe up: highlight the menu's top row (Continue); on a cue, page its
+        // body back toward the start and reset its countdown (XERK-133 —
+        // upstream the HOST scrolls the body under the same gesture).
+        // Translation/song boxes are left alone.
         if (this.menu) this.moveMenuHighlight("continue");
-        else if (this.recording && !this.translation && !this.song) this.touchCue();
+        else if (this.recording && !this.translation && !this.song) {
+          this.pageCueBody(-1);
+          this.touchCue();
+        }
         break;
       case "swipe_down":
-        // Swipe down: highlight the menu's bottom row (Exit session); on a
-        // cue, reset its countdown. Translation/song boxes are left alone.
+        // Swipe down: highlight the menu's bottom row (Exit session); on a cue,
+        // page its body on toward the end and reset its countdown.
         if (this.menu) this.moveMenuHighlight("exit");
-        else if (this.recording && !this.translation && !this.song) this.touchCue();
+        else if (this.recording && !this.translation && !this.song) {
+          this.pageCueBody(1);
+          this.touchCue();
+        }
         break;
       default:
         // Other gestures are ignored.
@@ -1084,6 +1129,13 @@ export class TenirController {
       );
     } catch {
       /* visibility not available — nothing to resync on */
+    }
+    try {
+      // The wearer flipped the phone between light and dark: repaint the page
+      // in the new palette, as `prefers-color-scheme` does upstream (XERK-237).
+      this.unsubs.push(this.session.onColorSchemeChange(() => this.sendColorScheme()));
+    } catch {
+      /* host doesn't report a scheme — the page keeps its boot default */
     }
     const shutdown = () => {
       // Clean shutdown (upstream cleanup()): end the session so the api
@@ -1207,6 +1259,16 @@ export class TenirController {
     this.ui.send("tenir:live", this.liveState());
   }
 
+  /**
+   * Forward the host's light/dark choice to the page (XERK-237). Upstream's
+   * phone page follows `prefers-color-scheme`; this WebView is told by the
+   * host, so the palette keys off this instead.
+   */
+  private sendColorScheme(): void {
+    const scheme = this.session.colorScheme === "light" ? "light" : "dark";
+    this.ui.send("tenir:color-scheme", { scheme });
+  }
+
   private registerUiHandlers(): void {
     // Full snapshot on every WebView open — and a forced HUD resync: an
     // opening WebView proves the JSContext just woke (or the user is active),
@@ -1214,6 +1276,10 @@ export class TenirController {
     this.unsubs.push(
       this.ui.onOpen(() => {
         this.ui.send("tenir:snapshot", this.snapshot());
+        // The page reads the host scheme from `window.MentraOS` at boot, but a
+        // WebView opened after a scheme change would otherwise keep the stale
+        // one until the next change event (XERK-237).
+        this.sendColorScheme();
         this.renderHud({ force: true });
       }),
     );
@@ -1267,15 +1333,34 @@ export class TenirController {
       ),
     );
 
+    // The retained clip's URL (XERK-237). Minted here, in the background,
+    // because only it holds the bearer token; the endpoint accepts the token as
+    // a query param, which is exactly how upstream's `<audio src>` and download
+    // link reach it. Signed out there is nothing to play.
     this.unsubs.push(
-      this.ui.on("tenir:open-url", ({ url }) => {
-        try {
-          this.session.system.openUrl(url);
-        } catch (err) {
-          console.warn("Tenir: openUrl failed", err);
-        }
+      this.ui.handle("tenir:audio-url", ({ id }: Channels["tenir:audio-url"]["req"]) => {
+        if (!this.signedIn || !this.wsUrl) return { ok: false as const };
+        return { ok: true as const, url: history.audioUrl(id) };
       }),
     );
+
+    // Save the clip through the host's download sheet — the miniapp
+    // counterpart of upstream's `<a download>` (the WebView has no filesystem).
+    this.unsubs.push(
+      this.ui.handle(
+        "tenir:download",
+        async ({ url, filename, mimeType }: Channels["tenir:download"]["req"]) => {
+          try {
+            const res = await this.session.system.download({ url, filename, mimeType });
+            return { ok: Boolean(res?.success) };
+          } catch (err) {
+            console.warn("Tenir: download failed", err);
+            return { ok: false };
+          }
+        },
+      ),
+    );
+
   }
 
   private async handleLogin(payload: Channels["tenir:login"]["req"]): Promise<

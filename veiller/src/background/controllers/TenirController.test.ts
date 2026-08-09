@@ -69,6 +69,11 @@ interface FakeWorld {
   /** Make subsequent display.render calls report this status ("blocked" = frame never shown). */
   setRenderStatus: (status: "displayed" | "blocked") => void;
   emitVisibility: (v: "foreground" | "background") => void;
+  /** The host flipped between light and dark (XERK-237). */
+  emitColorScheme: (s: "light" | "dark") => void;
+  /** Clips handed to the host's download sheet. */
+  downloads: Array<{ url: string; filename?: string; mimeType?: string }>;
+  setDownloadOk: (ok: boolean) => void;
 }
 
 function makeWorld(seed: Record<string, string> = {}): FakeWorld {
@@ -84,6 +89,9 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
   let renderStatus: "displayed" | "blocked" = "displayed";
   let renderCount = 0;
   let visHandler: ((v: "foreground" | "background") => void) | null = null;
+  let schemeHandler: ((s: "light" | "dark") => void) | null = null;
+  const downloads: Array<{ url: string; filename?: string; mimeType?: string }> = [];
+  let downloadOk = true;
 
   const session = {
     storage: {
@@ -133,9 +141,18 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
     },
     system: {
       openUrl: () => {},
+      download: (opts: { url: string; filename?: string; mimeType?: string }) => {
+        downloads.push(opts);
+        return Promise.resolve({ success: downloadOk });
+      },
     },
+    colorScheme: "dark" as "light" | "dark",
     onVisibilityChange: (cb: (v: "foreground" | "background") => void) => {
       visHandler = cb;
+      return () => {};
+    },
+    onColorSchemeChange: (cb: (s: "light" | "dark") => void) => {
+      schemeHandler = cb;
       return () => {};
     },
     onBeforeDisconnect: () => () => {},
@@ -167,6 +184,11 @@ function makeWorld(seed: Record<string, string> = {}): FakeWorld {
       renderStatus = status;
     },
     emitVisibility: (v) => visHandler?.(v),
+    emitColorScheme: (s) => schemeHandler?.(s),
+    downloads,
+    setDownloadOk: (ok) => {
+      downloadOk = ok;
+    },
   };
 }
 
@@ -532,6 +554,56 @@ describe("session flow", () => {
     c.stop();
   });
 
+  it("pages a long cue body on swipes instead of stranding its tail (XERK-237)", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    // A body far longer than the box's four rows: upstream hands the overflow
+    // to a host-scrolled container, which the scene API has no equivalent for.
+    const body = Array.from({ length: 12 }, (_, i) => `Row number ${i + 1} of the cue body.`).join(" ");
+    h.onCue?.({ type: "cue", cueId: "long", title: "Long", body, atMs: 0 });
+
+    const popup = () => c.hudFrame().popup?.text ?? "";
+    const rowsOf = (text: string) => text.split("\n").slice(1); // drop the title row
+    const first = rowsOf(popup());
+    expect(first.length).toBe(4); // the box still renders exactly four body rows
+    expect(popup()).toContain("Row number 1");
+    expect(popup()).toContain("▾"); // and says there is more below
+
+    // Swiping down pages the window on; the tail is reachable.
+    for (let i = 0; i < 20; i++) world.emitTouch("swipe_down");
+    const atEnd = popup();
+    expect(atEnd).toContain("Row number 12");
+    expect(atEnd).not.toContain("Row number 1 "); // the top rows have scrolled off
+    expect(atEnd).not.toContain("▾"); // nothing left below, so no marker
+
+    // Swiping up walks it back, and can never page above the first row.
+    for (let i = 0; i < 40; i++) world.emitTouch("swipe_up");
+    expect(rowsOf(popup())).toEqual(first);
+
+    // Paging still counts as touching the cue, so it keeps buying time (XERK-129).
+    expect(c.liveState().activeCue?.id).toBe("long");
+    expect(c.liveState().recording).toBe(true);
+    c.stop();
+  });
+
+  it("a promoted cue starts at the top of its own body (XERK-237)", async () => {
+    const { world, c } = await signedIn();
+    world.emitTouch("single_tap");
+    const h = world.clients[0].handlers;
+    const long = Array.from({ length: 12 }, (_, i) => `Alpha ${i + 1} padding words here.`).join(" ");
+    h.onCue?.({ type: "cue", cueId: "a", title: "A", body: long, atMs: 0 });
+    world.emitTouch("swipe_down");
+    world.emitTouch("swipe_down");
+    // A queued cue takes the box when the menu opens and closes over the first.
+    h.onCue?.({ type: "cue", cueId: "b", title: "B", body: "Short body.", atMs: 0 });
+    world.emitTouch("double_tap"); // menu opens, embedding cue A
+    world.emitTouch("double_tap"); // menu closes, promoting cue B
+    expect(c.liveState().activeCue?.id).toBe("b");
+    expect(c.hudFrame().popup?.text).toContain("Short body.");
+    c.stop();
+  });
+
   it("ignores other gestures", async () => {
     const { world, c } = await signedIn();
     world.emitTouch("swipe_up");
@@ -676,12 +748,17 @@ describe("UI bus", () => {
     await c.start();
     world.uiSent.length = 0;
     world.openUi();
-    expect(world.uiSent).toHaveLength(1);
     expect(world.uiSent[0].channel).toBe("tenir:snapshot");
     expect(world.uiSent[0].payload).toMatchObject({
       auth: { signedIn: true, username: "ada" },
       live: { recording: false, connection: "closed" },
     });
+    // …and the host's colour scheme alongside it (XERK-237), so a WebView
+    // opened after a scheme change doesn't paint in the stale palette.
+    expect(world.uiSent.map((m) => m.channel)).toEqual([
+      "tenir:snapshot",
+      "tenir:color-scheme",
+    ]);
     c.stop();
   });
 
@@ -831,6 +908,75 @@ describe("UI bus", () => {
       ok: false,
       error: "Not signed in.",
     });
+    c.stop();
+  });
+
+  // XERK-237: history audio is upstream's `<audio src>` + download link. The
+  // WebView can't fetch the authenticated endpoint cross-origin, but it doesn't
+  // need to — the api takes the bearer token as a query param on this route, so
+  // the background hands the page a plain playable URL.
+  it("tenir:audio-url mints a token-bearing clip URL, and refuses signed out", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    expect(await world.rpc("tenir:audio-url", { id: "conv1" })).toEqual({
+      ok: true,
+      url: "https://h.example.com/conversations/conv1/audio?token=tok-1",
+    });
+    c.stop();
+
+    const out = makeWorld();
+    const c2 = makeController(out);
+    await c2.start();
+    expect(await out.rpc("tenir:audio-url", { id: "conv1" })).toEqual({ ok: false });
+    c2.stop();
+  });
+
+  it("tenir:download hands the clip to the host's download sheet", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    expect(
+      await world.rpc("tenir:download", {
+        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
+        filename: "audio.wav",
+        mimeType: "audio/wav",
+      }),
+    ).toEqual({ ok: true });
+    expect(world.downloads).toEqual([
+      {
+        url: "https://h.example.com/conversations/c1/audio?token=tok-1",
+        filename: "audio.wav",
+        mimeType: "audio/wav",
+      },
+    ]);
+    // A sheet the wearer cancels is reported, not swallowed.
+    world.setDownloadOk(false);
+    expect(await world.rpc("tenir:download", { url: "u", filename: "audio.wav" })).toEqual({
+      ok: false,
+    });
+    c.stop();
+  });
+
+  // XERK-237: upstream's phone page follows `prefers-color-scheme`; this one is
+  // told the host's choice, so it has to arrive and to keep arriving.
+  it("forwards the host colour scheme on open and on every change", async () => {
+    routes["/auth/me"] = () => ({ status: 200, body: PRINCIPAL });
+    const world = makeWorld(AUTHED_SEED);
+    const c = makeController(world);
+    await c.start();
+    world.uiSent.length = 0;
+    world.openUi();
+    expect(world.uiSent.find((m) => m.channel === "tenir:color-scheme")?.payload).toEqual({
+      scheme: "dark",
+    });
+
+    world.uiSent.length = 0;
+    (world.session as unknown as { colorScheme: string }).colorScheme = "light";
+    world.emitColorScheme("light");
+    expect(world.uiSent).toEqual([{ channel: "tenir:color-scheme", payload: { scheme: "light" } }]);
     c.stop();
   });
 });

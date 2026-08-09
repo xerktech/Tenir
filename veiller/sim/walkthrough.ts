@@ -294,6 +294,73 @@ const STEPS: Step[] = [
   },
 
   {
+    title: "A cue longer than the box can be paged down to its last word",
+    run: async (ctx) => {
+      // Upstream (XERK-133) hands a long cue body to a host-scrolled container.
+      // The scene API has no scrollable container, so the app pages it instead
+      // (XERK-237) — the tail must still be reachable, and the title row must
+      // say there is more to come.
+      const body =
+        "Marina Bay was reclaimed from the sea in the 1970s. " +
+        "The barrage closed the river mouth in 2008, turning the basin into a freshwater reservoir. " +
+        "It now supplies about ten percent of the country's water and doubles as a flood-control scheme. " +
+        "The last line of this cue exists only to prove paging reaches it: PAGED-TO-THE-END."
+      ctx.server.cue("long", "Marina Bay", body)
+      await ctx.sim.waitForLens("Marina Bay", 15_000)
+      await ctx.show("long cue, first page")
+      ctx.check(
+        "the first page is showing",
+        ctx.sim.lensText().some((t) => t.includes("reclaimed from the sea")),
+        JSON.stringify(ctx.sim.lensText()),
+      )
+      ctx.check(
+        "the title row says there is more below",
+        ctx.sim.lensText().some((t) => t.includes("▾")),
+        JSON.stringify(ctx.sim.lensText()),
+      )
+      ctx.check(
+        "the tail is NOT on screen yet",
+        !ctx.sim.lensText().some((t) => t.includes("PAGED-TO-THE-END")),
+      )
+
+      for (let i = 0; i < 12; i++) {
+        ctx.sim.swipeDown()
+        await ctx.sim.settle()
+      }
+      await ctx.show("long cue, paged to the end")
+      ctx.check(
+        "swiping reaches the end of the body",
+        ctx.sim.lensText().some((t) => t.includes("PAGED-TO-THE-END")),
+        JSON.stringify(ctx.sim.lensText()),
+      )
+      ctx.check(
+        "the marker clears once there is nothing below",
+        !ctx.sim.lensText().some((t) => t.includes("▾")),
+      )
+      // (That the box never grows past its four body rows whatever the offset
+      // is asserted precisely in hud.test.ts; here we only care that the whole
+      // body is reachable.)
+
+      for (let i = 0; i < 20; i++) {
+        ctx.sim.swipeUp()
+        await ctx.sim.settle()
+      }
+      await ctx.show("long cue, paged back to the top")
+      ctx.check(
+        "swiping back returns to the first page",
+        ctx.sim.lensText().some((t) => t.includes("reclaimed from the sea")),
+      )
+      ctx.check("the session is still recording throughout", ctx.server.current !== null)
+
+      await ctx.sim.waitFor(
+        () => !ctx.sim.lensText().some((t) => t.includes("Marina Bay")),
+        20_000,
+        "the long cue never auto-dismissed",
+      )
+    },
+  },
+
+  {
     title: "Translation run: turns stack in one box, then it clears",
     run: async (ctx) => {
       ctx.server.final("es1", "Hola, ¿cómo estás?", "es")

@@ -8,11 +8,14 @@
  * to it over the typed `mentra` channel bus (src/shared/channels.ts):
  * snapshot/auth/live broadcasts in, login/logout/start/stop/fetch RPCs out.
  * All REST traffic (history) goes through the background's proxied-fetch RPC
- * — the WebView runs from file:// and can't fetch cross-origin itself.
+ * — the WebView runs from file:// and can't fetch cross-origin itself. The
+ * retained audio clip is the one exception: an `<audio src>` is plain media
+ * navigation, not a fetch, so it points straight at the api with the bearer
+ * token as a query param (minted by the background, XERK-237).
  *
- * Not ported: audio playback/download in history (needs a browser streaming
- * the authenticated audio endpoint), and the cue-detail modal (cues expand
- * inline instead, like the session page's reviewed cues).
+ * Structure, class names and copy track `even/index.html` +
+ * `even/src/phone/{login,nav,session,history}.ts` one-for-one, so the two
+ * front ends read identically (XERK-237).
  */
 
 import "../shared/channels";
@@ -59,7 +62,6 @@ const els = {
   submit: byId<HTMLButtonElement>("login-submit"),
   error: byId("login-error"),
   signOut: byId<HTMLButtonElement>("sign-out"),
-  openWeb: byId<HTMLButtonElement>("open-web"),
   appUser: byId("app-user"),
   toast: byId("app-toast"),
   // nav
@@ -91,6 +93,16 @@ const els = {
   cueToggle: byId("history-cue-toggle"),
   cueToggleInput: byId<HTMLInputElement>("history-cue-toggle-input"),
   historyTranscript: byId("history-transcript"),
+  historyAudio: byId("history-audio"),
+  historyAudioEl: byId<HTMLAudioElement>("history-audio-el"),
+  historyAudioLink: byId<HTMLButtonElement>("history-audio-link"),
+  // cue-detail popup (upstream phone/history.ts)
+  cuePopup: byId("history-cue-popup"),
+  cuePopupCard: byId("history-cue-popup-card"),
+  cuePopupTitle: byId("history-cue-popup-title"),
+  cuePopupBody: byId("history-cue-popup-body"),
+  cuePopupSource: byId("history-cue-popup-source"),
+  cuePopupClose: byId<HTMLButtonElement>("history-cue-popup-close"),
 };
 
 function make(tag: string, className: string, text?: string): HTMLElement {
@@ -193,12 +205,6 @@ els.signOut.addEventListener("click", () => {
   void mentra.request("tenir:logout", {}).catch((err) => toast(String(err)));
 });
 
-els.openWeb.addEventListener("click", () => {
-  // The server serves its own web UI at the https root of the same host.
-  if (!auth.serverUrl) return;
-  mentra.send("tenir:open-url", { url: `https://${auth.serverUrl}` });
-});
-
 // ---------------------------------------------------------------------------
 // Bottom nav (upstream phone/nav.ts)
 // ---------------------------------------------------------------------------
@@ -235,12 +241,12 @@ let live: TenirLiveState = {
   cues: [],
   song: null,
 };
-// Which reviewed cues are expanded, by cue id — held PER SURFACE (upstream
-// kept the session page's on the page and history used a modal), so expanding
-// a cue in history can't pre-expand it in the live transcript and a live
-// broadcast can't wipe the history view's state.
+// Which reviewed cues are expanded in the LIVE transcript, by cue id — the
+// live rows are rebuilt wholesale on every broadcast, so an expanded cue has
+// to come back in whatever state the viewer left it (upstream SessionPage's
+// `expanded`). History has no such set: there a cue is a chip that opens the
+// detail popup, exactly as upstream.
 const sessionExpanded = new Set<string>();
-const historyExpanded = new Set<string>();
 let wasRecording = false;
 
 function buildCueRow(cue: TenirCue, expanded: Set<string>): HTMLElement {
@@ -466,6 +472,9 @@ els.stop.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 let currentConversation: Conversation | null = null;
+// The open conversation's audio URL, kept so "Save audio.wav" can hand the
+// same URL to the host's download sheet.
+let audioUrl: string | null = null;
 let deleteArmed = false;
 let disarmTimer: ReturnType<typeof setTimeout> | null = null;
 let listReq = 0;
@@ -551,8 +560,50 @@ function showHistoryDetail(conv: Conversation): void {
   els.cueToggleInput.checked = true;
   els.cueToggle.hidden = !hasCues;
   renderHistoryTranscript(conv);
+  void showAudio(conv);
   els.historyList.hidden = true;
   els.historyDetail.hidden = false;
+}
+
+/**
+ * Wire the retained clip into the player (XERK-67, XERK-237). The URL is minted
+ * by the background — only it holds the bearer token, which the api accepts as
+ * a `?token=` query param on this endpoint — and `<audio src>` is plain media
+ * navigation, so no cross-origin fetch is involved. A conversation with no
+ * retained audio (or a signed-out page) simply has no player.
+ */
+async function showAudio(conv: Conversation): Promise<void> {
+  if (!conv.hasAudio) {
+    stopAudio();
+    els.historyAudio.hidden = true;
+    return;
+  }
+  try {
+    const res = await mentra.request("tenir:audio-url", { id: conv.id });
+    // A slower round-trip must not resurrect the player over a conversation the
+    // viewer has since left.
+    if (!res.ok || !res.url || currentConversation?.id !== conv.id) {
+      stopAudio();
+      els.historyAudio.hidden = true;
+      return;
+    }
+    audioUrl = res.url;
+    els.historyAudioEl.src = res.url;
+    els.historyAudio.hidden = false;
+  } catch {
+    stopAudio();
+    els.historyAudio.hidden = true;
+  }
+}
+
+function stopAudio(): void {
+  try {
+    els.historyAudioEl.pause();
+  } catch {
+    /* no media implementation */
+  }
+  els.historyAudioEl.removeAttribute("src");
+  audioUrl = null;
 }
 
 function renderHistoryTranscript(conv: Conversation): void {
@@ -564,6 +615,9 @@ function renderHistoryTranscript(conv: Conversation): void {
     return;
   }
   const showCues = els.cueToggleInput.checked;
+  // A cue popup left open would dangle over a transcript that no longer shows
+  // the chip that opened it.
+  if (!showCues) closeCuePopup();
   const frag = document.createDocumentFragment();
   for (const item of timeline(conv)) {
     if (item.kind === "segment") {
@@ -582,28 +636,45 @@ function renderHistoryTranscript(conv: Conversation): void {
       }
       frag.appendChild(row);
     } else if (showCues) {
-      // Inline expandable cue (the upstream modal is not ported). History
-      // keeps its own expand-state set, so live broadcasts can't disturb it.
-      frag.appendChild(
-        buildCueRow(
-          {
-            id: item.cue.cueId,
-            title: item.cue.title,
-            body: item.cue.body,
-            source: item.cue.source ?? undefined,
-            afterIndex: -1,
-          },
-          historyExpanded,
-        ),
-      );
+      // An inline clickable chip (XERK-81): "✦ <title>" opens the cue popup.
+      const button = make("button", "cue-inline") as HTMLButtonElement;
+      button.type = "button";
+      button.title = "Show cue detail";
+      const mark = make("span", "cue-inline-mark", "✦");
+      mark.setAttribute("aria-hidden", "true");
+      button.appendChild(mark);
+      button.appendChild(make("span", "cue-inline-title", item.cue.title));
+      const cue = item.cue;
+      button.addEventListener("click", () => openCuePopup(cue));
+      frag.appendChild(button);
     }
   }
   els.historyTranscript.replaceChildren(frag);
 }
 
+// ---- cue detail popup (XERK-81, upstream phone/history.ts) -----------------
+
+function openCuePopup(cue: { title: string; body: string; source?: string | null }): void {
+  els.cuePopupTitle.textContent = cue.title;
+  els.cuePopupBody.textContent = cue.body;
+  // Live-source attribution (XERK-120): shown only for a grounded cue.
+  els.cuePopupSource.textContent = cue.source ?? "";
+  els.cuePopupSource.hidden = !cue.source;
+  els.cuePopup.hidden = false;
+}
+
+function closeCuePopup(): void {
+  els.cuePopup.hidden = true;
+  els.cuePopupTitle.replaceChildren();
+  els.cuePopupBody.replaceChildren();
+}
+
 function showHistoryList(): void {
   currentConversation = null;
   disarmDelete();
+  closeCuePopup();
+  stopAudio();
+  els.historyAudio.hidden = true;
   els.historyDetail.hidden = true;
   els.historyList.hidden = false;
 }
@@ -648,6 +719,28 @@ els.cueToggleInput.addEventListener("change", () => {
   if (currentConversation) renderHistoryTranscript(currentConversation);
 });
 
+// Cue-detail popup, mirroring the web Modal: a click on the backdrop or the
+// close button dismisses it; a click inside the card does not.
+els.cuePopup.addEventListener("click", () => closeCuePopup());
+els.cuePopupClose.addEventListener("click", () => closeCuePopup());
+els.cuePopupCard.addEventListener("click", (e) => e.stopPropagation());
+
+// "Save audio.wav" — upstream is an `<a download>`; the WebView has no
+// filesystem, so the host's download sheet takes the same URL instead.
+els.historyAudioLink.addEventListener("click", () => {
+  if (!audioUrl) return;
+  void mentra
+    .request("tenir:download", {
+      url: audioUrl,
+      filename: "audio.wav",
+      mimeType: "audio/wav",
+    })
+    .then((res) => {
+      if (!res.ok) toast("Could not save the audio.");
+    })
+    .catch((err) => toast(String(err)));
+});
+
 // ---------------------------------------------------------------------------
 // Channel wiring + bootstrap
 // ---------------------------------------------------------------------------
@@ -665,6 +758,24 @@ mentra.on("tenir:auth", (state) => {
 mentra.on("tenir:live", (state) => {
   live = state;
   renderSession();
+});
+
+// ---- theme (XERK-237) ------------------------------------------------------
+// Upstream's phone page follows `prefers-color-scheme`. This WebView is told
+// the host's choice instead — seeded from `window.MentraOS` at boot so the
+// first paint is already right, then kept current by the background's
+// broadcast. The stylesheet keys off `data-theme` with the media query as its
+// fallback, so a host that reports nothing still follows the system.
+
+function applyColorScheme(scheme: "light" | "dark"): void {
+  document.documentElement.setAttribute("data-theme", scheme);
+}
+
+const bootScheme = window.MentraOS?.colorScheme;
+if (bootScheme === "light" || bootScheme === "dark") applyColorScheme(bootScheme);
+
+mentra.on("tenir:color-scheme", ({ scheme }) => {
+  applyColorScheme(scheme === "light" ? "light" : "dark");
 });
 
 renderSession();

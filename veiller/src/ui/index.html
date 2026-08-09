@@ -7,97 +7,167 @@
     <link rel="stylesheet" href="./index.css" />
   </head>
   <body>
-    <!-- Login card (upstream even/index.html #login) -->
-    <!-- Visible at boot (upstream even/index.html): the login card is on
-         screen immediately and hidden only once the auth snapshot resolves,
-         so the WebView never shows a blank page while the bridge opens. -->
-    <section id="login">
-      <div class="login-card">
-        <h1 class="brand">Tenir</h1>
-        <p class="tagline">Live captions from your own server</p>
-        <form id="login-form" autocomplete="on">
-          <label for="server-url">Server</label>
-          <input id="server-url" type="text" inputmode="url" required placeholder="tenir.example.com" autocapitalize="none" autocorrect="off" spellcheck="false" />
-          <span class="field-hint">Your self-hosted server's address (reachable over HTTPS).</span>
-          <label for="username">Username</label>
-          <input id="username" type="text" autocomplete="username" required placeholder="Your username" autocapitalize="none" autocorrect="off" spellcheck="false" />
-          <label for="password">Password</label>
-          <input id="password" type="password" autocomplete="current-password" required placeholder="Your password" />
-          <p id="login-error" class="form-error" role="alert"></p>
-          <button id="login-submit" type="submit" class="btn btn-primary">Log in</button>
-          <p class="login-note">Log in to the household on your self-hosted instance. The glasses use the same sign-in and stay signed in.</p>
-        </form>
-      </div>
-    </section>
-
-    <!-- Signed-in shell: Session / History pages + bottom nav -->
-    <section id="app" hidden>
+    <!--
+      The phone page of the Tenir miniapp, a faithful port of the upstream Even
+      Hub app's phone surface (`even/index.html`) — same structure, same class
+      names, same copy (XERK-237). The glasses HUD is driven from the background
+      JSContext, not from here; this page is what the wearer sees on their
+      phone: the login, and once signed in the app's own two pages — Session
+      (the running live transcript) and History (stored sessions) — with the web
+      UI's bottom navigation between them.
+    -->
+    <main class="container" id="login">
       <header class="app-header">
-        <div class="app-header-left">
-          <span class="brand-small">Tenir</span>
-          <span id="app-user" class="app-user"></span>
-        </div>
-        <div class="app-header-right">
-          <button id="open-web" type="button" class="btn btn-ghost">Web app</button>
-          <button id="sign-out" type="button" class="btn btn-ghost">Sign out</button>
-        </div>
+        <h1 class="wordmark"><span class="wordmark-dot" aria-hidden="true"></span>Tenir</h1>
       </header>
 
-      <!-- Session page: live transcript mirror + Start/Stop (upstream phone/session.ts) -->
-      <main id="page-session" class="page">
-        <div class="session-head">
-          <h2 class="page-title grow">Session</h2>
-          <span id="session-dot" class="live-dot" aria-hidden="true" hidden></span>
-          <span id="session-badge" class="badge-neutral">idle</span>
-          <div id="session-controls" class="session-controls">
-            <button id="session-start" type="button" class="btn btn-primary">Start</button>
-            <button id="session-stop" type="button" class="btn btn-danger" hidden>Stop</button>
-          </div>
-        </div>
-        <div id="session-cue" class="session-cue" aria-live="polite" hidden></div>
-        <div id="session-song" class="session-song" aria-live="polite" hidden></div>
-        <div id="session-empty" class="empty">
-          <p id="session-empty-title" class="empty-title">No session running</p>
-          <p id="session-empty-hint" class="empty-hint">Press Start, or tap your glasses, to begin a session.</p>
-        </div>
-        <ul id="session-text" class="session-text" aria-live="polite" hidden></ul>
-      </main>
-
-      <!-- History page: stored sessions (upstream phone/history.ts) -->
-      <main id="page-history" class="page" hidden>
-        <div id="history-list">
-          <h2 class="page-title">History &amp; search</h2>
-          <form id="history-search" class="history-search">
-            <input id="history-query" type="text" placeholder="Search what you've heard…" />
-            <button type="submit" class="btn btn-secondary">Search</button>
-          </form>
-          <div id="history-status"></div>
-          <ul id="history-rows" class="history-rows"></ul>
-        </div>
-        <div id="history-detail" hidden>
-          <div class="detail-head">
-            <button id="history-back" type="button" class="btn btn-ghost">← History</button>
-            <h3 class="page-subtitle grow">Conversation detail</h3>
-            <button id="history-delete" type="button" class="btn btn-danger">Delete</button>
-          </div>
-          <p id="history-meta" class="muted"></p>
-          <label id="history-cue-toggle" class="cue-toggle" hidden>
-            <input id="history-cue-toggle-input" type="checkbox" checked />
-            Show cues
+      <section>
+        <h2>Log in</h2>
+        <form id="login-form" autocomplete="on">
+          <label class="field">
+            <span class="field-label">Server</span>
+            <input class="input" id="server-url" name="server" type="text" placeholder="tenir.example.com"
+                   autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="url" required />
+            <span class="field-hint">Your self-hosted server's address (reachable over HTTPS).</span>
           </label>
-          <div id="history-transcript" class="history-transcript"></div>
-          <!-- Audio playback/download is not ported: the WebView can't stream the
-               authenticated audio endpoint through the background fetch proxy. -->
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input class="input" id="username" name="username" type="text" placeholder="username"
+                   autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input class="input" id="password" name="password" type="password" placeholder="password"
+                   autocomplete="current-password" required />
+          </label>
+          <button class="btn btn-primary" id="login-submit" type="submit">Log in</button>
+        </form>
+        <p class="muted">Log in to the household on your self-hosted instance. The glasses use the same sign-in and stay signed in.</p>
+      </section>
+    </main>
+
+    <div class="toast err" id="login-error" role="alert"></div>
+
+    <!-- Signed-in view (XERK-93): dedicated Session + History pages in the web
+         UI's style, with the web UI's phone bottom navigation between them.
+         Live captions run on the glasses; the Session page mirrors them. -->
+    <div id="app" hidden>
+      <div class="bar">
+        <span class="wordmark"><span class="wordmark-dot" aria-hidden="true"></span>Tenir</span>
+        <span class="bar-spacer"></span>
+        <span class="who">Signed in as <b id="app-user"></b></span>
+        <button class="btn btn-ghost" id="sign-out" type="button">Log out</button>
+      </div>
+
+      <div class="content">
+        <!-- Session: the running glasses session, mirrored full-page in real
+             time. Idle it explains how to start one. -->
+        <section class="page" id="page-session">
+          <div class="row">
+            <h2 class="grow">Session</h2>
+            <span class="live-dot" id="session-dot" aria-hidden="true" hidden></span>
+            <span class="badge-neutral" id="session-badge">idle</span>
+          </div>
+          <!-- Start/stop from the phone (XERK-116), so a session no longer has
+               to be begun and ended on the glasses. -->
+          <div class="row session-controls" id="session-controls">
+            <button class="btn btn-primary" id="session-start" type="button">Start</button>
+            <button class="btn btn-danger" id="session-stop" type="button" hidden>Stop</button>
+          </div>
+          <!-- The recognized song's synced lyrics (XERK-184): the same bordered
+               accent card as a cue, "TITLE — ARTIST" over a window of lyric lines
+               that scrolls as the song plays. Shown while a song is recognized. -->
+          <div class="session-song" id="session-song" aria-live="polite" hidden></div>
+          <!-- The private context cue (XERK-81): a bordered accent card above
+               the transcript, shown while a cue is live during a session. -->
+          <div class="session-cue" id="session-cue" aria-live="polite" hidden></div>
+          <div class="empty" id="session-empty">
+            <p class="empty-title" id="session-empty-title">No session running</p>
+            <p class="empty-hint" id="session-empty-hint">Tap your glasses to start a session.</p>
+          </div>
+          <ul class="transcript" id="session-text" aria-live="polite" hidden></ul>
+        </section>
+
+        <!-- History: stored sessions from the api, list -> detail (transcript,
+             audio, delete), mirroring the web UI's History panel. -->
+        <div class="page" id="page-history" hidden>
+          <section id="history-list">
+            <h2>History &amp; search</h2>
+            <form class="row" id="history-search">
+              <input class="input grow" id="history-query" name="q" type="text" placeholder="Search what you've heard…"
+                     autocapitalize="none" autocorrect="off" spellcheck="false" />
+              <button class="btn btn-primary" type="submit">Search</button>
+            </form>
+            <div id="history-status"></div>
+            <ul class="history-list" id="history-rows"></ul>
+          </section>
+          <div class="detail" id="history-detail" hidden>
+            <div class="row">
+              <button class="btn btn-ghost" id="history-back" type="button">← History</button>
+              <h3 class="grow">Conversation detail</h3>
+              <button class="btn btn-danger" id="history-delete" type="button">Delete</button>
+            </div>
+            <p class="muted" id="history-meta"></p>
+            <!-- Toggle cues off to read the transcript as one uninterrupted,
+                 selectable run (XERK-104); shown only when the conversation has
+                 cues, and defaults to on each time a conversation is opened. -->
+            <label class="cue-toggle" id="history-cue-toggle" hidden>
+              <input type="checkbox" id="history-cue-toggle-input" checked />
+              Show cues
+            </label>
+            <div class="transcript-block" id="history-transcript"></div>
+            <div class="audio-player" id="history-audio" hidden>
+              <!-- Native playback with the WebView's built-in transport + seek
+                   bar (XERK-67). The retained clip is fetched straight from the
+                   api over https with the bearer token as a query param (the
+                   endpoint accepts it there), so no cross-origin fetch is
+                   involved; "Save audio" hands the same URL to the host's
+                   download sheet, the miniapp counterpart of upstream's
+                   `<a download>` (XERK-237). -->
+              <audio class="audio-player-el" id="history-audio-el" controls preload="metadata"></audio>
+              <button class="link" id="history-audio-link" type="button">Save audio.wav</button>
+            </div>
+          </div>
+
+          <!-- Cue-detail popup (XERK-81): a fixed backdrop over the page with a
+               centered card, opened by an inline cue chip in the transcript.
+               Dismissed by the backdrop or the ✕; a click on the card stays. -->
+          <div class="cue-popup-backdrop" id="history-cue-popup" role="dialog" aria-modal="true" hidden>
+            <div class="cue-popup" id="history-cue-popup-card">
+              <div class="cue-popup-head">
+                <h3 class="cue-popup-title" id="history-cue-popup-title"></h3>
+                <button class="cue-popup-close" id="history-cue-popup-close" type="button" aria-label="Close">✕</button>
+              </div>
+              <div class="cue-popup-body" id="history-cue-popup-body"></div>
+              <!-- Live-source attribution (XERK-120); hidden for ungrounded cues. -->
+              <div class="cue-popup-source" id="history-cue-popup-source" hidden></div>
+            </div>
+          </div>
         </div>
-      </main>
+      </div>
 
-      <nav class="bottom-nav" aria-label="Sections">
-        <button id="nav-session" type="button" class="nav-tab active" aria-current="page">Session</button>
-        <button id="nav-history" type="button" class="nav-tab">History</button>
+      <nav class="nav-tabs" aria-label="Sections">
+        <button class="nav-item active" id="nav-session" type="button" aria-current="page">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <rect x="9" y="2" width="6" height="11" rx="3" />
+            <path d="M5 10a7 7 0 0 0 14 0" />
+            <line x1="12" y1="19" x2="12" y2="22" />
+          </svg>
+          <span>Session</span>
+        </button>
+        <button class="nav-item" id="nav-history" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+          <span>History</span>
+        </button>
       </nav>
-    </section>
+    </div>
 
-    <div id="app-toast" class="toast" role="status"></div>
+    <div class="toast err" id="app-toast" role="alert"></div>
 
     <script type="module" src="./main.ts"></script>
   </body>

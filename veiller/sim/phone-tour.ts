@@ -335,12 +335,107 @@ const STEPS: Step[] = [
       check("detail shows the turns", detail.includes("First turn of the conversation"), detail.slice(0, 400))
       check("detail shows the embedded cue", detail.includes("Distance"), detail.slice(0, 400))
 
+      // A stored cue opens the detail POPUP, as upstream does — not an inline
+      // expansion (XERK-237).
+      await ctx.page.locator("#history-transcript .cue-inline").first().click()
+      await ctx.page.waitForSelector("#history-cue-popup", {state: "visible"})
+      check(
+        "the cue popup shows the cue body",
+        (await ctx.page.locator("#history-cue-popup-body").innerText()).includes("150 million"),
+      )
+      await ctx.page.locator("#history-cue-popup-close").click()
+      check("the popup closes again", !(await ctx.page.locator("#history-cue-popup").isVisible()))
+
       // Delete is deliberately two-step (arm, then confirm).
       await ctx.page.click("#history-delete")
       await ctx.page.waitForTimeout(200)
       await ctx.page.click("#history-delete")
       await ctx.page.waitForTimeout(800)
       check("conversation deleted server-side", ctx.server.conversations.length === 0)
+    },
+  },
+
+  {
+    title: "A conversation with retained audio gets a working player",
+    run: async (ctx) => {
+      // XERK-237: upstream's history detail plays and downloads the retained
+      // clip. The WebView can't fetch the authenticated endpoint cross-origin,
+      // but `<audio src>` is plain media navigation and the api takes the token
+      // as a query param — so the player has to actually load something.
+      ctx.server.conversations = [
+        {
+          id: "conv-audio",
+          status: "final",
+          micSource: "g2-microphone",
+          sourceLang: "en",
+          startedAt: new Date("2026-01-03T09:00:00Z").toISOString(),
+          endedAt: new Date("2026-01-03T09:00:30Z").toISOString(),
+          durationMs: 30_000,
+          segmentCount: 1,
+          hasAudio: true,
+          segments: [{segmentId: "s1", text: "A recorded turn", startMs: 0, endMs: 400, lang: "en"}],
+          cues: [],
+        },
+      ]
+      await ctx.page.click("#nav-history")
+      await ctx.page.waitForSelector(".history-item", {state: "visible"})
+      await ctx.page.locator(".history-item .history-open").first().click()
+      await ctx.page.waitForSelector("#history-audio", {state: "visible"})
+      check("the player is shown for a conversation with audio", await ctx.page.locator("#history-audio").isVisible())
+
+      const src = await ctx.page.locator("#history-audio-el").getAttribute("src")
+      check("the clip URL carries the bearer token", Boolean(src && /\/audio\?token=/.test(src)), String(src))
+
+      // The element must actually load it — a 401 or a bad URL would leave
+      // readyState at 0 and the duration NaN.
+      const ok = await ctx.page.evaluate(async () => {
+        const el = document.getElementById("history-audio-el") as HTMLAudioElement
+        if (!el) return {loaded: false, duration: 0}
+        await new Promise<void>((resolve) => {
+          if (el.readyState >= 1) return resolve()
+          el.addEventListener("loadedmetadata", () => resolve(), {once: true})
+          el.addEventListener("error", () => resolve(), {once: true})
+          setTimeout(resolve, 4000)
+        })
+        return {loaded: el.readyState >= 1, duration: el.duration}
+      })
+      check("the browser loads the clip's metadata", ok.loaded, JSON.stringify(ok))
+
+      await ctx.page.click("#history-back")
+      const stillSrc = await ctx.page.locator("#history-audio-el").getAttribute("src")
+      check("leaving the detail releases the clip", !stillSrc, String(stillSrc))
+      ctx.server.conversations = []
+    },
+  },
+
+  {
+    title: "The page follows the host's light/dark scheme",
+    run: async (ctx) => {
+      // XERK-237: upstream follows `prefers-color-scheme`; here the host says
+      // which it is, and the page must repaint — it shipped dark-only before.
+      const bg = () =>
+        ctx.page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+      const themeAttr = () =>
+        ctx.page.evaluate(() => document.documentElement.getAttribute("data-theme"))
+
+      const darkBg = await bg()
+      check("starts on the host's scheme", (await themeAttr()) !== null, String(await themeAttr()))
+
+      // The background broadcasts the scheme; drive the channel the way it does.
+      await ctx.page.evaluate(() => {
+        document.documentElement.setAttribute("data-theme", "light")
+      })
+      const lightBg = await bg()
+      check("light and dark paint different backgrounds", darkBg !== lightBg, `${darkBg} vs ${lightBg}`)
+      check(
+        "the light palette is actually light",
+        /^rgb\((2\d\d|1\d\d), /.test(lightBg),
+        lightBg,
+      )
+      await ctx.page.evaluate(() => {
+        document.documentElement.setAttribute("data-theme", "dark")
+      })
+      check("dark comes back", (await bg()) === darkBg, `${await bg()} vs ${darkBg}`)
     },
   },
 
