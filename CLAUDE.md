@@ -69,14 +69,17 @@ The GPU model servers run on the host at **`10.10.10.22`** and can be hit
 model behaviour (e.g. cue/translation accuracy) instead of only unit tests or
 the stub. Both expose an OpenAI-compatible API:
 
-- **`10.10.10.22:9402`** — cue/summary/translation LLM: `gpt-oss:120b` served
-  by Ollama (`GET /v1/models`, `POST /v1/chat/completions`). Point
-  `OpenAICueGenerator(endpoint="http://10.10.10.22:9402/v1", model="gpt-oss:120b", api_key="")`
-  (or `OpenAITranslator(...)`) straight at it to drive the real model. Probe
+- **`maxai.xerktech.com:8890`** — cue/summary/translation LLM: `qwen3.8-27b`
+  served by SGLang (NVFP4 + DFlash speculative decoding; `GET /v1/models`,
+  `POST /v1/chat/completions`). Point
+  `OpenAICueGenerator(endpoint="http://maxai.xerktech.com:8890/v1", model="qwen3.8-27b", api_key="")`
+  (or `OpenAITranslator(...)`) straight at it to drive the real model. Thinking
+  is toggled via `chat_template_kwargs.enable_thinking` (on by default for cues,
+  off by default for translations — see `api/src/api/config.py`). Probe
   `GET /v1/models` first and use the id it reports — a wrong model name comes
   back as a 404 on /chat/completions, which looks like a missing route.
 - **`10.10.10.22:9401`** — Parakeet STT (`GET /health`).
 
-These are the same containers the gateway routes to (the `gpt-oss:120b` alias);
+These are the same servers the gateway routes to (the `qwen3.8-27b-dflash` alias);
 talking to them directly skips the gateway alias and auth so you can iterate on
 prompts/params without the full stack.

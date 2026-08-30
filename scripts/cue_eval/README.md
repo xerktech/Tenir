@@ -22,7 +22,7 @@ docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
 ```bash
 cd api && pip install -e '.[dev]'   # the harness imports the api package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://10.10.10.22:9402/v1 --model Qwen/Qwen3.6-27B-FP8 \
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
   --out results.json [--conversations id1,id2,...]
 ```
 
@@ -37,7 +37,7 @@ SearXNG/Kiwix/RSS infrastructure.
 
 ```bash
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://10.10.10.22:9402/v1 --model Qwen/Qwen3.6-27B-FP8
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b
 python scripts/cue_eval/report.py results.judged.json
 ```
 
@@ -48,6 +48,10 @@ weights, so treat absolute accuracy numbers as comparative, not ground truth —
 spot-check the flagged cues by hand.
 
 ## Baseline numbers (2026-07, 12 recorded conversations)
+
+These numbers are gpt-oss:120b-era; the production model was replaced by
+Qwen3.8-27B on SGLang in Aug 2026, so re-baseline before comparing anything
+new (rule: never compare against an old export).
 
 | prompt | cues | attempts | novelty | relevance | accuracy | restatements | wrong | judged dups |
 |---|---|---|---|---|---|---|---|---|
@@ -62,3 +66,22 @@ grounded bar, and carried the restatement/duplicate/wrong-cue problems this
 calibration removed. The shipped combination restores volume (~3.5x the
 replayed baseline, before grounding adds more) at equal-or-better judged
 quality; greedy decoding (t=0.0) cut judged-wrong cues 5 -> 1 at equal volume.
+The August 2026 re-baseline after the Qwen3.8-27B cutover is in
+`RESULTS-2026-08.md`.
+
+## Prompt-variant replays (Aug 2026, Qwen3.8-27B retune)
+
+`cue_replay_prompt.py` extends the replay with emission-posture tails and
+full-frame prompt variants (v1–v7) — the harness behind the Qwen3.8-27B
+retune in `RESULTS-2026-08.md`:
+
+```bash
+python scripts/cue_eval/cue_replay_prompt.py segments.json \
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
+  --out results.json --variant v5 --thinking on --max-tokens 2048
+```
+
+Variant v5 (now the shipped frame) is a full system-prompt replacement; the
+tail variants v1–v4 anchor on the July frame's closing sentence
+(`_SHIPPED_TAIL`), which no longer ships — re-baseline against the current
+shipped prompt before comparing those tails.

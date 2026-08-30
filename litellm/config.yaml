@@ -28,41 +28,38 @@ model_list:
 
   # Cue/summary + translation LLM (XERK-81, XERK-160) — the alias the api sends
   # when API_CUE_BACKEND / API_TRANSLATION_BACKEND = openai (API_LLM_MODEL =
-  # gpt-oss:120b). A plain chat model (no mode → /chat/completions), so both route
-  # through this SAME gateway, no new URL/key var. Fronts Ollama's OpenAI-compatible
-  # surface, exactly as the deployed gateway fronts the tenir-ollama-cue container;
-  # reasoning_effort matches the July 2026 cue-model eval's setting. The backend
-  # (ollama-cue) is only up under `docker compose --profile cues up`; without it
-  # this route just 503s and cues/translations stay silent — captions are unaffected.
-  - model_name: gpt-oss:120b
+  # qwen3.8-27b-dflash). A plain chat model (no mode → /chat/completions), so both
+  # routes go through this SAME gateway, no new URL/key var. Fronts the
+  # OpenAI-compatible surface of the Qwen3.8-27B SGLang server on the GPU box
+  # (NVFP4 weights + DFlash speculative decoding), which replaced the retired
+  # Ollama gpt-oss:120b deployment. api_key is a placeholder — the SGLang server
+  # does no auth, but LiteLLM's OpenAI client needs a non-empty key to route.
+  # The thinking toggle rides chat_template_kwargs.enable_thinking (Qwen's chat
+  # template), off by default so cues/translations get fast structured JSON; it is
+  # allowlisted so drop_params doesn't strip it (see the note on the route below).
+  - model_name: qwen3.8-27b-dflash
     litellm_params:
-      model: openai/gpt-oss:120b
-      api_base: http://ollama-cue:11434/v1
-      api_key: tenir-local
-      reasoning_effort: medium
-      # Without this allowlist, drop_params silently strips reasoning_effort
-      # (LiteLLM's model map doesn't know gpt-oss:120b supports it) and the
-      # backend runs at Ollama's default — verified by watching the proxied
-      # payloads during the XERK-180 route split. Ollama's gpt-oss default
-      # happens to BE medium, so cues behaved as intended, but only by luck;
-      # pin it explicitly so the dial actually works on both routes.
-      allowed_openai_params: ["reasoning_effort"]
+      model: openai/qwen3.8-27b
+      api_base: http://maxai.xerktech.com:8890/v1
+      api_key: sk-none
+      # Without this allowlist, drop_params silently strips chat_template_kwargs
+      # and the model keeps thinking on, spending the whole token budget on
+      # reasoning and returning empty content — the exact failure the retired
+      # Qwen3 server showed. Pin it explicitly so the thinking toggle actually
+      # reaches the backend on both routes.
+      allowed_openai_params: ["chat_template_kwargs"]
 
   # Translation route (XERK-180) — SAME weights and backend as the cue alias
-  # above, but with the reasoning dial at low. The Aug 2026 translation eval
-  # (scripts/translation_eval/RESULTS-2026-08.md) measured low at ~2x the speed
-  # of medium (p50 0.82s vs 1.21s serialized, p90 3.6s vs 7.6s at prod
-  # concurrency — medium blows the 1-2s translation budget) with accuracy
-  # within noise on conversational speech; dedicated smaller models all lost
-  # accuracy. Splitting the alias lets translations shed the cue route's
-  # reasoning tax without touching cue behavior. Matches API_TRANSLATION_MODEL.
-  - model_name: gpt-oss:120b-translate
+  # above, on its own alias so the api can point translation traffic at a distinct
+  # route without touching cue behavior. Qwen has no reasoning_effort dial, so both
+  # routes share the same params and the thinking toggle is set per-request by the
+  # api rather than pinned per-route. Matches API_TRANSLATION_MODEL.
+  - model_name: qwen3.8-27b-dflash-translate
     litellm_params:
-      model: openai/gpt-oss:120b
-      api_base: http://ollama-cue:11434/v1
-      api_key: tenir-local
-      reasoning_effort: low
-      allowed_openai_params: ["reasoning_effort"]
+      model: openai/qwen3.8-27b
+      api_base: http://maxai.xerktech.com:8890/v1
+      api_key: sk-none
+      allowed_openai_params: ["chat_template_kwargs"]
 
 litellm_settings:
   # Drop OpenAI params the backend doesn't implement instead of erroring.

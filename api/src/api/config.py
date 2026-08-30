@@ -71,24 +71,31 @@ class Settings(BaseSettings):
     # + litellm_api_key, POSTing /chat/completions instead of /audio/transcriptions).
     #   "off"    — no cues (default; the stripped core stays STT-only unless enabled).
     #   "stub"   — model-free, deterministic generator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b on Ollama,
-    #   the tenir-ollama-cue container — see docs/cues.md).
+    #   "openai" — real chat model via the gateway (prod: qwen3.8-27b-dflash on
+    #   the SGLang server — see docs/cues.md).
     cue_backend: str = "off"  # off | stub | openai
     # The chat-model alias sent to the gateway for cue generation (matches the
     # LiteLLM route + the deployed API_LLM_MODEL). The gateway owns the real model id.
-    llm_model: str = "gpt-oss:120b"
+    llm_model: str = "qwen3.8-27b-dflash"
     # How much recent transcript (finalized turns) to feed the cue model as context.
     cue_context_segments: int = 8
     # Cap the model's cue body length (characters) so a cue fits the glasses box and
     # the live band; the generator prompt also asks for brevity.
     cue_max_body_chars: int = 240
-    # Disable the chat model's chain-of-thought for cue calls. Reasoning models
-    # (gpt-oss today; the retired Qwen3 that motivated this) can spend the whole
-    # token budget on reasoning and return an empty `content`, so no cue is ever
-    # produced. Cues want fast structured JSON, not reasoning, so default on. A
-    # server that doesn't know the `enable_thinking` kwarg ignores/drops it
-    # (LiteLLM's drop_params); turn off only for a chat template that rejects it.
-    cue_disable_thinking: bool = True
+    # Token budget for the cue call. With thinking on (the default) the model
+    # reasons inside this same budget before the JSON answer; at 600 the answer
+    # measurably starved (finish_reason: length, empty content). 2048 is the
+    # replay-measured budget (scripts/cue_eval/RESULTS-2026-08.md); the body is
+    # still clipped to cue_max_body_chars at parse.
+    cue_max_tokens: int = 2048
+    # Disable the chat model's chain-of-thought for cue calls. The August 2026
+    # replay retune measured thinking ON ahead of OFF on both volume and judged
+    # accuracy for Qwen3.8-27B (159 vs 64 cues; accuracy 1.97 vs 1.81 on the
+    # frozen set — scripts/cue_eval/RESULTS-2026-08.md), so it defaults to OFF.
+    # The toggle is sent explicitly in both directions; a server that doesn't
+    # know the `enable_thinking` kwarg ignores/drops it (LiteLLM's drop_params).
+    # Set true to run thinking-off (faster, measurably less accurate).
+    cue_disable_thinking: bool = False
 
     # ---- Live translations (XERK-160) --------------------------------------------
     # When a finalized turn's detected language isn't English, the session
@@ -100,17 +107,23 @@ class Settings(BaseSettings):
     # translation box's dismiss countdown, and cues resume.
     #   "off"    — no translations (default; matches the stripped core).
     #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: gpt-oss:120b weights
-    #   behind the dedicated translation alias below).
+    #   "openai" — real chat model via the gateway (prod: qwen3.8-27b-dflash
+    #   weights behind the dedicated translation alias below).
     translation_backend: str = "off"  # off | stub | openai
     # The chat-model alias sent to the gateway for translations (matches the
-    # LiteLLM route + the deployed API_TRANSLATION_MODEL). Same gpt-oss:120b
-    # weights as llm_model, but the alias carries reasoning_effort low: the
-    # XERK-180 eval (scripts/translation_eval/RESULTS-2026-08.md) found low ~2x
-    # faster than the cue route's medium with accuracy within noise, and every
-    # dedicated smaller model an accuracy loss. Point this at llm_model's alias
-    # to fall back to the shared route.
-    translation_model: str = "gpt-oss:120b-translate"
+    # LiteLLM route + the deployed API_TRANSLATION_MODEL). Same qwen3.8-27b
+    # weights as llm_model, on its own alias so translation traffic can be
+    # routed independently of the cue route. Qwen has no reasoning_effort dial
+    # (thinking is toggled per-request via chat_template_kwargs), so the alias
+    # mostly exists for routing and observability. Point this at llm_model's
+    # alias to fall back to the shared route.
+    translation_model: str = "qwen3.8-27b-dflash-translate"
+    # Thinking toggle for translation calls, kept OFF: translations are
+    # per-utterance on the live caption path (XERK-160/180 measured them with
+    # thinking off), and the cue retune's thinking-on default must not drag
+    # per-utterance translation latency with it — hence a separate flag from
+    # cue_disable_thinking.
+    translation_disable_thinking: bool = True
     # How long speech may go quiet after the last non-English activity before the
     # run is declared done. Finals only land at pauses, so partial captions also
     # count as activity — the window only starts once the speaker actually stops.

@@ -89,14 +89,15 @@ def test_cue_guidance_is_present() -> None:
 def test_cue_guidance_guards_growing_facts_from_stale_memory() -> None:
     # XERK-124: the model answered "how many Toy Story movies" from memory with
     # a count that its own training cutoff had made stale (the fifth film was
-    # already out). Facts that grow over time — franchise/series counts, latest
-    # releases — must be flagged as unsafe from memory in BOTH bars: the tight
-    # bar stays silent on them, the grounded bar takes them only from evidence.
+    # already out). Both bars must stay silent over a stale-memory answer; the
+    # grounded bar keeps the full growing-facts list and gates them to
+    # evidence, while the ungrounded bar is the frame's short bullet
+    # (replay-measured verbatim in RESULTS-2026-08.md).
     for guidance in (cue_guidance(), cue_guidance(grounded=True)):
-        low = guidance.lower()
-        assert "training cutoff" in low
-        assert "franchise" in low
-        assert "silent" in low  # silence over a stale-memory answer
+        assert "silent" in guidance.lower()  # silence over a stale-memory answer
+    grounded = cue_guidance(grounded=True).lower()
+    assert "training cutoff" in grounded
+    assert "franchise" in grounded
 
 
 def test_grounded_guidance_is_generous_but_evidence_gated() -> None:
@@ -221,11 +222,23 @@ def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> Non
         make_cue_generator()
 
 
+def test_factory_wires_the_cue_thinking_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Aug 2026 Qwen retune: cues default to thinking ON; the factory must pass
+    # the setting through (translations keep their own separate flag — see
+    # test_translation_backends.py).
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "cue_disable_thinking", False)
+    gen = make_cue_generator()
+    assert gen._build_payload("hi")["chat_template_kwargs"] == {"enable_thinking": True}
+
+
 # ---- OpenAI response parsing (pure; the network call itself is not covered) --
 
 
 def _gen() -> OpenAICueGenerator:
-    return OpenAICueGenerator(endpoint="http://litellm:4000/v1", model="gpt-oss:120b")
+    return OpenAICueGenerator(endpoint="http://litellm:4000/v1", model="qwen3.8-27b-dflash")
 
 
 def test_parse_valid_cue() -> None:
@@ -280,27 +293,39 @@ def test_parse_short_body_unchanged() -> None:
     assert cue is not None and cue.body == "short and sweet."
 
 
-# ---- request payload (regression: reasoning model must not think) -----------
+def test_parse_placeholder_answer_returns_none() -> None:
+    # The v5think replay produced one degenerate {"cue": true, "title": "...",
+    # "body": "..."} — a decline the model phrased as an acceptance. Dots are
+    # not cue content: require at least one alphanumeric in each field.
+    assert _gen()._parse('{"cue": true, "title": "...", "body": "..."}') is None
+    assert _gen()._parse('{"cue": true, "title": "Sun", "body": "..."}') is None
 
 
-def test_payload_disables_thinking_by_default() -> None:
-    # A reasoning model left thinking spends the whole token budget on reasoning and
-    # returns an empty content (recorded on the retired Qwen3), so no cue is
-    # produced. The payload must switch thinking off.
+# ---- request payload (regression: thinking toggle + budget) -----------------
+
+
+def test_payload_enables_thinking_by_default() -> None:
+    # August 2026 Qwen retune: thinking ON + the 2048-token budget is the
+    # replay-measured winner (RESULTS-2026-08.md). The toggle is sent
+    # explicitly in both directions so the outcome never depends on the
+    # server's own default.
     payload = _gen()._build_payload("how far is the sun?")
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
     assert payload["response_format"] == {"type": "json_object"}
     # Greedy decoding: sampled decoding measurably produced more wrong cues.
     assert payload["temperature"] == 0.0
-    assert payload["model"] == "gpt-oss:120b"
+    assert payload["model"] == "qwen3.8-27b-dflash"
+    # 2048, not 600: thinking-on reasons inside the same budget, and 600
+    # measurably starved the JSON answer (finish_reason: length, empty content).
+    assert payload["max_tokens"] == 2048
     assert [m["role"] for m in payload["messages"]] == ["system", "user"]
     assert payload["messages"][1]["content"] == "how far is the sun?"
 
 
-def test_payload_keeps_thinking_when_disabled_off() -> None:
-    gen = OpenAICueGenerator(endpoint="e", model="m", disable_thinking=False)
+def test_payload_disables_thinking_when_flagged() -> None:
+    gen = OpenAICueGenerator(endpoint="e", model="m", disable_thinking=True)
     payload = gen._build_payload("hi")
-    assert "chat_template_kwargs" not in payload
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_payload_tells_model_to_avoid_already_surfaced_cues() -> None:
@@ -334,166 +359,55 @@ def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
     assert "do NOT repeat" not in system
 
 
-def test_payload_system_prompt_is_enrichment_framed() -> None:
-    # The enrichment calibration: a cue must ADD information — the system prompt
-    # bans restating the transcript, names all five triggers, and keeps the
-    # accuracy rules absolute.
-    system = _gen()._build_payload("the sun is 15 thousand km away")["messages"][0]["content"].lower()
-    assert "enrich" in system  # the defining property
-    assert "restat" in system  # restatement banned
-    assert "question" in system and "answer" in system  # trigger 1 (XERK-124)
-    assert "jargon" in system  # trigger 3: define terms
-    assert "decision" in system  # trigger 4: inform the work being discussed
-    assert "correct" in system  # trigger 5: fix falsehoods
-    assert "accura" in system  # accuracy rules ride every call
-
-
-def test_payload_system_prompt_guards_against_stt_and_stale_memory_traps() -> None:
-    # The three wrong-cue classes production replays surfaced: invented facts
-    # about misheard names, contradicting what a speaker said firsthand, and
-    # "correcting" the world from a stale training cutoff. Each gets a rule.
+def test_payload_system_prompt_is_emission_first() -> None:
+    # August 2026 Qwen retune (RESULTS-2026-08.md): the July enrichment frame
+    # under-emitted on Qwen3.8-27B (26 cues thinking-on, 6 thinking-off on the
+    # frozen set), so the shipped frame is the short emission-first one — cue on
+    # most substantive turns, any of five triggers, from the newest turns.
     system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "speech recognition" in system and "garbled" in system
-    assert "firsthand" in system
-    assert "training cutoff" in system
-    assert "wrong cue is worse than no cue" in system
-
-
-def test_payload_system_prompt_blocks_cross_generation_and_false_corrections() -> None:
-    # Session-2 review (RESULTS-2026-07.md): the model adapted a KNOWN older
-    # product's specs to a newer model number it had never seen ("Galaxy Z
-    # Fold 8 ... launched August 2023"), and "corrected" a true regional title
-    # as nonexistent (Jet Grind Radio). Each failure class gets a rule.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "product generations" in system  # specs don't transfer across models
-    assert "regional titles" in system  # stale memory isn't grounds to correct
-    assert "does not exist" in system  # never cue that a used name isn't real
-
-
-def test_payload_system_prompt_cues_only_the_live_topic() -> None:
-    # Fast topic-switching audio produced cues about topics the conversation
-    # had left a minute earlier; candidates must come from the newest turns.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
+    assert "adds information the speakers did not say aloud" in system
+    assert "repeating or summarizing" in system  # restatement banned
+    assert "most turns of a substantive conversation" in system
     assert "newest turns" in system
+    for trigger in ("factual question", "concrete fact", "jargon",
+                    "decision or problem", "correct fact"):
+        assert trigger in system
 
 
-def test_payload_system_prompt_respects_the_speakers_own_vocabulary() -> None:
-    # 2026-07-27/28 production review: work sessions were flooded with
-    # dictionary cues defining the speakers' own professional vocabulary to
-    # them ("Pull Request" to a standup of engineers, "DevOps" on a DevOps
-    # onboarding call — ~120 of 396 cues). The audience model must judge
-    # "already known" against THESE listeners, and treat declining as normal
-    # rather than escalating to filler.
+def test_payload_system_prompt_gates_accuracy() -> None:
+    # The accuracy block stays absolute over the content: certainty gate,
+    # garbled-name guard, firsthand-detail guard, the time-varying-facts bar
+    # (the ungrounded cue_guidance bullet, slotted in), and the
+    # cross-generation guard from the July session-2 review.
     system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "working vocabulary" in system  # fluent use is proof of knowledge
-    assert "professional vocabulary" in system  # never defined back at them
-    assert "knowledge gap" in system  # jargon fires only where one shows
-    assert "declining is a normal outcome" in system  # no filler escalation
-    assert "lower the bar" in system  # a quiet run never loosens it
+    assert "accuracy is absolute" in system
+    assert "certain of" in system
+    assert "sounds garbled" in system
+    assert "firsthand detail" in system
+    assert cue_guidance().lower() in system  # ungrounded time-varying bar
+    assert "sibling model's specs" in system  # cross-generation guard
+    assert "only the listener sees" in system  # observer stance, never a participant
 
 
-def test_payload_system_prompt_defaults_bare_names_to_people_present() -> None:
-    # Same review: coworkers' and friends' names were resolved to celebrities
-    # and products (Archie -> Archie Moore / the FTP index, Jonathan -> a TV
-    # actor, Ezra -> the biblical scribe), team acronyms to famous expansions
-    # from other domains (MCP -> Minecraft Coder Pack in a Model Context
-    # Protocol chat, RPM -> Red Hat Package Manager for an internal app), and
-    # internal service names were given invented generic definitions.
+def test_payload_system_prompt_keeps_the_worked_examples() -> None:
+    # The worked examples carry the mishearing, wrong-referent, and
+    # cross-generation traps the short frame dropped as prose rules; v5 was
+    # replay-measured WITH them (RESULTS-2026-08.md), so they ship.
     system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "coworker" in system  # bare names default to people they know
-    assert "wrong by construction" in system  # their X is not the public X
-    assert "you know nothing about it" in system  # internal names undefined
-    assert "acronym resolves within" in system  # no cross-domain expansions
-
-
-def test_payload_system_prompt_treats_acronym_variants_as_the_internal_term() -> None:
-    # 2026-07-30 post-deploy review: an accented work meeting garbled the
-    # team's own internal acronym differently each utterance, and every
-    # variant got its own cross-domain definitional cue — occupational-health
-    # Display Screen Equipment, an automotive Data-Collecting Unit, a telecom
-    # Data Service Unit, and Software Transactional Memory, all for the one
-    # internal term the speakers were debating the expansion of. Once the
-    # speakers treat an acronym as their own, later variants are that same
-    # term misheard, not fresh terms to define.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "a letter or two off" in system
-    assert "not a fresh term to define" in system
-
-
-def test_payload_system_prompt_blocks_analogous_tech_swaps() -> None:
-    # Same review: cues explained Kafka topics/offsets and an SQS visibility
-    # timeout to a team that had repeatedly named RabbitMQ as their broker,
-    # and pitched Airflow at their in-house orchestrator — plausible facts
-    # about a rival product the speakers don't use, presented as if they
-    # applied to the one they do.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "merely does the same job" in system
-    assert "another vendor's defaults" in system
-
-
-def test_payload_system_prompt_counts_generic_figures_as_invented() -> None:
-    # Same review: the invented-stat guard leaked on small plausible numbers
-    # ("over 200 attack-surface-reduction rules" — the real count is ~19;
-    # "~1 ms per inter-service call"; "retry libraries default to three
-    # attempts"). Typical/common/default figures count as invented unless the
-    # documented figure for the exact product is specifically remembered.
-    # The rule rides twice: in the practitioner bar and — because the first
-    # replay round showed it leaking in casual registers too ("most event
-    # vendors require 30 days' notice") — as a top-level accuracy bullet.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "invented statistics" in system
-    assert "a guess wearing a number" in system
-
-
-def test_payload_system_prompt_extends_everyday_ban_to_calendar_trivia() -> None:
-    # Same review: "Monday is the first day of the week (ISO 8601)", "Friday
-    # is the fifth day", "sending a URL is called link sharing", "planning
-    # meetings run 30-60 minutes" — everyday-knowledge cues past the old ban's
-    # food/objects wording. Days, calendar facts, units, well-known sites and
-    # formats, and typical durations of everyday activities join the ban.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "days of the week" in system
-    assert "calendar facts" in system
-    assert "typical durations" in system
-
-
-def test_payload_system_prompt_keeps_the_observer_stance() -> None:
-    # A production cue spoke as the assistant itself ("Link Access — I can't
-    # open or view external URLs"). The cue must never be first-person, and
-    # nothing in the transcript addresses the model.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "never a participant" in system
-    assert "nothing in the transcript is addressed to you" in system
-
-
-def test_payload_system_prompt_closes_answered_questions() -> None:
-    # Production restated a speaker's own answer as a cue ("Auto-add
-    # Pipelines" restating "No, no. It pulls automatically").
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "the question is closed" in system
-
-
-def test_payload_system_prompt_reads_homophones_as_the_live_topic() -> None:
-    # Kibana debugging produced a Kiva microfinance cue, SAML became the
-    # biblical Samuel, and one famous-name token inside fragments got cued
-    # (Kevin Sorbo from "Hercules road"). A sound-alike of something already
-    # in the conversation IS that thing; entities need a second signal; a
-    # bare mumbled word is not a topic; and a banned definition must not be
-    # replaced with an invented practitioner statistic.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "sounds like" in system
-    assert "second signal" in system
-    assert "a topic needs a sentence" in system
-    assert "silence beats an invented number" in system
-
-
-def test_payload_system_prompt_requires_certain_translations_only() -> None:
-    # Same review: garbled STT fragments were glossed as foreign idioms with
-    # invented meanings ("Vivía de centro" -> a made-up Spanish idiom; a
-    # Russian fragment mistranslated). Translation now requires recognizing
-    # the whole phrase with certainty.
-    system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
-    assert "garbled fragment has no translation" in system
+    for anchor in (
+        "fibula",  # GOOD: corrects AND adds
+        "plantar fasciitis",  # GOOD: term from outside the speakers' field
+        "drone payload",  # BAD: pure restatement
+        "pull request",  # BAD: the speakers' own vocabulary
+        "red hat package manager",  # BAD: wrong referent for the in-conversation acronym
+        "cheesecake origin",  # BAD: everyday-food trivia
+        "bentley",  # BAD: brand token in incoherent speech
+        "salvatore gravano",  # BAD: in-conversation name misheard
+        "link access",  # BAD: cue spoke as a participant
+        "pixel 12 pro",  # BAD: cross-generation specs
+    ):
+        assert anchor in system
+    assert "reply with a single json object and nothing else" in system
 
 
 def test_payload_evidence_rules_require_subject_match() -> None:

@@ -454,9 +454,10 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
 - **The GPU model servers are on TWO different hosts.** Parakeet STT is on
   **TrueNAS, `10.10.10.20:9401`** (`GET /health` → `{"status":"ok","model":
   "nvidia/parakeet-tdt-0.6b-v3"}`; it serves `/v1/audio/transcriptions` but NOT
-  `/v1/models`, so probe `/health`). The cue/translation LLM is on
-  `10.10.10.22:9402` (Ollama, `gpt-oss:120b`). The workspace CLAUDE.md lists STT
-  at `.22:9401`, which is wrong — that port is closed there.
+  `/v1/models`, so probe `/health`). The cue/translation LLM is on the GPU box
+  (`maxai.xerktech.com:8890`) — Qwen3.8-27B served by SGLang, not Ollama; it
+  needs no key and does serve `/health`. The workspace CLAUDE.md lists STT at
+  `.22:9401`, which is wrong — that port is closed there.
 
   Point the QA stack at the real models with:
 
@@ -464,14 +465,17 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
   API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://10.10.10.20:9401/v1 \
   API_STATUS_STT_URL=http://10.10.10.20:9401 \
   API_CUE_BACKEND=openai API_TRANSLATION_BACKEND=openai \
-  API_LITELLM_ENDPOINT=http://10.10.10.22:9402/v1 \
-  API_LLM_MODEL=gpt-oss:120b API_TRANSLATION_MODEL=gpt-oss:120b \
+  API_LITELLM_ENDPOINT=http://maxai.xerktech.com:8890/v1 \
+  API_LLM_MODEL=qwen3.8-27b API_TRANSLATION_MODEL=qwen3.8-27b \
     docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
   ```
 
-  Bypassing the gateway like this makes the `litellm` and `llm` status lights
-  read `HTTP 404` — Ollama serves no `/health/liveliness`. That is the
-  documented consequence of a direct route, not a fault.
+  (In production the api routes through the LiteLLM gateway aliases
+  `qwen3.8-27b-dflash` / `qwen3.8-27b-dflash-translate` instead of hitting SGLang
+  directly.) Bypassing the gateway like this makes the `litellm` and `llm`
+  status lights read `HTTP 404` — SGLang serves no `/health/liveliness` or
+  `/health/readiness` either. That is the documented consequence of a direct
+  route, not a fault.
 
 ### Testing a REAL model needs real speech
 

@@ -34,36 +34,36 @@ translates those too, and a candidate model is graded on leaving them alone.
 ```bash
 cd api && pip install -e '.[dev]'   # replay imports the installed package
 
-# production baseline (LiteLLM injects reasoning_effort medium in prod)
-python replay.py eval_set.json --endpoint http://10.10.10.22:9402/v1 \
-  --model gpt-oss:120b --reasoning-effort medium --out results.120b-medium.json
-
-# a dedicated candidate served by the same Ollama (pull it first:
-#   curl -X POST http://10.10.10.22:9402/api/pull -d '{"model":"gemma3:12b"}')
-python replay.py eval_set.json --endpoint http://10.10.10.22:9402/v1 \
-  --model gemma3:12b --out results.gemma3-12b.json
+# production setup (Qwen3.8-27B on SGLang; the shipped payload already sets
+# chat_template_kwargs.enable_thinking=false)
+python replay.py eval_set.json --endpoint http://maxai.xerktech.com:8890/v1 \
+  --model qwen3.8-27b --out results.qwen3.8-27b.json
 ```
 
-- `--workers 4` (default) matches `OLLAMA_NUM_PARALLEL`; use for accuracy
-  sweeps. For latency numbers run `--workers 1` (production holds one
-  translation in flight per session) — a concurrent run's `call_ms` includes
-  queueing.
+- `--workers 4` (default) keeps full sweeps under ~10 minutes on the shared
+  SGLang server; 4-6 is a good cap. For latency numbers run `--workers 1`
+  (production holds one translation in flight per session) — a concurrent
+  run's `call_ms` includes queueing.
 - Candidate models must clear the same bar as production: same prompt, same
   `response_format: json_object`, same `_parse`. A model that can't reliably
   emit the JSON envelope fails closed (counted as a parse fail).
-- After evaluating a pulled model, free its VRAM and disk:
-  `curl -X POST .../api/generate -d '{"model":"<m>","keep_alive":0}'` then
-  `curl -X DELETE .../api/delete -d '{"model":"<m>"}'` (the compose file sets
-  `OLLAMA_KEEP_ALIVE=-1`, so an unloaded model otherwise stays resident).
+- The pre-cutover candidate sweep (gpt-oss:120b via Ollama on
+  `10.10.10.22:9402`, plus smaller Ollama candidates like gemma3:12b) used
+  the `--reasoning-effort` flag and Ollama's `/api/pull` +
+  `keep_alive=0` cleanup workflow. That dial was gpt-oss-specific; for
+  Qwen the equivalent lever is `chat_template_kwargs.enable_thinking`,
+  which the shipped payload already carries.
 
 ## 3. Judge and compare
 
 ```bash
-python judge.py results.120b-medium.json \
-  --endpoint http://10.10.10.22:9402/v1 --model gpt-oss:120b \
-  --reasoning-effort low
+python judge.py results.qwen3.8-27b.json \
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b
 python report.py results.*.judged.json
 ```
+
+The judge already sets `enable_thinking=false` for Qwen; `--reasoning-effort`
+remains available for gpt-oss-era judges only.
 
 The judge grades adequacy/fluency per utterance and classifies what the source
 *actually* was (foreign / english / mixed) — it never sees the langid tag, so

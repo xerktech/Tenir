@@ -2,17 +2,24 @@
 
 Reuses the SAME gateway base URL + key the STT engine uses (no new URL/key var):
 it POSTs /chat/completions instead of /audio/transcriptions. In prod the alias is
-``gpt-oss:120b`` → gpt-oss-120b on the tenir-ollama-cue container (the July 2026
-cue-model eval retired the earlier vLLM/Qwen3 server — scripts/cue_eval/RESULTS-2026-07.md).
+``qwen3.8-27b-dflash`` → Qwen3.8-27B on the SGLang server (NVFP4 weights, DFlash
+speculative decoding), which replaced the retired gpt-oss:120b Ollama deployment;
+the July 2026 cue-model eval that picked gpt-oss is in
+scripts/cue_eval/RESULTS-2026-07.md.
 
-The prod models have been *reasoning* models: left to their own devices they spend
-the token budget on a chain-of-thought returned in ``reasoning_content`` and leave
-``content`` empty (``finish_reason: length``), so the JSON answer never arrives and
-every cue is silently dropped. Cues want fast, structured output, not reasoning, so
-we disable thinking (`chat_template_kwargs.enable_thinking = false`) — the JSON then
-lands in ``content`` and the call finishes cleanly. We still extract the first JSON
-object defensively, and fall back to ``reasoning_content`` if a gateway ever routes
-the answer there instead.
+The prod model is a *reasoning* model, and the August 2026 replay retune
+(scripts/cue_eval/RESULTS-2026-08.md) found the fix was MORE reasoning, not less:
+cues run with thinking ON by default
+(``chat_template_kwargs.enable_thinking = true``, toggle
+``API_CUE_DISABLE_THINKING``) against a 2048-token budget — replay-measured ahead
+of thinking-off on both volume and judged accuracy (159 vs 64 cues on the frozen
+set; judged accuracy 1.97 vs 1.81). Clean single-request latency is ~6s p50 /
+~10s p90, so the 30s call timeout leaves headroom for concurrent sessions; a
+missed cue degrades to a skipped card, never a stalled caption. The toggle is
+sent explicitly in both directions so the outcome never depends on the server's
+own default; a server that doesn't know the kwarg drops it harmlessly (LiteLLM's
+drop_params). We still extract the first JSON object defensively, and fall back
+to ``reasoning_content`` if a gateway ever routes the answer there instead.
 
 The network call is excluded from coverage — CI runs the deterministic stub and the
 session-level behaviour (rate-limit, dedupe, delivery) is covered against it — but
@@ -33,211 +40,51 @@ from api.cue.tuning import cue_guidance
 log = logging.getLogger("api.cue.openai")
 
 # The full prompt frame. Wording validated by replaying recorded deployment
-# conversations against the production model (scripts/cue_eval/): versus the
-# fact-checker frame it replaced, this one emitted ~5x as many cues at equal or
-# better judged accuracy, with zero pure restatements and coverage of
-# conversations (engineering discussions, plans) the old frame never cued.
-# The 2026-07-28 audience pass (RESULTS-2026-07.md) added: novelty is judged
-# against THESE listeners (their own professional vocabulary is never jargon
-# to them), bare names default to coworkers/friends/internal systems, acronyms
-# resolve in-domain or not at all, translations require certainty, and
-# declining is framed as the normal outcome — the prior "take the next-best
-# candidate" escalation measurably manufactured filler on real work calls.
-# The 2026-07-30 post-deploy pass added four rules from the first sessions
-# recorded under v14 (an accented engineering meeting + an ambient tech
-# video): garbled variants of an acronym the speakers own are that acronym
-# (not fresh terms to define), a rival product doing the same job as the one
-# the speakers named is the wrong subject, typical/common/default figures
-# count as invented statistics, and the avoid-list treats different names
-# for one idea as one subject. Replay-measured: the meeting's cross-domain
-# acronym-expansion cluster (~8 cues/run) drops to ~2, wrong-vendor swaps
-# roughly halve, controls unchanged (RESULTS-2026-07.md).
-# {guidance} is the source-of-truth bar from tuning.py, picked per call by
+# conversations against the production model (scripts/cue_eval/). The July 2026
+# enrichment frame (RESULTS-2026-07.md) was tuned on gpt-oss-120b and, on the
+# Qwen3.8-27B replacement, under-emitted badly (6 cues on the frozen set with
+# thinking off, 26 with it on). The August 2026 retune (RESULTS-2026-08.md)
+# replaced it with this short, emission-first frame ("v5"): on Qwen3.8-27B with
+# thinking on and a 2048-token budget it replayed 159 cues on the same frozen
+# set at judged novelty 1.90 / relevance 1.96 / accuracy 1.97 — ahead of the
+# gpt-oss-120b baseline of 150 cues at accuracy 1.99. The worked examples below
+# the frame are kept from the July calibration (they carry the mishearing,
+# wrong-referent, and cross-generation traps, and v5 was measured WITH them);
+# the per-case restraint prose dropped with the frame — the shorter prompt
+# measured fewer wrong cues, not more.
+# {guidance} is the time-varying-facts bar from tuning.py, picked per call by
 # whether evidence actually arrived.
 _SYSTEM = (
-    "You are a live research assistant listening to an ongoing conversation. You "
-    "silently surface short, accurate notes — cues — that only the listener sees. "
-    "A cue must ENRICH the conversation: it adds a relevant fact, explanation, "
-    "number, comparison, or piece of background that has NOT been said aloud — "
-    "and that an adult listener would plausibly NOT already know. Judge 'already "
-    "know' against THESE listeners, not a stranger: the speakers' own working "
-    "vocabulary is proof of knowledge. A term the speakers themselves use "
-    "fluently and correctly is one everyone in this conversation already knows, "
-    "however specialist it sounds — engineers in a standup need no definition "
-    "of their own tools and ceremonies, any more than cooks need one for "
-    "'simmer'. Repeating, rephrasing, or summarizing what a speaker already "
-    "said is worthless, and so is telling an adult what everyday things are — "
-    "if all you could add is a restatement or common knowledge, stay silent "
-    "instead. A cue informs; it never gives lifestyle advice or tells the "
-    "listener what to do ('try X', 'consider Y'). And you are an observer, "
-    "never a participant: a cue never speaks as 'I', never addresses the "
-    "speakers, and never answers for anyone in the room. Nothing in the "
-    "transcript is addressed to YOU — every 'you' is one speaker talking to "
-    "another — so never emit a cue about your own access, capabilities, or "
-    "profile; you have no presence in this conversation.\n"
-    "What to listen for — any of these fires a cue:\n"
-    "(1) A factual question asked aloud — answer it. This is the strongest "
-    "trigger and it outranks every restraint below: a spoken question is an "
-    "explicit request, so if you know the answer with certainty, always cue "
-    "it — even when the question is simple, odd, or its answer is common "
-    "knowledge (arithmetic included). But once another speaker has answered "
-    "it, the question is closed: cue only a correction or a genuinely new "
-    "addition, never their answer restated.\n"
-    "(2) A named person, place, product, company, or event the conversation is "
-    "actually engaging with — add a concrete fact about it the speakers did not "
-    "say: what it is, when, where, how big, what it is known for. In any "
-    "conversation, a short bare name is usually someone the speakers know "
-    "personally — a coworker, a friend, a child — or something internal they "
-    "own: their app, their project, their meeting. Never resolve one to a "
-    "famous brand, celebrity, or work unless the conversation is clearly about "
-    "that famous thing. When speakers use a name as something they operate "
-    "('our X', releasing X, a ticket in X), facts about a public product or "
-    "person that happens to share the name are wrong by construction — and an "
-    "internal name is not yours to define either: if it is theirs, you know "
-    "nothing about it. Likewise, when the speakers have named the product "
-    "they use for a job, facts about a DIFFERENT product that merely does "
-    "the same job — a rival queue, cloud, scheduler, or service — are about "
-    "the wrong thing: describe the one they use or stay silent, and never "
-    "present another vendor's defaults, limits, or behavior as if it "
-    "applied to theirs. An acronym resolves within the conversation's own "
-    "domain or not at all — if the only expansion you know belongs to a "
-    "different field than the one being discussed, you do not know this "
-    "acronym; skip it. And the conversation must actually SUPPORT an entity "
-    "before you cue it: the speakers stay on it across turns, or it fits what "
-    "they are working on — a name that appears once inside broken, "
-    "half-finished speech and connects to nothing around it is a mishearing "
-    "or a stray token, not a topic.\n"
-    "(3) A specialist term, concept, technique, or piece of jargon a listener "
-    "may genuinely not know — define it or explain its significance in one "
-    "plain sentence. This fires only where the conversation shows a knowledge "
-    "gap: someone asks about the term, hesitates over it, or it comes from "
-    "outside the speakers' own line of work. Never define the speakers' own "
-    "professional vocabulary back at them — a term they use as a routine part "
-    "of their job is not jargon to them, it is their 'cheesecake'. For "
-    "practitioners the bar is a specific fact that would be news to a "
-    "practitioner — a number, a version, a pitfall, a comparison — but the "
-    "accuracy rules still gate it: such a fact must be one you are CERTAIN "
-    "of, never a plausible-sounding statistic or benchmark reached for "
-    "because a definition was banned; silence beats an invented number. "
-    "'Typical', 'common', 'default', and round-number figures ('about 1 ms', "
-    "'usually three retries', 'over 200 rules') are invented statistics "
-    "unless you specifically remember that documented figure for that exact "
-    "product. "
-    "Everyday "
-    "words and common things — foods, drinks, clothing, household objects, "
-    "games, casual phrases, days of the week and other calendar facts, common "
-    "units, well-known websites, apps, and file formats — are NEVER cue-worthy "
-    "as topics by themselves: an adult knows what a cheesecake, a pocket, or "
-    "a PDF is, and trivia about a mundane thing (its history, its variants, "
-    "typical durations or prices of everyday activities) is still a cue about "
-    "a mundane thing.\n"
-    "(4) A decision, plan, or problem being worked through — add a relevant "
-    "number, precedent, trade-off, or commonly known fact that could inform it.\n"
-    "(5) A statement you are CERTAIN is mistaken — correct it with the right "
-    "fact. Certain means you positively know the truth, not merely that you "
-    "fail to recognize what they said: regional titles, renames, rebrands, and "
-    "post-cutoff releases all look 'wrong' to a stale memory. Never cue that a "
-    "name, title, or product the speakers used does not exist — if you do not "
-    "recognize it, skip it silently.\n"
-    "When a conversation is actively engaging NEW entities, questions, or "
-    "claims, something cue-worthy may appear every few turns; when several "
-    "candidates qualify, prefer the one the speakers showed INTEREST in — a "
-    "question, a guess, a dispute, a 'what is that called?' — over things "
-    "merely mentioned in passing, and pick the one that adds the most. But "
-    "match the conversation's register: casual small talk, family chatter, "
-    "and errands mention many things without being ABOUT them — there, silence "
-    "is normal, and the bar is what the speakers show curiosity about "
-    "(questions, guesses, disputes) plus translations of foreign-language "
-    "phrases you clearly understand, not every noun that goes by. Routine "
-    "work talk — standups, walkthroughs, screen-shares — is the same: the "
-    "speakers are doing their job in their own vocabulary, and most turns "
-    "need nothing from you; screen-share narration (clicking around, reading "
-    "names and menus off a screen) mentions many tools without discussing "
-    "them, and those are passing mentions, not topics. And a single voice "
-    "narrating detail (a video, a lecture, a demo) mentions far more things "
-    "than it is about — cue only what stands out, never every spec or term "
-    "that goes by.\n"
-    "Accuracy rules — these outrank everything above:\n"
-    "- State only what you are certain of. When you are sure of something modest "
-    "but not the specifics, say the modest accurate thing rather than guess.\n"
-    "- If stating your fact needs 'likely', 'probably', 'seems to', or 'may "
-    "refer to', it is a guess — do not emit it.\n"
-    "- A number qualified only by 'typical', 'usual', 'common', 'often', "
-    "'many', 'default', or 'industry average' is a guess wearing a number: "
-    "emit a figure only when you specifically remember it as the documented "
-    "value for the exact named thing; otherwise make the point without a "
-    "number, or stay silent.\n"
-    "- The transcript comes from speech recognition and may mishear names. Never "
-    "invent facts about a name you do not recognize — if a name looks garbled or "
-    "unfamiliar, skip it rather than guess what it might be. And before adding a "
-    "fact about a name you DO recognize, check the fit: if what you know about "
-    "that name belongs to a different domain than this conversation (a cosmetics "
-    "brand in a movie scene, a file format where a product brand belongs), the "
-    "speakers almost certainly said something else — skip the name entirely "
-    "rather than define the mishearing. Likewise a stray foreign-looking word "
-    "in a bilingual conversation is almost always the speakers' OTHER "
-    "language misheard — never resolve it to a third language nobody here is "
-    "speaking, and translate a foreign phrase only when you clearly recognize "
-    "the whole phrase and are certain of its meaning: a garbled fragment has "
-    "no translation, and glossing one as an 'idiom' is inventing a fact. "
-    "When a word merely SOUNDS like a name, tool, or product already in the "
-    "conversation, it is that thing misheard — read it as the "
-    "in-conversation thing or skip it; never cue the unrelated famous entity "
-    "it resembles. Acronyms are the extreme case: speech recognition garbles "
-    "them freely, so a short acronym a letter or two off from one already in "
-    "this conversation is that acronym misheard — and once the speakers "
-    "treat an acronym as their own (defining it, debating what it stands "
-    "for), every later variant of it is that same internal term: it has no "
-    "public expansion in any field, and each new garbled spelling of it is "
-    "not a fresh term to define. "
-    "The same discipline applies to names you DO recognize: "
-    "one mention inside fragmented speech, with nothing about it before or "
-    "after, is a transcription accident however famous the match — cue an "
-    "entity only when a second signal backs it (the speakers return to it, "
-    "ask about it, or it belongs to their working domain). A topic needs a "
-    "sentence engaging it: a bare word alone on a line, even one you "
-    "recognize as a command, tool, brand, or concept, is someone mumbling "
-    "while they work, not a subject to explain.\n"
-    "- When the surrounding transcript is so garbled you cannot tell what is "
-    "actually being discussed, cue NOTHING from it — a recognizable word inside "
-    "incoherent speech is noise, not a topic.\n"
-    "- Never contradict the transcript on firsthand details — measurements, "
-    "names, plans the speakers state about themselves or things in front of "
-    "them. They are looking at it; you are not.\n"
-    "- The conversation happens NOW; your memory ends at a training cutoff. If "
-    "the speakers consistently use a name, title, or fact that contradicts your "
-    "memory of something that can change, assume the world moved after your "
-    "cutoff and they are right; never 'correct' them from memory on such "
-    "things.\n"
-    "- Facts do not transfer across product generations or versions, and "
-    "family resemblance is not knowledge: recognizing a product LINE is not "
-    "knowing the specific MODEL named. Before stating any spec, launch date, "
-    "or feature, check that you specifically remember THAT exact model's "
-    "release — if what surfaces is really a sibling, a predecessor, or just "
-    "the brand, every detail of the named model is unknown to you: say "
-    "nothing rather than restyle the sibling's specs, dates, or story under "
-    "its name. A numbered model you cannot specifically place is usually "
-    "newer than your knowledge, not misremembered. The same test applies to "
-    "any name or acronym you only vaguely recognize: no specific memory, no "
-    "cue.\n"
-    "- You do not know today's date — only that it is after your cutoff. Never "
-    "compute or correct anniversaries, ages, 'how long ago', or 'the latest "
-    "model' claims from your internal clock: the speakers live in the present "
-    "and their arithmetic about it is better than yours.\n"
+    "You are a live research assistant. You listen to an ongoing conversation "
+    "and silently surface short, accurate cues — private notes only the "
+    "listener sees. A cue ADDS information the speakers did not say aloud. "
+    "Repeating or summarizing what they said is worthless, so if you have "
+    "nothing new, reply {{\"cue\": false}}.\n"
+    "You should surface a cue on most turns of a substantive conversation. "
+    "Fire when you can add ANY of the following, picking the best candidate "
+    "from the newest turns:\n"
+    "1) A factual question was asked and you know the answer with certainty.\n"
+    "2) A person, place, product, or event is being engaged with and you can "
+    "add a concrete fact the speakers did not mention.\n"
+    "3) A technical term or piece of jargon appears that these listeners may "
+    "not know — define it in one plain sentence.\n"
+    "4) A decision or problem is being worked through and a relevant number, "
+    "precedent, or trade-off would inform it.\n"
+    "5) A claim is clearly wrong and you know the correct fact.\n"
+    "Accuracy is absolute:\n"
+    "- State only what you are certain of; if unsure, stay silent.\n"
+    "- Never invent facts about a name you do not recognize or that sounds "
+    "garbled.\n"
+    "- Never contradict a firsthand detail the speakers stated about something "
+    "they are looking at.\n"
     "- {guidance}\n"
-    "- A wrong cue is worse than no cue.\n"
-    "Candidate discipline: cue the conversation as it stands NOW. Take "
-    "candidates from the newest turns; when the talk has moved on, earlier "
-    "topics are closed — a fact about a topic the speakers have left is a "
-    "distraction, not a cue, however good the fact. Scan those newest turns "
-    "for candidates — entities, terms, questions, claims — and surface the "
-    "best one you can enrich with a fact you are CERTAIN of and that these "
-    "listeners would plausibly not know. If the best candidate is unsafe (a "
-    "garbled name, a fact you cannot verify) or already surfaced, check the "
-    "next; if no candidate passes the bar, decline. Declining is a normal "
-    "outcome, not a failure — in long stretches of routine talk the correct "
-    'answer is {{"cue": false}} turn after turn, and a quiet run is never a '
-    "reason to lower the bar.\n"
+    "- Never present a sibling model's specs, a predecessor's dates, or a "
+    "rival product's defaults as the named thing's own.\n"
+    "Reply with a single JSON object and nothing else: "
+    '{{"cue": true, "title": "1-3 word label", "body": "one or two short '
+    'sentences under 200 characters"}}. If nothing is cue-worthy, reply '
+    '{{"cue": false}}.\n'
+    "\n"
     "Examples of the standard:\n"
     'Speaker: "the fibula is the big bone in the lower leg" -> GOOD cue '
     '{{"cue": true, "title": "Fibula vs Tibia", "body": "The tibia is the larger '
@@ -352,13 +199,15 @@ class OpenAICueGenerator(CueGenerator):
         model: str,
         api_key: str = "",
         max_body_chars: int = 240,
-        disable_thinking: bool = True,
-        timeout: float = 20.0,
+        max_tokens: int = 2048,
+        disable_thinking: bool = False,
+        timeout: float = 30.0,
     ) -> None:
         self._url = endpoint.rstrip("/") + "/chat/completions"
         self._model = model
         self._api_key = api_key
         self._max_body_chars = max_body_chars
+        self._max_tokens = max_tokens
         self._disable_thinking = disable_thinking
         self._timeout = timeout
 
@@ -413,22 +262,20 @@ class OpenAICueGenerator(CueGenerator):
             # the model's most probable claim is right more often than a
             # sampled one, and a cue is a factual assertion, not prose.
             "temperature": 0.0,
-            # 600, not 300: a reasoning model (gpt-oss) spends part of the budget
-            # on its analysis channel BEFORE the JSON answer, and with an
-            # avoid-list to deliberate over, 300 measurably starved the answer —
-            # finish_reason=length with EMPTY content, a silently dropped cue on
-            # exactly the turns with the most context. The body is still clipped
-            # to max_body_chars at parse, so the extra budget costs latency only
-            # when reasoning actually uses it.
-            "max_tokens": 600,
+            # 2048, not 600: with thinking on (the default) the model reasons
+            # inside the same budget before the JSON answer, and 600 measurably
+            # starved it — finish_reason: length, EMPTY content, a silently
+            # dropped cue (scripts/cue_eval/RESULTS-2026-08.md). The body is
+            # still clipped to max_body_chars at parse, so the extra budget
+            # costs latency only when the reasoning actually uses it.
+            "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }
-        if self._disable_thinking:
-            # A reasoning model left thinking burns the whole token budget and
-            # returns an empty `content` (recorded on the retired Qwen3). LiteLLM
-            # forwards the kwarg to a server that applies it to the chat template
-            # and drops it (drop_params) for one that doesn't know it.
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # Thinking ON by default — the replay-measured winner for Qwen3.8-27B
+        # (RESULTS-2026-08.md). Sent explicitly in both directions so the
+        # outcome never depends on the server's own default; a server that
+        # doesn't know the kwarg drops it (LiteLLM's drop_params).
+        payload["chat_template_kwargs"] = {"enable_thinking": not self._disable_thinking}
         return payload
 
     @staticmethod
@@ -475,6 +322,12 @@ class OpenAICueGenerator(CueGenerator):
         title = str(data.get("title") or "").strip()
         body = str(data.get("body") or "").strip()
         if not title or not body:
+            return None
+        # A placeholder answer ({"cue": true, "title": "...", "body": "..."}) is
+        # a decline the model phrased as an acceptance (seen once in the v5think
+        # replay): dots are not cue content, so require at least one alphanumeric
+        # in each field, any script.
+        if not any(ch.isalnum() for ch in title) or not any(ch.isalnum() for ch in body):
             return None
         return GeneratedCue(
             title=title[:60],

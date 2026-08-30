@@ -43,10 +43,10 @@ def test_factory_uses_the_translation_model_not_the_cue_model(
 
 
 def test_translation_model_defaults_to_the_dedicated_alias() -> None:
-    """The default must match the gpt-oss:120b-translate route in
+    """The default must match the qwen3.8-27b-dflash-translate route in
     litellm/config.yaml — a drifted alias 404s at the gateway and translations
     silently fail closed."""
-    assert type(settings).model_fields["translation_model"].default == "gpt-oss:120b-translate"
+    assert type(settings).model_fields["translation_model"].default == "qwen3.8-27b-dflash-translate"
 
 
 def test_gateway_config_carries_the_translation_alias() -> None:
@@ -58,14 +58,27 @@ def test_gateway_config_carries_the_translation_alias() -> None:
     if not gateway.is_file():  # pragma: no cover - api tested outside the monorepo
         pytest.skip("litellm/config.yaml not present")
     text = gateway.read_text()
-    assert "model_name: gpt-oss:120b-translate" in text
-    assert "reasoning_effort: low" in text
+    assert "model_name: qwen3.8-27b-dflash-translate" in text
+    assert "chat_template_kwargs" in text
 
 
 def test_factory_unknown_backend_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "translation_backend", "nope")
     with pytest.raises(ValueError):
         make_translator()
+
+
+def test_factory_wires_the_translation_thinking_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Translations stay thinking-off even though the cue side flipped to
+    # thinking-on in the Aug 2026 retune — per-utterance latency on the
+    # caption path matters more there. The flag is separate from the cue's.
+    monkeypatch.setattr(settings, "translation_backend", "openai")
+    monkeypatch.setattr(settings, "translation_disable_thinking", True)
+    monkeypatch.setattr(settings, "cue_disable_thinking", False)  # must NOT leak
+    translator = make_translator()
+    assert translator._build_payload("hola")["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 # ---- stub ----------------------------------------------------------------------
@@ -87,14 +100,14 @@ def test_stub_empty_returns_none() -> None:
 
 
 def _translator(**kwargs) -> OpenAITranslator:
-    defaults = dict(endpoint="http://gw:4000/v1", model="gpt-oss:120b", api_key="k")
+    defaults = dict(endpoint="http://gw:4000/v1", model="qwen3.8-27b-dflash", api_key="k")
     defaults.update(kwargs)
     return OpenAITranslator(**defaults)
 
 
 def test_payload_shape() -> None:
     payload = _translator()._build_payload("hola, ¿qué tal?", "es")
-    assert payload["model"] == "gpt-oss:120b"
+    assert payload["model"] == "qwen3.8-27b-dflash"
     assert payload["temperature"] == 0.0
     assert payload["response_format"] == {"type": "json_object"}
     system, user = payload["messages"]
