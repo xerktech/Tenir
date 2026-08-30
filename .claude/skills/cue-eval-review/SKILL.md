@@ -74,13 +74,18 @@ backstops), then LLM-judges every cue.
 ```bash
 cd api && pip install -e '.[dev]'    # replay imports the installed package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://10.10.10.22:9402/v1 --model <model> \
-  --reasoning-effort medium --out results.json
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
+  --out results.json
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://10.10.10.22:9402/v1 --model <model> \
-  --reasoning-effort low --max-tokens 500
+  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
+  --max-tokens 500
 python scripts/cue_eval/report.py results.judged.json
 ```
+
+The shipped Qwen payload already sets `chat_template_kwargs.enable_thinking`
+(on by default — the Aug 2026 retune default) and a 2048-token budget, so no
+extra flags are needed. The `--reasoning-effort` flag remains for gpt-oss-era
+runs only.
 
 Rules that keep the comparison honest:
 
@@ -96,8 +101,9 @@ Rules that keep the comparison honest:
   frozen sweep. Hand-read the emitted cues of every iteration — the scorecard
   can't see a new failure class it has no axis for (v10 fixed duplicates but
   introduced date-arithmetic false corrections; only reading caught it).
-- **Match production decoding.** Same temperature (0), same reasoning effort
-  (medium — LiteLLM injects it in production), same endpoint family.
+- **Match production decoding.** Same temperature (0), same thinking toggle
+  (`chat_template_kwargs.enable_thinking` — the shipped payload carries the
+  production value), same endpoint family.
 - **Expect stochastic effects.** Even at temp 0 the avoid-list makes runs
   path-dependent: cue counts vary ±6 run-to-run, and prompt fixes for
   model-belief failures (confabulation) typically *halve* the class per run
@@ -110,8 +116,8 @@ Rules that keep the comparison honest:
 Editing prompt source mid-run does not affect a replay already running
 (Python imports are resolved at process start), but re-`pip install -e` isn't
 needed for source edits either — the editable install sees them on the *next*
-process. GPU concurrency is capped (`OLLAMA_NUM_PARALLEL=4`); don't raise
-harness parallelism past it.
+process. The SGLang server is a shared GPU resource — keep harness
+parallelism moderate (4-6) so interactive use of the box isn't starved.
 
 ## 4. Calibrate thresholds on real data, not intuition
 

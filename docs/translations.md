@@ -60,7 +60,9 @@ once the run ends.
 2. **Translation is server-side, off the caption path.** Each non-English final
    is translated through the same LiteLLM gateway the cues use, on its own
    route (`API_TRANSLATION_MODEL` over `API_LITELLM_ENDPOINT`; same weights as
-   the cue alias, reasoning_effort low — XERK-180) — a `/chat/completions` call
+   the cue alias, thinking disabled on its own `API_TRANSLATION_DISABLE_THINKING`
+   toggle since the Aug 2026 retune gave cues a thinking-on default — XERK-180)
+   — a `/chat/completions` call
    returning `{"translation": …}` (temperature 0, thinking disabled, defensive
    JSON extraction; `api/src/api/translate/openai.py`). Calls are serialized
    through one per-session worker so translations reach the client in transcript
@@ -84,7 +86,7 @@ once the run ends.
 |----------|-----------------------------------------------------------------------|
 | `off`    | No translations (default). The stripped core stays STT-only.          |
 | `stub`   | Model-free, deterministic (`[es→en] …`) for CI/dev — no GPU.          |
-| `openai` | Real chat model via the LiteLLM gateway: `API_TRANSLATION_MODEL`, default `gpt-oss:120b-translate` — the cue model's weights on a dedicated route with `reasoning_effort: low` (XERK-180). |
+| `openai` | Real chat model via the LiteLLM gateway: `API_TRANSLATION_MODEL`, default `qwen3.8-27b-dflash-translate` — the cue model's weights on a dedicated route (XERK-180). |
 
 The stub is what CI exercises end-to-end (run state → WS messages →
 persistence → history). The real prompt and route were evaluated in the Aug

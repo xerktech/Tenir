@@ -52,18 +52,27 @@ services:
       # Cues (XERK-81): private context cards derived from the conversation. Off by
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
-      # model through the SAME LiteLLM gateway — start it with `--profile cues`, which
-      # brings up ollama-cue + registers the gpt-oss:120b alias in litellm/config.yaml.
+      # model through the SAME LiteLLM gateway. The cue LLM is Qwen3.8-27B on the
+      # external SGLang server (no local container); litellm/config.yaml aliases it
+      # as qwen3.8-27b-dflash.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
-      API_LLM_MODEL: ${API_LLM_MODEL:-gpt-oss:120b}
+      API_LLM_MODEL: ${API_LLM_MODEL:-qwen3.8-27b-dflash}
+      # Cue-call token budget and thinking toggle (Aug 2026 Qwen retune:
+      # thinking on + 2048 tokens beat thinking-off on volume and accuracy —
+      # scripts/cue_eval/RESULTS-2026-08.md).
+      API_CUE_MAX_TOKENS: ${API_CUE_MAX_TOKENS:-2048}
+      API_CUE_DISABLE_THINKING: ${API_CUE_DISABLE_THINKING:-false}
       # Live translations (XERK-160): non-English turns are translated to English
       # and shown alongside the transcript (the glasses show them in the cue box).
       # Off by default like cues; "stub" is model-free, "openai" routes to the
-      # same gateway + Ollama backend the cues use (`--profile cues` for the
-      # model) via the dedicated gpt-oss:120b-translate alias — same weights,
-      # reasoning_effort low (XERK-180; see scripts/translation_eval/).
+      # same gateway the cues use (the external SGLang server) via the dedicated
+      # qwen3.8-27b-dflash-translate alias — same Qwen weights as the cue route
+      # (XERK-180; see scripts/translation_eval/).
       API_TRANSLATION_BACKEND: ${API_TRANSLATION_BACKEND:-off}
-      API_TRANSLATION_MODEL: ${API_TRANSLATION_MODEL:-gpt-oss:120b-translate}
+      API_TRANSLATION_MODEL: ${API_TRANSLATION_MODEL:-qwen3.8-27b-dflash-translate}
+      # Translations keep thinking off (per-utterance latency on the live
+      # caption path) — separate knob from the cue thinking toggle.
+      API_TRANSLATION_DISABLE_THINKING: ${API_TRANSLATION_DISABLE_THINKING:-true}
       # How long speech may go quiet after the last non-English activity before
       # the run is declared done and the glasses' dismiss countdown starts.
       API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}
@@ -246,45 +255,7 @@ services:
               count: all
               capabilities: [gpu]
 
-  ollama-cue:
-    # Cue/summary + translation LLM (XERK-81, XERK-160): a chat model the api calls
-    # through the SAME LiteLLM gateway. Opt-in — only started with `--profile cues`
-    # (it's a large model and needs its own GPU share alongside the STT servers).
-    # gpt-oss-120b on Ollama, mirroring the deployed tenir-gpu stack (the July 2026
-    # cue-model eval retired the earlier vLLM/Qwen server — see
-    # scripts/cue_eval/RESULTS-2026-07.md). The gateway aliases it as "gpt-oss:120b"
-    # (litellm/config.yaml), matching API_LLM_MODEL. Version PINNED like prod: cue
-    # behaviour must not shift under a silent runtime upgrade.
-    profiles: ["cues"]
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.32.4}
-    # Serve, then pull the model (no-op once cached — the ~65 GB GGUF persists in
-    # the volume), then keep serving in the foreground.
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - "/bin/ollama serve & sleep 8; /bin/ollama pull ${OLLAMA_CUE_MODEL:-gpt-oss:120b}; wait"
-    ports:
-      - "9300:11434"
-    volumes:
-      - "${TENIR_DATA_DIR:-C:/docker/tenir}/ollama-cue:/root/.ollama"
-    environment:
-      # Cue prompts are ~2.5k tokens (system prompt + turn window + avoid list);
-      # 16384 matches the eval and leaves ample room (translations are far smaller).
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CUE_CONTEXT_LENGTH:-16384}
-      # Keep the model resident — a cue/translation attempt must never pay the
-      # model-load penalty mid-conversation.
-      OLLAMA_KEEP_ALIVE: "-1"
-      OLLAMA_FLASH_ATTENTION: "1"
-    healthcheck:
-      test: ["CMD", "ollama", "ls"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      # First boot on an empty volume downloads the ~65 GB GGUF.
-      start_period: 1800s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+  # The cue/translation LLM is no longer a container in this stack. It is Qwen3.8-27B
+  # served by an external SGLang server (NVFP4 weights + DFlash speculative decoding);
+  # the LiteLLM gateway aliases it as qwen3.8-27b-dflash (and -translate) — see
+  # litellm/config.yaml. The retired gpt-oss:120b Ollama service is gone.

@@ -3,8 +3,8 @@
 Before the cue model runs, the session gathers *evidence* — short, dated
 snippets from live sources (the RSS news corpus, Wikipedia, SearXNG web
 search) — and rides it in the model's prompt. The cue model's weights are
-frozen years in the past (measured on the previously deployed Qwen3, which
-reported an October 2023 cutoff; the current gpt-oss is likewise frozen),
+frozen years in the past (the previously deployed Qwen3 reported an October
+2023 cutoff; the current Qwen3.8-27B is likewise frozen),
 so anything about current events answered from memory is a guess; evidence
 makes the cue's facts come from sources that are right *now*, and lets the cue
 carry an attribution the listener can trust.

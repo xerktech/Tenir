@@ -32,7 +32,7 @@ def make_translator() -> Translator | None:
             endpoint=settings.litellm_endpoint,
             model=settings.translation_model,
             api_key=settings.litellm_api_key,
-            disable_thinking=settings.cue_disable_thinking,
+            disable_thinking=settings.translation_disable_thinking,
         )
     raise ValueError(
         f"unknown translation backend: {backend!r} (expected 'off', 'stub' or 'openai')"

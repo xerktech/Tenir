@@ -33,21 +33,20 @@ miscite-ing unrelated evidence; the one-sided wording passed. The grounded bar i
 used ONLY when evidence actually arrived (the payload builder picks per call), so
 a retrieval outage degrades to the memory bar, never to aggressive guessing.
 
-Three things are tuned:
+Two things are tuned here:
   * ``MIN_INTERVAL_MS`` — the minimum gap the session waits between emitted cues.
     A floor, not a target: it keeps a burst of hits from stacking on top of each
-    other. (Not the frequency lever: one cue attempt costs ~2-2.5s of retrieval +
-    model call serialized one-in-flight, and the clients show one cue per ~10s
-    band slot — the emission bar governs frequency.)
-  * ``CUE_GUIDANCE`` — the source-of-truth bar with no evidence in the prompt:
-    time-changing facts are unsafe from memory, so stay silent on them.
-  * ``CUE_GUIDANCE_GROUNDED`` — the bar when evidence rides the prompt:
-    generous for evidence-covered facts, time-sensitive facts only from
-    evidence.
+    other. (Not the frequency lever: one cue attempt costs a few seconds of model
+    call serialized one-in-flight, and the clients show one cue per ~10s band
+    slot — the emission bar governs frequency.)
+  * ``CUE_GUIDANCE`` / ``CUE_GUIDANCE_GROUNDED`` — the time-varying-facts line
+    slotted into the frame's accuracy rules: tight (stay silent) without
+    evidence, evidence-gated (generous for covered facts; time-sensitive facts
+    only from evidence) when evidence rides the prompt.
 
-The rest of the prompt — the enrichment framing, the five triggers, the
-no-restatement/no-speculation rules, and the worked examples — is shared by
-both bars and lives in ``openai.py``'s ``_SYSTEM``.
+The rest of the prompt — the emission-first frame, the five triggers, and the
+worked examples — is shared by both bars and lives in ``openai.py``'s
+``_SYSTEM``.
 """
 
 from __future__ import annotations
@@ -56,37 +55,27 @@ from __future__ import annotations
 # the accuracy bar in CUE_GUIDANCE is what actually governs how often cues appear.
 MIN_INTERVAL_MS = 1500
 
-# The source-of-truth bar slotted into the system prompt's accuracy rules
+# The time-varying-facts line slotted into the system prompt's accuracy rules
 # (openai.py `_SYSTEM`). Since the enrichment calibration the shared frame —
 # role, the five triggers (answer / entity context / define terms / inform
-# decisions / correct), the no-restatement rule, candidate discipline, and the
-# worked examples — lives in `_SYSTEM`; the two strings below carry only what
-# differs between an ungrounded and an evidence-grounded call: where a fact is
-# allowed to come from.
+# decisions / correct), and the worked examples — lives in `_SYSTEM`; the two
+# strings below carry only what differs between an ungrounded and an
+# evidence-grounded call: where a fact is allowed to come from.
 #
-# History of the calibration: XERK-114 ran "when in doubt, emit", which on a
-# replayed real session produced confidently WRONG cues; XERK-118 swung to
-# accuracy-only, which measured 0 cues on whole real sessions; XERK-124
-# restored an emissive posture over three triggers (answer, contextualize,
-# correct). The enrichment round after that replayed 12 recorded deployment
-# conversations (566 attempts per variant) against the production model and
-# found the XERK-124 wording still near-mute without evidence (8 cues, 1.4% of
-# attempts) while production cues showed ~13% restatements, ~13% rephrased
-# duplicates, and ~10% wrong cues (invented facts about misheard names, or
-# contradictions of what the speaker just said). The replacement — enrichment
-# framing, five triggers, no-restatement + no-speculation + garbled-name +
-# firsthand-details + world-moved rules, candidate discipline, worked examples
-# — measured 39 cues on the same replay (5x) with judged novelty 1.85/2,
-# relevance 2.0/2, accuracy 1.79/2 and zero pure restatements, versus novelty
-# 1.49 / accuracy 1.74 and 8 restatements + 8 duplicates for the production
-# baseline. See scripts/cue_eval/ for the harness that produced those numbers.
+# History of the calibration: XERK-114 ran "when in doubt, emit" (confidently
+# WRONG cues on a replayed session); XERK-118 swung to accuracy-only (0 cues on
+# whole real sessions); XERK-124 restored an emissive posture; the July 2026
+# enrichment round (RESULTS-2026-07.md) replayed 12 recorded deployment
+# conversations (566 attempts per variant) and landed the frame that measured
+# 39 cues at accuracy 1.79 with zero pure restatements. The August 2026 Qwen
+# retune (RESULTS-2026-08.md) found that frame under-emitting badly on
+# Qwen3.8-27B (6 cues thinking-off, 26 thinking-on on the frozen set) and
+# replaced it with a short emission-first frame; the ungrounded line below is
+# that frame's own short bullet — the exact wording replay-measured at 159 cues
+# / accuracy 1.97. See scripts/cue_eval/ for the harnesses behind those numbers.
 CUE_GUIDANCE = (
-    "Facts that change or grow over time — recent events, latest releases, "
-    "current versions, prices, scores, officeholders, how many entries an "
-    "ongoing film series, product line, or franchise has — are NOT safe from "
-    "memory even when they feel settled: your knowledge of them ends at your "
-    "training cutoff and the true answer may have moved, so stay silent on "
-    "them rather than answer from memory."
+    "Facts that change over time (current versions, prices, officeholders, "
+    "recent events) may be past your knowledge; if not confident, stay silent."
 )
 
 # The bar when live evidence rides the prompt (XERK-120). One-sided generosity:
@@ -98,23 +87,21 @@ CUE_GUIDANCE = (
 # evidence; the one-sided wording emitted on covered facts and stayed silent on
 # every uncovered trap.
 CUE_GUIDANCE_GROUNDED = (
-    "Live evidence accompanies this conversation — be generous with it: for "
-    "facts the evidence covers, prefer emitting a cue over staying silent. "
+    "Live evidence accompanies this conversation — for facts it covers, prefer "
+    "emitting a cue over staying silent, and cite the item numbers you used. "
     "Generosity applies only to topics that are cue-worthy in the first "
-    "place: evidence exists for every mundane noun (a dessert, a pocket, a "
-    "playground game) and for every term of the speakers' own trade, and "
-    "covering one with a citation does not make it worth the listener's "
-    "attention — the everyday-knowledge, known-to-these-listeners, and "
-    "register rules above outrank evidence coverage. "
+    "place: covering a mundane noun or a term of the speakers' own trade with "
+    "a citation does not make it worth the listener's attention — a cue must "
+    "still ADD something the speakers did not say. "
     "Facts that change or grow over time — recent events, latest releases, "
     "current versions, prices, scores, officeholders, how many entries an "
     "ongoing film series, product line, or franchise has — may come ONLY from "
     "the evidence, never from memory: your knowledge of them ends at your "
     "training cutoff and the true answer may have moved. If the evidence does "
     "not cover them, stay silent rather than answer from memory, and never "
-    "cite evidence that does not actually support the fact. A stable, "
+    "cite an item that does not actually support the fact. A stable, "
     "timeless fact may come from your own knowledge only if you are certain "
-    "it is correct. Accuracy stays absolute either way."
+    "of it. Accuracy stays absolute either way."
 )
 
 

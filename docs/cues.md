@@ -63,13 +63,16 @@ on the phone.
    (`api/src/api/cue/openai.py`) POSTs `/chat/completions` to the *same* LiteLLM
    endpoint + key the STT engine uses (`API_LITELLM_ENDPOINT` /
    `API_LITELLM_API_KEY`) — no new URL/key var. The model alias is `API_LLM_MODEL`
-   (default `gpt-oss:120b`). The model returns a small JSON object
-   (`{cue, title, body}`). The prod models have been *reasoning* models, so the
-   call disables thinking (`chat_template_kwargs.enable_thinking = false`, toggle
-   `API_CUE_DISABLE_THINKING`) — the retired Qwen3 left thinking spent the whole
-   token budget reasoning and returned an empty `content`, so no cue was ever
-   produced; a server that doesn't know the kwarg drops it harmlessly. The first
-   JSON object is still extracted defensively, falling back to `reasoning_content`.
+   (default `qwen3.8-27b-dflash`). The model returns a small JSON object
+   (`{cue, title, body}`). The prod model is a *reasoning* model, and the
+   August 2026 replay retune
+   (`scripts/cue_eval/RESULTS-2026-08.md`) found it emits better with thinking
+   **on** against a 2048-token budget (`API_CUE_MAX_TOKENS`; toggle
+   `API_CUE_DISABLE_THINKING` — on by default, set `true` to fall back to
+   thinking-off on a latency-constrained host). The toggle is sent explicitly
+   in both directions so the outcome never depends on the server's own default;
+   a server that doesn't know the kwarg drops it harmlessly. The first JSON
+   object is still extracted defensively, falling back to `reasoning_content`.
 3. **Delivery + persistence.** A cue is delivered as a `cue` WebSocket message
    (see `contract/ws-messages.schema.json`) and persisted to the `cues` table
    (`schema.sql`) at `at_ms` — its position on the transcript timeline — so history
@@ -79,21 +82,26 @@ on the phone.
 ## Enrichment over echo, accuracy over volume
 
 A cue earns its place by **adding** something true. The prompt
-(`api/src/api/cue/openai.py`) frames the model as a research assistant with
-five triggers — answer a question asked aloud; add a concrete fact about a
-named person/place/product; define a term or piece of jargon; contribute a
-relevant number, precedent, or trade-off to a decision being worked through;
-correct a falsehood — and bans restating the transcript. In substantive talk
-the posture is emissive (silence is the exception, and if the best candidate
-fact is unsafe or already surfaced the model takes the next-best instead of
-declining); accuracy rules stay absolute over the content: no speculation, no
-facts about garbled/misheard names, never contradict what a speaker stated
-firsthand, never "correct" the speakers from a stale training cutoff on things
-that change, and stay silent rather than guess. Decoding is greedy
-(temperature 0) — measured on replayed deployment sessions it produced the
-same volume with materially fewer wrong cues than sampled decoding. The
-calibration history and replay measurements live in `docs/cue-rag.md`; the
-harness is `scripts/cue_eval/`.
+(`api/src/api/cue/openai.py`) is the short, emission-first frame adopted in
+the August 2026 Qwen retune (`scripts/cue_eval/RESULTS-2026-08.md`): surface a
+cue on most turns of a substantive conversation, firing on any of five
+triggers — a factual question asked aloud; a concrete fact about a named
+person, place, product, or event; a jargon definition; a number, precedent, or
+trade-off for a decision being worked through; correcting a clearly wrong
+claim — and bans restating the transcript. Accuracy stays absolute over the
+content: state only what you are certain of, never invent facts about garbled
+or misheard names, never contradict a firsthand detail the speakers stated,
+stay silent on facts that change over time when not confident (the
+`cue_guidance()` line, or the evidence-gated `cue_guidance(grounded=True)`
+line when retrieval evidence rides the prompt), and never present a sibling
+model's specs, a predecessor's dates, or a rival product's defaults as the
+named thing's own. The worked examples after the frame carry the July
+calibration's mishearing, wrong-referent, and cross-generation traps. Decoding
+is greedy (temperature 0) — measured on replayed deployment sessions it
+produced the same volume with materially fewer wrong cues than sampled
+decoding. The calibration history and replay measurements live in
+`docs/cue-rag.md` and `scripts/cue_eval/RESULTS-2026-07.md` /
+`RESULTS-2026-08.md`.
 
 Repeats are blocked in three layers: the prompt carries the recent surfaced
 cues (title *and* body) as a do-not-repeat list, the session drops exact title
@@ -167,36 +175,36 @@ by construction.
 |----------|-----------------------------------------------------------------------|
 | `off`    | No cues (default). The stripped core stays STT-only.                   |
 | `stub`   | Model-free, deterministic generator for CI/dev — no GPU.               |
-| `openai` | Real chat model via the LiteLLM gateway (`gpt-oss:120b`).              |
+| `openai` | Real chat model via the LiteLLM gateway (`qwen3.8-27b-dflash`).          |
 
 The stub is what CI exercises end-to-end (session → WS frame → persistence →
 history), so the whole path is covered without a GPU.
 
 ## The model
 
-The production cue model is **gpt-oss-120b**, served by Ollama and aliased
-`gpt-oss:120b` on the shared LiteLLM gateway. It runs as the `tenir-ollama-cue`
-container in the `tenir-gpu` compose stack (DockerOps repo), co-tenant with the
-Parakeet STT server on the GPU box. (STT moved Voxtral→Parakeet in XERK-92; the
-cue model is a separate chat route through the same gateway.)
+The production cue model is **Qwen3.8-27B**, served by SGLang on the GPU box
+(`maxai.xerktech.com:8890`) with NVFP4 weights and DFlash speculative decoding,
+and aliased `qwen3.8-27b-dflash` on the shared LiteLLM gateway. It replaced the
+retired gpt-oss-120b Ollama deployment (the `ollama-cue` container, whose July
+2026 cue-model eval record is `scripts/cue_eval/RESULTS-2026-07.md`). Cues are
+fact checks and factual lookups (correcting wrong claims, distances, entities),
+so breadth *and* reliability of knowledge matter most. Since XERK-160 the same
+weights also serve the live translations (`docs/translations.md`) — on their own
+gateway alias (`qwen3.8-27b-dflash-translate`) since XERK-180, so translation
+traffic routes independently of the cue route.
 
-Why this model: the July 2026 cue-model eval
-(`scripts/cue_eval/RESULTS-2026-07.md`) replayed the frozen 12-conversation
-deployment dataset against the then-production Qwen3.6-27B-FP8 and candidate
-replacements, judged by a cross-family LLM judge. gpt-oss-120b won on the bar
-that matters — enrichment without accuracy loss (XERK-118: a cue is only worth
-surfacing if it is right) — and retired the vLLM/Qwen server. Cues are fact
-checks and factual lookups (correcting wrong claims, distances, entities), so
-breadth *and* reliability of knowledge matter most; the runtime is pinned
-(`ollama/ollama:0.32.4`, the version the eval ran on) so cue behaviour can't
-shift under a silent upgrade. The JSON-only prompt gives dependable
+Qwen3.8 is a *reasoning* model, so its selectivity dial is the thinking toggle
+— `chat_template_kwargs.enable_thinking`, **on by default** for cues
+(`API_CUE_DISABLE_THINKING`) — which replaces gpt-oss's `reasoning_effort`
+dial. At the old 600-token budget, thinking-on starved the JSON answer
+(`finish_reason: length`, empty `content`) and every cue was silently dropped;
+with the 2048-token budget (`API_CUE_MAX_TOKENS`) the reasoning fits, and the
+August 2026 replay measured thinking-on ahead of thinking-off on both volume
+and judged accuracy (159 vs 64 cues on the frozen set; accuracy 1.97 vs 1.81 —
+`scripts/cue_eval/RESULTS-2026-08.md`). The JSON-only prompt gives dependable
 `{cue, title, body}` objects, which the parser still guards defensively for
-reasoning-model wrapping. Since XERK-160 the same model also serves the live
-translations (`docs/translations.md`) — same weights, and since XERK-180 a
-separate gateway alias (`gpt-oss:120b-translate`, reasoning_effort low): the
-Aug 2026 translation eval (`scripts/translation_eval/RESULTS-2026-08.md`) found
-low ~2× faster with no meaningful accuracy loss for translation, while cues
-keep medium for selectivity.
+reasoning-model wrapping — including a placeholder-only
+`{"title": "...", "body": "..."}` decline, which it now rejects.
 
 ### Running it on the single-host stack
 
@@ -206,10 +214,10 @@ The base `docker-compose.yml` keeps cues `off`. To see them:
 # Model-free demo cues (no extra container):
 API_CUE_BACKEND=stub docker compose up --build
 
-# Real model (large; needs its own GPU share alongside Parakeet):
-API_CUE_BACKEND=openai docker compose --profile cues up --build
+# Real model (external SGLang server on the GPU box; no extra container):
+API_CUE_BACKEND=openai docker compose up --build
 ```
 
-The `cues` profile starts the `ollama-cue` container and the gateway routes the
-`gpt-oss:120b` alias to it (`litellm/config.yaml`). Without the profile the route
-just 503s and cues stay silent — captions are unaffected.
+The gateway routes the `qwen3.8-27b-dflash` alias to the SGLang server
+(`litellm/config.yaml`). If that server is unreachable the route just fails and
+cues stay silent — captions are unaffected.

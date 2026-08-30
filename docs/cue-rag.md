@@ -30,7 +30,7 @@ sources from the deployment host:
 
 | Operation | Latency |
 |---|---|
-| Cue LLM call (~70-token prompt, thinking off) | **~1.0–1.1s** (decode-bound) |
+| Cue LLM call (v5 prompt, thinking on, 2048 budget) | **~5.9s p50 / ~9.7s p90** (reasoning-bound; clean single-request, 2026-08) |
 | … + ~500 evidence tokens | +~50ms |
 | … + ~1,400 evidence tokens | +~200ms |
 | … + ~2,700 evidence tokens | +~300ms |
