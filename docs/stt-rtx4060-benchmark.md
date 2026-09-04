@@ -8,7 +8,7 @@
 
 Follow-up to `stt-model-gpu-benchmark.md` (XERK-115). Both STT servers
 (`tenir-parakeet-stt`, `tenir-nemotron-stt`) were deployed to an 8 GB RTX 4060
-(TrueNAS, driver 570.x/CUDA 12.8) and benchmarked against the production
+(driver 570.x/CUDA 12.8) and benchmarked against the production
 deployment on the 96 GB RTX PRO 6000 Blackwell (Windows/WSL2 Docker Desktop,
 `10.10.10.22`). Everything here ran from the same client host in one sitting;
 the fixes this exercise forced are in `parakeet-stt/server.py` and
