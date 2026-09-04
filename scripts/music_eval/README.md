@@ -22,13 +22,13 @@ your deployment):
 
 ```bash
 # Recent conversations (last 6h) with retained audio:
-ssh NAS01-TrueNAS "docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
+ssh <deployment-host> "docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
   \"select household, id from conversations \
     where started_at > now() - interval '6 hours' and audio_key is not null \
     order by started_at desc\""
 
 # Copy one out (household 'default', id <ID>) to a local WAV:
-ssh NAS01-TrueNAS "docker exec Tenir cat /data/audio/default/<ID>.wav" > <ID>.wav
+ssh <deployment-host> "docker exec Tenir cat /data/audio/default/<ID>.wav" > <ID>.wav
 ```
 
 ## 2. Replay

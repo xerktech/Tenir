@@ -7,7 +7,7 @@
 # box that has no GPU. Rebuild the one service you care about instead:
 #   docker compose -f docker-compose.yml -f docker-compose.qa.yml build app
 #
-# The root compose file is the SHAPE THIS PROJECT DEPLOYS: a Windows/TrueNAS host
+# The root compose file is the SHAPE THIS PROJECT DEPLOYS: a Windows host
 # with `C:/docker/tenir/...` bind mounts and a local GPU running the Parakeet
 # image. Neither holds on a Linux dev box or in a QA container, so this overlay
 # swaps them out and changes nothing else:

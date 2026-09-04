@@ -430,7 +430,7 @@ security-relevant mediums). Each was reproduced; none is speculative.
 
 ## Don't QA against production
 
-The live hosts are listed in the workspace `~/git/CLAUDE.md` (TrueNAS, backups,
+The live hosts are listed in the workspace `~/git/CLAUDE.md` (backups,
 the GPU/model box, UniFi, Home Assistant). Read-only commands and dry runs only
 against those unless told otherwise.
 
@@ -451,19 +451,18 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
 - **`make` may not be installed** even though `make gen` is the documented
   contract workflow. Run the two commands from the `Makefile` directly. CI's
   `contract-drift` job regenerates and diffs, so drift is caught regardless.
-- **The GPU model servers are on TWO different hosts.** Parakeet STT is on
-  **TrueNAS, `10.10.10.20:9401`** (`GET /health` → `{"status":"ok","model":
-  "nvidia/parakeet-tdt-0.6b-v3"}`; it serves `/v1/audio/transcriptions` but NOT
-  `/v1/models`, so probe `/health`). The cue/translation LLM is on the GPU box
-  (`maxai.xerktech.com:8890`) — Qwen3.8-27B served by SGLang, not Ollama; it
-  needs no key and does serve `/health`. The workspace CLAUDE.md lists STT at
-  `.22:9401`, which is wrong — that port is closed there.
+- **The GPU model servers are on different hosts, supplied by env.** Parakeet STT
+  runs wherever you point `API_STT_ENDPOINT` (`GET /health` →
+  `{"status":"ok","model": "nvidia/parakeet-tdt-0.6b-v3"}`; it serves
+  `/v1/audio/transcriptions` but NOT `/v1/models`, so probe `/health`). The
+  cue/translation LLM is on the GPU box (`maxai.xerktech.com:8890`) — Qwen3.8-27B
+  served by SGLang, not Ollama; it needs no key and does serve `/health`.
 
-  Point the QA stack at the real models with:
+  Point the QA stack at the real models with (substitute your STT host):
 
   ```bash
-  API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://10.10.10.20:9401/v1 \
-  API_STATUS_STT_URL=http://10.10.10.20:9401 \
+  API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://<stt-host>:9401/v1 \
+  API_STATUS_STT_URL=http://<stt-host>:9401 \
   API_CUE_BACKEND=openai API_TRANSLATION_BACKEND=openai \
   API_LITELLM_ENDPOINT=http://maxai.xerktech.com:8890/v1 \
   API_LLM_MODEL=qwen3.8-27b API_TRANSLATION_MODEL=qwen3.8-27b \
