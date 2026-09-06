@@ -36,12 +36,26 @@ class AuthError(Exception):
 
 @dataclass(frozen=True)
 class Principal:
-    """The authenticated caller: who they are, their household, and their role."""
+    """The authenticated caller: who they are, their household, and their role.
+
+    The single seam both auth backends produce (built-in HMAC and, when enabled,
+    Authentik OIDC — see ``auth/oidc.py``). The local fields below are what every
+    request and WS session is scoped by and are unchanged by OIDC. The trailing
+    fields are populated only on the OIDC path and default such that the built-in
+    path constructs the exact same value it always has (docs/auth-oidc.md §8).
+    """
 
     user_id: str
     household: str
     role: Role = "member"
     username: str = ""
+    # OIDC-only, all optional so the built-in path is byte-for-byte identical. For an
+    # OIDC token ``user_id`` is the Authentik subject in T3; T4 resolves it to the
+    # local ``users.id`` before the Principal reaches downstream ownership checks.
+    sub: str | None = None  # Authentik subject (oidc_sub) when OIDC-authenticated
+    email: str | None = None  # email from the token (link key + stored, per T4)
+    email_verified: bool = False  # the token's verified flag — T4's hard link guard
+    groups: tuple[str, ...] = ()  # raw groups (role already derived; kept for audit)
 
     @property
     def is_admin(self) -> bool:

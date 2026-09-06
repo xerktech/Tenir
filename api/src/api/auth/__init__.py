@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from api.auth.deps import (
     assert_secure_auth_config,
+    assert_valid_oidc_config,
     current_principal,
+    get_oidc_verifier,
+    principal_from_bearer,
     principal_from_live_token,
     principal_from_token,
     require_admin,
+    reset_oidc_verifier,
 )
 from api.auth.tokens import (
     AuthError,
@@ -31,14 +35,18 @@ __all__ = [
     "Principal",
     "User",
     "assert_secure_auth_config",
+    "assert_valid_oidc_config",
     "current_principal",
     "decode_token",
+    "get_oidc_verifier",
     "get_user_store",
     "hash_password",
     "issue_token",
+    "principal_from_bearer",
     "principal_from_live_token",
     "principal_from_token",
     "require_admin",
+    "reset_oidc_verifier",
     "reset_user_store",
     "sign_message",
     "verify_password",

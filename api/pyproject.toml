@@ -12,6 +12,11 @@ dependencies = [
     "numpy>=1.26",
     # The Voxtral STT backend and the status probes are HTTP clients.
     "httpx>=0.27",
+    # Optional Authentik OIDC (XERK-649): validate RS256 access tokens against the
+    # provider's JWKS. [crypto] pulls `cryptography` for RSA verification. A base
+    # dep (not an extra) so the OIDC path — and its CI tests — work in any install;
+    # the code is unreachable unless API_OIDC_ENABLED is set. Pinned <3 for the 2.x API.
+    "pyjwt[crypto]>=2.9,<3",
 ]
 
 [project.optional-dependencies]

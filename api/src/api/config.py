@@ -355,6 +355,51 @@ class Settings(BaseSettings):
     auth_admin_username: str = ""
     auth_admin_password: str = ""
     auth_admin_household: str = "default"
+    # Email that identifies the env-admin's row so their first Authentik login links
+    # to it by verified email (docs/auth-oidc.md §6). Consumed by T4's linking; T3
+    # only reads it into config. Empty ⇒ no email link key for the env-admin.
+    auth_admin_email: str = ""
+
+    # ---- Optional Authentik OIDC (XERK-646, T3) ---------------------------------
+    # A SECOND auth backend alongside — never replacing — the built-in HMAC tokens
+    # above. Off by default: with oidc_enabled false nothing here is reachable and
+    # auth behaves byte-for-byte as before. When on, the API also accepts Authentik
+    # access tokens (JWT, RS256) verified locally against the provider's JWKS, and
+    # any token that validates yields the same Principal seam. The shared contract
+    # is docs/auth-oidc.md; every value is env, twelve-factor, defaulting off/empty.
+    oidc_enabled: bool = False
+    # The `iss` the API requires AND the base for JWKS/discovery derivation. Authentik
+    # namespaces per provider: https://<authentik-host>/application/o/tenir/ (trailing
+    # slash). Boot refuses to start when oidc_enabled and this is empty.
+    oidc_issuer: str = ""
+    # The `aud` the API requires = the Tenir application's client_id in Authentik.
+    # Boot refuses to start when oidc_enabled and this is empty.
+    oidc_audience: str = ""
+    # RS256 signing keys. Left empty it derives to `{issuer}jwks/` (see
+    # oidc_jwks_url_resolved); override only if Authentik is fronted oddly.
+    oidc_jwks_url: str = ""
+    # Signature algorithms accepted on the OIDC path (comma-separated). RS256 only by
+    # design — `alg: none` and every symmetric alg are rejected, so there is no
+    # alg-confusion path between this and the HMAC backend.
+    oidc_algorithms: str = "RS256"
+    # Token claim carrying the user's group array; role derives from it (see below).
+    oidc_groups_claim: str = "groups"
+    # Membership in this group ⇒ role `admin`; any other (or no) group ⇒ `member`.
+    oidc_admin_group: str = "tenir-admins"
+    # Documented member group. Presence is NOT a gate — a validated token is at
+    # least a member regardless (docs/auth-oidc.md §7). Kept for parity/advertising.
+    oidc_member_group: str = "tenir-members"
+    # Claim names for the email and its verified flag. Authentik's built-in `email`
+    # scope sets email_verified true when the user has an email. These fields ride
+    # the Principal for T4's verified-email account linking.
+    oidc_email_claim: str = "email"
+    oidc_email_verified_claim: str = "email_verified"
+    # Clock-skew leeway (seconds) applied to exp/nbf/iat. Small on purpose (≤60s).
+    oidc_leeway_seconds: int = 60
+    # Secondary link key `preferred_username` (T4). Off by default and recommended
+    # off — it is mutable in Authentik and carries no verification comparable to
+    # email_verified (docs/auth-oidc.md §5). T3 only reads it into config.
+    oidc_allow_username_link: bool = False
 
     # Infra endpoints. The host matches the Postgres service name in
     # docker-compose.yml (compose also sets this var explicitly, but the default
@@ -436,6 +481,23 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def oidc_jwks_url_resolved(self) -> str:
+        """The JWKS URL the verifier fetches keys from: the explicit override when
+        set, else `{issuer}jwks/`. Authentik serves the provider's keys off its
+        namespaced issuer, so the issuer alone is enough for the default."""
+        if self.oidc_jwks_url.strip():
+            return self.oidc_jwks_url.strip()
+        base = self.oidc_issuer.strip()
+        if not base:
+            return ""
+        return f"{base.rstrip('/')}/jwks/"
+
+    @property
+    def oidc_algorithm_list(self) -> list[str]:
+        """Accepted OIDC signature algorithms, parsed from oidc_algorithms."""
+        return [a.strip() for a in self.oidc_algorithms.split(",") if a.strip()]
 
     @property
     def stt_endpoint_url(self) -> str:
