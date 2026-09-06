@@ -8,9 +8,28 @@
  * `configureApi`.
  */
 
-import { configureApi, getToken, setToken } from "@tenir/client-core";
+import {
+  browserOidcPrimitives,
+  configureApi,
+  configureOidc,
+  getToken,
+  setToken,
+} from "@tenir/client-core";
 
 const DEFAULT = "http://localhost:8080";
+
+/**
+ * The registered OIDC redirect URI for the web SPA (docs/auth-oidc.md §10). The
+ * SPA is served *by* the api, so this is same-origin: Authentik has
+ * `<origin>/auth/oidc/callback` registered as the web client's redirect (see
+ * `authentik/blueprints/tenir-oidc.yaml` → `TENIR_OIDC_REDIRECT_WEB`). On the way
+ * back the browser lands here and `App` completes the exchange from the query
+ * string. Based on the api origin (`getServerUrl`) so it matches the registered
+ * URI exactly, which Authentik enforces with `matching_mode: strict`.
+ */
+export function oidcRedirectUri(): string {
+  return `${getServerUrl()}/auth/oidc/callback`;
+}
 
 /**
  * Adopt a bearer token handed over in the URL fragment (`#token=…`) — the Even
@@ -64,4 +83,10 @@ export function getServerUrl(): string {
 // Point the shared REST client at the configured api at startup, and pick up a
 // token handed over by the Even G2 phone page (before the app's first `me()`).
 configureApi({ httpBaseUrl: getServerUrl() });
+// Wire the browser OIDC primitives (Web Crypto + `location`) so the optional
+// "Sign in with Authentik" path can run and so an OIDC session can silently
+// refresh on a 401 (docs/auth-oidc.md §10). This only *registers* the seam — it
+// is inert until the server advertises OIDC and `prepareOidc` resolves a
+// provider, so a deployment with OIDC off behaves exactly as before.
+configureOidc(browserOidcPrimitives(oidcRedirectUri()));
 adoptTokenFromUrl();
