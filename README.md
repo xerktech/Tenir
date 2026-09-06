@@ -78,6 +78,12 @@ Retained audio lives on a bind mount (`API_AUDIO_DIR`, the "disk" audio
 backend). Smoke check once up: `curl localhost:8080/health`, then open
 `http://localhost:8080`.
 
+**Optional OIDC (Authentik):** for household multi-user SSO, a separate stack
+(`authentik/docker-compose.authentik.yml`) stands up Authentik as the identity
+provider Tenir authenticates against. It's optional infra with its own
+Postgres/Redis, deployed as its own Portainer stack — see
+[`docs/authentik-oidc.md`](docs/authentik-oidc.md).
+
 ### STT (partials and finals)
 
 One model, `parakeet`, serves both caption flavours (`API_STT_BACKEND=parakeet`):

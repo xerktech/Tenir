@@ -1,0 +1,158 @@
+# Tenir OIDC — declarative Authentik configuration (XERK-647).
+#
+# Applied automatically by the Authentik worker on boot (the stack mounts this
+# dir at /blueprints/tenir, which Authentik auto-discovers). Editing this file
+# and restarting the worker re-applies it — it is idempotent (entries are matched
+# by their `identifiers`, so re-running updates in place rather than duplicating).
+#
+# This is the single source of truth for everything XERK-647 must create:
+#   * an OAuth2/OIDC provider (RS256) + the "Tenir" application
+#   * the tenir-admins / tenir-members household groups
+#   * the root (admin) and test-member users, with verified emails
+#   * the openid/profile/email/groups scope→claim mappings the tokens carry
+#
+# Secrets and per-deployment values (client id, emails, passwords, redirect URIs)
+# come from the environment (.env) via !Env — never hardcode them here.
+version: 1
+metadata:
+  name: Tenir OIDC provider, application, groups and users
+  labels:
+    blueprints.goauthentik.io/instance: "true"
+
+entries:
+  # --- Household groups -------------------------------------------------------
+  - id: group-tenir-admins
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: tenir-admins
+    attrs:
+      name: tenir-admins
+      # These are Tenir application roles, NOT Authentik superusers. Managing
+      # Authentik itself stays with the built-in `akadmin`.
+      is_superuser: false
+
+  - id: group-tenir-members
+    model: authentik_core.group
+    state: present
+    identifiers:
+      name: tenir-members
+    attrs:
+      name: tenir-members
+      is_superuser: false
+
+  # --- Users ------------------------------------------------------------------
+  # Root/admin identity. Its email MUST match the API's API_AUTH_ADMIN_EMAIL so
+  # that on first OIDC login the API links this account to the local env-admin
+  # (T4). Having a real email set makes the token carry email_verified=true.
+  - id: user-tenir-root
+    model: authentik_core.user
+    state: present
+    identifiers:
+      username: tenir-root
+    attrs:
+      username: tenir-root
+      name: Tenir Root
+      email: !Env [AUTHENTIK_TENIR_ROOT_EMAIL, admin@example.com]
+      is_active: true
+      path: users
+      password: !Env [AUTHENTIK_TENIR_ROOT_PASSWORD, ""]
+      groups:
+        - !KeyOf group-tenir-admins
+      attributes:
+        # NOTE: the token's email_verified comes from Authentik's built-in `email`
+        # scope mapping, which emits `email_verified: true` for any user with an
+        # email set — it does NOT read this attribute. We set it anyway to record
+        # that these seeded identities are intended as verified. Since the seeded
+        # users have real emails, the token carries email_verified=true regardless.
+        email_verified: true
+
+  # Test member — proves a non-admin token carries groups=[tenir-members].
+  - id: user-tenir-member
+    model: authentik_core.user
+    state: present
+    identifiers:
+      username: tenir-member
+    attrs:
+      username: tenir-member
+      name: Tenir Test Member
+      email: !Env [AUTHENTIK_TENIR_MEMBER_EMAIL, member@example.com]
+      is_active: true
+      path: users
+      password: !Env [AUTHENTIK_TENIR_MEMBER_PASSWORD, ""]
+      groups:
+        - !KeyOf group-tenir-members
+      attributes:
+        email_verified: true
+
+  # --- Scope → claim mappings -------------------------------------------------
+  # A dedicated `groups` scope so tokens carry household group membership. The
+  # claim name is `groups` (recorded for T2/T3). openid/profile/email reuse
+  # Authentik's built-in default mappings (referenced on the provider below);
+  # the built-in `email` mapping already emits `email` and `email_verified`.
+  - id: scope-tenir-groups
+    model: authentik_providers_oauth2.scopemapping
+    state: present
+    identifiers:
+      name: Tenir OIDC — groups
+    attrs:
+      name: Tenir OIDC — groups
+      scope_name: groups
+      description: "Tenir household group membership"
+      expression: |
+        return {
+            "groups": [group.name for group in request.user.ak_groups.all()],
+        }
+
+  # --- OAuth2 / OIDC provider -------------------------------------------------
+  - id: provider-tenir
+    model: authentik_providers_oauth2.oauth2provider
+    state: present
+    identifiers:
+      name: Tenir
+    attrs:
+      name: Tenir
+      # Public client + PKCE for the browser/native fronts (the browser web app,
+      # the even phone page, the mobile native app). No client secret is issued;
+      # T2 confirms whether any client is instead confidential.
+      client_type: public
+      client_id: !Env [AUTHENTIK_TENIR_CLIENT_ID, tenir]
+      # RS256 signing via Authentik's auto-generated self-signed RSA keypair,
+      # exposed at the JWKS endpoint.
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-explicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # Groups/email land in the id_token too, not just userinfo, so a client can
+      # authorize from the id_token alone.
+      include_claims_in_id_token: true
+      sub_mode: hashed_user_id
+      # issuer = <authentik>/application/o/tenir/  (per-provider issuer).
+      issuer_mode: per_provider
+      access_code_validity: minutes=1
+      access_token_validity: minutes=60
+      refresh_token_validity: days=30
+      redirect_uris:
+        - matching_mode: strict
+          url: !Env [TENIR_OIDC_REDIRECT_WEB, "http://localhost:8080/auth/oidc/callback"]
+        - matching_mode: strict
+          url: !Env [TENIR_OIDC_REDIRECT_EVEN, "http://localhost:8080/even/auth/oidc/callback"]
+        - matching_mode: strict
+          url: !Env [TENIR_OIDC_REDIRECT_MOBILE, "com.xerktech.tenir://auth/callback"]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !KeyOf scope-tenir-groups
+
+  # --- Application ------------------------------------------------------------
+  - id: app-tenir
+    model: authentik_core.application
+    state: present
+    identifiers:
+      slug: tenir
+    attrs:
+      name: Tenir
+      slug: tenir
+      provider: !KeyOf provider-tenir
+      meta_launch_url: !Env [TENIR_PUBLIC_URL, "http://localhost:8080"]
+      meta_description: "Tenir household — live captions, cues and recordings"
