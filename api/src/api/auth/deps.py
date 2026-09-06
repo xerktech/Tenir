@@ -12,7 +12,7 @@ from fastapi import Depends, Header, HTTPException
 
 from api.auth.oidc import OidcVerifier
 from api.auth.tokens import AuthError, Principal, decode_token
-from api.auth.users import get_user_store
+from api.auth.users import get_user_store, resolve_oidc_principal
 from api.config import DEFAULT_AUTH_SECRET, settings
 
 
@@ -132,12 +132,15 @@ def principal_from_bearer(token: str) -> Principal:
 
     A built-in HMAC token goes through :func:`principal_from_live_token` exactly as
     before (signature + expiry + account liveness). When OIDC is enabled, a
-    three-segment JWS is verified against Authentik's JWKS instead. Both backends
-    coexist — a request is authenticated by whichever one accepts its token — and
-    both yield the same :class:`Principal` seam. Raises ``AuthError`` on rejection.
+    three-segment JWS is verified against Authentik's JWKS, then resolved to a local
+    user row — linked by verified email or JIT-provisioned (``resolve_oidc_principal``,
+    docs/auth-oidc.md §5) — so the returned Principal's ``user_id`` is the stable
+    local ``users.id``, never the raw ``sub``. Both backends coexist — a request is
+    authenticated by whichever one accepts its token — and both yield the same
+    :class:`Principal` seam. Raises ``AuthError`` on rejection.
     """
     if settings.oidc_enabled and _is_oidc_token(token):
-        return get_oidc_verifier().verify(token)
+        return resolve_oidc_principal(get_oidc_verifier().verify(token))
     return principal_from_live_token(token)
 
 

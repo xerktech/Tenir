@@ -93,10 +93,14 @@ def test_apply_schema_creates_the_cues_table() -> None:
     apply_schema(conn, path.read_text(encoding="utf-8"))
 
     assert _creates_cues(conn.statements), "boot schema apply must create the cues table"
-    # Idempotent guard: every statement is a safe CREATE/INSERT so a converged DB
-    # re-applies cleanly.
+    # Idempotent guard: every statement is safe to re-run on a converged DB — a
+    # CREATE/INSERT guarded by IF NOT EXISTS / ON CONFLICT, or an ALTER COLUMN ...
+    # DROP NOT NULL (a no-op when the column is already nullable, XERK-650).
     assert all(
-        "IF NOT EXISTS" in s or "ON CONFLICT" in s or s.upper().startswith("INSERT")
+        "IF NOT EXISTS" in s
+        or "ON CONFLICT" in s
+        or s.upper().startswith("INSERT")
+        or "DROP NOT NULL" in s.upper()
         for s in conn.statements
     )
 

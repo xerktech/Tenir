@@ -28,7 +28,12 @@ from api.auth.tokens import (
     sign_message,
     verify_password,
 )
-from api.auth.users import User, get_user_store, reset_user_store
+from api.auth.users import (
+    User,
+    get_user_store,
+    reset_user_store,
+    resolve_oidc_principal,
+)
 
 __all__ = [
     "AuthError",
@@ -48,6 +53,7 @@ __all__ = [
     "require_admin",
     "reset_oidc_verifier",
     "reset_user_store",
+    "resolve_oidc_principal",
     "sign_message",
     "verify_password",
 ]

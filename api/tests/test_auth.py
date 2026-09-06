@@ -816,3 +816,58 @@ def test_sql_user_store_get_env_admin_and_by_id_scope_dict_row_to_cursor(fake_ps
     assert _store_with(conn2).get_by_id(_ADMIN_ROW["id"]).username == "ada"
     assert conn2.calls[0][2] is fake_psycopg.dict_row
     assert conn2.row_factory is None
+
+
+# --- SqlUserStore: OIDC identity methods (XERK-650) ---------------------------
+#
+# Same psycopg3 row_factory contract as above, extended to the OIDC read/write
+# path (create_oidc / update_oidc / get_by_oidc_sub / get_by_email). An OIDC-only
+# row maps with password_hash NULL; a local row read back still authenticates.
+
+_OIDC_ROW = {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "household": "default",
+    "username": "authentik-maya",
+    "role": "member",
+    "password_hash": None,       # OIDC-only: no local password
+    "oidc_sub": "authentik-sub-1",
+    "email": "maya@household.test",
+}
+
+
+def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -> None:
+    conn = _FakeConn([_OIDC_ROW])
+    user = _store_with(conn).create_oidc(
+        oidc_sub="authentik-sub-1", email="maya@household.test",
+        username="authentik-maya", household="default", role="member",
+    )
+    assert user.oidc_sub == "authentik-sub-1" and user.email == "maya@household.test"
+    assert user.password_hash is None  # OIDC-only row read back cleanly
+    assert conn.calls[0][2] is fake_psycopg.dict_row
+    assert conn.row_factory is None
+
+
+def test_sql_user_store_update_oidc_links_and_scopes_dict_row(fake_psycopg) -> None:
+    linked_row = {**_ADMIN_ROW, "oidc_sub": "authentik-sub-9", "email": "ada@household.test"}
+    conn = _FakeConn([linked_row])
+    user = _store_with(conn).update_oidc(_ADMIN_ROW["id"], oidc_sub="authentik-sub-9", role="admin")
+    assert user.oidc_sub == "authentik-sub-9" and user.role == "admin"
+    assert conn.calls[0][2] is fake_psycopg.dict_row
+    assert conn.row_factory is None
+
+
+def test_sql_user_store_get_by_oidc_sub_and_email_scope_dict_row(fake_psycopg) -> None:
+    conn = _FakeConn([_OIDC_ROW])
+    assert _store_with(conn).get_by_oidc_sub("authentik-sub-1").username == "authentik-maya"
+    assert conn.calls[0][2] is fake_psycopg.dict_row
+    # An empty key short-circuits without touching the DB.
+    conn_empty = _FakeConn([])
+    assert _store_with(conn_empty).get_by_oidc_sub("") is None
+    assert _store_with(conn_empty).get_by_email("  ") is None
+    assert conn_empty.calls == []
+
+    conn2 = _FakeConn([_OIDC_ROW])
+    # The query lower()s both sides, so a mixed-case address still matches.
+    assert _store_with(conn2).get_by_email("maya@household.test").username == "authentik-maya"
+    assert conn2.calls[0][2] is fake_psycopg.dict_row
+    assert conn2.row_factory is None

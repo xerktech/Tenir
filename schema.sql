@@ -17,13 +17,20 @@ INSERT INTO households (id) VALUES ('default') ON CONFLICT (id) DO NOTHING;
 
 -- Household members who can authenticate. The built-in auth service issues a
 -- signed bearer token scoping every request to `household`; `role` gates
--- admin-only controls (user management, /metrics).
+-- admin-only controls (user management, /metrics). A row may be local-only
+-- (password_hash, no oidc_sub), OIDC-only (oidc_sub, no password_hash) or linked
+-- (both) — see docs/auth-oidc.md §5 and auth/users.py::resolve_oidc_principal.
 CREATE TABLE IF NOT EXISTS users (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     household      TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
     username       TEXT NOT NULL UNIQUE,
     role           TEXT NOT NULL DEFAULT 'member',     -- member | admin
-    password_hash  TEXT NOT NULL,                      -- pbkdf2_sha256$...
+    password_hash  TEXT,                               -- pbkdf2_sha256$...; NULL for OIDC-only
+    -- Authentik subject (OIDC `sub`), unique when set. NULL on a local-only row.
+    oidc_sub       TEXT,
+    -- Verified email; the case-insensitive link key that connects an existing local
+    -- row to its Authentik identity (XERK-650, T4). Unique when set. NULL otherwise.
+    email          TEXT,
     -- Marks the single env-managed bootstrap admin (API_AUTH_ADMIN_*). Reconciled
     -- from env on every boot by its stable id, not its (mutable) username.
     is_env_admin   BOOLEAN NOT NULL DEFAULT false,
@@ -32,6 +39,16 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS users_household_idx ON users (household);
 -- At most one env-managed admin.
 CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin;
+-- Additive migration for data dirs created before XERK-650 (this file is applied
+-- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip the
+-- new columns on an existing table). password_hash was NOT NULL before OIDC-only rows.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_sub TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+-- oidc_sub is unique when set; email is unique case-insensitively when set (the
+-- verified-email link key must identify exactly one local row).
+CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL;
 
 -- A persisted conversation: one live session's durable record.
 CREATE TABLE IF NOT EXISTS conversations (
