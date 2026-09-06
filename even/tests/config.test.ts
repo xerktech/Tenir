@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SERVER_URL_KEY } from "../src/state/settings";
 import { MemStorage } from "./memStorage";
@@ -16,6 +16,16 @@ beforeEach(async () => {
 
 // Flush the token store's fire-and-forget persistence writes.
 const settle = () => new Promise((r) => setTimeout(r, 0));
+
+afterEach(() => {
+  // The OIDC sidecar store write-throughs to localStorage; clear it so state
+  // doesn't leak between tests.
+  try {
+    localStorage.clear();
+  } catch {
+    /* no localStorage in this env */
+  }
+});
 
 describe("deviceTokenStore", () => {
   it("mirrors the token in memory and write-throughs to the device store", async () => {
@@ -61,6 +71,39 @@ describe("initConfig", () => {
     expect(cfg.isServerConfigured()).toBe(false);
     expect(cfg.config.apiWsUrl).toBe("ws://localhost:8080/ws");
     expect(core.getToken()).toBeNull();
+  });
+});
+
+describe("OIDC sidecar (XERK-656)", () => {
+  it("re-seeds a persisted PKCE transaction so the authorize redirect survives a restart", async () => {
+    // The Even WebView returning from Authentik may be restart-like: localStorage
+    // wiped, but the transaction was write-through'd to the device store before
+    // the redirect. initConfig must recover it so the code exchange can complete.
+    localStorage.clear();
+    const storage = new MemStorage();
+    storage.map.set(cfg.OIDC_TX_KEY, JSON.stringify({ verifier: "v", state: "st", nonce: "no" }));
+
+    await cfg.initConfig(storage);
+
+    expect(core.getOidcTransaction()).toEqual({ verifier: "v", state: "st", nonce: "no" });
+  });
+
+  it("re-seeds a persisted OIDC session so a signed-in OIDC user survives a restart", async () => {
+    localStorage.clear();
+    const storage = new MemStorage();
+    storage.map.set(cfg.OIDC_SESSION_KEY, JSON.stringify({ refreshToken: "r", expiresAt: 123 }));
+
+    await cfg.initConfig(storage);
+
+    expect(core.getSessionKind()).toBe("oidc");
+    expect(core.getOidcSession()).toEqual({ refreshToken: "r", expiresAt: 123 });
+  });
+
+  it("stays built-in with nothing persisted", async () => {
+    localStorage.clear();
+    await cfg.initConfig(new MemStorage());
+    expect(core.getSessionKind()).toBe("builtin");
+    expect(core.getOidcTransaction()).toBeNull();
   });
 });
 

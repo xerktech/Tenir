@@ -48,6 +48,13 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.useRealTimers();
+  // The OIDC sidecar store write-throughs to localStorage; clear it so an OIDC
+  // session never leaks into a later (built-in) test.
+  try {
+    localStorage.clear();
+  } catch {
+    /* no localStorage in this env */
+  }
 });
 
 const settle = async () => {
@@ -170,6 +177,25 @@ describe("lens controller: repeated unauthorized rejections (XERK-236)", () => {
     live.handlers.onError?.(unauthorized());
     await settle();
     expect(silentLogin).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("lens controller: OIDC session reauth (XERK-656)", () => {
+  it("does NOT replay cached credentials on unauthorized — OIDC re-auth is the phone", async () => {
+    // An active OIDC session (sidecar present): the socket already tried an IdP
+    // refresh before surfacing this, so there is nothing for the glasses to do
+    // but send the wearer back to the phone to sign in with Authentik again.
+    const core = await import("@tenir/client-core");
+    core.setOidcSession({ refreshToken: "r", expiresAt: Date.now() + 60_000 });
+    expect(core.getSessionKind()).toBe("oidc");
+
+    const t = await boot();
+    t.clients[0].handlers.onError?.(unauthorized());
+    await settle();
+
+    // No credential re-login, and no reconnect client spun up.
+    expect(silentLogin).not.toHaveBeenCalled();
+    expect(t.clients).toHaveLength(1);
   });
 });
 
