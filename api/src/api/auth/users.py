@@ -441,21 +441,32 @@ def resolve_oidc_principal(token: Principal, store: UserStore | None = None) -> 
     store = store or get_user_store()
     sub = token.sub or ""
     email = token.email
+    # A verified email is the only email that is ever a link key or stored (§5).
+    jit_email = email if token.email_verified else None
 
     user = store.get_by_oidc_sub(sub)
     if user is None and token.email_verified and email:
         match = store.get_by_email(email)
-        if match is not None:
-            # Link the token's sub onto the existing (local, or sub-rotated) row.
+        if match is not None and match.oidc_sub is None:
+            # A local (never-linked) row owns this verified email: adopt it in place,
+            # keeping its id/role/recordings. This is the env-admin / pre-created member
+            # link path.
             user = store.update_oidc(match.user_id, oidc_sub=sub)
+        elif match is not None:
+            # The email is already claimed by a *different* Authentik identity (step 1
+            # by-sub missed, so match.oidc_sub != sub). Authentik enforces one verified
+            # email per account, so this is an IdP misconfiguration — never collapse two
+            # identities onto one row and its recordings. Provision a distinct row and
+            # do NOT store the (already-taken) email.
+            log.warning(
+                "verified email is already linked to a different oidc_sub; provisioning "
+                "a separate row rather than re-linking"
+            )
+            jit_email = None
 
     if user is None:
-        # JIT-provision. Only a verified email is stored (it is the link key); an
-        # unverified email is dropped so it can never become one.
-        return _principal_for(
-            _jit_create(store, token, email if token.email_verified else None),
-            token,
-        )
+        # JIT-provision. Only a still-available verified email is stored.
+        return _principal_for(_jit_create(store, token, jit_email), token)
 
     return _principal_for(_refresh_login(store, user, token), token)
 

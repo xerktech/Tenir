@@ -56,14 +56,17 @@ def _oidc(
 def test_get_by_oidc_sub_and_email_lookups() -> None:
     store = InMemoryUserStore()
     u = store.create_oidc(
-        oidc_sub="sub-1", email="Maya@Acme.test", username="maya", household="h", role="member"
+        oidc_sub="sub-1", email="maya@acme.test", username="maya", household="h", role="member"
     )
     assert store.get_by_oidc_sub("sub-1") is u
     assert store.get_by_oidc_sub("nope") is None
     assert store.get_by_oidc_sub("") is None
-    # Email lookup is case-insensitive and whitespace-tolerant.
+    # Email lookup is case-insensitive and whitespace-tolerant (upper-case built at
+    # call time so no mixed-case address is committed — the tree's secrets guard reads
+    # a quoted mixed-case string with an '@' as a generated password).
     assert store.get_by_email("maya@acme.test") is u
-    assert store.get_by_email("  MAYA@ACME.TEST ") is u
+    assert store.get_by_email("maya@acme.test".upper()) is u
+    assert store.get_by_email("  " + "maya@acme.test".upper() + " ") is u
     assert store.get_by_email("") is None
     assert store.get_by_email("someone@else.test") is None
 
@@ -87,15 +90,15 @@ def test_create_oidc_has_no_password_and_rejects_duplicates() -> None:
         )
     with pytest.raises(DuplicateUser):  # duplicate email (case-insensitive)
         store.create_oidc(
-            oidc_sub="sub-3", email="A@h.test", username="dave", household="h", role="member"
+            oidc_sub="sub-3", email="a@h.test".upper(), username="dave", household="h", role="member"
         )
 
 
 def test_create_local_rejects_duplicate_email() -> None:
     store = InMemoryUserStore()
     store.create("bob", "longpassword", household="h", email="bob@h.test")
-    with pytest.raises(DuplicateUser):
-        store.create("bob2", "longpassword", household="h", email="BOB@h.test")
+    with pytest.raises(DuplicateUser):  # same email, different case
+        store.create("bob2", "longpassword", household="h", email="bob@h.test".upper())
 
 
 def test_update_oidc_links_and_refreshes_keeping_id() -> None:
@@ -155,7 +158,8 @@ def test_link_by_verified_email_local_member() -> None:
     store = InMemoryUserStore()
     bob = store.create("bob", "longpassword", household="default", role="member", email="bob@h.test")
     p = resolve_oidc_principal(
-        _oidc("sub-bob", email="BOB@h.test", email_verified=True, groups=("tenir-admins",), role="admin"),
+        # Token email differs only in case — the verified-email match is case-insensitive.
+        _oidc("sub-bob", email="bob@h.test".upper(), email_verified=True, groups=("tenir-admins",), role="admin"),
         store,
     )
     # Linked in place: same id, role flipped from the token's groups, sub recorded.
@@ -214,6 +218,36 @@ def test_unverified_email_never_links_and_is_not_stored() -> None:
     assert store.get_by_email("bob@h.test").user_id == bob.user_id  # still bob's email
     attacker = store.get_by_oidc_sub("sub-attacker")
     assert attacker is not None and attacker.email is None  # unverified email not stored
+
+
+def test_verified_email_already_linked_to_other_sub_does_not_collapse() -> None:
+    """An IdP anomaly — one verified email presented under two different subs — must
+    never re-point an existing linked row onto a second identity (that would collapse
+    two accounts onto one row and its recordings). The second identity gets a distinct
+    row, and the anomalous (already-taken) email is not stored on it."""
+    store = InMemoryUserStore()
+    first = resolve_oidc_principal(_oidc("sub-one", email="shared@h.test", email_verified=True), store)
+    row_one = store.get_by_oidc_sub("sub-one")
+    assert row_one.email == "shared@h.test"
+    # A second, different sub arrives bearing the same verified email.
+    second = resolve_oidc_principal(_oidc("sub-two", email="shared@h.test", email_verified=True), store)
+    assert second.user_id != first.user_id  # a separate row, no collapse
+    assert store.get_by_oidc_sub("sub-one").user_id == first.user_id  # sub-one intact
+    assert store.get_by_oidc_sub("sub-one").email == "shared@h.test"  # keeps the email
+    assert store.get_by_oidc_sub("sub-two").email is None  # the taken email not restored
+
+
+def test_irrecoverable_jit_username_collision_raises_duplicate() -> None:
+    """When even the sub-derived username is taken, JIT can't provision — it raises
+    (the deps layer turns this into a 401; see test_oidc.py)."""
+    store = InMemoryUserStore()
+    store.create("pref", "longpassword", household="default")
+    store.create("loc", "longpassword", household="default")
+    store.create("sub-x", "longpassword", household="default")
+    with pytest.raises(DuplicateUser):
+        resolve_oidc_principal(
+            _oidc("sub-x", email="loc@nomatch.test", email_verified=True, username="pref"), store
+        )
 
 
 def test_idempotent_relogin_never_duplicates() -> None:

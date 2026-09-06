@@ -12,7 +12,7 @@ from fastapi import Depends, Header, HTTPException
 
 from api.auth.oidc import OidcVerifier
 from api.auth.tokens import AuthError, Principal, decode_token
-from api.auth.users import get_user_store, resolve_oidc_principal
+from api.auth.users import DuplicateUser, get_user_store, resolve_oidc_principal
 from api.config import DEFAULT_AUTH_SECRET, settings
 
 
@@ -140,7 +140,15 @@ def principal_from_bearer(token: str) -> Principal:
     :class:`Principal` seam. Raises ``AuthError`` on rejection.
     """
     if settings.oidc_enabled and _is_oidc_token(token):
-        return resolve_oidc_principal(get_oidc_verifier().verify(token))
+        principal = get_oidc_verifier().verify(token)
+        try:
+            return resolve_oidc_principal(principal)
+        except (DuplicateUser, KeyError) as exc:
+            # Provisioning/linking hit a unique-constraint clash or a row that
+            # vanished under a concurrent delete. The auth layer fails closed: turn
+            # it into a 401 (like every other rejection) rather than let it escape as
+            # a 500. Denies access — never grants it.
+            raise AuthError(f"could not provision OIDC user: {exc}") from exc
     return principal_from_live_token(token)
 
 

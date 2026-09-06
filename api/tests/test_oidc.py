@@ -468,6 +468,33 @@ def test_oidc_jit_provisions_and_unverified_email_does_not_link(
 
 
 @pytest.mark.real_auth
+def test_oidc_unprovisionable_user_is_401_not_500(
+    oidc_enabled: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A validated token that cannot be provisioned (every candidate username taken)
+    fails closed as a 401 — the auth layer never lets it escape as a 500."""
+    from api.auth import get_user_store, reset_user_store
+
+    priv = oidc_enabled
+    monkeypatch.setattr(settings, "auth_admin_username", "")
+    monkeypatch.setattr(settings, "auth_admin_password", "")
+    reset_user_store()
+    store = get_user_store()
+    # Occupy every username JIT would try: preferred_username, email local-part, sub.
+    for name in ("pref", "loc", "collide-sub"):
+        store.create(name, "longpassword", household=HOUSEHOLD)
+
+    token = _token(
+        priv, "k1", sub="collide-sub", email="loc@nomatch.test",
+        email_verified=True, preferred_username="pref",
+    )
+    with TestClient(app) as client:
+        r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401  # not 500
+    reset_user_store()
+
+
+@pytest.mark.real_auth
 def test_oidc_and_builtin_tokens_over_ws(oidc_enabled: str) -> None:
     import json as _json
 
