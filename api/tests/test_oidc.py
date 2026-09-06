@@ -66,8 +66,17 @@ def _token(private_pem: str, kid: str, **claims: object) -> str:
     return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": kid})
 
 
-def _verifier(jwks_keys: list[dict], *, fetch_calls: list | None = None) -> OidcVerifier:
-    """A verifier whose JWKS 'fetch' returns ``jwks_keys`` (no network)."""
+def _verifier(
+    jwks_keys: list[dict],
+    *,
+    fetch_calls: list | None = None,
+    min_refetch_interval: float = 0.0,
+) -> OidcVerifier:
+    """A verifier whose JWKS 'fetch' returns ``jwks_keys`` (no network).
+
+    ``min_refetch_interval`` defaults to 0 so rotation/refetch behaviour is
+    immediate in tests; the production default (10s) rate-limits refetches.
+    """
 
     def fetch() -> dict:
         if fetch_calls is not None:
@@ -86,6 +95,7 @@ def _verifier(jwks_keys: list[dict], *, fetch_calls: list | None = None) -> Oidc
         household=HOUSEHOLD,
         leeway_seconds=60,
         fetch_jwks=fetch,
+        min_refetch_interval_seconds=min_refetch_interval,
     )
 
 
@@ -126,9 +136,20 @@ def test_email_verified_extraction_is_strict_boolean() -> None:
     assert v.verify(_token(priv, "k1", email_verified=False)).email_verified is False
     assert v.verify(_token(priv, "k1", email_verified="true")).email_verified is False
     assert v.verify(_token(priv, "k1", email_verified=1)).email_verified is False
-    # Absent email_verified → False, and an absent email → None (not a crash).
-    p = v.verify(_token(priv, "k1", **{"email_verified": None, "email": None}))
-    assert p.email_verified is False and p.email is None
+    # Absent email_verified → False (email is still present, as it must be).
+    assert v.verify(_token(priv, "k1", email_verified=None)).email_verified is False
+
+
+def test_missing_email_rejected() -> None:
+    """docs/auth-oidc.md §4: email is a required claim on the OIDC path — a token
+    that otherwise validates but carries no email is a 401 (T4's link key + stored
+    on the row; §5's linking is written assuming this rejection already happened)."""
+    priv, jwk = _keypair("k1")
+    v = _verifier([jwk])
+    with pytest.raises(AuthError, match="missing email"):
+        v.verify(_token(priv, "k1", email=None))
+    with pytest.raises(AuthError, match="missing email"):
+        v.verify(_token(priv, "k1", email=""))
 
 
 # --- verifier: rejections (each ⇒ AuthError ⇒ 401) ---------------------------
@@ -241,6 +262,22 @@ def test_truly_unknown_kid_refetches_once_then_rejects() -> None:
     assert len(calls) == 1  # refetched once, did not loop
 
 
+def test_unknown_kid_refetch_is_rate_limited() -> None:
+    """A flood of tokens bearing novel kids must not amplify 1:1 into JWKS fetches
+    (DoS against the IdP). Within the refetch window an unknown kid is rejected
+    without a fetch; only the first (cache-populating) fetch happens."""
+    priv1, jwk1 = _keypair("k1")
+    calls: list = []
+    v = _verifier([jwk1], fetch_calls=calls, min_refetch_interval=100.0)
+    assert v.verify(_token(priv1, "k1")).sub == "authentik-user-1"  # fetch #1
+    assert len(calls) == 1
+    for n in range(5):
+        ghost_priv, _ = _keypair(f"ghost-{n}")
+        with pytest.raises(AuthError, match="unknown OIDC signing key"):
+            v.verify(_token(ghost_priv, f"ghost-{n}"))
+    assert len(calls) == 1  # no refetch inside the window despite 5 novel kids
+
+
 def test_jwks_fetch_failure_is_401_not_500() -> None:
     def boom() -> dict:
         raise RuntimeError("jwks server down")
@@ -281,6 +318,19 @@ def test_oidc_boot_guard_requires_issuer_and_audience(monkeypatch: pytest.Monkey
         assert_valid_oidc_config()
     monkeypatch.setattr(settings, "oidc_audience", AUDIENCE)
     assert_valid_oidc_config()  # both set → boots
+
+
+def test_oidc_boot_guard_rejects_non_rsa_algorithms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A symmetric alg in the list is a misconfig (an RSA key can't HMAC-verify) and
+    the shape alg-confusion exploits — refuse it at boot, not as a 500 mid-request."""
+    monkeypatch.setattr(settings, "oidc_enabled", True)
+    monkeypatch.setattr(settings, "oidc_issuer", ISSUER)
+    monkeypatch.setattr(settings, "oidc_audience", AUDIENCE)
+    monkeypatch.setattr(settings, "oidc_algorithms", "RS256,HS256")
+    with pytest.raises(RuntimeError, match="RSA-family"):
+        assert_valid_oidc_config()
+    monkeypatch.setattr(settings, "oidc_algorithms", "RS256,RS384")
+    assert_valid_oidc_config()  # RSA family is fine
 
 
 def test_jwks_url_derives_from_issuer(monkeypatch: pytest.MonkeyPatch) -> None:

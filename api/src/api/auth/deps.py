@@ -77,8 +77,19 @@ def assert_valid_oidc_config() -> None:
         )
     if not settings.oidc_jwks_url_resolved:
         raise RuntimeError("API_OIDC_ENABLED is true but no JWKS URL could be resolved.")
-    if not settings.oidc_algorithm_list:
+    algs = settings.oidc_algorithm_list
+    if not algs:
         raise RuntimeError("API_OIDC_ENABLED is true but API_OIDC_ALGORITHMS is empty.")
+    # RSA-family only. Authentik signs with RS256, and the verifier loads RSA JWKS
+    # keys — allowing a symmetric alg (HS*) here is a misconfiguration that would
+    # feed an RSA key object into an HMAC verify and 500 on a forged token rather
+    # than fail clean; and it is the shape alg-confusion attacks exploit. Refuse it
+    # at boot so the mistake surfaces immediately, not deep in a request.
+    non_rsa = [a for a in algs if not a.startswith("RS")]
+    if non_rsa:
+        raise RuntimeError(
+            f"API_OIDC_ALGORITHMS must be RSA-family (RS256/RS384/RS512); got {non_rsa}."
+        )
 
 
 # One verifier per process holds the JWKS cache, so it survives Authentik key

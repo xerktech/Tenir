@@ -20,6 +20,7 @@ unit-tests run against a locally-generated RSA keypair with no network.
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 import httpx
@@ -32,6 +33,14 @@ from api.config import Settings
 # The JWKS document is small and rarely changes; a short HTTP timeout keeps a slow
 # or hung IdP from stalling an authenticated request. A miss still refetches.
 _JWKS_FETCH_TIMEOUT_SECONDS = 5.0
+
+# Minimum seconds between JWKS refetches. A refetch is triggered by a cache miss
+# (an unknown ``kid``), which is unauthenticated input — so without a floor an
+# attacker flooding tokens bearing novel kids turns one request into one outbound
+# JWKS GET each (DoS amplification against the IdP). Rotation is rare and key
+# overlap windows are long, so a few seconds' delay in picking up a genuinely new
+# key is immaterial; within the window an unknown kid is simply rejected.
+_MIN_JWKS_REFETCH_INTERVAL_SECONDS = 10.0
 
 # What a JWKS fetch returns: the parsed JSON document, i.e. ``{"keys": [ ... ]}``.
 JwksFetcher = Callable[[], dict]
@@ -59,6 +68,7 @@ class OidcVerifier:
         household: str,
         leeway_seconds: int = 60,
         fetch_jwks: JwksFetcher | None = None,
+        min_refetch_interval_seconds: float = _MIN_JWKS_REFETCH_INTERVAL_SECONDS,
     ) -> None:
         self._issuer = issuer
         self._audience = audience
@@ -71,7 +81,9 @@ class OidcVerifier:
         self._household = household
         self._leeway = leeway_seconds
         self._fetch = fetch_jwks or self._http_fetch
+        self._min_refetch_interval = min_refetch_interval_seconds
         self._keys: dict[str, PyJWK] = {}
+        self._last_refresh = 0.0  # monotonic time of the last JWKS (re)fetch
 
     @classmethod
     def from_settings(
@@ -119,13 +131,23 @@ class OidcVerifier:
         self._keys = keys
 
     def _key_for_kid(self, kid: str) -> PyJWK:
-        """The signing key for ``kid``, refetching once on a cache miss.
+        """The signing key for ``kid``, refetching the JWKS on a cache miss.
 
-        A rotated-in Authentik key is unknown to the cache exactly once; the miss
-        triggers a refresh and the next lookup finds it — rotation with no restart.
+        A rotated-in Authentik key is unknown to the cache; the miss triggers a
+        refresh and the next lookup finds it — rotation with no restart. The
+        refetch is rate-limited (``_min_refetch_interval``): the miss is driven by
+        unauthenticated input, so an unbounded refetch would let a flood of novel
+        kids amplify into one outbound JWKS GET each. Within the window an unknown
+        kid is rejected without a fetch. The cache starts empty, so the first ever
+        lookup always fetches regardless of the window.
         """
         if kid not in self._keys:
-            self._refresh_keys()
+            now = time.monotonic()
+            if not self._keys or now - self._last_refresh >= self._min_refetch_interval:
+                # Stamp before fetching so a failing/slow fetch still counts against
+                # the window — a flood can't bypass the limit by making fetches fail.
+                self._last_refresh = now
+                self._refresh_keys()
         key = self._keys.get(kid)
         if key is None:
             raise AuthError("unknown OIDC signing key (kid)")
@@ -158,7 +180,11 @@ class OidcVerifier:
                 leeway=self._leeway,
                 options={"require": ["exp", "iss", "aud"]},
             )
-        except jwt.PyJWTError as exc:
+        except (jwt.PyJWTError, TypeError, ValueError) as exc:
+            # PyJWTError covers the normal rejections (bad sig, exp, aud, iss).
+            # TypeError/ValueError are defence-in-depth: a key/alg mismatch (e.g. an
+            # RSA key handed to an HMAC verify under a misconfigured alg list) raises
+            # TypeError inside PyJWT, which must fail closed as a 401, never a 500.
             raise AuthError(f"invalid OIDC token: {exc}") from exc
         return self._principal_of(claims)
 
@@ -166,10 +192,16 @@ class OidcVerifier:
         sub = str(claims.get("sub", ""))
         if not sub:
             raise AuthError("OIDC token missing sub")
+        email = claims.get(self._email_claim)
+        # email is a required claim on the OIDC path (docs/auth-oidc.md §4): it is
+        # T4's verified-email link key and is stored on the row, and §5's linking
+        # logic is written assuming a missing email is already rejected here. A token
+        # that otherwise validates but carries no email cannot be safely placed.
+        if email is None or str(email) == "":
+            raise AuthError("OIDC token missing email")
         raw_groups = claims.get(self._groups_claim)
         groups = tuple(str(g) for g in raw_groups) if isinstance(raw_groups, list) else ()
         role = "admin" if self._admin_group in groups else "member"
-        email = claims.get(self._email_claim)
         # Only a literal boolean ``true`` counts as verified — a truthy string or a
         # missing claim must NOT open T4's verified-email link (docs/auth-oidc.md §5).
         email_verified = claims.get(self._email_verified_claim) is True
@@ -182,7 +214,7 @@ class OidcVerifier:
             role=role,
             username=username,
             sub=sub,
-            email=str(email) if email is not None else None,
+            email=str(email),  # required + non-empty (checked above)
             email_verified=email_verified,
             groups=groups,
         )
