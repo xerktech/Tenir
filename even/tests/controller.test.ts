@@ -735,6 +735,31 @@ describe("wireLens cues (XERK-81)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
+  it("keeps the phone cue card when the glasses popup BLE fails (XERK-660)", async () => {
+    // The glasses lens popup fails to render (BLE), so the on-lens cue box is
+    // dropped best-effort. The phone Session page needs no glasses popup, so its
+    // mirror of the cue must survive — a lens-side failure must not blank it.
+    const t = await boot({ withPhone: true, rebuildFails: true });
+    t.controls.enable();
+    await settle();
+    await t.click(); // idle → a tap starts a session
+    await settle();
+
+    const cueEl = document.getElementById("session-cue")!;
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50); // phone shows it; the lens popup rebuild fails
+    expect(cueEl.hidden).toBe(false);
+    expect(cueEl.textContent).toContain("Sun");
+
+    // Captions flow continuously; each one re-syncs the phone page. Before the
+    // fix, the failed lens popup had nulled the shared cue state, so the next
+    // caption tick blanked the phone card too.
+    t.api.handlers().onPartial?.({ type: "caption.partial", text: "hello" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(cueEl.hidden).toBe(false); // still there — decoupled from the lens drop
+    expect(cueEl.textContent).toContain("Sun");
+  });
+
   it("mirrors the active cue to the phone Session page", async () => {
     const { bridge, emit } = fakeBridge();
     const latest = new Map<number, string>();
@@ -1534,6 +1559,27 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(t.text(C().menu)).toBe(TITLE);
     expect(bodyContainer(t)?.content).toBe("♪ ♪ ♪");
+  });
+
+  it("keeps the phone song card when the glasses popup BLE fails (XERK-660)", async () => {
+    const t = await boot({ withPhone: true, rebuildFails: true });
+    t.controls.enable();
+    await settle();
+    await t.click();
+    await settle();
+
+    const songEl = document.getElementById("session-song")!;
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50); // phone shows it; the lens popup rebuild fails
+    expect(songEl.hidden).toBe(false);
+    expect(songEl.textContent).toContain("Yesterday");
+
+    // A caption tick re-syncs the phone. Before the fix, the failed lens popup
+    // had nulled the shared song state, blanking the phone card on the next tick.
+    t.api.handlers().onPartial?.({ type: "caption.partial", text: "hello" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(songEl.hidden).toBe(false); // still there — decoupled from the lens drop
+    expect(songEl.textContent).toContain("Yesterday");
   });
 
   it("clears the box on song.done when nothing is queued behind it", async () => {
