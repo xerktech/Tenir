@@ -1,0 +1,134 @@
+# Authentik — the household's OPTIONAL OIDC identity provider for Tenir (XERK-647,
+# epic XERK-646).
+#
+# This is a SEPARATE stack from the root docker-compose.yml on purpose: Authentik
+# is optional infra (a household that doesn't want SSO never runs it), it has its
+# own Postgres + Redis, and it is deployed/managed as its own Portainer stack on
+# the hub host. Tenir's own Postgres (`postgres-tenir`) is untouched — Authentik
+# gets its own database so the two can be backed up, upgraded and torn down
+# independently.
+#
+# Bring it up (hub host, or locally to validate):
+#   docker compose -f authentik/docker-compose.authentik.yml --env-file .env up -d
+#
+# All config (the OIDC provider, the "Tenir" application, the tenir-admins /
+# tenir-members groups, the root + test-member users, the scope→claim mappings)
+# is applied DECLARATIVELY from ./authentik/blueprints/tenir-oidc.yaml on boot —
+# there is no click-ops. Edit that blueprint + restart the worker to reconfigure.
+#
+# Secrets come from .env (see .env.example). The images are pinned; bump
+# AUTHENTIK_TAG deliberately and re-test the blueprint against the new version.
+
+name: tenir-authentik
+
+x-authentik-env: &authentik-env
+  AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?set AUTHENTIK_SECRET_KEY in .env}
+  AUTHENTIK_POSTGRESQL__HOST: postgresql
+  AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_PG_USER:-authentik}
+  AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_PG_DB:-authentik}
+  AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_PG_PASS:?set AUTHENTIK_PG_PASS in .env}
+  AUTHENTIK_REDIS__HOST: redis
+  # First-boot bootstrap of the built-in `akadmin` superuser (used to administer
+  # Authentik itself; the Tenir identities are the blueprint's tenir-root /
+  # tenir-member). Only consumed on an empty database.
+  AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?set AUTHENTIK_BOOTSTRAP_PASSWORD in .env}
+  AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-akadmin@example.com}
+  AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+  # Values the blueprint reads (see blueprints/tenir-oidc.yaml). Defaults are for
+  # a local validation run; the hub sets real ones in .env.
+  AUTHENTIK_TENIR_CLIENT_ID: ${AUTHENTIK_TENIR_CLIENT_ID:-tenir}
+  AUTHENTIK_TENIR_ROOT_EMAIL: ${AUTHENTIK_TENIR_ROOT_EMAIL:-admin@example.com}
+  AUTHENTIK_TENIR_ROOT_PASSWORD: ${AUTHENTIK_TENIR_ROOT_PASSWORD:?set AUTHENTIK_TENIR_ROOT_PASSWORD in .env}
+  AUTHENTIK_TENIR_MEMBER_EMAIL: ${AUTHENTIK_TENIR_MEMBER_EMAIL:-member@example.com}
+  AUTHENTIK_TENIR_MEMBER_PASSWORD: ${AUTHENTIK_TENIR_MEMBER_PASSWORD:?set AUTHENTIK_TENIR_MEMBER_PASSWORD in .env}
+  # Redirect URIs for the three Tenir clients. Placeholders here; T7–T10 finalize
+  # the real values (web served by the API, even phone page, mobile custom scheme).
+  TENIR_OIDC_REDIRECT_WEB: ${TENIR_OIDC_REDIRECT_WEB:-http://localhost:8080/auth/oidc/callback}
+  TENIR_OIDC_REDIRECT_EVEN: ${TENIR_OIDC_REDIRECT_EVEN:-http://localhost:8080/even/auth/oidc/callback}
+  TENIR_OIDC_REDIRECT_MOBILE: ${TENIR_OIDC_REDIRECT_MOBILE:-com.xerktech.tenir://auth/callback}
+  TENIR_PUBLIC_URL: ${TENIR_PUBLIC_URL:-http://localhost:8080}
+
+services:
+  postgresql:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${AUTHENTIK_PG_USER:-authentik}
+      POSTGRES_PASSWORD: ${AUTHENTIK_PG_PASS:?set AUTHENTIK_PG_PASS in .env}
+      POSTGRES_DB: ${AUTHENTIK_PG_DB:-authentik}
+    volumes:
+      # THE persisted volume the ticket calls for — Authentik's whole state
+      # (providers, apps, groups, users, signing keys) lives here.
+      - authentik-postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUTHENTIK_PG_USER:-authentik} -d ${AUTHENTIK_PG_DB:-authentik}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    command: --save 60 1 --loglevel warning
+    volumes:
+      - authentik-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+
+  server:
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2024.12}
+    command: server
+    environment: *authentik-env
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      # Custom blueprints are auto-discovered under /blueprints/ and applied by
+      # the worker. Read-only: the repo is the source of truth for this config.
+      - ./blueprints:/blueprints/tenir:ro
+    ports:
+      # Bound to loopback by default; the hub fronts it with its reverse proxy /
+      # exposes it deliberately via AUTHENTIK_BIND. HTTP on 9000, HTTPS on 9443.
+      - "${AUTHENTIK_BIND:-127.0.0.1}:${AUTHENTIK_HTTP_PORT:-9000}:9000"
+      - "${AUTHENTIK_BIND:-127.0.0.1}:${AUTHENTIK_HTTPS_PORT:-9443}:9443"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  worker:
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2024.12}
+    command: worker
+    environment: *authentik-env
+    # The worker applies blueprints and runs background tasks; it needs the same
+    # blueprint mount as the server.
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - ./blueprints:/blueprints/tenir:ro
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  authentik-postgresql:
+  authentik-redis:
+  authentik-media:
+  authentik-templates:

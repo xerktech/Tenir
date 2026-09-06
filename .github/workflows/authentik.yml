@@ -1,0 +1,65 @@
+name: Authentik
+
+# PR gate for the optional Authentik OIDC stack (XERK-647). Self-contained: it
+# only validates the compose file resolves and the blueprint YAML parses — it
+# does NOT stand up Authentik (that's a deploy/QA concern, too heavy for a PR
+# gate). Gates only on its own dir + this workflow + the shared .env.example.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'authentik/**'
+      - '.github/workflows/authentik.yml'
+      - '.env.example'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate compose + blueprint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compose config resolves
+        # Placeholder secrets satisfy the `${VAR:?}` required-var guards so the
+        # file interpolates; this only checks the compose schema, not a live run.
+        run: |
+          cat > .env.ci <<'EOF'
+          AUTHENTIK_SECRET_KEY=ci-secret
+          AUTHENTIK_PG_PASS=ci-pass
+          AUTHENTIK_BOOTSTRAP_PASSWORD=ci-bootstrap
+          AUTHENTIK_TENIR_ROOT_PASSWORD=ci-root
+          AUTHENTIK_TENIR_MEMBER_PASSWORD=ci-member
+          EOF
+          docker compose --env-file .env.ci -f authentik/docker-compose.authentik.yml config -q
+
+      - name: Blueprint YAML parses
+        # Authentik's !Env/!KeyOf/!Find are custom tags; register them as opaque
+        # so PyYAML validates structure without needing Authentik itself.
+        run: |
+          python3 - <<'PY'
+          import yaml
+          for tag in ("!Env", "!KeyOf", "!Find", "!Format", "!Context", "!Find "):
+              yaml.SafeLoader.add_constructor(tag.strip(), lambda l, n: None)
+          yaml.SafeLoader.add_multi_constructor("!", lambda l, s, n: None)
+          with open("authentik/blueprints/tenir-oidc.yaml") as f:
+              doc = yaml.safe_load(f)
+          assert doc["version"] == 1, "blueprint version must be 1"
+          models = [e["model"] for e in doc["entries"]]
+          for required in (
+              "authentik_core.group",
+              "authentik_core.user",
+              "authentik_providers_oauth2.oauth2provider",
+              "authentik_core.application",
+              "authentik_providers_oauth2.scopemapping",
+          ):
+              assert required in models, f"blueprint missing {required}"
+          print(f"OK: {len(doc['entries'])} entries, models={sorted(set(models))}")
+          PY
