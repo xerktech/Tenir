@@ -263,6 +263,16 @@ export async function wireLens(
   // The popup-page rebuild failed on the host: the menu renders inside the
   // caption band instead, so the wearer always has a way out of a session.
   let menuFallback = false;
+  // The on-lens popup box (a cue, translation or song — not the interactive menu,
+  // which has its own in-band fallback above) could not be rebuilt on the host,
+  // so it is dropped from the LENS best-effort — the caption band flows unmasked
+  // as if no box were up. The shared cue/song/translation state is deliberately
+  // KEPT so the phone Session page keeps mirroring the aside (XERK-660): the phone
+  // needs no glasses popup, so a glasses-side BLE failure must not blank its card.
+  // Reset on every rebuild attempt (each is a fresh try) and re-set only when that
+  // attempt fails; the aside then lives out its normal lifecycle on the phone
+  // (a cue counts down and dismisses, a song ends on song.done).
+  let asideDroppedOnLens = false;
 
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.map((s) => s.text).join("\n");
@@ -329,9 +339,10 @@ export async function wireLens(
   // (XERK-81). All live in the same bordered container across the top.
   const popupUp = () =>
     state.menu !== null ||
-    state.translation !== null ||
-    state.song !== null ||
-    state.cue !== null;
+    // A non-menu aside dropped from the lens (XERK-660) no longer masks the band —
+    // the box never made it onto the host, so the caption rows flow full.
+    (!asideDroppedOnLens &&
+      (state.translation !== null || state.song !== null || state.cue !== null));
   // The popup strip covers the status/clock line and the first caption row:
   // whatever it covers is blanked while it is up (fallback mode has no strip).
   const popupCovering = () => popupUp() && !menuFallback;
@@ -357,8 +368,14 @@ export async function wireLens(
     if (menuFallback) return;
     // Repaint the title row of whichever box is on top (XERK-194): song beats
     // translation beats cue, the menu above all.
-    if (state.menu) writer.set(CONTAINER.menu, menuText(state.menu));
-    else if (state.song) writer.set(CONTAINER.menu, cueTitleLine(songCard()));
+    if (state.menu) {
+      writer.set(CONTAINER.menu, menuText(state.menu));
+      return;
+    }
+    // A non-menu aside box dropped from the lens (XERK-660) has no strip to paint —
+    // it lives on only as the phone mirror. (The menu is never dropped this way.)
+    if (asideDroppedOnLens) return;
+    if (state.song) writer.set(CONTAINER.menu, cueTitleLine(songCard()));
     else if (state.translation)
       writer.set(CONTAINER.menu, cueTitleLine(translationCard()));
     else if (state.cue) writer.set(CONTAINER.menu, cueTitleLine(state.cue, cueCountdown()));
@@ -371,7 +388,7 @@ export async function wireLens(
   // song box is the one actually on screen — only the menu outranks it now
   // (XERK-194: the song beats a translation for the box).
   const renderSongBody = () => {
-    if (menuFallback || state.menu || !state.song) return;
+    if (menuFallback || state.menu || asideDroppedOnLens || !state.song) return;
     writer.set(CONTAINER.cueBody, cueBodyText(songCard()));
   };
   const renderStatus = () => writer.set(CONTAINER.status, statusContent());
@@ -397,6 +414,10 @@ export async function wireLens(
    * stale queued write from just before the swap can't land on the new page.
    */
   const rebuildPage = () => {
+    // Every rebuild is a fresh attempt to put the box on the lens, so clear any
+    // prior lens-drop (XERK-660): the page below is built with the box up and the
+    // band masked to fit it, and only a failing rebuild re-sets the drop.
+    asideDroppedOnLens = false;
     const contents = pageContents();
     // The menu outranks everything (it is interactive). On the glasses lyrics beat
     // translation beat cues (XERK-194): the single popup box can hold only one, so a
@@ -432,24 +453,28 @@ export async function wireLens(
         // caption band, which needs no rebuild at all.
         menuFallback = true;
         writer.set(CONTAINER.caption, menuText(state.menu));
-      } else if (!ok && openingTranslation && state.translation) {
-        // Like a cue, the on-lens box is a best-effort aside: drop it rather
-        // than leave the band masked with no box. The translations themselves
-        // are safe — they're paired to their turns on the phone mirror.
-        state.translation = null;
-        writer.set(CONTAINER.caption, pageContents().caption);
-      } else if (!ok && openingSong && state.song) {
-        // The song box is a best-effort aside too (XERK-184): if its popup page
-        // never appeared, drop it rather than leave the caption band masked with
-        // no box. The song keeps playing; a later song.sync re-opens the box.
-        state.song = null;
-        writer.set(CONTAINER.caption, pageContents().caption);
-      } else if (!ok && openingCue && state.cue) {
-        // A cue is a best-effort aside — if its popup page never appeared,
-        // drop it rather than leave the caption band masked with no box.
-        state.cue = null;
-        clearCueTimer();
-        writer.set(CONTAINER.caption, pageContents().caption);
+      } else if (
+        !ok &&
+        !menuFallback &&
+        ((openingTranslation && state.translation) ||
+          (openingSong && state.song) ||
+          (openingCue && state.cue))
+      ) {
+        // The on-lens box (cue/translation/song) is a best-effort aside: its popup
+        // page never appeared, so drop it from the LENS rather than leave the band
+        // masked with no box. But KEEP the shared cue/song/translation state — the
+        // phone Session page mirrors it and needs no glasses popup, so a BLE failure
+        // here must not blank the phone card (XERK-660). The aside lives out its
+        // normal lifecycle from the phone's side: a cue keeps its countdown and
+        // dismisses on the TTL timer (untouched here, unlike before), a song ends on
+        // song.done, a translation on translation.done. Marking it lens-dropped
+        // unmasks the band (popupUp now reads false) and stops the box being
+        // repainted onto the lens (renderMenu / renderSongBody).
+        asideDroppedOnLens = true;
+        const restored = pageContents();
+        writer.set(CONTAINER.caption, restored.caption);
+        writer.set(CONTAINER.status, restored.status);
+        writer.set(CONTAINER.clock, restored.clock);
       }
     });
     writer.invalidate();
@@ -605,6 +630,7 @@ export async function wireLens(
     state.song = null;
     clearCueTimer();
     menuFallback = false;
+    asideDroppedOnLens = false; // no aside survives a stop (XERK-660)
     client?.stop(); // sends session.end, closes, no reconnect
     client = null;
     void capture.stop();
