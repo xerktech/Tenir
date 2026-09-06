@@ -25,7 +25,7 @@ import type {
   TranslationDone,
 } from "@tenir/contract";
 
-import { withToken } from "./auth";
+import { getSessionKind, tryOidcRefresh, withToken } from "./auth";
 
 export interface SessionParams {
   micSource: MicSource;
@@ -66,6 +66,15 @@ export class ApiClient {
   // Set on a fatal/policy close (bad or expired token, capture off): reconnecting
   // can't fix it and would hammer the api, so we stop and surface it instead.
   private fatal = false;
+  // Set once we've tried an OIDC silent-refresh after a 1008 close, so an expired
+  // OIDC token is refreshed-and-reconnected exactly once; a second 1008 is fatal.
+  // Reset only when a session is actually ESTABLISHED (session.ready) — NOT on
+  // socket open. A 1008 is an application close code that can only arrive after the
+  // handshake accepts and we've sent session.start, i.e. always after onopen; so
+  // resetting the guard on open would defeat it and let a persistent 1008 (a token
+  // the IdP happily re-mints but the API keeps rejecting, or capture-off policy)
+  // spin refresh→reconnect forever. Only a working session earns a fresh attempt.
+  private oidcReauthTried = false;
 
   constructor(url: string, handlers: ApiHandlers = {}) {
     this.url = url;
@@ -86,6 +95,7 @@ export class ApiClient {
     this.params = params;
     this.closedByUser = false;
     this.fatal = false;
+    this.oidcReauthTried = false;
     if (resumeSessionId) this.sessionId = resumeSessionId;
     this.connect();
   }
@@ -119,13 +129,19 @@ export class ApiClient {
       // drop: reconnecting loops forever without re-auth, so stop and surface it so
       // the app can prompt a re-login instead of silently hammering the api.
       if (ev.code === 1008) {
-        this.fatal = true;
-        this.handlers.onError?.({
-          type: "error",
-          code: "unauthorized",
-          message: "connection rejected — please sign in again",
-          fatal: true,
-        });
+        // On an OIDC session an expired access token is recoverable: silently
+        // refresh it against the IdP and reconnect once (the REST 401→refresh→retry
+        // counterpart). Only the built-in path, or a failed refresh, is fatal.
+        if (!this.closedByUser && getSessionKind() === "oidc" && !this.oidcReauthTried) {
+          this.oidcReauthTried = true;
+          void tryOidcRefresh().then((refreshed) => {
+            if (this.closedByUser) return;
+            if (refreshed) this.connect();
+            else this.failAuth();
+          });
+          return;
+        }
+        this.failAuth();
       }
       if (!this.closedByUser && !this.fatal) this.scheduleReconnect();
     };
@@ -133,6 +149,17 @@ export class ApiClient {
     ws.onerror = () => {
       // onclose will follow; reconnect handled there.
     };
+  }
+
+  /** Mark the connection fatally unauthorized and surface a re-login to the app. */
+  private failAuth(): void {
+    this.fatal = true;
+    this.handlers.onError?.({
+      type: "error",
+      code: "unauthorized",
+      message: "connection rejected — please sign in again",
+      fatal: true,
+    });
   }
 
   private scheduleReconnect(): void {
@@ -154,6 +181,9 @@ export class ApiClient {
     switch (msg.type) {
       case "session.ready":
         this.sessionId = msg.sessionId;
+        // A working session proves the current token was accepted; only now does a
+        // later 1008 (a fresh expiry) earn another single silent-refresh attempt.
+        this.oidcReauthTried = false;
         this.handlers.onReady?.(msg);
         break;
       case "caption.partial":
