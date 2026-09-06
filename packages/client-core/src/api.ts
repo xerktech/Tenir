@@ -7,7 +7,14 @@
  * the server's detail message. Shared by every TS frontend.
  */
 
-import { authHeader, clearToken, getToken, setToken } from "./auth";
+import {
+  authHeader,
+  clearOidcSession,
+  clearToken,
+  getToken,
+  setToken,
+  tryOidcRefresh,
+} from "./auth";
 import { apiBaseUrl } from "./config";
 
 export class ApiError extends Error {
@@ -40,6 +47,11 @@ interface RequestOptions {
    * Send the bearer token. Default true; `/auth/login` opts out (see `login`).
    */
   auth?: boolean;
+  /**
+   * Internal: set once we've already refreshed-and-retried after a 401, so an
+   * OIDC session that still 401s surfaces the error instead of looping forever.
+   */
+  retried?: boolean;
 }
 
 async function request<T>(
@@ -62,6 +74,17 @@ async function request<T>(
     // surface it as a typed NetworkError so callers can tell "can't reach the
     // server" apart from "the server said no".
     throw new NetworkError("could not reach the server", cause);
+  }
+  // OIDC silent refresh (docs/auth-oidc.md §10): an authenticated 401 on an OIDC
+  // session means the access token expired mid-use — refresh it against the IdP and
+  // retry the request once. `tryOidcRefresh` is a no-op returning false for a
+  // built-in session (its token rides X-Renewed-Token instead) and when no OIDC is
+  // configured, so this path is inert for the built-in flow. The retry flag stops a
+  // still-401 (revoked/invalid refresh) from looping — it falls through to throw.
+  if (res.status === 401 && opts.auth !== false && !opts.retried) {
+    if (await tryOidcRefresh()) {
+      return request<T>(method, path, body, { ...opts, retried: true });
+    }
   }
   // Sliding renewal (XERK-168): past half a token's life the api attaches a fresh
   // one to every authenticated response. Adopting it here — the one request path
@@ -200,7 +223,11 @@ export async function login(username: string, password: string): Promise<Princip
   const previous = getToken();
   setToken(out.token);
   try {
-    return await me();
+    const principal = await me();
+    // A confirmed built-in login supersedes any prior OIDC session, so the session
+    // kind reverts to built-in (no more silent-refresh attempts on this token).
+    clearOidcSession();
+    return principal;
   } catch (err) {
     if (previous) setToken(previous);
     else clearToken();
@@ -226,12 +253,43 @@ export function describeLoginError(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Local logout: drop the stored token and any OIDC session sidecar, for either kind
+ * of session. For an OIDC session this is only the *local* half — `oidcLogout()`
+ * (oidc.ts) additionally ends the IdP session (RP-initiated logout, §10).
+ */
 export function logout(): void {
   clearToken();
+  clearOidcSession();
 }
 
 export function me(): Promise<Principal> {
   return request<Principal>("GET", "/auth/me");
+}
+
+/** What the server advertises about its auth backends (docs/auth-oidc.md §10). */
+export interface ServerAuthConfig {
+  /** Built-in username/password is always available; the form is always shown. */
+  builtin: boolean;
+  /** Present (and `enabled`) only when the deployment turned OIDC on. */
+  oidc?: {
+    enabled: boolean;
+    issuer: string;
+    clientId: string;
+    /** From the IdP's discovery document; the client may re-discover the rest. */
+    authorizationEndpoint?: string;
+    scopes?: string[];
+  };
+}
+
+/**
+ * Fetch the server's public auth advertisement (unauthenticated, like `/status`).
+ * A UI uses this to decide whether to show the OIDC button; when the server has
+ * OIDC off (`oidc` absent or `enabled:false`) the client behaves exactly as today
+ * and shows only the username/password form.
+ */
+export function getAuthConfig(): Promise<ServerAuthConfig> {
+  return request<ServerAuthConfig>("GET", "/auth/config", undefined, { auth: false });
 }
 
 // ---- household admin: users -------------------------------------------------

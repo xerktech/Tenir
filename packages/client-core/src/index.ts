@@ -13,6 +13,7 @@ export * from "./lang";
 export * from "./serverUrl";
 export * from "./auth";
 export * from "./api";
+export * from "./oidc";
 export * from "./ws";
 export * from "./pcm";
 export * from "./pcmSource";

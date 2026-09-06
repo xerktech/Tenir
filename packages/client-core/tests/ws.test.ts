@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ServerMessage } from "@tenir/contract";
 
-import { clearToken } from "../src/auth";
+import {
+  clearOidcSession,
+  clearToken,
+  configureOidcStore,
+  registerOidcRefresher,
+  setOidcSession,
+  type OidcStore,
+} from "../src/auth";
 import { ApiClient } from "../src/ws";
 
 class MockWebSocket {
@@ -57,15 +64,35 @@ class MockWebSocket {
 
 let instances: MockWebSocket[];
 
+// The OIDC 1008 recovery runs on the microtask queue (promise `.then`), not a timer,
+// so a few resolved-promise ticks drain it even under fake timers.
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
+
+function memoryOidcStore(): OidcStore {
+  const m = new Map<string, string>();
+  return {
+    get: (k) => m.get(k) ?? null,
+    set: (k, v) => void m.set(k, v),
+    remove: (k) => void m.delete(k),
+  };
+}
+
 beforeEach(() => {
   instances = [];
   clearToken();
+  configureOidcStore(memoryOidcStore());
+  clearOidcSession();
+  registerOidcRefresher(null);
   vi.useFakeTimers();
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  registerOidcRefresher(null);
+  clearOidcSession();
 });
 
 describe("ApiClient", () => {
@@ -242,6 +269,41 @@ describe("ApiClient", () => {
     );
     vi.runAllTimers(); // no reconnect should be scheduled
     expect(instances).toHaveLength(1);
+  });
+
+  it("on an OIDC session, a 1008 silently refreshes and reconnects once", async () => {
+    setOidcSession({ refreshToken: "r", expiresAt: Date.now() + 1000 }); // OIDC session
+    const refresh = vi.fn(async () => true); // refresh succeeds
+    registerOidcRefresher(refresh);
+    const onError = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onError });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+
+    instances[0].close(1008); // token expired mid-session
+    await flushMicrotasks(); // let the refresh promise settle
+    expect(instances).toHaveLength(2); // refreshed → reconnected
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled(); // recoverable, not surfaced as re-login
+    instances[1].open(); // clean reconnect clears the one-shot guard
+    expect(instances[1].jsonSent()[0]).toMatchObject({ type: "session.start" });
+  });
+
+  it("on an OIDC session, a failed refresh surfaces re-login and does not reconnect", async () => {
+    setOidcSession({ refreshToken: "r", expiresAt: 1 });
+    registerOidcRefresher(async () => false); // refresh token revoked/expired
+    const onError = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onError });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+
+    instances[0].close(1008);
+    await flushMicrotasks();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "unauthorized", fatal: true }),
+    );
+    vi.runAllTimers();
+    expect(instances).toHaveLength(1); // no reconnect after a fatal auth failure
   });
 
   it("stops reconnecting after a fatal error message", () => {
