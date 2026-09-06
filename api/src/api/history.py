@@ -144,14 +144,28 @@ def _store():
     return store
 
 
-def _require(household: str, conversation_id: str) -> Conversation:
+def _owner_scope(principal: Principal) -> str | None:
+    """The owner filter a read runs under (XERK-651).
+
+    An admin sees every recording in their household, so they read with no owner
+    filter (``None``). A member is scoped to their own recordings by their stable
+    local ``user_id``. A NULL-owner (legacy) row never equals a member id, so it is
+    admin-only until backfilled (docs/auth-oidc.md §9).
+    """
+    return None if principal.is_admin else principal.user_id
+
+
+def _require(household: str, conversation_id: str, *, owner: str | None = None) -> Conversation:
     # A conversation id is always a server-issued uuid4. Anything else cannot
     # match a row, and handing it to the store is how a NUL byte in the path
     # (`/conversations/<uuid>%00`) reached psycopg and came back as a 500 with a
     # traceback instead of a 404 (XERK-236). Reject the shape, don't query it.
     if not is_valid_session_id(conversation_id):
         raise HTTPException(status_code=404, detail="conversation not found")
-    conv = _store().get(household, conversation_id)
+    # Owner scope is applied in the store read, so a recording the caller doesn't own
+    # comes back as None and 404s here — the same "not found" a member gets for an id
+    # that doesn't exist, so ownership never leaks another user's ids (XERK-651).
+    conv = _store().get(household, conversation_id, owner=owner)
     if conv is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     return conv
@@ -166,10 +180,11 @@ def list_conversations(
 ) -> list[ConversationSummaryOut]:
     store = _store()
     hh = principal.household
+    owner = _owner_scope(principal)
     convs = (
-        store.search(hh, q, limit=limit, offset=offset)
+        store.search(hh, q, owner=owner, limit=limit, offset=offset)
         if q
-        else store.list(hh, limit=limit, offset=offset)
+        else store.list(hh, owner=owner, limit=limit, offset=offset)
     )
     return [ConversationSummaryOut.of(c) for c in convs]
 
@@ -178,7 +193,9 @@ def list_conversations(
 def get_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
-    return ConversationOut.of(_require(principal.household, conversation_id))
+    return ConversationOut.of(
+        _require(principal.household, conversation_id, owner=_owner_scope(principal))
+    )
 
 
 @router.get("/conversations/{conversation_id}/export", response_model=ConversationOut)
@@ -186,7 +203,9 @@ def export_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
     # Per-record export for the privacy controls; same shape as the detail view.
-    return ConversationOut.of(_require(principal.household, conversation_id))
+    return ConversationOut.of(
+        _require(principal.household, conversation_id, owner=_owner_scope(principal))
+    )
 
 
 def _parse_byte_range(range_header: str, size: int) -> tuple[int, int] | None:
@@ -254,7 +273,9 @@ def get_conversation_audio(
     principal: Principal = Depends(principal_from_request),
     range_header: str | None = Header(default=None, alias="Range"),
 ) -> Response:
-    conv = _require(principal.household, conversation_id)
+    # Owner-scoped: a member cannot fetch another user's audio even with a direct
+    # link (the token can ride in ?token=, but ownership still gates the row).
+    conv = _require(principal.household, conversation_id, owner=_owner_scope(principal))
     store = get_audio_store()
     data = store.get(conv.audio_key) if (store is not None and conv.audio_key) else None
     if data is None:
@@ -266,9 +287,11 @@ def get_conversation_audio(
 def delete_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> None:
-    # Per-record delete: drop the transcript *and* the retained audio.
+    # Per-record delete: drop the transcript *and* the retained audio. Owner-scoped,
+    # so a member can only delete their own recording (another user's 404s); an admin
+    # can delete any in the household.
     hh = principal.household
-    conv = _require(hh, conversation_id)
+    conv = _require(hh, conversation_id, owner=_owner_scope(principal))
     audio = get_audio_store()
     if audio is not None and conv.audio_key:
         audio.delete(conv.audio_key)

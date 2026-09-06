@@ -310,6 +310,10 @@ class Session:
                 self._conversations.create,
                 self._household,
                 self.session_id,
+                # Per-user ownership (XERK-651): stamp the recording with the principal
+                # that opened the socket. Idempotent create keeps a resumed row's
+                # original owner, so a resume never re-owns another user's recording.
+                owner=self.user_id,
                 mic_source=_enum_str(mic_source),
                 source_lang=_enum_str(source_lang),
             )

@@ -108,6 +108,7 @@ class SqlConversationStore:
         return Conversation(
             id=row["id"],
             household=row["household"],
+            owner=row.get("owner"),
             mic_source=row["mic_source"],
             source_lang=row["source_lang"],
             started_at=row["started_at"],
@@ -127,18 +128,21 @@ class SqlConversationStore:
         household: str,
         conversation_id: str,
         *,
+        owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
     ) -> Conversation:
         with self._ensure_pool().connection() as conn:
+            # ON CONFLICT DO NOTHING keeps a resumed row's original owner (a resume
+            # never re-owns a recording), mirroring the in-memory store.
             conn.execute(
                 """
                 INSERT INTO conversations
-                    (id, household, mic_source, source_lang, started_at, status)
-                VALUES (%s, %s, %s, %s, %s, 'live')
+                    (id, household, owner, mic_source, source_lang, started_at, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'live')
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (conversation_id, household, mic_source, source_lang, utcnow()),
+                (conversation_id, household, owner, mic_source, source_lang, utcnow()),
             )
         got = self.get(household, conversation_id)
         assert got is not None
@@ -252,7 +256,7 @@ class SqlConversationStore:
             )
 
     def get(  # pragma: no cover - requires a live database
-        self, household: str, conversation_id: str
+        self, household: str, conversation_id: str, *, owner: str | None = None
     ) -> Conversation | None:
         from psycopg.rows import dict_row
 
@@ -261,10 +265,19 @@ class SqlConversationStore:
             # pool doesn't reset row_factory on return, so mutating the connection
             # leaks dict rows into the next borrower (e.g. households()'s r[0]).
             cur = conn.cursor(row_factory=dict_row)
-            row = cur.execute(
-                "SELECT * FROM conversations WHERE household = %s AND id = %s",
-                (household, conversation_id),
-            ).fetchone()
+            # Owner scope (XERK-651): owner=None is admin/internal (no filter); a member
+            # id restricts to their own rows, so a NULL-owner or another user's row reads
+            # back as missing → the router turns that into a 404 (ids don't leak).
+            if owner is None:
+                row = cur.execute(
+                    "SELECT * FROM conversations WHERE household = %s AND id = %s",
+                    (household, conversation_id),
+                ).fetchone()
+            else:
+                row = cur.execute(
+                    "SELECT * FROM conversations WHERE household = %s AND id = %s AND owner = %s",
+                    (household, conversation_id, owner),
+                ).fetchone()
             if row is None:
                 return None
             seg_rows = cur.execute(
@@ -318,29 +331,43 @@ class SqlConversationStore:
         )
 
     def list(  # pragma: no cover - requires a live database
-        self, household: str, *, limit: int = 50, offset: int = 0
+        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
     ) -> list[Conversation]:
         from psycopg.rows import dict_row
 
+        # Owner scope (XERK-651): owner=None is the admin view (whole household); a member
+        # id restricts to their own rows. The owner index carries (household, owner, ...).
+        where = "household = %s" if owner is None else "household = %s AND owner = %s"
+        params: tuple = (household,) if owner is None else (household, owner)
         with self._ensure_pool().connection() as conn:
             rows = (
                 conn.cursor(row_factory=dict_row)
                 .execute(
-                    """
-                SELECT * FROM conversations WHERE household = %s
+                    f"""
+                SELECT * FROM conversations WHERE {where}
                 ORDER BY started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (household, limit, offset),
+                    (*params, limit, offset),
                 )
                 .fetchall()
             )
         return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
 
     def search(  # pragma: no cover - requires a live database
-        self, household: str, query: str, *, limit: int = 50, offset: int = 0
+        self,
+        household: str,
+        query: str,
+        *,
+        owner: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Conversation]:
         from psycopg.rows import dict_row
 
+        # Owner scope (XERK-651): owner=None searches the whole household (admin); a member
+        # id restricts to rows they own, so search can never surface another user's match.
+        owner_clause = "" if owner is None else "AND c.owner = %s"
+        owner_param: tuple = () if owner is None else (owner,)
         with self._ensure_pool().connection() as conn:
             # Match per-row so the functional FTS index on segments
             # (to_tsvector('simple', text), schema.sql) can serve the query — a
@@ -350,9 +377,9 @@ class SqlConversationStore:
             rows = (
                 conn.cursor(row_factory=dict_row)
                 .execute(
-                    """
+                    f"""
                 SELECT c.id FROM conversations c
-                WHERE c.household = %s
+                WHERE c.household = %s {owner_clause}
                   AND EXISTS (
                       SELECT 1 FROM segments s
                       WHERE s.conversation_id = c.id
@@ -361,7 +388,7 @@ class SqlConversationStore:
                   )
                 ORDER BY c.started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (household, query, limit, offset),
+                    (household, *owner_param, query, limit, offset),
                 )
                 .fetchall()
             )

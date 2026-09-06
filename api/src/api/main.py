@@ -323,11 +323,19 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     )
                     metrics.incr("sessions.bad_resume_id")
                     msg = msg.model_copy(update={"sessionId": None})
-                # Resume a still-live session if the client presents its id and the
-                # household matches: rebind to it, preserving the transcriber state,
-                # instead of starting fresh.
+                # Resume a still-live session if the client presents its id and both
+                # the household AND the owner match: rebind to it, preserving the
+                # transcriber state, instead of starting fresh. Owning the socket is
+                # not enough — a recording belongs to the principal that created it,
+                # so a different member (even in the same household) can never resume
+                # into another user's live session and append to their recording
+                # (XERK-651).
                 resumable = registry.get(msg.sessionId) if msg.sessionId else None
-                if resumable is not None and resumable.household == principal.household:
+                if (
+                    resumable is not None
+                    and resumable.household == principal.household
+                    and resumable.user_id == principal.user_id
+                ):
                     if session is not None and session is not resumable:
                         registry.unregister(session)
                         await session.close()
@@ -347,6 +355,27 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 requested_id = msg.sessionId
                 if requested_id is not None and registry.get(requested_id) is not None:
                     requested_id = None
+                # Cold resume of a *persisted* recording is owner-gated too. create()
+                # is idempotent by id, so without this a member presenting another
+                # user's (or a legacy admin's) conversation id would append this
+                # sitting's audio/segments onto that recording and overwrite its audio
+                # key on end. Only the owner may reopen their own recording; anything
+                # else starts fresh under a server id (XERK-651).
+                if requested_id is not None:
+                    convs = get_conversation_store()
+                    existing = (
+                        await asyncio.to_thread(convs.get, principal.household, requested_id)
+                        if convs is not None
+                        else None
+                    )
+                    if existing is not None and existing.owner != principal.user_id:
+                        log.warning(
+                            "rejecting cross-user resume of recording owned by another "
+                            "user in household %s",
+                            principal.household,
+                        )
+                        metrics.incr("sessions.cross_user_resume")
+                        requested_id = None
                 if session is not None:
                     registry.unregister(session)
                     await session.close()
