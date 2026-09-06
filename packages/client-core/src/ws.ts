@@ -68,7 +68,12 @@ export class ApiClient {
   private fatal = false;
   // Set once we've tried an OIDC silent-refresh after a 1008 close, so an expired
   // OIDC token is refreshed-and-reconnected exactly once; a second 1008 is fatal.
-  // Reset on a clean open (a fresh token got us back in).
+  // Reset only when a session is actually ESTABLISHED (session.ready) — NOT on
+  // socket open. A 1008 is an application close code that can only arrive after the
+  // handshake accepts and we've sent session.start, i.e. always after onopen; so
+  // resetting the guard on open would defeat it and let a persistent 1008 (a token
+  // the IdP happily re-mints but the API keeps rejecting, or capture-off policy)
+  // spin refresh→reconnect forever. Only a working session earns a fresh attempt.
   private oidcReauthTried = false;
 
   constructor(url: string, handlers: ApiHandlers = {}) {
@@ -90,6 +95,7 @@ export class ApiClient {
     this.params = params;
     this.closedByUser = false;
     this.fatal = false;
+    this.oidcReauthTried = false;
     if (resumeSessionId) this.sessionId = resumeSessionId;
     this.connect();
   }
@@ -104,7 +110,6 @@ export class ApiClient {
 
     ws.onopen = () => {
       this.reconnectAttempt = 0;
-      this.oidcReauthTried = false;
       this.handlers.onConnectionChange?.("open");
       // Resume the prior session if we have an id, else start fresh.
       this.send({
@@ -176,6 +181,9 @@ export class ApiClient {
     switch (msg.type) {
       case "session.ready":
         this.sessionId = msg.sessionId;
+        // A working session proves the current token was accepted; only now does a
+        // later 1008 (a fresh expiry) earn another single silent-refresh attempt.
+        this.oidcReauthTried = false;
         this.handlers.onReady?.(msg);
         break;
       case "caption.partial":

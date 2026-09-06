@@ -285,8 +285,58 @@ describe("ApiClient", () => {
     expect(instances).toHaveLength(2); // refreshed → reconnected
     expect(refresh).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled(); // recoverable, not surfaced as re-login
-    instances[1].open(); // clean reconnect clears the one-shot guard
+    instances[1].open();
     expect(instances[1].jsonSent()[0]).toMatchObject({ type: "session.start" });
+  });
+
+  it("on an OIDC session, a PERSISTENT 1008 refreshes at most once then goes fatal (no loop)", async () => {
+    // The refresh always "succeeds" but the api keeps rejecting the token (bad
+    // audience / clock skew / capture-off policy). Without the guard this spins
+    // refresh→reconnect forever, hammering the IdP and api.
+    setOidcSession({ refreshToken: "r", expiresAt: Date.now() + 1000 });
+    const refresh = vi.fn(async () => true);
+    registerOidcRefresher(refresh);
+    const onError = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onError });
+    client.start({ micSource: "g2-microphone" });
+
+    instances[0].open();
+    instances[0].close(1008); // first policy close → one refresh + reconnect
+    await flushMicrotasks();
+    expect(instances).toHaveLength(2);
+    expect(refresh).toHaveBeenCalledOnce();
+
+    // Second socket opens but never reaches session.ready and 1008s again.
+    instances[1].open();
+    instances[1].close(1008); // second policy close on an unestablished session
+    await flushMicrotasks();
+    expect(refresh).toHaveBeenCalledOnce(); // NOT refreshed again — guard held
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "unauthorized", fatal: true }),
+    );
+    vi.runAllTimers();
+    expect(instances).toHaveLength(2); // no third socket — the loop is bounded
+  });
+
+  it("on an OIDC session, a 1008 AFTER a session is established earns a fresh single retry", async () => {
+    setOidcSession({ refreshToken: "r", expiresAt: Date.now() + 1000 });
+    const refresh = vi.fn(async () => true);
+    registerOidcRefresher(refresh);
+    const client = new ApiClient("ws://h/ws");
+    client.start({ micSource: "g2-microphone" });
+
+    instances[0].open();
+    instances[0].emit({ type: "session.ready", sessionId: "s1" }); // session established
+    instances[0].close(1008); // later expiry → one refresh + reconnect
+    await flushMicrotasks();
+    expect(instances).toHaveLength(2);
+
+    instances[1].open();
+    instances[1].emit({ type: "session.ready", sessionId: "s1" }); // re-established → guard resets
+    instances[1].close(1008); // a fresh expiry cycle → another single retry
+    await flushMicrotasks();
+    expect(instances).toHaveLength(3);
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("on an OIDC session, a failed refresh surfaces re-login and does not reconnect", async () => {

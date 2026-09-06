@@ -282,7 +282,12 @@ export async function completeOidcCallback(
     redirect_uri: requireReady().p.redirectUri,
     code_verifier: tx.verifier,
   });
-  if (tokens.id_token) assertNonce(tokens.id_token, tx.nonce);
+  // An `openid`-scope code exchange MUST return an id_token; a response without one
+  // means the nonce/replay binding can't be checked, so reject rather than silently
+  // proceed on the access token alone. (Refresh responses, by contrast, legitimately
+  // omit it — but that path re-uses an already-bound session, not this one.)
+  if (!tokens.id_token) throw new OidcError("OIDC token response missing id_token");
+  assertNonce(tokens.id_token, tx.nonce);
   storeSession(tokens);
   try {
     return await me();

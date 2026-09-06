@@ -274,6 +274,20 @@ describe("Authorization Code + PKCE flow", () => {
     expect(getToken()).toBeNull();
   });
 
+  it("rejects a code exchange whose token response omits the id_token", async () => {
+    setOidcProvider(PROVIDER);
+    configureOidc(fakePrimitives(async () => ({ code: "c", state: "s1" })));
+    // openid scope was requested but the IdP returned no id_token → nonce unbindable.
+    mockFetch((call) =>
+      call.url === PROVIDER.tokenEndpoint
+        ? json({ access_token: "a", refresh_token: "r", expires_in: 300 })
+        : json({ userId: "u1" }),
+    );
+    await expect(startOidcLogin()).rejects.toMatchObject({ name: "OidcError" });
+    expect(getToken()).toBeNull();
+    expect(calls.some((c) => c.url.endsWith("/auth/me"))).toBe(false); // never got that far
+  });
+
   it("clears the half-session if /auth/me rejects the fresh token", async () => {
     setOidcProvider(PROVIDER);
     configureOidc(fakePrimitives(async () => ({ code: "c", state: "s1" })));
