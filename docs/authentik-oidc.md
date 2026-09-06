@@ -78,6 +78,21 @@ Per repo ops: this is a Portainer-managed stack; no host log spelunking.
 4. First boot: the worker applies the blueprint. The built-in `akadmin` superuser
    (for administering Authentik itself) uses `AUTHENTIK_BOOTSTRAP_PASSWORD`.
 
+## First-boot ordering
+
+The Tenir blueprint `!Find`s objects that Authentik provisions from its *own*
+default/system blueprints and a post-migrate task: the two default flows
+(`default-provider-authorization-explicit-consent`,
+`default-provider-invalidation-flow`) and the auto-generated
+`authentik Self-signed Certificate` (the RS256 signing key). On a cold first
+boot the Tenir blueprint may apply *before* those exist, in which case the
+provider entry fails validation — Authentik **logs** this and moves on (it does
+not crash), then re-applies the blueprint on its next reconciliation pass once
+the dependencies are present. So on a fresh stack, confirm steady state rather
+than trusting the first apply: after ~1–2 minutes, re-check the worker logs and
+the API (below) and confirm the provider/app now exist with no lingering error.
+A `docker compose ... restart worker` forces an immediate re-apply.
+
 ## Verify (acceptance criteria)
 
 ```bash

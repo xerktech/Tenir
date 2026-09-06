@@ -18,6 +18,15 @@ paths:
 - Blueprint schema is **version-sensitive** — `redirect_uris` as a list of
   `{matching_mode,url}` and `invalidation_flow` require Authentik ≥ 2024.8. Pinned
   via `AUTHENTIK_TAG` (default `2024.12`). Re-test the blueprint when bumping it.
+- **First cold boot has an ordering race**: the blueprint `!Find`s the two default
+  flows + the self-signed signing cert, all provisioned by Authentik's own
+  system blueprints / post-migrate task. If the Tenir blueprint applies first,
+  the provider entry fails validation — logged, not fatal — and reconciles on a
+  later pass. Verify *steady state* (re-check after ~1–2 min or restart the
+  worker), not the first apply. See `docs/authentik-oidc.md`.
+- `email_verified` in tokens comes from Authentik's built-in `email` scope
+  mapping (hardcodes `true` when the user has an email) — NOT from the user's
+  `attributes.email_verified`, which is set only to document intent.
 - The seeded `tenir-root` email must equal the API's `API_AUTH_ADMIN_EMAIL` (T4
   links by verified email). Both seeded users set `email_verified: true`.
 - Downstream OIDC values (issuer, JWKS, client id, group/email claim names) live

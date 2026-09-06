@@ -44,7 +44,7 @@ entries:
   # --- Users ------------------------------------------------------------------
   # Root/admin identity. Its email MUST match the API's API_AUTH_ADMIN_EMAIL so
   # that on first OIDC login the API links this account to the local env-admin
-  # (T4). Email is marked verified so email_verified=true in the token.
+  # (T4). Having a real email set makes the token carry email_verified=true.
   - id: user-tenir-root
     model: authentik_core.user
     state: present
@@ -60,9 +60,11 @@ entries:
       groups:
         - !KeyOf group-tenir-admins
       attributes:
-        # Authentik's default email scope mapping reports email_verified from the
-        # user's email being set; this explicit flag keeps intent unambiguous and
-        # is what T4 keys off of.
+        # NOTE: the token's email_verified comes from Authentik's built-in `email`
+        # scope mapping, which emits `email_verified: true` for any user with an
+        # email set — it does NOT read this attribute. We set it anyway to record
+        # that these seeded identities are intended as verified. Since the seeded
+        # users have real emails, the token carries email_verified=true regardless.
         email_verified: true
 
   # Test member — proves a non-admin token carries groups=[tenir-members].
