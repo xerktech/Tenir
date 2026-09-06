@@ -42,6 +42,7 @@ import {
   ApiClient,
   currentLyricIndex,
   cueSecondsLeft,
+  getSessionKind,
   langName,
   lyricWindow,
   type ApiHandlers,
@@ -143,6 +144,21 @@ const TOUCH_GESTURES: ReadonlySet<OsEventTypeList> = new Set([
 
 export const SIGN_IN_PROMPT = "Not signed in — open the Tenir app on your phone to sign in.";
 export const IDLE_PROMPT = "Tap to start a new session.";
+
+/**
+ * Heal an expired/rejected token once so the session can reconnect (XERK-656):
+ *
+ *  - **Built-in:** silently re-login with the cached credentials (XERK-82).
+ *  - **OIDC:** there are no cached credentials to replay, and the socket already
+ *    tried a silent IdP refresh before surfacing this (ws.ts), so re-auth means
+ *    the phone — return false to send the wearer there.
+ *
+ * Returns true when a usable token is in place and a reconnect should follow.
+ */
+async function healToken(storage: KeyValueStorage): Promise<boolean> {
+  if (getSessionKind() === "oidc") return false;
+  return (await silentLogin(storage)) !== null;
+}
 
 /** One finalized turn on the lens, keyed so a translation can pair to it (XERK-160).
  * `lang` is the turn's detected spoken language — the phone mirror tags a
@@ -552,12 +568,12 @@ export async function wireLens(
           return;
         }
         if (m.code === "unauthorized") {
-          // Expired/revoked token: re-login silently with the cached credentials
-          // and reconnect. Only if that fails does the wearer get sent to the phone.
+          // Expired/revoked token: heal it once and reconnect. Only if that fails
+          // does the wearer get sent to the phone.
           if (!reauthAttempted) {
             reauthAttempted = true;
-            void silentLogin(storage).then((principal) => {
-              if (principal) connect();
+            void healToken(storage).then((ok) => {
+              if (ok) connect();
               else disable();
             });
           } else {
