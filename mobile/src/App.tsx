@@ -30,6 +30,7 @@ import { bootstrap } from "./bootstrap";
 import { configureApiFromWs } from "./config";
 import { CaptureProvider, useCaptureContext } from "./lib/capture";
 import { useAuth } from "./lib/controllers";
+import { probeOidcAvailable } from "./lib/oidc";
 import { NotifyProvider } from "./lib/notify";
 import { deviceKeyValue } from "./secureStorage";
 import { HistoryScreen } from "./screens/History";
@@ -118,6 +119,24 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
     await auth.signIn(username, password);
   };
 
+  // Point at the chosen server and ask whether it advertises OIDC (XERK-655), so the
+  // setup screen knows whether to show the Authentik button. Resolving the provider is
+  // a side effect of the probe.
+  const checkOidc = async (server: string): Promise<boolean> => {
+    applyServerUrl(server);
+    return probeOidcAvailable();
+  };
+
+  // Native OIDC login: point at the server, make sure its provider is resolved, then run
+  // the browser round-trip + code exchange.
+  const connectWithOidc = async (server: string) => {
+    applyServerUrl(server);
+    if (!(await probeOidcAvailable())) {
+      throw new Error("This server does not offer Authentik sign-in.");
+    }
+    await auth.signInWithOidc();
+  };
+
   if (auth.loading) return <FullScreenSpinner />;
 
   if (!auth.data) {
@@ -125,6 +144,8 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
       <SetupScreen
         initialServerUrl={displayServerUrl(wsUrl)}
         onConnect={connectAndSignIn}
+        onCheckOidc={checkOidc}
+        onOidcConnect={connectWithOidc}
         // A transport failure is NOT "signed out": say the server is
         // unreachable instead of presenting an empty login as if the session
         // had been forgotten (XERK-236). Retry re-runs /auth/me, so a token

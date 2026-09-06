@@ -21,5 +21,7 @@ export function deviceKeyValue(): KeyValueStore {
     getItem: (key) => AsyncStorage.getItem(key),
     setItem: (key, value) => AsyncStorage.setItem(key, value),
     removeItem: (key) => AsyncStorage.removeItem(key),
+    // Used by the OIDC sidecar mirror to hydrate its keys by prefix at startup.
+    getAllKeys: () => AsyncStorage.getAllKeys().then((keys) => [...keys]),
   };
 }

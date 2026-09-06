@@ -7,12 +7,15 @@
  */
 
 import {
+  getSessionKind,
   getStatus,
   history,
   login,
   logout,
   me,
   NetworkError,
+  oidcLogout,
+  startOidcLogin,
   type Conversation,
   type ConversationSummary,
   type Principal,
@@ -26,6 +29,11 @@ import { useAsync, type AsyncState } from "./useAsync";
 
 export interface AuthController extends AsyncState<Principal | null> {
   signIn(username: string, password: string): Promise<void>;
+  /**
+   * Complete the native OIDC login (XERK-655) and re-check identity. The server's
+   * provider must already be resolved (`probeOidcAvailable` on the setup screen).
+   */
+  signInWithOidc(): Promise<void>;
   signOut(): void;
 }
 
@@ -52,11 +60,23 @@ export function useAuth(): AuthController {
     },
     [state],
   );
-  const signOut = useCallback(() => {
-    logout();
+  const signInWithOidc = useCallback(async () => {
+    // `startOidcLogin` drives the browser round-trip and, on the native primitive,
+    // completes the code exchange inline (token stored, identity confirmed) before it
+    // resolves; reload re-runs `me()` to land on the dashboard.
+    await startOidcLogin();
     state.reload();
   }, [state]);
-  return { ...state, signIn, signOut };
+  const signOut = useCallback(() => {
+    // An OIDC session additionally ends the IdP session (RP-initiated logout, which
+    // opens the browser); both kinds clear the local token first. `oidcLogout` clears
+    // the token synchronously before its redirect, so reloading right away lands on the
+    // login screen either way.
+    if (getSessionKind() === "oidc") void oidcLogout();
+    else logout();
+    state.reload();
+  }, [state]);
+  return { ...state, signIn, signInWithOidc, signOut };
 }
 
 // ---- history ----------------------------------------------------------------

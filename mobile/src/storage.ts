@@ -20,6 +20,12 @@ export interface KeyValueStore {
   getItem(key: string): Promise<string | null>;
   setItem(key: string, value: string): Promise<void>;
   removeItem(key: string): Promise<void>;
+  /**
+   * Enumerate the stored keys. Optional — only the OIDC sidecar mirror needs it (to
+   * hydrate its keys by prefix at startup); callers that don't have it degrade to
+   * "nothing to hydrate". AsyncStorage provides `getAllKeys`.
+   */
+  getAllKeys?(): Promise<string[]>;
 }
 
 /** An in-memory `KeyValueStore` — the test/fallback backing when no keystore is present. */
@@ -35,6 +41,7 @@ export function memoryKeyValue(initial: Record<string, string> = {}): KeyValueSt
       map.delete(k);
       return Promise.resolve();
     },
+    getAllKeys: () => Promise.resolve([...map.keys()]),
   };
 }
 

@@ -12,6 +12,9 @@ const api = vi.hoisted(() => ({
   historyList: vi.fn(),
   historyGet: vi.fn(),
   historyRemove: vi.fn(),
+  getSessionKind: vi.fn(),
+  oidcLogout: vi.fn(),
+  startOidcLogin: vi.fn(),
 }));
 
 const { NetworkError } = vi.hoisted(() => ({
@@ -23,6 +26,9 @@ vi.mock("@tenir/client-core", () => ({
   login: api.login,
   logout: api.logout,
   getStatus: api.getStatus,
+  getSessionKind: api.getSessionKind,
+  oidcLogout: api.oidcLogout,
+  startOidcLogin: api.startOidcLogin,
   NetworkError,
   history: {
     list: api.historyList,
@@ -34,6 +40,7 @@ vi.mock("@tenir/client-core", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getSessionKind.mockReturnValue("builtin");
 });
 
 describe("useAuth", () => {
@@ -68,6 +75,55 @@ describe("useAuth", () => {
 
     expect(api.login).toHaveBeenCalledWith("ada", "pw");
     await waitFor(() => expect(result.current.data?.userId).toBe("ada"));
+  });
+
+  it("signs in via OIDC then re-checks identity (XERK-655)", async () => {
+    api.me.mockResolvedValueOnce(null).mockResolvedValue({
+      userId: "ada",
+      username: "ada",
+      household: "lab",
+      role: "member",
+    });
+    // startOidcLogin resolves once the browser round-trip + code exchange completed.
+    api.startOidcLogin.mockResolvedValue({ userId: "ada", username: "ada", household: "lab", role: "member" });
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.signInWithOidc();
+    });
+
+    expect(api.startOidcLogin).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.data?.userId).toBe("ada"));
+  });
+
+  it("signs a built-in session out locally", async () => {
+    api.me.mockResolvedValue({ userId: "u", username: "ada", household: "h", role: "member" });
+    api.getSessionKind.mockReturnValue("builtin");
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.data?.userId).toBe("u"));
+
+    api.me.mockRejectedValue(new Error("401"));
+    act(() => result.current.signOut());
+
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(api.oidcLogout).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.data).toBeNull());
+  });
+
+  it("ends the IdP session when signing an OIDC session out (XERK-655)", async () => {
+    api.me.mockResolvedValue({ userId: "u", username: "ada", household: "h", role: "member" });
+    api.getSessionKind.mockReturnValue("oidc");
+    api.oidcLogout.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.data?.userId).toBe("u"));
+
+    api.me.mockRejectedValue(new Error("401"));
+    act(() => result.current.signOut());
+
+    expect(api.oidcLogout).toHaveBeenCalledTimes(1);
+    expect(api.logout).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.data).toBeNull());
   });
 });
 
