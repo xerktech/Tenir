@@ -29,6 +29,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Optional Authentik OIDC login (XERK-655): the custom-scheme redirect the
+                 IdP returns to after authorization. Scheme must match MOBILE_REDIRECT_URI
+                 (mobile/src/native/oidc.ts) and TENIR_OIDC_REDIRECT_MOBILE (the Authentik
+                 blueprint). singleTask (above) delivers it to the running app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.xerktech.tenir" android:host="auth" android:path="/callback" />
+            </intent-filter>
         </activity>
 
         <service

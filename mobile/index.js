@@ -11,6 +11,10 @@
  * app entry imported below.
  */
 import "react-native-url-polyfill/auto";
+// Installs a spec `crypto.getRandomValues` (React Native has none), which the OIDC PKCE
+// primitives (src/native/oidc.ts, XERK-655) use to generate the verifier/state/nonce.
+// Must load before any OIDC code runs.
+import "react-native-get-random-values";
 
 import { AppRegistry } from "react-native";
 
