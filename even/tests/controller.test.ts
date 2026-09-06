@@ -745,11 +745,19 @@ describe("wireLens cues (XERK-81)", () => {
     await t.click(); // idle → a tap starts a session
     await settle();
 
+    t.api.handlers().onConnectionChange?.("open"); // "listening" once the socket is up
+
     const cueEl = document.getElementById("session-cue")!;
     t.api.handlers().onCue?.(CUE);
     await vi.advanceTimersByTimeAsync(50); // phone shows it; the lens popup rebuild fails
     expect(cueEl.hidden).toBe(false);
     expect(cueEl.textContent).toContain("Sun");
+
+    // The other half of the fix: the on-lens box IS dropped, so the caption band
+    // flows unmasked and the status/clock line — which a popup box blanks — comes
+    // back. Guards against the drop leaving the band masked with no box.
+    expect(t.text(C().status)).not.toBe("");
+    expect(t.text(C().clock)).not.toBe("");
 
     // Captions flow continuously; each one re-syncs the phone page. Before the
     // fix, the failed lens popup had nulled the shared cue state, so the next
@@ -758,6 +766,66 @@ describe("wireLens cues (XERK-81)", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(cueEl.hidden).toBe(false); // still there — decoupled from the lens drop
     expect(cueEl.textContent).toContain("Sun");
+
+    // A lens-dropped cue keeps its TTL timer (not cleared on drop), so it dismisses
+    // from the phone on the normal schedule rather than lingering forever.
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(cueEl.hidden).toBe(true);
+  });
+
+  it("re-shows a cue on the lens once the popup rebuild recovers (XERK-660)", async () => {
+    // The lens rebuild starts failing — the first cue is dropped from the lens
+    // (kept on the phone) — then BLE recovers. The next cue to take the box must
+    // render on the lens again: the lens-drop flag is cleared on each fresh rebuild
+    // attempt, so a transient failure doesn't strand later boxes off the lens.
+    let rebuildOk = false;
+    let handler: ((e: EvenHubEvent) => void) | null = null;
+    const store = new Map<string, string>();
+    const bridge = {
+      onEvenHubEvent: (h: (e: EvenHubEvent) => void) => {
+        handler = h;
+        return () => {
+          handler = null;
+        };
+      },
+      audioControl: async () => true,
+      getLocalStorage: async (k: string) => store.get(k) ?? "",
+      setLocalStorage: async (k: string, v: string) => {
+        store.set(k, v);
+        return true;
+      },
+      shutDownPageContainer: async () => true,
+      rebuildPageContainer: async () => rebuildOk,
+    } as unknown as EvenAppBridge;
+    const latest = new Map<number, string>();
+    const writer = new layout.LensTextWriter(async (c, content) => {
+      latest.set(c.id, content);
+      return true;
+    });
+    const text = (c: { id: number }) => latest.get(c.id);
+    const emit = (e: EvenHubEvent) => handler?.(e);
+    const api = fakeClientFactory();
+    const controls = await controllerMod.wireLens(bridge, new MemStorage(), writer, null, {
+      createClient: api.createClient,
+    });
+    await settle();
+    controls.enable();
+    await settle();
+    emit({ sysEvent: { eventType: OsEventTypeList.CLICK_EVENT } } as EvenHubEvent); // start
+    await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+
+    const CUE2 = { ...CUE, cueId: "c2", title: "Moon", body: "About 384,400 km away." };
+    api.handlers().onCue?.(CUE); // rebuild fails → dropped from the lens
+    await vi.advanceTimersByTimeAsync(50);
+    api.handlers().onCue?.(CUE2); // queued behind the still-live first cue
+    await vi.advanceTimersByTimeAsync(50);
+
+    rebuildOk = true; // BLE recovers
+    // The first cue's TTL fires: it dismisses and the queued cue pops, rebuilding
+    // the box — which now succeeds, so it must show on the lens (drop flag reset).
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(text(C().menu)).toContain("Moon"); // the second cue is painted on the lens
+    expect(text(C().status)).toBe(""); // and its box covers the status line again
   });
 
   it("mirrors the active cue to the phone Session page", async () => {
@@ -1568,11 +1636,21 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     await t.click();
     await settle();
 
+    t.api.handlers().onConnectionChange?.("open"); // "listening" once the socket is up
+
     const songEl = document.getElementById("session-song")!;
     t.api.handlers().onSong?.(SONG);
     await vi.advanceTimersByTimeAsync(50); // phone shows it; the lens popup rebuild fails
     expect(songEl.hidden).toBe(false);
     expect(songEl.textContent).toContain("Yesterday");
+
+    // The on-lens box is dropped: the caption band flows unmasked (status/clock
+    // back), and the lens song body is NOT repainted for a dropped box — the
+    // ticker leaves the cue-body container untouched.
+    await vi.advanceTimersByTimeAsync(controllerMod.TICK_MS + 50);
+    expect(t.text(C().status)).not.toBe("");
+    expect(t.text(C().clock)).not.toBe("");
+    expect(t.text(C().cueBody)).toBeUndefined(); // no lyric window painted on the lens
 
     // A caption tick re-syncs the phone. Before the fix, the failed lens popup
     // had nulled the shared song state, blanking the phone card on the next tick.
@@ -1580,6 +1658,11 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(songEl.hidden).toBe(false); // still there — decoupled from the lens drop
     expect(songEl.textContent).toContain("Yesterday");
+
+    // The phone song card follows its normal lifecycle: song.done clears it.
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(songEl.hidden).toBe(true);
   });
 
   it("clears the box on song.done when nothing is queued behind it", async () => {
