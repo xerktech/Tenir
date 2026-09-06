@@ -51,6 +51,10 @@ _PASSWORD_ALLOWLIST = {
     "downsampleTo16k",  # digits mid-identifier, so the trailing-digit strip misses it
     "%H%x1f%P%x1f%s",
     "%Y-%m-%d",  # strftime date format (cue evidence timestamps, XERK-120)
+    # Authentik blueprint YAML tag echoed in .github/workflows/authentik.yml — the
+    # `!`+mixed-case reads as generated, but it is a config directive, not a secret.
+    # (The other tags there — !Env, !Find, !Format — are under 8 chars and never match.)
+    "!Context",
 }
 
 
