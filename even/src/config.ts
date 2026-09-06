@@ -37,11 +37,16 @@ export const TOKEN_KEY = "tenir.token";
 
 /**
  * OIDC sidecar keys, mirroring client-core's private `auth.ts` constants (same
- * re-declared-string pattern as `TOKEN_KEY` above). Only the session sidecar
- * (refresh token + expiry) needs to outlive an app restart; the short-lived PKCE
- * transaction lives only for the authorize redirect, so it is not pre-loaded.
+ * re-declared-string pattern as `TOKEN_KEY` above). Both are pre-loaded from the
+ * device store at init: the session sidecar (refresh token + expiry) so a
+ * signed-in OIDC session outlives an app restart, and the PKCE transaction so the
+ * authorize redirect survives even if the Even WebView wipes `localStorage` on
+ * the way back from Authentik (the exact restart-like condition that motivated
+ * the device-backed sidecar — see `deviceOidcStore`). The transaction is
+ * single-use and burned by client-core the moment a callback is handled.
  */
 export const OIDC_SESSION_KEY = "tenir.oidc.session";
+export const OIDC_TX_KEY = "tenir.oidc.tx";
 
 let storage: KeyValueStorage | null = null;
 let saved = false; // whether a user-chosen server URL is persisted
@@ -147,11 +152,14 @@ export async function initConfig(store: KeyValueStorage): Promise<void> {
   configureTokenStore(deviceTokenStore(store, await store.get(TOKEN_KEY)));
 
   // Optional OIDC path (XERK-656): wire the sidecar store (seeded from the device
-  // store so a restart keeps the session) and the browser PKCE primitives. With
-  // OIDC off this is inert — the built-in path never touches it.
+  // store so a restart keeps the session AND the in-flight authorize redirect can
+  // recover its PKCE transaction) and the browser PKCE primitives. With OIDC off
+  // this is inert — the built-in path never touches it.
   const snapshot: Record<string, string> = {};
-  const persistedSession = await store.get(OIDC_SESSION_KEY);
-  if (persistedSession) snapshot[OIDC_SESSION_KEY] = persistedSession;
+  for (const key of [OIDC_SESSION_KEY, OIDC_TX_KEY]) {
+    const persisted = await store.get(key);
+    if (persisted) snapshot[key] = persisted;
+  }
   configureOidcStore(deviceOidcStore(store, snapshot));
   configureOidc(browserOidcPrimitives(oidcRedirectUri()));
 }

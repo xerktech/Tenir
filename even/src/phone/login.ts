@@ -234,7 +234,9 @@ async function ensureOidcProviderReady(): Promise<void> {
     const oidc = await advertisedOidc();
     if (oidc) await prepareOidc(oidc);
   } catch {
-    /* the on-demand refresh path re-discovers if this couldn't reach the server */
+    // Couldn't reach the server to discover the provider. A later refresh then
+    // finds no provider and fails closed to re-login (the phone) rather than
+    // re-discovering — a rare, self-healing case (the next boot retries this).
   }
 }
 
