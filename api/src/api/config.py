@@ -400,6 +400,14 @@ class Settings(BaseSettings):
     # off — it is mutable in Authentik and carries no verification comparable to
     # email_verified (docs/auth-oidc.md §5). T3 only reads it into config.
     oidc_allow_username_link: bool = False
+    # Client-facing advertisement (XERK-652, T6). GET /auth/config surfaces these so a
+    # UI can drive the Authorization Code + PKCE flow (docs/auth-oidc.md §10). The
+    # scopes the client should request; the default is Authentik's built-in set the
+    # API's role/email linking needs. `oidc_authorization_endpoint` is optional — left
+    # empty the client re-discovers it from `{issuer}.well-known/openid-configuration`,
+    # so set it only to save that one round-trip.
+    oidc_scopes: str = "openid,email,profile,groups"
+    oidc_authorization_endpoint: str = ""
 
     # Infra endpoints. The host matches the Postgres service name in
     # docker-compose.yml (compose also sets this var explicitly, but the default
@@ -498,6 +506,11 @@ class Settings(BaseSettings):
     def oidc_algorithm_list(self) -> list[str]:
         """Accepted OIDC signature algorithms, parsed from oidc_algorithms."""
         return [a.strip() for a in self.oidc_algorithms.split(",") if a.strip()]
+
+    @property
+    def oidc_scope_list(self) -> list[str]:
+        """OIDC scopes advertised to clients (GET /auth/config), parsed from oidc_scopes."""
+        return [s.strip() for s in self.oidc_scopes.split(",") if s.strip()]
 
     @property
     def stt_endpoint_url(self) -> str:

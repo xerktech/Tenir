@@ -115,6 +115,8 @@ Everything defaults to "off/empty" so an untouched deployment is unaffected.
 | `API_OIDC_ADMIN_GROUP` | `tenir-admins` | Membership here ⇒ role `admin`. |
 | `API_OIDC_MEMBER_GROUP` | `tenir-members` | Documented member group; presence is **not** required for access (see §7). |
 | `API_OIDC_ALLOW_USERNAME_LINK` | `false` | Secondary link key `preferred_username` (§5). **Recommend `false`.** |
+| `API_OIDC_SCOPES` | `openid,email,profile,groups` | Scopes advertised to clients via `GET /auth/config` (§10) for the PKCE request. |
+| `API_OIDC_AUTHORIZATION_ENDPOINT` | `""` | Optional pinned authorize endpoint advertised via `/auth/config`; empty ⇒ the client re-discovers it. |
 | `API_AUTH_ADMIN_EMAIL` | `""` | Email that identifies the env-admin's row, so their Authentik login links to it (§6). |
 
 Discovery: with the issuer known, `{issuer}.well-known/openid-configuration` yields the

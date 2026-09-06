@@ -91,6 +91,55 @@ def me(principal: Principal = Depends(current_principal)) -> PrincipalOut:
     return PrincipalOut.of(principal)
 
 
+class OidcConfigOut(BaseModel):
+    """The OIDC half of the public auth advertisement (docs/auth-oidc.md §10).
+
+    ``issuer`` and ``clientId`` are the essentials the client needs; it re-discovers
+    the token/end-session endpoints (and, when ``authorizationEndpoint`` is absent,
+    the authorize endpoint too) from ``{issuer}/.well-known/openid-configuration``.
+    """
+
+    enabled: bool = True
+    issuer: str
+    clientId: str
+    authorizationEndpoint: str | None = None
+    scopes: list[str]
+
+
+class AuthConfigOut(BaseModel):
+    """What the server advertises about its auth backends (docs/auth-oidc.md §10).
+
+    Built-in username/password is always available (``builtin`` is always true), so the
+    login form always shows. The ``oidc`` block is present only when the deployment
+    turned OIDC on, letting a client conditionally show the "Sign in with Authentik"
+    button in addition to the form.
+    """
+
+    builtin: bool = True
+    oidc: OidcConfigOut | None = None
+
+
+@router.get("/config", response_model=AuthConfigOut, response_model_exclude_none=True)
+def auth_config() -> AuthConfigOut:
+    """Public auth-backend advertisement (unauthenticated, like ``/health``).
+
+    OIDC off (default): ``{"builtin": true}`` — clients show only the local login form
+    and behave exactly as before. OIDC on: the ``oidc`` block is included so T7–T10 can
+    show the OIDC button and drive the Authorization Code + PKCE flow. Flipping
+    ``API_OIDC_ENABLED`` is the only thing that changes the response — no code change or
+    data migration (XERK-652)."""
+    oidc: OidcConfigOut | None = None
+    if settings.oidc_enabled:
+        oidc = OidcConfigOut(
+            enabled=True,
+            issuer=settings.oidc_issuer.strip(),
+            clientId=settings.oidc_audience.strip(),
+            authorizationEndpoint=settings.oidc_authorization_endpoint.strip() or None,
+            scopes=settings.oidc_scope_list,
+        )
+    return AuthConfigOut(builtin=True, oidc=oidc)
+
+
 @router.get("/users", response_model=list[UserSummaryOut])
 def list_users(admin: Principal = Depends(require_admin)) -> list[UserSummaryOut]:
     # The admin manages exactly their own household's roster (decision #6).
