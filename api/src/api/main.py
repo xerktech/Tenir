@@ -24,8 +24,9 @@ from api.auth import (
     AuthError,
     Principal,
     assert_secure_auth_config,
+    assert_valid_oidc_config,
     get_user_store,
-    principal_from_live_token,
+    principal_from_bearer,
     principal_from_token,
     require_admin,
 )
@@ -61,6 +62,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # import) so merely importing the app — codegen, tests, --help — never trips it,
     # and so it runs once per process rather than per import.
     assert_secure_auth_config()
+    # And, when the optional OIDC backend is on, refuse to boot half-configured
+    # (XERK-649). No-op when it's off, so a non-OIDC deployment is unaffected.
+    assert_valid_oidc_config()
     # Redact query-string bearer tokens from the access log before anything can
     # be logged (XERK-236): the WS handshake and the audio download both carry
     # the token in the URL, and uvicorn logs the full request line.
@@ -225,9 +229,10 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
     if not token:
         return None
     try:
-        # Same liveness check as the REST path: a deleted user's still-unexpired
-        # token must not open a capture socket either (XERK-236).
-        return principal_from_live_token(token)
+        # Same resolver as the REST path: built-in HMAC (with the XERK-236 liveness
+        # check that keeps a deleted user's still-unexpired token from opening a
+        # capture socket) or, when enabled, an Authentik OIDC token (XERK-649).
+        return principal_from_bearer(token)
     except AuthError:
         return None
 
@@ -240,7 +245,7 @@ def _ws_reject_reason(ws: WebSocket) -> str:
     if not token:
         return "missing token"
     try:
-        principal_from_live_token(token)
+        principal_from_bearer(token)
     except AuthError as exc:
         return str(exc)
     return "unknown"

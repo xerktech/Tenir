@@ -51,6 +51,7 @@ _PASSWORD_ALLOWLIST = {
     "downsampleTo16k",  # digits mid-identifier, so the trailing-digit strip misses it
     "%H%x1f%P%x1f%s",
     "%Y-%m-%d",  # strftime date format (cue evidence timestamps, XERK-120)
+    "!Context",  # Authentik blueprint YAML tag listed in .github/workflows/authentik.yml
 }
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import Depends, Header, HTTPException
 
+from api.auth.oidc import OidcVerifier
 from api.auth.tokens import AuthError, Principal, decode_token
 from api.auth.users import get_user_store
 from api.config import DEFAULT_AUTH_SECRET, settings
@@ -50,9 +51,83 @@ def assert_secure_auth_config() -> None:
         )
 
 
+def assert_valid_oidc_config() -> None:
+    """Refuse to boot on a half-configured OIDC backend (XERK-649, T3).
+
+    When OIDC is off nothing new is required. When it is on, a validator that can't
+    name its issuer/audience would silently accept nothing (or, worse, skip a
+    check) — the same latent-hole class ``assert_secure_auth_config`` guards. So we
+    fail fast, mirroring that guard. Called at api startup.
+    """
+    if not settings.oidc_enabled:
+        return
+    missing = [
+        name
+        for name, value in (
+            ("API_OIDC_ISSUER", settings.oidc_issuer),
+            ("API_OIDC_AUDIENCE", settings.oidc_audience),
+        )
+        if not value.strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            "API_OIDC_ENABLED is true but "
+            + ", ".join(missing)
+            + " is not set; OIDC cannot validate tokens without an issuer and audience."
+        )
+    if not settings.oidc_jwks_url_resolved:
+        raise RuntimeError("API_OIDC_ENABLED is true but no JWKS URL could be resolved.")
+    if not settings.oidc_algorithm_list:
+        raise RuntimeError("API_OIDC_ENABLED is true but API_OIDC_ALGORITHMS is empty.")
+
+
+# One verifier per process holds the JWKS cache, so it survives Authentik key
+# rotation without a restart (a rotated-in key misses the cache once and refetches).
+_oidc_verifier: OidcVerifier | None = None
+
+
+def get_oidc_verifier() -> OidcVerifier:
+    """The process-wide OIDC verifier, built from settings on first use."""
+    global _oidc_verifier
+    if _oidc_verifier is None:
+        _oidc_verifier = OidcVerifier.from_settings(settings)
+    return _oidc_verifier
+
+
+def reset_oidc_verifier() -> None:
+    """Drop the cached verifier (tests that reconfigure OIDC settings)."""
+    global _oidc_verifier
+    _oidc_verifier = None
+
+
 def principal_from_token(token: str) -> Principal:
     """Decode a bearer token to a Principal, raising AuthError if it is invalid."""
     return decode_token(token, secret=settings.auth_secret)
+
+
+def _is_oidc_token(token: str) -> bool:
+    """Discriminate an OIDC JWS from a built-in HMAC token by segment count.
+
+    Built-in token = ``<payload>.<hmac-sig>`` — exactly two dot-separated segments.
+    An OIDC access token is a standard JWS — three (``header.payload.signature``).
+    The shapes cannot be confused (docs/auth-oidc.md §1), and each verifier only
+    ever runs its own algorithm, so there is no alg-confusion path between them.
+    """
+    return token.count(".") == 2
+
+
+def principal_from_bearer(token: str) -> Principal:
+    """Resolve a bearer to a Principal via whichever backend accepts it.
+
+    A built-in HMAC token goes through :func:`principal_from_live_token` exactly as
+    before (signature + expiry + account liveness). When OIDC is enabled, a
+    three-segment JWS is verified against Authentik's JWKS instead. Both backends
+    coexist — a request is authenticated by whichever one accepts its token — and
+    both yield the same :class:`Principal` seam. Raises ``AuthError`` on rejection.
+    """
+    if settings.oidc_enabled and _is_oidc_token(token):
+        return get_oidc_verifier().verify(token)
+    return principal_from_live_token(token)
 
 
 def _bearer(authorization: str | None) -> str | None:
@@ -85,7 +160,7 @@ def current_principal(
     if token is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
     try:
-        return principal_from_live_token(token)
+        return principal_from_bearer(token)
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -106,7 +181,7 @@ def principal_from_request(
     if tok is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
     try:
-        return principal_from_live_token(tok)
+        return principal_from_bearer(tok)
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
