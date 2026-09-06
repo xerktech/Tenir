@@ -31,7 +31,7 @@ function fixedBytes(bytes: Uint8Array): RandomBytes {
   };
 }
 
-describe("base64UrlEncode", () => {
+describe("base64url encoding", () => {
   it("encodes to url-safe base64 with no padding", () => {
     expect(base64UrlEncode(Uint8Array.from([0]))).toBe("AA");
     expect(base64UrlEncode(Uint8Array.from([0, 0]))).toBe("AAA");
