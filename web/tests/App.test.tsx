@@ -1,8 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 
-import { App } from "../src/App";
+import * as core from "@tenir/client-core";
+import { App, OIDC_CALLBACK_PATH } from "../src/App";
 import { ToastProvider } from "../src/lib/toast";
+
+// The mocked OIDC surface (see vi.mock below), pulled back typed for per-test tweaks.
+const getAuthConfig = core.getAuthConfig as unknown as Mock;
+const getSessionKind = core.getSessionKind as unknown as Mock;
+const oidcReady = core.oidcReady as unknown as Mock;
+const prepareOidc = core.prepareOidc as unknown as Mock;
+const startOidcLogin = core.startOidcLogin as unknown as Mock;
+const completeOidcCallback = core.completeOidcCallback as unknown as Mock;
+const oidcLogout = core.oidcLogout as unknown as Mock;
+const logout = core.logout as unknown as Mock;
 
 const { me, captureStats } = vi.hoisted(() => ({
   me: vi.fn(),
@@ -14,9 +25,22 @@ const { me, captureStats } = vi.hoisted(() => ({
 
 vi.mock("@tenir/client-core", () => ({
   configureApi: vi.fn(),
+  // config.ts (pulled in transitively) wires the browser OIDC primitives at import.
+  configureOidc: vi.fn(),
+  browserOidcPrimitives: vi.fn((redirectUri: string) => ({ redirectUri })),
   me,
   login: vi.fn(),
   logout: vi.fn(),
+  describeLoginError: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  // OIDC surface (docs/auth-oidc.md §10). Default: server advertises OIDC off, so
+  // the existing suites see the login form + dashboard exactly as before.
+  getAuthConfig: vi.fn(async () => ({ builtin: true })),
+  getSessionKind: vi.fn(() => "builtin"),
+  oidcReady: vi.fn(() => false),
+  prepareOidc: vi.fn(async () => {}),
+  startOidcLogin: vi.fn(async () => {}),
+  completeOidcCallback: vi.fn(),
+  oidcLogout: vi.fn(async () => {}),
   ApiError: class ApiError extends Error {},
   NetworkError: class NetworkError extends Error {},
   getStatus: vi.fn(async () => ({ overall: "ready", generatedAt: "x", reasons: [], components: [] })),
@@ -293,5 +317,181 @@ describe("URL hash routing", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Users" })).toHaveAttribute("aria-current", "page"),
     );
+  });
+});
+
+// XERK-654: the optional "Sign in with Authentik" path. The username/password
+// form is always present; the OIDC button is gated on the server advertising it,
+// and the redirect callback / sign-out are handled for both session kinds.
+describe("OIDC login (docs/auth-oidc.md §10)", () => {
+  const OIDC_ON = {
+    builtin: true,
+    oidc: {
+      enabled: true,
+      issuer: "https://idp.example/application/o/tenir/",
+      clientId: "tenir-web",
+      scopes: ["openid", "email", "profile", "groups"],
+    },
+  };
+
+  afterEach(() => {
+    // Reset the OIDC surface to its "off / built-in" defaults so overrides here
+    // never leak into the suites above.
+    getAuthConfig.mockReset();
+    getAuthConfig.mockResolvedValue({ builtin: true });
+    getSessionKind.mockReset();
+    getSessionKind.mockReturnValue("builtin");
+    oidcReady.mockReset();
+    oidcReady.mockReturnValue(false);
+    for (const m of [prepareOidc, startOidcLogin, completeOidcCallback, oidcLogout, logout]) {
+      m.mockReset();
+    }
+    prepareOidc.mockResolvedValue(undefined);
+    startOidcLogin.mockResolvedValue(undefined);
+    oidcLogout.mockResolvedValue(undefined);
+  });
+
+  it("shows only the username/password form when the server has OIDC off", async () => {
+    getAuthConfig.mockResolvedValue({ builtin: true });
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Log in" })).toBeInTheDocument());
+    // The form is always present...
+    expect(screen.getByLabelText("Username")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+    // ...and with OIDC off, no Authentik button.
+    expect(screen.queryByRole("button", { name: /Authentik/ })).not.toBeInTheDocument();
+  });
+
+  it("adds the Authentik button beside the form when the server advertises OIDC", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Sign in with Authentik" })).toBeInTheDocument(),
+    );
+    // The built-in form is still there in addition to the OIDC button.
+    expect(screen.getByLabelText("Username")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+
+  it("prepares the provider and starts the redirect when the button is clicked", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    oidcReady.mockReturnValue(false); // not yet discovered
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    const btn = await screen.findByRole("button", { name: "Sign in with Authentik" });
+    fireEvent.click(btn);
+    await waitFor(() => expect(prepareOidc).toHaveBeenCalledWith(OIDC_ON.oidc));
+    expect(startOidcLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips discovery when the provider is already resolved", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    oidcReady.mockReturnValue(true); // provider already known
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with Authentik" }));
+    await waitFor(() => expect(startOidcLogin).toHaveBeenCalledTimes(1));
+    expect(prepareOidc).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an error when starting the redirect fails, and stays on the login screen", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    prepareOidc.mockRejectedValue(new Error("OIDC discovery failed (503)"));
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with Authentik" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("OIDC discovery failed (503)"));
+    expect(startOidcLogin).not.toHaveBeenCalled();
+    // Still the login screen, with the form intact.
+    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+
+  it("completes the redirect callback and lands signed in, clearing the URL", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    completeOidcCallback.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "member" });
+    me.mockClear(); // this suite shares the hoisted `me`; assert on this test's calls only
+    // Boot on the redirect path the IdP returns to.
+    window.history.replaceState(null, "", `${OIDC_CALLBACK_PATH}?code=the-code&state=the-state`);
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument());
+    // The provider was resolved and the code exchanged from the query string.
+    expect(prepareOidc).toHaveBeenCalledWith(OIDC_ON.oidc);
+    expect(completeOidcCallback).toHaveBeenCalledWith("?code=the-code&state=the-state");
+    // me() is never needed on the callback path — the exchange returns the principal.
+    expect(me).not.toHaveBeenCalled();
+    // The callback path is scrubbed from the address bar so tab routing resumes.
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("shows the failure on the login screen when the callback exchange rejects", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    completeOidcCallback.mockRejectedValue(new Error("OIDC state mismatch — possible CSRF, login rejected"));
+    window.history.replaceState(null, "", `${OIDC_CALLBACK_PATH}?code=x&state=bad`);
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Log in" })).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("OIDC state mismatch");
+    // Even on failure the callback path is cleared.
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("does not treat a bare post-logout return (no code) as a callback", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    me.mockClear();
+    me.mockRejectedValue(new Error("401"));
+    window.history.replaceState(null, "", OIDC_CALLBACK_PATH); // no ?code / ?error
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Log in" })).toBeInTheDocument());
+    expect(completeOidcCallback).not.toHaveBeenCalled();
+    // Falls through to me() and the path is cleaned so login isn't stuck on it.
+    expect(me).toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("resolves the provider on boot for an existing OIDC session (so silent refresh works)", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    getSessionKind.mockReturnValue("oidc"); // a stored OIDC session
+    me.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "member" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument());
+    expect(prepareOidc).toHaveBeenCalledWith(OIDC_ON.oidc);
+  });
+
+  it("does not prepare the provider on boot for a built-in session", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    getSessionKind.mockReturnValue("builtin");
+    me.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "admin" });
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument());
+    expect(prepareOidc).not.toHaveBeenCalled();
+  });
+
+  it("signs out an OIDC session via RP-initiated logout, not the local-only clear", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON);
+    getSessionKind.mockReturnValue("oidc");
+    me.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "member" });
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(oidcLogout).toHaveBeenCalledTimes(1));
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("signs out a built-in session with the local token clear", async () => {
+    getAuthConfig.mockResolvedValue(OIDC_ON); // OIDC available, but this session is built-in
+    getSessionKind.mockReturnValue("builtin");
+    me.mockResolvedValue({ userId: "u", username: "ada", household: "lab", role: "member" });
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+    expect(oidcLogout).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the form alone when /auth/config is unreachable", async () => {
+    getAuthConfig.mockRejectedValue(new Error("404"));
+    me.mockRejectedValue(new Error("401"));
+    renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Authentik/ })).not.toBeInTheDocument();
   });
 });
