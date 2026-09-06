@@ -396,6 +396,105 @@ def test_builtin_token_still_works_with_oidc_on(oidc_enabled: str) -> None:
 
 
 @pytest.mark.real_auth
+def test_oidc_env_admin_links_by_verified_email(oidc_enabled: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance (XERK-650): the env-admin, given a matching verified email in
+    Authentik, logs in via OIDC and resolves to the *same* local admin row (same id,
+    still admin) — no duplicate. This is what keeps their pre-OIDC recordings theirs."""
+    from api.auth import get_user_store, reset_user_store
+
+    priv = oidc_enabled
+    monkeypatch.setattr(settings, "auth_admin_username", "root")
+    monkeypatch.setattr(settings, "auth_admin_password", "rootpassword")
+    monkeypatch.setattr(settings, "auth_admin_email", "owner@household.test")
+    reset_user_store()
+    admin = get_user_store().get_env_admin()
+    assert admin is not None and admin.email == "owner@household.test"
+
+    # A token with NO admin group — the env-admin must still resolve to admin (§6).
+    token = _token(priv, "k1", sub="owner-sub", email="owner@household.test", groups=[])
+    with TestClient(app) as client:
+        me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
+    assert me["userId"] == admin.user_id  # same row, no duplicate
+    assert me["role"] == "admin" and me["household"] == HOUSEHOLD
+    # The single row is now linked to the Authentik subject.
+    assert get_user_store().get_by_oidc_sub("owner-sub").user_id == admin.user_id
+    assert len(get_user_store().list_by_household(HOUSEHOLD)) == 1
+    reset_user_store()
+
+
+@pytest.mark.real_auth
+def test_oidc_jit_provisions_and_unverified_email_does_not_link(
+    oidc_enabled: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-created local member links on first (verified) OIDC login; an unmatched
+    user is JIT-provisioned; and an *unverified* email never links (security)."""
+    from api.auth import get_user_store, reset_user_store
+
+    priv = oidc_enabled
+    monkeypatch.setattr(settings, "auth_admin_username", "")  # no env-admin here
+    monkeypatch.setattr(settings, "auth_admin_password", "")
+    reset_user_store()
+    store = get_user_store()
+    member = store.create("member", "longpassword", household=HOUSEHOLD, email="member@household.test")
+
+    with TestClient(app) as client:
+        # Verified email → link the pre-created local member in place (same id).
+        linked = client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {_token(priv, 'k1', sub='member-sub', email='member@household.test')}"},
+        ).json()
+        assert linked["userId"] == member.user_id
+
+        # Unmatched user → JIT a distinct row.
+        jit = client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {_token(priv, 'k1', sub='fresh-sub', email='fresh@household.test')}"},
+        ).json()
+        assert jit["userId"] not in (member.user_id,) and store.get_by_oidc_sub("fresh-sub") is not None
+
+        # Unverified email matching the member must NOT seize the member's row.
+        attacker = client.get(
+            "/auth/me",
+            headers={
+                "Authorization": f"Bearer {_token(priv, 'k1', sub='attacker-sub', email='member@household.test', email_verified=False)}"
+            },
+        ).json()
+        assert attacker["userId"] != member.user_id
+    # The member's row keeps its *legitimate* link (member-sub), not the attacker's,
+    # and the attacker got a distinct JIT row that did not store the unverified email.
+    assert store.get_by_id(member.user_id).oidc_sub == "member-sub"
+    assert store.get_by_oidc_sub("attacker-sub").email is None
+    reset_user_store()
+
+
+@pytest.mark.real_auth
+def test_oidc_unprovisionable_user_is_401_not_500(
+    oidc_enabled: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A validated token that cannot be provisioned (every candidate username taken)
+    fails closed as a 401 — the auth layer never lets it escape as a 500."""
+    from api.auth import get_user_store, reset_user_store
+
+    priv = oidc_enabled
+    monkeypatch.setattr(settings, "auth_admin_username", "")
+    monkeypatch.setattr(settings, "auth_admin_password", "")
+    reset_user_store()
+    store = get_user_store()
+    # Occupy every username JIT would try: preferred_username, email local-part, sub.
+    for name in ("pref", "loc", "collide-sub"):
+        store.create(name, "longpassword", household=HOUSEHOLD)
+
+    token = _token(
+        priv, "k1", sub="collide-sub", email="loc@nomatch.test",
+        email_verified=True, preferred_username="pref",
+    )
+    with TestClient(app) as client:
+        r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401  # not 500
+    reset_user_store()
+
+
+@pytest.mark.real_auth
 def test_oidc_and_builtin_tokens_over_ws(oidc_enabled: str) -> None:
     import json as _json
 

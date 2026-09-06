@@ -32,14 +32,26 @@ _ENSURE_SCHEMA = (
         household      TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
         username       TEXT NOT NULL UNIQUE,
         role           TEXT NOT NULL DEFAULT 'member',
-        password_hash  TEXT NOT NULL,
+        password_hash  TEXT,
+        oidc_sub       TEXT,
+        email          TEXT,
         is_env_admin   BOOLEAN NOT NULL DEFAULT false,
         created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_env_admin BOOLEAN NOT NULL DEFAULT false",
+    # OIDC identity (XERK-650, T4): additive on databases created before it, and
+    # password_hash was NOT NULL before OIDC-only rows existed.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_sub TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT",
+    "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin",
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL",
 )
+
+# Every read selects the same column set so a row maps cleanly to ``User``.
+_USER_COLUMNS = "id, household, username, role, password_hash, oidc_sub, email"
 
 
 class SqlUserStore:
@@ -66,6 +78,8 @@ class SqlUserStore:
             household=row["household"],
             role="admin" if row["role"] == "admin" else "member",
             password_hash=row["password_hash"],
+            oidc_sub=row.get("oidc_sub"),
+            email=row.get("email"),
         )
 
     def create(  # pragma: no cover - requires a live database
@@ -76,6 +90,7 @@ class SqlUserStore:
         household: str,
         role: Role = "member",
         is_env_admin: bool = False,
+        email: str | None = None,
     ) -> User:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
@@ -86,12 +101,38 @@ class SqlUserStore:
                 # row_factory, so mutating the pooled connection would poison the
                 # next borrower with dict rows.
                 row = conn.cursor(row_factory=dict_row).execute(
-                    """
-                    INSERT INTO users (household, username, role, password_hash, is_env_admin)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING id, household, username, role, password_hash
+                    f"""
+                    INSERT INTO users (household, username, role, password_hash, is_env_admin, email)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING {_USER_COLUMNS}
                     """,
-                    (household, username, role, hash_password(password), is_env_admin),
+                    (household, username, role, hash_password(password), is_env_admin, email),
+                ).fetchone()
+        except UniqueViolation as exc:
+            raise DuplicateUser(username) from exc
+        return self._row_to_user(row)
+
+    def create_oidc(  # pragma: no cover - requires a live database
+        self,
+        *,
+        oidc_sub: str,
+        email: str | None,
+        username: str,
+        household: str,
+        role: Role,
+    ) -> User:
+        from psycopg.errors import UniqueViolation
+        from psycopg.rows import dict_row
+
+        try:
+            with self._ensure_pool().connection() as conn:
+                row = conn.cursor(row_factory=dict_row).execute(
+                    f"""
+                    INSERT INTO users (household, username, role, password_hash, oidc_sub, email)
+                    VALUES (%s, %s, %s, NULL, %s, %s)
+                    RETURNING {_USER_COLUMNS}
+                    """,
+                    (household, username, role, oidc_sub, email),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
@@ -102,8 +143,7 @@ class SqlUserStore:
 
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
-                "SELECT id, household, username, role, password_hash FROM users"
-                " WHERE lower(username) = lower(%s)",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(username) = lower(%s)",
                 (username.strip(),),
             ).fetchone()
         return self._row_to_user(row) if row else None
@@ -113,8 +153,33 @@ class SqlUserStore:
 
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
-                "SELECT id, household, username, role, password_hash FROM users WHERE id = %s",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE id = %s",
                 (user_id,),
+            ).fetchone()
+        return self._row_to_user(row) if row else None
+
+    def get_by_oidc_sub(self, oidc_sub: str) -> User | None:  # pragma: no cover
+        from psycopg.rows import dict_row
+
+        if not oidc_sub:
+            return None
+        with self._ensure_pool().connection() as conn:
+            row = conn.cursor(row_factory=dict_row).execute(
+                f"SELECT {_USER_COLUMNS} FROM users WHERE oidc_sub = %s",
+                (oidc_sub,),
+            ).fetchone()
+        return self._row_to_user(row) if row else None
+
+    def get_by_email(self, email: str) -> User | None:  # pragma: no cover
+        from psycopg.rows import dict_row
+
+        key = (email or "").strip()
+        if not key:
+            return None
+        with self._ensure_pool().connection() as conn:
+            row = conn.cursor(row_factory=dict_row).execute(
+                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(email) = lower(%s)",
+                (key,),
             ).fetchone()
         return self._row_to_user(row) if row else None
 
@@ -123,8 +188,7 @@ class SqlUserStore:
 
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
-                "SELECT id, household, username, role, password_hash FROM users"
-                " WHERE is_env_admin",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE is_env_admin",
             ).fetchone()
         return self._row_to_user(row) if row else None
 
@@ -133,8 +197,7 @@ class SqlUserStore:
 
         with self._ensure_pool().connection() as conn:
             rows = conn.cursor(row_factory=dict_row).execute(
-                "SELECT id, household, username, role, password_hash FROM users"
-                " WHERE household = %s ORDER BY lower(username)",
+                f"SELECT {_USER_COLUMNS} FROM users WHERE household = %s ORDER BY lower(username)",
                 (household,),
             ).fetchall()
         return [self._row_to_user(row) for row in rows]
@@ -147,7 +210,10 @@ class SqlUserStore:
 
     def authenticate(self, username: str, password: str) -> User | None:  # pragma: no cover
         user = self.get_by_username(username)
-        if user is None or not verify_password(password, user.password_hash):
+        # An OIDC-only row has no password_hash and can never authenticate locally.
+        if user is None or not user.password_hash:
+            return None
+        if not verify_password(password, user.password_hash):
             return None
         return user
 
@@ -158,6 +224,7 @@ class SqlUserStore:
         username: str | None = None,
         password: str | None = None,
         household: str | None = None,
+        email: str | None = None,
     ) -> User:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
@@ -173,6 +240,9 @@ class SqlUserStore:
         if household is not None:
             sets.append("household = %s")
             params.append(household)
+        if email is not None:
+            sets.append("email = %s")
+            params.append(email)
         if not sets:
             got = self.get_by_id(user_id)
             if got is None:
@@ -183,11 +253,52 @@ class SqlUserStore:
             with self._ensure_pool().connection() as conn:
                 row = conn.cursor(row_factory=dict_row).execute(
                     f"UPDATE users SET {', '.join(sets)} WHERE id = %s"
-                    " RETURNING id, household, username, role, password_hash",
+                    f" RETURNING {_USER_COLUMNS}",
                     tuple(params),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username or "") from exc
+        if row is None:
+            raise KeyError(user_id)
+        return self._row_to_user(row)
+
+    def update_oidc(  # pragma: no cover - requires a live database
+        self,
+        user_id: str,
+        *,
+        oidc_sub: str | None = None,
+        username: str | None = None,
+        role: Role | None = None,
+    ) -> User:
+        from psycopg.errors import UniqueViolation
+        from psycopg.rows import dict_row
+
+        sets: list[str] = []
+        params: list[object] = []
+        if oidc_sub is not None:
+            sets.append("oidc_sub = %s")
+            params.append(oidc_sub)
+        if username is not None:
+            sets.append("username = %s")
+            params.append(username)
+        if role is not None:
+            sets.append("role = %s")
+            params.append(role)
+        if not sets:
+            got = self.get_by_id(user_id)
+            if got is None:
+                raise KeyError(user_id)
+            return got
+        params.append(user_id)
+        try:
+            with self._ensure_pool().connection() as conn:
+                row = conn.cursor(row_factory=dict_row).execute(
+                    f"UPDATE users SET {', '.join(sets)} WHERE id = %s"
+                    f" RETURNING {_USER_COLUMNS}",
+                    tuple(params),
+                ).fetchone()
+        except UniqueViolation as exc:
+            raise DuplicateUser(username or oidc_sub or "") from exc
         if row is None:
             raise KeyError(user_id)
         return self._row_to_user(row)
