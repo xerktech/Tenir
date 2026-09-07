@@ -10,6 +10,15 @@ client for the Veiller app, bundled into that repo's
 asset**: its distribution channel is the Even Hub developer portal, uploaded
 by `build-even` right after packing (see "Even Hub dev-portal publish").
 
+**Not a release component: optional Authentik OIDC.** The optional Authentik IdP
+(`authentik/`) is separate operator-managed infra — its own Portainer stack on a
+pinned upstream `AUTHENTIK_TAG`, not built or versioned by this pipeline. A change
+under `authentik/` (or to the API's `API_OIDC_*` handling) rides the normal
+component releases; standing Authentik up, enabling OIDC, and rolling it back are
+config operations documented in [`docs/oidc-runbook.md`](docs/oidc-runbook.md), not
+release steps. OIDC is off by default, so a default release ships built-in auth
+unchanged.
+
 ## How the version is decided
 
 - The root `VERSION` file holds `MAJOR.MINOR` only.
