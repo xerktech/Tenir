@@ -170,6 +170,21 @@ def test_oidc_actor_principal_is_jit_provisioned(oidc_actor: AuthActor) -> None:
 
 
 @pytest.mark.real_auth
+def test_oidc_token_without_tenir_group_is_denied(oidc_env: OidcEnv) -> None:
+    """The access gate end-to-end (docs/auth-oidc.md §7): a fully valid Authentik token
+    that is in neither Tenir group 401s at the request layer and provisions no account —
+    so removing a user from the Tenir group in Authentik revokes their access, and a
+    non-Tenir Authentik user can never authenticate into the household."""
+    from api.auth import get_user_store
+
+    token = oidc_env.mint(sub="outsider", email="outsider@household.test", groups=[])
+    with TestClient(app) as client:
+        me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 401
+    assert get_user_store().get_by_oidc_sub("outsider") is None  # nothing provisioned
+
+
+@pytest.mark.real_auth
 def test_linked_actor_resolves_to_existing_local_row(linked_actor: AuthActor) -> None:
     """A linked account authenticates through OIDC to the SAME local id as the row that
     owned the verified email — one identity, no duplicate (docs/auth-oidc.md §5, §8)."""

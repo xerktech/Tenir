@@ -384,10 +384,12 @@ class Settings(BaseSettings):
     oidc_algorithms: str = "RS256"
     # Token claim carrying the user's group array; role derives from it (see below).
     oidc_groups_claim: str = "groups"
-    # Membership in this group ⇒ role `admin`; any other (or no) group ⇒ `member`.
+    # Membership in this group ⇒ role `admin`.
     oidc_admin_group: str = "tenir-admins"
-    # Documented member group. Presence is NOT a gate — a validated token is at
-    # least a member regardless (docs/auth-oidc.md §7). Kept for parity/advertising.
+    # Membership in this group ⇒ role `member`. This is the ACCESS GATE: a validated
+    # token in neither this nor the admin group is denied and provisions no account —
+    # removing a user from the Tenir group(s) in Authentik is how access is revoked
+    # (docs/auth-oidc.md §7/§8). The env-admin is exempt (always admin, §6).
     oidc_member_group: str = "tenir-members"
     # Claim names for the email and its verified flag. Authentik's built-in `email`
     # scope sets email_verified true when the user has an email. These fields ride

@@ -211,7 +211,8 @@ def linked_actor(oidc_env: OidcEnv) -> AuthActor:
         email="linkme@household.test",
     )
     token = oidc_env.mint(
-        sub="linked-sub", email="linkme@household.test", email_verified=True, groups=[]
+        sub="linked-sub", email="linkme@household.test", email_verified=True,
+        groups=["tenir-members"],
     )
     return AuthActor(kind="linked", token=token, user_id=user.user_id)
 

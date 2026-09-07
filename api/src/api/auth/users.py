@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from api.auth.tokens import Principal, Role, hash_password, verify_password
+from api.auth.tokens import AuthError, Principal, Role, hash_password, verify_password
 from api.config import settings
 
 log = logging.getLogger("api.auth.users")
@@ -421,8 +421,50 @@ def _principal_for(user: User, token: Principal) -> Principal:
     )
 
 
+def _has_tenir_group(token: Principal) -> bool:
+    """Whether the token grants Tenir access — i.e. it carries the admin or member group.
+
+    Group membership is the OIDC access gate (docs/auth-oidc.md §7): being in
+    ``API_OIDC_ADMIN_GROUP`` or ``API_OIDC_MEMBER_GROUP`` is what makes an Authentik
+    identity a Tenir user. A token in neither has no Tenir account and is denied — this
+    is how removing a user from the Tenir group in Authentik revokes their access.
+    """
+    return (
+        settings.oidc_admin_group in token.groups or settings.oidc_member_group in token.groups
+    )
+
+
+def _token_is_env_admin(store: UserStore, token: Principal) -> bool:
+    """Whether this validated token resolves to the env-admin row.
+
+    True if the env-admin row already carries this ``sub`` (already linked) or if the
+    token's *verified* email matches the env-admin's link email (the pending link). Used
+    to exempt the env-admin from the group-membership gate (docs/auth-oidc.md §6): the
+    household operator stays admin even if left out of every Authentik group, so an IdP
+    group change can never lock them out of their own hub. Read-only — never mutates.
+    """
+    env_admin = store.get_env_admin()
+    if env_admin is None:
+        return False
+    if env_admin.oidc_sub is not None and env_admin.oidc_sub == (token.sub or ""):
+        return True
+    return bool(
+        token.email_verified
+        and token.email
+        and env_admin.email
+        and env_admin.email.lower() == token.email.lower()
+    )
+
+
 def resolve_oidc_principal(token: Principal, store: UserStore | None = None) -> Principal:
     """Resolve a validated OIDC token to a local user, per docs/auth-oidc.md §5.
+
+    **Access gate (§7):** a validated token must carry a Tenir group (admin or member)
+    or it is denied with no account provisioned — the env-admin (§6) is the sole
+    exception. This is the OIDC revocation lever: removing a user from the Tenir group
+    in Authentik denies them on their next login (an OIDC row is never revoked by local
+    deletion — the router refuses to delete it, so a still-valid token can't re-provision
+    it, docs/auth-oidc.md §8).
 
     Fixed order, first hit wins: (1) ``oidc_sub`` match → already-linked row;
     (2) *verified*-email match → link the token's ``sub`` onto that existing local
@@ -443,6 +485,12 @@ def resolve_oidc_principal(token: Principal, store: UserStore | None = None) -> 
     email = token.email
     # A verified email is the only email that is ever a link key or stored (§5).
     jit_email = email if token.email_verified else None
+
+    # Group gate (§7): no Tenir group ⇒ no access. Checked before any row is created or
+    # linked, so a denied login never leaves a provisioned/mutated row behind. The
+    # env-admin is exempt (§6) — always admin, even with no group.
+    if not _has_tenir_group(token) and not _token_is_env_admin(store, token):
+        raise AuthError("OIDC token is not in a Tenir group; access denied")
 
     user = store.get_by_oidc_sub(sub)
     if user is None and token.email_verified and email:

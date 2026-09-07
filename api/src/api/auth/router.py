@@ -189,6 +189,20 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
         # The env-managed admin is reconciled from API_AUTH_ADMIN_* on every boot, so
         # deleting it just resurrects on restart — refuse rather than mislead.
         raise HTTPException(status_code=409, detail="the env-managed admin cannot be removed")
+    if target.oidc_sub is not None:
+        # An OIDC account is governed by Authentik, not deleted here (docs/auth-oidc.md
+        # §8). Local deletion would not revoke it: a still-valid Authentik access token
+        # re-provisions the account on the next request (group gate permitting), so a
+        # deleted admin could silently re-appear as admin. Revoke by removing the user
+        # from the Tenir group in Authentik instead — the group gate denies them on
+        # their next login.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "an OIDC account cannot be removed here; remove the user from the Tenir "
+                "group in Authentik to revoke their access"
+            ),
+        )
     store.delete(user_id)
     # Auth is checked at the WS handshake only, so a live capture socket keeps
     # recording into the household after its account is gone. Close them here so
