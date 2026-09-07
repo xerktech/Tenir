@@ -216,6 +216,13 @@ class Session:
         self._music_offset_monotonic: float | None = None
         self._music_end_ms: int | None = None
         self._music_end_task: asyncio.Task[None] | None = None
+        # The run opened but its lyric fetch failed transiently (LRCLIB 5xx/timeout),
+        # so the `song` frame went out with no lines and the client shows the ♪
+        # placeholder. Set here, it makes the next sync retry the fetch and re-emit
+        # the song with lyrics once LRCLIB recovers, instead of the whole run
+        # playing lyric-less (XERK-184). A genuine "no synced lyrics" miss leaves
+        # this False — nothing to retry.
+        self._music_lyrics_pending = False
         # Running total of audio pushed this sitting, so the music scan can stamp a
         # recognized song at the current session-timeline position (the same
         # timeline cues/segments use), independent of the STT seam.
@@ -991,9 +998,15 @@ class Session:
             await self._end_music_run()
         try:
             synced = await self._music.lyrics(match)
+            # A clean lookup (lines found, or a genuine miss) is final; nothing to
+            # retry. Only a transient failure below leaves the run marked pending.
+            self._music_lyrics_pending = False
         except Exception:
             log.warning("session %s lyric lookup failed", self.session_id, exc_info=True)
             synced = []
+            # Transient (LRCLIB 5xx/timeout): retry on the next sync rather than
+            # letting the placeholder stand for the whole run (XERK-184).
+            self._music_lyrics_pending = True
         song_id = uuid.uuid4().hex
         self._music_run_id = song_id
         self._music_track_key = key
@@ -1035,11 +1048,68 @@ class Session:
                 ),
             )
 
+    async def _retry_song_lyrics(
+        self, match: MusicMatch, at_ms: int, window_end_monotonic: float
+    ) -> bool:
+        """Re-fetch lyrics for a run that opened without them (XERK-184).
+
+        Returns True when lyrics were recovered and a fresh `song` frame was
+        emitted (so the caller sends no `song.sync` — the re-emitted frame carries
+        the drift-corrected anchor itself). Returns False when the retry found no
+        synced lyrics (a genuine miss — stop retrying) or failed again transiently
+        (stay pending, fall through to the normal re-anchor so the clock keeps
+        moving)."""
+        if self._music_run_id is None:
+            return False
+        try:
+            synced = await self._music.lyrics(match)
+        except Exception:
+            # Still failing: keep pending so the next sync tries once more.
+            log.warning("session %s lyric retry failed", self.session_id, exc_info=True)
+            return False
+        # A clean lookup is final either way: recovered lyrics or a genuine miss.
+        self._music_lyrics_pending = False
+        if not synced:
+            return False
+        lines = [LyricLine(atMs=max(0, ln.at_ms), text=ln.text) for ln in synced]
+        # Refine the end position now that we have the synced lines, then re-anchor
+        # off the fresh offset (this reschedules the precise `song.done`).
+        self._music_end_ms = self._song_end_ms(match, lines)
+        self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
+        try:
+            await self._send(
+                Song(
+                    type="song",
+                    songId=self._music_run_id,
+                    title=match.title,
+                    artist=match.artist,
+                    atMs=at_ms,
+                    offsetMs=self._music_offset_ms,
+                    durationMs=match.duration_ms,
+                    lines=lines,
+                )
+            )
+        except Exception:
+            log.warning("session %s could not deliver song (client gone)", self.session_id)
+            metrics.incr("music.send_errors")
+        metrics.incr("music.emitted")
+        return True
+
     async def _send_song_sync(
         self, match: MusicMatch, at_ms: int, window_end_monotonic: float
     ) -> None:
-        """Re-anchor the locked song so the client corrects scroll drift."""
+        """Re-anchor the locked song so the client corrects scroll drift.
+
+        If the run opened without lyrics because the fetch failed transiently
+        (``_music_lyrics_pending``), retry it here: LRCLIB may have recovered since
+        the open, and re-emitting the `song` frame with lyrics swaps the client's
+        ♪ placeholder for the real scroll without waiting for the track to end and
+        re-open (XERK-184)."""
         if self._music_run_id is None:
+            return
+        if self._music_lyrics_pending and await self._retry_song_lyrics(
+            match, at_ms, window_end_monotonic
+        ):
             return
         # Re-anchor (XERK-192): refresh the retained offset and reschedule the
         # end-of-song dismissal off the fresh, drift-corrected position.
@@ -1078,6 +1148,7 @@ class Session:
         self._music_offset_ms = None
         self._music_offset_monotonic = None
         self._music_end_ms = None
+        self._music_lyrics_pending = False
         if song_id is not None:
             try:
                 await self._send(SongDone(type="song.done", songId=song_id))

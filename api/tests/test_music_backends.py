@@ -116,6 +116,67 @@ def test_parse_lrc_keeps_instrumental_gap_lines() -> None:
     assert [(ln.at_ms, ln.text) for ln in lines] == [(10000, ""), (20000, "words")]
 
 
+# ---- lyric fetch caching (XERK-184) ------------------------------------------
+
+
+def test_synced_lines_caches_hit_and_definitive_miss() -> None:
+    """A clean lookup is cached — a hit and a genuine "no synced lyrics" miss alike
+    — so the network is hit once per track."""
+    from api.music.lyrics import LrcLibLyrics
+
+    async def run() -> None:
+        lyr = LrcLibLyrics(endpoint="https://example.test")
+        calls = {"n": 0}
+
+        async def fake_lookup(**_kwargs: object) -> str | None:
+            calls["n"] += 1
+            return "[00:01.00] hello"
+
+        lyr._lookup = fake_lookup  # type: ignore[method-assign]
+        first = await lyr.synced_lines(artist="A", title="T")
+        second = await lyr.synced_lines(artist="A", title="T")
+        assert [(ln.at_ms, ln.text) for ln in first] == [(1000, "hello")]
+        assert second == first
+        assert calls["n"] == 1  # second call served from cache
+
+        # A genuine miss (clean lookup, no synced lyrics) is cached as [] too.
+        async def miss_lookup(**_kwargs: object) -> str | None:
+            calls["n"] += 1
+            return None
+
+        lyr._lookup = miss_lookup  # type: ignore[method-assign]
+        assert await lyr.synced_lines(artist="B", title="U") == []
+        assert await lyr.synced_lines(artist="B", title="U") == []
+        assert calls["n"] == 2  # the miss was cached, not re-fetched
+
+    asyncio.run(run())
+
+
+def test_synced_lines_reraises_transient_and_does_not_cache() -> None:
+    """A transient failure (network/5xx) is re-raised and NOT cached, so a later
+    call retries once LRCLIB recovers instead of the empty result sticking."""
+    from api.music.lyrics import LrcLibLyrics
+
+    async def run() -> None:
+        lyr = LrcLibLyrics(endpoint="https://example.test")
+        state = {"fail": True}
+
+        async def flaky_lookup(**_kwargs: object) -> str | None:
+            if state["fail"]:
+                raise RuntimeError("503 Service Unavailable")
+            return "[00:02.00] recovered"
+
+        lyr._lookup = flaky_lookup  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await lyr.synced_lines(artist="A", title="T")
+        # Nothing cached: the recovery is observed on retry.
+        state["fail"] = False
+        recovered = await lyr.synced_lines(artist="A", title="T")
+        assert [(ln.at_ms, ln.text) for ln in recovered] == [(2000, "recovered")]
+
+    asyncio.run(run())
+
+
 # ---- tuning ------------------------------------------------------------------
 
 

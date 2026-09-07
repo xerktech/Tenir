@@ -611,3 +611,91 @@ def test_music_off_starts_no_loop() -> None:
         await session.close()
 
     asyncio.run(run())
+
+
+class _FlakyLyricMusicService:
+    """Music spy whose lyric fetch follows a scripted list of outcomes: a list of
+    SyncedLine is returned, an Exception instance is raised (a transient LRCLIB
+    failure). Records how many times lyrics() ran so a genuine miss can be shown
+    NOT to retry."""
+
+    def __init__(
+        self,
+        matches: list[MusicMatch | None],
+        lyric_outcomes: list[list[SyncedLine] | Exception],
+    ) -> None:
+        self._matches = list(matches)
+        self._lyric_outcomes = list(lyric_outcomes)
+        self.lyric_calls = 0
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self.lyric_calls += 1
+        outcome = self._lyric_outcomes.pop(0) if self._lyric_outcomes else []
+        if isinstance(outcome, Exception):
+            raise outcome
+        return list(outcome)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_song_lyrics_retried_and_recovered_on_next_sync() -> None:
+    """A transient lyric-fetch failure at run-open leaves the run pending; the next
+    sync retries, and once LRCLIB recovers a fresh `song` frame (same id) carries
+    the lyrics — no `song.sync` for that scan (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        recovered = [SyncedLine(at_ms=0, text="one"), SyncedLine(at_ms=5000, text="two")]
+        session._music = _FlakyLyricMusicService(
+            [_match(offset_ms=60000), _match(offset_ms=78000)],
+            [RuntimeError("503"), recovered],
+        )
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run — lyric fetch 503s
+        assert session._music_lyrics_pending is True
+        songs = _songs(sent)
+        assert len(songs) == 1
+        assert songs[0].lines == []  # placeholder run, no lyrics yet
+
+        await session._scan_music_once()  # same song -> retry, recovers lyrics
+        songs, syncs = _songs(sent), _syncs(sent)
+        assert len(songs) == 2  # a second `song` frame carrying the lyrics
+        assert songs[1].songId == songs[0].songId  # same run, replaced in place
+        assert [(ln.atMs, ln.text) for ln in songs[1].lines] == [(0, "one"), (5000, "two")]
+        assert 78000 <= songs[1].offsetMs < 78200  # re-anchored to the fresh offset
+        assert syncs == []  # the re-emitted song carries the anchor; no extra sync
+        assert session._music_lyrics_pending is False
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_song_genuine_lyric_miss_is_not_retried() -> None:
+    """A clean lookup that finds no synced lyrics is final: the run is not marked
+    pending, later syncs don't re-fetch, and the box just scrolls nothing."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _FlakyLyricMusicService(
+            [_match(offset_ms=60000), _match(offset_ms=78000)],
+            [[], []],  # a genuine miss at open; a second (unexpected) call would also miss
+        )
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens with no lyrics (genuine miss)
+        assert session._music_lyrics_pending is False
+        await session._scan_music_once()  # same song -> plain re-sync, no re-fetch
+
+        assert len(_songs(sent)) == 1  # no second song frame
+        assert len(_syncs(sent)) == 1  # normal re-sync path
+        assert svc.lyric_calls == 1  # the miss was not retried
+        await session.close()
+
+    asyncio.run(run())
