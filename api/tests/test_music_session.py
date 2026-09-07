@@ -773,3 +773,62 @@ def test_lyric_retry_bails_if_run_ends_mid_fetch() -> None:
         await session.close()
 
     asyncio.run(run())
+
+
+class _GatedFailAgainMusicService:
+    """Like _GatedRetryMusicService, but the retry fetch blocks then FAILS again
+    transiently — exercising the path where _retry_song_lyrics returns False while
+    the run ended mid-fetch, so _send_song_sync's re-guard must skip the sync."""
+
+    def __init__(self, matches: list[MusicMatch | None]) -> None:
+        self._matches = list(matches)
+        self._calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self._calls += 1
+        if self._calls == 1:
+            raise RuntimeError("503")  # transient failure at run-open
+        self.started.set()
+        await self.release.wait()
+        raise RuntimeError("503 again")  # still failing when the run has ended
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_lyric_retry_failagain_skips_sync_if_run_ends_mid_fetch() -> None:
+    """The retry fetch fails again while the run ends mid-fetch: _send_song_sync's
+    re-guard must skip the normal re-anchor + `song.sync`, leaving no stale anchor
+    and no frame for the dead run (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _GatedFailAgainMusicService([_match(offset_ms=60000)])
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens; fetch 503s -> pending
+        assert session._music_lyrics_pending is True
+
+        sync_task = asyncio.create_task(
+            session._send_song_sync(_match(offset_ms=78000), 78000, time.monotonic())
+        )
+        await asyncio.wait_for(svc.started.wait(), timeout=1.0)
+        await session._end_music_run()  # run ends mid-fetch
+        svc.release.set()
+        await asyncio.wait_for(sync_task, timeout=1.0)
+
+        # Re-guard held: no stale anchor, no sync for the ended run.
+        assert session._music_run_id is None
+        assert session._music_offset_ms is None
+        assert len(_syncs(sent)) == 0
+        assert len(_dones(sent)) == 1
+        await session.close()
+
+    asyncio.run(run())
