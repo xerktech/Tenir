@@ -171,8 +171,8 @@ Authentik login**, by verified email:
 1. Create the member in Authentik (add them to `tenir-members`, or `tenir-admins` for an admin) with
    an **email that matches their existing Tenir local account's email**, and mark it verified.
 2. Make sure that email is set on the existing local Tenir row (see the note below — for the
-   env-admin it is set from `API_AUTH_ADMIN_EMAIL`; for other members it currently requires a direct
-   DB update).
+   env-admin it is set from `API_AUTH_ADMIN_EMAIL`; for other members an admin sets it through the
+   API).
 3. The member logs in once through Authentik. The API matches the verified email to their local row
    and **links in place** — the row keeps its **id, role, and every existing recording**. From then
    on that person can log in with **either** their password **or** Authentik.
@@ -197,23 +197,25 @@ issued and the current one expires.
 > are still deletable and deleting one revokes it at once, as before.) Keep access-token lifetimes
 > short in Authentik (§ `docs/auth-oidc.md` §10) so a group removal takes effect promptly.
 
-> **Setting a non-env-admin member's email today.** The env-admin's link email comes from
-> `API_AUTH_ADMIN_EMAIL`. For **other** existing local members there is currently **no admin
-> endpoint** to set an email (the create-user API takes only username/password/role, and there is no
-> update-user endpoint — `api/src/api/auth/router.py`), so linking one of them by verified email
-> needs a direct DB write:
+> **Setting a non-env-admin member's email (XERK-661).** The env-admin's link email comes from
+> `API_AUTH_ADMIN_EMAIL`. For **other** existing local members an admin sets the link email through
+> the API — `PATCH /auth/users/{id}` (admin token, scoped to the admin's household):
 >
-> ```sql
-> -- attach the member's Authentik email to their existing local row so the next
-> -- OIDC login links in place instead of JIT-creating a duplicate
-> UPDATE users SET email = 'member@household.example'
->     WHERE username = 'member' AND household = 'default';
+> ```bash
+> # attach the member's Authentik email to their existing local row so the next
+> # OIDC login links in place instead of JIT-creating a duplicate
+> curl -fsS -X PATCH localhost:8080/auth/users/<member users.id> \
+>   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+>   -d '{"email":"member@household.example"}'
 > ```
 >
-> Without this, an existing local member who logs in through Authentik is JIT-created as a *separate*
-> OIDC-only row (their old local account and its recordings stay untouched under the old login).
-> Closing this gap with an admin API is tracked as
-> [XERK-661](https://xerktech.atlassian.net/browse/XERK-661).
+> Get `<member users.id>` from `GET /auth/users` (the roster now reports each member's `email`). A
+> brand-new member can also be created with the email in one call:
+> `POST /auth/users {"username":...,"password":...,"email":"member@household.example"}`.
+>
+> Without a matching email, an existing local member who logs in through Authentik is JIT-created as
+> a *separate* OIDC-only row (their old local account and its recordings stay untouched under the old
+> login). The email must equal the member's **verified** Authentik email for the link to happen.
 
 > **Security guard.** Linking happens **only** when the token's `email_verified` is `true`. An
 > unverified email is never a link key (it would be an account-takeover vector). See
@@ -267,11 +269,15 @@ After this:
   anyone who had a local account before still logs in.
 - **JIT-created (OIDC-only) users have no password** and cannot log in while OIDC is off. Their
   recordings are not deleted — they remain owned by that user id and reappear if OIDC is re-enabled.
-  There is currently no admin endpoint to set a password on such a row (same gap as the email one
-  above); if one of them needs local access while OIDC is off, either re-enable OIDC or recreate the
-  account with a password. In practice rollback is safest for a household where every member still
-  has their original local password — which is the case unless you deliberately created OIDC-only
-  members.
+  To restore local access for one, an admin sets a password on the row (XERK-661):
+  ```bash
+  curl -fsS -X PATCH localhost:8080/auth/users/<user id> \
+    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"password":"a-new-local-password"}'
+  ```
+  The row keeps its `oidc_sub`, so it becomes a linked account: local login works now, and Authentik
+  login still links to the same row if OIDC is re-enabled. Rollback is otherwise safest for a
+  household where every member still has their original local password.
 - The `oidc_sub`/`email` columns and the `owner` backfill stay in place; re-enabling OIDC later
   picks up exactly where it left off. There is no destructive step in either direction.
 

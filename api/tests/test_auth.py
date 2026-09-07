@@ -50,7 +50,9 @@ def test_assert_secure_auth_config_blocks_default_secret(
 def test_assert_secure_auth_config_allows_overridden_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "auth_secret", "a-real-strong-secret-of-adequate-length")
+    monkeypatch.setattr(
+        settings, "auth_secret", "a-real-strong-secret-of-adequate-length"
+    )
     assert_secure_auth_config()  # does not raise
 
 
@@ -124,7 +126,13 @@ def test_old_token_without_username_decodes_empty() -> None:
 
     from api.auth.tokens import _b64url_encode, _sign
 
-    claims = {"sub": "u1", "hh": "acme", "role": "member", "iat": 1000, "exp": 9999999999}
+    claims = {
+        "sub": "u1",
+        "hh": "acme",
+        "role": "member",
+        "iat": 1000,
+        "exp": 9999999999,
+    }
     payload = _b64url_encode(_json.dumps(claims).encode())
     token = f"{payload}.{_sign(payload, 's3cret')}"
     got = decode_token(token, secret="s3cret", now=1010)
@@ -155,9 +163,9 @@ def test_update_credentials_renames_and_keeps_id() -> None:
     store = InMemoryUserStore()
     user = store.create("maya", "longpassword", household="acme", role="admin")
     updated = store.update_credentials(user.user_id, username="maia")
-    assert updated.user_id == user.user_id          # identity is stable
-    assert updated.role == "admin"                  # untouched fields preserved
-    assert store.get_by_username("maya") is None     # old username freed
+    assert updated.user_id == user.user_id  # identity is stable
+    assert updated.role == "admin"  # untouched fields preserved
+    assert store.get_by_username("maya") is None  # old username freed
     assert store.authenticate("maia", "longpassword") is updated
     assert store.get_by_id(user.user_id) is updated
 
@@ -168,6 +176,41 @@ def test_update_credentials_changes_password() -> None:
     store.update_credentials(user.user_id, password="newpassword")
     assert store.authenticate("maya", "oldpassword") is None
     assert store.authenticate("maya", "newpassword") is not None
+
+
+def test_update_credentials_sets_email_and_rejects_email_collision() -> None:
+    # XERK-661: setting a link email on an existing local row makes it findable by
+    # email (the OIDC verified-email link key), and a collision with another row's
+    # email is refused.
+    store = InMemoryUserStore()
+    alice = store.create("alice", "longpassword", household="acme")
+    store.create("bob", "longpassword", household="acme", email="bob@acme.test")
+    updated = store.update_credentials(alice.user_id, email="alice@acme.test")
+    assert updated.email == "alice@acme.test"
+    assert (
+        store.get_by_email("alice@acme.test".upper()) is updated
+    )  # case-insensitive index
+    with pytest.raises(DuplicateUser):
+        store.update_credentials(alice.user_id, email="bob@acme.test")  # taken by bob
+
+
+def test_update_credentials_sets_password_on_oidc_only_row() -> None:
+    # XERK-661 rollback path: an OIDC-only row has no password_hash and can't log in
+    # locally; setting a password restores local login (and makes it a linked row).
+    store = InMemoryUserStore()
+    oidc = store.create_oidc(
+        oidc_sub="sub-1",
+        email="jit@acme.test",
+        username="jit",
+        household="acme",
+        role="member",
+    )
+    assert store.authenticate("jit", "longpassword") is None  # no local password yet
+    store.update_credentials(oidc.user_id, password="longpassword")
+    row = store.authenticate("jit", "longpassword")
+    assert (
+        row is not None and row.oidc_sub == "sub-1"
+    )  # linked: keeps its OIDC identity
 
 
 def test_update_credentials_rejects_collision_and_unknown_id() -> None:
@@ -205,7 +248,9 @@ def test_delete_removes_user_and_frees_username() -> None:
 
 def test_delete_clears_env_admin_marker() -> None:
     store = InMemoryUserStore()
-    admin = store.create("root", "longpassword", household="acme", role="admin", is_env_admin=True)
+    admin = store.create(
+        "root", "longpassword", household="acme", role="admin", is_env_admin=True
+    )
     store.delete(admin.user_id)
     assert store.get_env_admin() is None
 
@@ -213,13 +258,17 @@ def test_delete_clears_env_admin_marker() -> None:
 def test_create_marks_and_finds_the_env_admin() -> None:
     store = InMemoryUserStore()
     assert store.get_env_admin() is None
-    store.create("alice", "longpassword", household="acme")           # not the env admin
+    store.create("alice", "longpassword", household="acme")  # not the env admin
     assert store.get_env_admin() is None
-    admin = store.create("root", "longpassword", household="acme", role="admin", is_env_admin=True)
+    admin = store.create(
+        "root", "longpassword", household="acme", role="admin", is_env_admin=True
+    )
     assert store.get_env_admin() is admin
 
 
-def _set_admin_env(monkeypatch: pytest.MonkeyPatch, user: str, pw: str, hh: str = "h1") -> None:
+def _set_admin_env(
+    monkeypatch: pytest.MonkeyPatch, user: str, pw: str, hh: str = "h1"
+) -> None:
     monkeypatch.setattr(settings, "auth_admin_username", user)
     monkeypatch.setattr(settings, "auth_admin_password", pw)
     monkeypatch.setattr(settings, "auth_admin_household", hh)
@@ -236,7 +285,9 @@ def test_reconcile_creates_env_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert store.get_env_admin() is admin
 
 
-def test_reconcile_updates_username_and_password_keeping_id(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reconcile_updates_username_and_password_keeping_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from api.auth.users import InMemoryUserStore, reconcile_admin
 
     store = InMemoryUserStore()
@@ -249,7 +300,7 @@ def test_reconcile_updates_username_and_password_keeping_id(monkeypatch: pytest.
     reconcile_admin(store)
 
     admin = store.get_env_admin()
-    assert admin.user_id == original_id           # identity preserved
+    assert admin.user_id == original_id  # identity preserved
     assert admin.username == "newroot"
     assert store.authenticate("newroot", "newpassword") is admin
     assert store.authenticate("root", "rootpassword") is None
@@ -261,7 +312,9 @@ def test_reconcile_skips_on_username_collision(monkeypatch: pytest.MonkeyPatch) 
     store = InMemoryUserStore()
     _set_admin_env(monkeypatch, "root", "rootpassword")
     reconcile_admin(store)
-    store.create("taken", "longpassword", household="h1")  # a different user owns "taken"
+    store.create(
+        "taken", "longpassword", household="h1"
+    )  # a different user owns "taken"
 
     _set_admin_env(monkeypatch, "taken", "rootpassword")  # collide the admin's new name
     reconcile_admin(store)  # logs + keeps the current admin username; must not raise
@@ -314,14 +367,18 @@ def test_login_me_and_household_scoping(monkeypatch: pytest.MonkeyPatch) -> None
         assert client.get("/conversations").status_code == 401
         assert client.get("/auth/me").status_code == 401
         assert (
-            client.get("/conversations", headers={"Authorization": "Bearer nope"}).status_code
+            client.get(
+                "/conversations", headers={"Authorization": "Bearer nope"}
+            ).status_code
             == 401
         )
 
         bad = client.post("/auth/login", json={"username": "maya", "password": "wrong"})
         assert bad.status_code == 401
 
-        tok = client.post("/auth/login", json={"username": "maya", "password": "longpassword"})
+        tok = client.post(
+            "/auth/login", json={"username": "maya", "password": "longpassword"}
+        )
         assert tok.status_code == 200
         token = tok.json()["token"]
         assert tok.json()["household"] == "acme"
@@ -342,18 +399,26 @@ def test_login_me_and_household_scoping(monkeypatch: pytest.MonkeyPatch) -> None
         # A different household (different token, real account) sees nothing.
         other_user = get_user_store().create("otto", "longpassword", household="other")
         other = issue_token(
-            Principal(other_user.user_id, "other", "member"), secret=TEST_AUTH_SECRET, ttl_seconds=60
+            Principal(other_user.user_id, "other", "member"),
+            secret=TEST_AUTH_SECRET,
+            ttl_seconds=60,
         )
         assert (
-            client.get("/conversations", headers={"Authorization": f"Bearer {other}"}).json()
+            client.get(
+                "/conversations", headers={"Authorization": f"Bearer {other}"}
+            ).json()
             == []
         )
         # A well-signed token for an account that does not exist is not a login.
         ghost = issue_token(
-            Principal("no-such-user", "acme", "admin"), secret=TEST_AUTH_SECRET, ttl_seconds=60
+            Principal("no-such-user", "acme", "admin"),
+            secret=TEST_AUTH_SECRET,
+            ttl_seconds=60,
         )
         assert (
-            client.get("/conversations", headers={"Authorization": f"Bearer {ghost}"}).status_code
+            client.get(
+                "/conversations", headers={"Authorization": f"Bearer {ghost}"}
+            ).status_code
             == 401
         )
 
@@ -422,14 +487,23 @@ def test_admin_lists_and_removes_users(monkeypatch: pytest.MonkeyPatch) -> None:
         assert names == ["admin", "bob"]  # household-scoped, sorted; no "eve"
 
         # Removing a member 204s and drops them from the roster.
-        assert client.delete(f"/auth/users/{bob.user_id}", headers=auth).status_code == 204
-        assert [u["username"] for u in client.get("/auth/users", headers=auth).json()] == ["admin"]
+        assert (
+            client.delete(f"/auth/users/{bob.user_id}", headers=auth).status_code == 204
+        )
+        assert [
+            u["username"] for u in client.get("/auth/users", headers=auth).json()
+        ] == ["admin"]
 
         # An admin can't delete their own account.
-        assert client.delete(f"/auth/users/{admin.user_id}", headers=auth).status_code == 400
+        assert (
+            client.delete(f"/auth/users/{admin.user_id}", headers=auth).status_code
+            == 400
+        )
         # A user in another household is reported as not found (no cross-tenant leak).
         eve = store.get_by_username("eve")
-        assert client.delete(f"/auth/users/{eve.user_id}", headers=auth).status_code == 404
+        assert (
+            client.delete(f"/auth/users/{eve.user_id}", headers=auth).status_code == 404
+        )
         # An unknown id is 404 too.
         assert client.delete("/auth/users/ghost", headers=auth).status_code == 404
 
@@ -449,7 +523,9 @@ def test_member_cannot_list_or_delete_users(monkeypatch: pytest.MonkeyPatch) -> 
         ).json()["token"]
         auth = {"Authorization": f"Bearer {member}"}
         assert client.get("/auth/users", headers=auth).status_code == 403
-        assert client.delete(f"/auth/users/{bob.user_id}", headers=auth).status_code == 403
+        assert (
+            client.delete(f"/auth/users/{bob.user_id}", headers=auth).status_code == 403
+        )
 
 
 @pytest.mark.real_auth
@@ -469,15 +545,22 @@ def test_env_admin_cannot_be_removed(monkeypatch: pytest.MonkeyPatch) -> None:
         ).json()["token"]
         auth = {"Authorization": f"Bearer {token}"}
         # The roster marks the env admin so the UI can grey out its remove control.
-        roster = {u["username"]: u for u in client.get("/auth/users", headers=auth).json()}
+        roster = {
+            u["username"]: u for u in client.get("/auth/users", headers=auth).json()
+        }
         assert roster["root"]["isEnvAdmin"] is True
         assert roster["admin"]["isEnvAdmin"] is False
         # And the server refuses to remove it (it would just reappear on reboot).
-        assert client.delete(f"/auth/users/{root.user_id}", headers=auth).status_code == 409
+        assert (
+            client.delete(f"/auth/users/{root.user_id}", headers=auth).status_code
+            == 409
+        )
 
 
 @pytest.mark.real_auth
-def test_oidc_account_cannot_be_locally_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_oidc_account_cannot_be_locally_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An OIDC account (any row carrying an ``oidc_sub``) is governed by Authentik, not
     removed here (docs/auth-oidc.md §8): local deletion wouldn't revoke it — a still-valid
     Authentik token would re-provision it on the next request. The admin must revoke via
@@ -488,7 +571,11 @@ def test_oidc_account_cannot_be_locally_deleted(monkeypatch: pytest.MonkeyPatch)
     store = get_user_store()
     store.create("admin", "longpassword", household="acme", role="admin")
     oidc_user = store.create_oidc(
-        oidc_sub="sub-xyz", email="jit@acme.test", username="jitter", household="acme", role="member"
+        oidc_sub="sub-xyz",
+        email="jit@acme.test",
+        username="jitter",
+        household="acme",
+        role="member",
     )
     with TestClient(app) as client:
         token = client.post(
@@ -500,7 +587,235 @@ def test_oidc_account_cannot_be_locally_deleted(monkeypatch: pytest.MonkeyPatch)
         assert "Authentik" in resp.json()["detail"]
         # A plain local user in the same household is still deletable, unchanged.
         local = store.create("bob", "longpassword", household="acme")
-        assert client.delete(f"/auth/users/{local.user_id}", headers=auth).status_code == 204
+        assert (
+            client.delete(f"/auth/users/{local.user_id}", headers=auth).status_code
+            == 204
+        )
+
+
+@pytest.mark.real_auth
+def test_admin_can_create_user_with_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-661: an admin can set a member's link email at creation time, so their
+    Authentik login links in place by verified email instead of JIT-duplicating."""
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/auth/users",
+            json={
+                "username": "bob",
+                "password": "longpassword",
+                "email": "bob@acme.test",
+            },
+            headers=auth,
+        )
+        assert r.status_code == 201
+        assert store.get_by_email("bob@acme.test").username == "bob"
+        # A create colliding on the email (already bob's) is a 409.
+        assert (
+            client.post(
+                "/auth/users",
+                json={
+                    "username": "carol",
+                    "password": "longpassword",
+                    "email": "bob@acme.test",
+                },
+                headers=auth,
+            ).status_code
+            == 409
+        )
+
+
+@pytest.mark.real_auth
+def test_admin_updates_member_email_password_and_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-661: PATCH /auth/users/{id} sets email, password and role. Setting a
+    member's verified-link email lets their Authentik login link in place (same id,
+    role and recordings) rather than JIT-creating a duplicate OIDC-only row."""
+    from api.auth import get_user_store
+    from api.auth.users import resolve_oidc_principal
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    bob = store.create("bob", "oldpassword", household="acme", role="member")
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        # Set the link email + a new password + promote to admin in one call.
+        r = client.patch(
+            f"/auth/users/{bob.user_id}",
+            json={"email": "bob@acme.test", "password": "newpassword", "role": "admin"},
+            headers=auth,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["email"] == "bob@acme.test" and body["role"] == "admin"
+        # Password was changed: old fails, new works.
+        assert store.authenticate("bob", "oldpassword") is None
+        assert store.authenticate("bob", "newpassword") is not None
+
+        # The whole point: bob's Authentik login now links in place by verified email.
+        p = resolve_oidc_principal(
+            Principal(
+                user_id="sub-bob",
+                household="acme",
+                role="member",
+                username="bob",
+                sub="sub-bob",
+                email="bob@acme.test",
+                email_verified=True,
+                groups=(settings.oidc_member_group,),
+            ),
+            store,
+        )
+        assert p.user_id == bob.user_id  # linked in place, no duplicate row
+        assert store.get_by_id(bob.user_id).oidc_sub == "sub-bob"
+
+
+@pytest.mark.real_auth
+def test_admin_sets_password_on_oidc_only_row_restores_local_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-661 rollback path: an OIDC-only row (password_hash NULL) can't log in once
+    OIDC is off. An admin sets a password via PATCH and local login is restored."""
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    oidc_user = store.create_oidc(
+        oidc_sub="sub-x",
+        email="jit@acme.test",
+        username="jitter",
+        household="acme",
+        role="member",
+    )
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        # Before: the OIDC-only account cannot log in locally.
+        assert (
+            client.post(
+                "/auth/login", json={"username": "jitter", "password": "restored-pw"}
+            ).status_code
+            == 401
+        )
+        r = client.patch(
+            f"/auth/users/{oidc_user.user_id}",
+            json={"password": "restored-pw"},
+            headers=auth,
+        )
+        assert r.status_code == 200
+        # After: local login works, and the OIDC identity is untouched.
+        assert (
+            client.post(
+                "/auth/login", json={"username": "jitter", "password": "restored-pw"}
+            ).status_code
+            == 200
+        )
+        assert store.get_by_id(oidc_user.user_id).oidc_sub == "sub-x"
+
+
+@pytest.mark.real_auth
+def test_update_user_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-661: PATCH is admin-only, household-scoped, refuses the env-admin, an
+    email collision, self-demotion, and an empty body."""
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    admin = store.create("admin", "longpassword", household="acme", role="admin")
+    store.create("bob", "longpassword", household="acme", email="bob@acme.test")
+    carol = store.create("carol", "longpassword", household="acme")
+    root = store.create(
+        "root", "longpassword", household="acme", role="admin", is_env_admin=True
+    )
+    store.create("eve", "longpassword", household="other")
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        # Empty body -> 400.
+        assert (
+            client.patch(
+                f"/auth/users/{carol.user_id}", json={}, headers=auth
+            ).status_code
+            == 400
+        )
+        # Email colliding with bob's -> 409.
+        assert (
+            client.patch(
+                f"/auth/users/{carol.user_id}",
+                json={"email": "bob@acme.test"},
+                headers=auth,
+            ).status_code
+            == 409
+        )
+        # The env-managed admin's credentials are env-owned -> 409.
+        assert (
+            client.patch(
+                f"/auth/users/{root.user_id}",
+                json={"password": "longpassword"},
+                headers=auth,
+            ).status_code
+            == 409
+        )
+        # An admin cannot demote themselves (lockout guard) -> 400.
+        assert (
+            client.patch(
+                f"/auth/users/{admin.user_id}", json={"role": "member"}, headers=auth
+            ).status_code
+            == 400
+        )
+        # Another household's user / an unknown id are both 404 (no cross-tenant leak).
+        eve = store.get_by_username("eve")
+        assert (
+            client.patch(
+                f"/auth/users/{eve.user_id}",
+                json={"password": "longpassword"},
+                headers=auth,
+            ).status_code
+            == 404
+        )
+        assert (
+            client.patch(
+                "/auth/users/ghost", json={"password": "longpassword"}, headers=auth
+            ).status_code
+            == 404
+        )
+
+        # A member token cannot PATCH at all -> 403.
+        member = client.post(
+            "/auth/login", json={"username": "bob", "password": "longpassword"}
+        ).json()["token"]
+        assert (
+            client.patch(
+                f"/auth/users/{carol.user_id}",
+                json={"password": "longpassword"},
+                headers={"Authorization": f"Bearer {member}"},
+            ).status_code
+            == 403
+        )
 
 
 @pytest.mark.real_auth
@@ -512,7 +827,9 @@ def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_auth(monkeypatch)
     user = get_user_store().create("wsuser", "longpassword", household="acme")
     token = issue_token(
-        Principal(user.user_id, "acme", "member"), secret=TEST_AUTH_SECRET, ttl_seconds=60
+        Principal(user.user_id, "acme", "member"),
+        secret=TEST_AUTH_SECRET,
+        ttl_seconds=60,
     )
     with TestClient(app) as client:
         # No token -> the socket is accepted, then closed with 1008. The code must
@@ -528,7 +845,9 @@ def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
         with client.websocket_connect(f"/ws?token={token}") as ws:
             import json as _json
 
-            ws.send_text(_json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
+            ws.send_text(
+                _json.dumps({"type": "session.start", "micSource": "phone-microphone"})
+            )
             assert ws.receive_json()["type"] == "session.ready"
 
 
@@ -577,7 +896,10 @@ def test_renew_token_if_due_rejects_invalid_and_expired() -> None:
     # An expired token gets no renewal — that's a re-login, not a slide.
     assert renew_token_if_due(token, secret="s3cret", ttl_seconds=60, now=2000) is None
     assert renew_token_if_due(token, secret="other", ttl_seconds=60, now=1050) is None
-    assert renew_token_if_due("not-a-token", secret="s3cret", ttl_seconds=60, now=1050) is None
+    assert (
+        renew_token_if_due("not-a-token", secret="s3cret", ttl_seconds=60, now=1050)
+        is None
+    )
 
 
 def test_renew_token_without_iat_renews_unconditionally() -> None:
@@ -625,7 +947,10 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
         # must be in the exposed list or browser JS could never read it.
         r = client.get(
             "/auth/me",
-            headers={"Authorization": f"Bearer {aged}", "Origin": "http://example.test"},
+            headers={
+                "Authorization": f"Bearer {aged}",
+                "Origin": "http://example.test",
+            },
         )
         assert r.status_code == 200
         fresh = r.headers.get(RENEWED_TOKEN_HEADER)
@@ -643,7 +968,9 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.real_auth
-def test_deleted_user_token_is_revoked_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deleted_user_token_is_revoked_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Deleting a user must end their access NOW, not at their token's expiry.
 
     XERK-236: tokens are stateless and last 30 days by default (and sliding
@@ -662,7 +989,9 @@ def test_deleted_user_token_is_revoked_immediately(monkeypatch: pytest.MonkeyPat
     user = get_user_store().create("doomed", "longpassword", household="acme")
     principal = Principal(user.user_id, "acme", "member", username="doomed")
     # Aged past half its life, so a renewal would be due if one were allowed.
-    token = issue_token(principal, secret=TEST_AUTH_SECRET, ttl_seconds=ttl, now=time.time() - 0.6 * ttl)
+    token = issue_token(
+        principal, secret=TEST_AUTH_SECRET, ttl_seconds=ttl, now=time.time() - 0.6 * ttl
+    )
     auth = {"Authorization": f"Bearer {token}"}
 
     with TestClient(app) as client:
@@ -681,8 +1010,6 @@ def test_deleted_user_token_is_revoked_immediately(monkeypatch: pytest.MonkeyPat
             with client.websocket_connect(f"/ws?token={token}") as ws:
                 ws.receive_json()
         assert excinfo.value.code == 1008
-
-
 
 
 # --- SqlUserStore: psycopg row_factory wiring (regression) -------------------
@@ -819,21 +1146,29 @@ def test_sql_user_store_authenticate_round_trips_password(fake_psycopg) -> None:
     assert bad is None
 
 
-def test_sql_user_store_create_and_update_scope_dict_row_to_cursor(fake_psycopg) -> None:
+def test_sql_user_store_create_and_update_scope_dict_row_to_cursor(
+    fake_psycopg,
+) -> None:
     conn = _FakeConn([_ADMIN_ROW])
-    created = _store_with(conn).create("ada", _ADMIN_PASSWORD, household="default", role="admin")
+    created = _store_with(conn).create(
+        "ada", _ADMIN_PASSWORD, household="default", role="admin"
+    )
     assert created.username == "ada"
     assert conn.calls[0][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
 
     conn2 = _FakeConn([_ADMIN_ROW])
-    updated = _store_with(conn2).update_credentials(_ADMIN_ROW["id"], password="newpass123")
+    updated = _store_with(conn2).update_credentials(
+        _ADMIN_ROW["id"], password="newpass123"
+    )
     assert updated.username == "ada"
     assert conn2.calls[0][2] is fake_psycopg.dict_row
     assert conn2.row_factory is None
 
 
-def test_sql_user_store_get_env_admin_and_by_id_scope_dict_row_to_cursor(fake_psycopg) -> None:
+def test_sql_user_store_get_env_admin_and_by_id_scope_dict_row_to_cursor(
+    fake_psycopg,
+) -> None:
     conn = _FakeConn([_ADMIN_ROW])
     assert _store_with(conn).get_env_admin().username == "ada"
     assert conn.calls[0][2] is fake_psycopg.dict_row
@@ -856,7 +1191,7 @@ _OIDC_ROW = {
     "household": "default",
     "username": "authentik-maya",
     "role": "member",
-    "password_hash": None,       # OIDC-only: no local password
+    "password_hash": None,  # OIDC-only: no local password
     "oidc_sub": "authentik-sub-1",
     "email": "maya@household.test",
 }
@@ -865,8 +1200,11 @@ _OIDC_ROW = {
 def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -> None:
     conn = _FakeConn([_OIDC_ROW])
     user = _store_with(conn).create_oidc(
-        oidc_sub="authentik-sub-1", email="maya@household.test",
-        username="authentik-maya", household="default", role="member",
+        oidc_sub="authentik-sub-1",
+        email="maya@household.test",
+        username="authentik-maya",
+        household="default",
+        role="member",
     )
     assert user.oidc_sub == "authentik-sub-1" and user.email == "maya@household.test"
     assert user.password_hash is None  # OIDC-only row read back cleanly
@@ -875,9 +1213,15 @@ def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -
 
 
 def test_sql_user_store_update_oidc_links_and_scopes_dict_row(fake_psycopg) -> None:
-    linked_row = {**_ADMIN_ROW, "oidc_sub": "authentik-sub-9", "email": "ada@household.test"}
+    linked_row = {
+        **_ADMIN_ROW,
+        "oidc_sub": "authentik-sub-9",
+        "email": "ada@household.test",
+    }
     conn = _FakeConn([linked_row])
-    user = _store_with(conn).update_oidc(_ADMIN_ROW["id"], oidc_sub="authentik-sub-9", role="admin")
+    user = _store_with(conn).update_oidc(
+        _ADMIN_ROW["id"], oidc_sub="authentik-sub-9", role="admin"
+    )
     assert user.oidc_sub == "authentik-sub-9" and user.role == "admin"
     assert conn.calls[0][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
@@ -885,7 +1229,10 @@ def test_sql_user_store_update_oidc_links_and_scopes_dict_row(fake_psycopg) -> N
 
 def test_sql_user_store_get_by_oidc_sub_and_email_scope_dict_row(fake_psycopg) -> None:
     conn = _FakeConn([_OIDC_ROW])
-    assert _store_with(conn).get_by_oidc_sub("authentik-sub-1").username == "authentik-maya"
+    assert (
+        _store_with(conn).get_by_oidc_sub("authentik-sub-1").username
+        == "authentik-maya"
+    )
     assert conn.calls[0][2] is fake_psycopg.dict_row
     # An empty key short-circuits without touching the DB.
     conn_empty = _FakeConn([])
@@ -895,6 +1242,9 @@ def test_sql_user_store_get_by_oidc_sub_and_email_scope_dict_row(fake_psycopg) -
 
     conn2 = _FakeConn([_OIDC_ROW])
     # The query lower()s both sides, so a mixed-case address still matches.
-    assert _store_with(conn2).get_by_email("maya@household.test").username == "authentik-maya"
+    assert (
+        _store_with(conn2).get_by_email("maya@household.test").username
+        == "authentik-maya"
+    )
     assert conn2.calls[0][2] is fake_psycopg.dict_row
     assert conn2.row_factory is None

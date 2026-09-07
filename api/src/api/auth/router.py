@@ -54,12 +54,35 @@ class CreateUserIn(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=8, description="At least 8 characters.")
     role: Role = "member"
+    # Optional link email (XERK-661): set it at creation time so the member links in
+    # place to their Authentik identity by verified email on first OIDC login, rather
+    # than being JIT-provisioned as a duplicate OIDC-only row (docs/auth-oidc.md §5).
+    email: str | None = Field(default=None, min_length=3)
+
+
+class UpdateUserIn(BaseModel):
+    """Fields an admin may set on an existing user (XERK-661). All optional; at least
+    one must be present.
+
+    ``email`` is the verified-email link key for OIDC migration (set it on an existing
+    local member so their Authentik login links in place). ``password`` restores local
+    login — notably on an OIDC-only row after an OIDC rollback, which has no password.
+    ``role`` promotes/demotes between member and admin.
+    """
+
+    email: str | None = Field(default=None, min_length=3)
+    password: str | None = Field(
+        default=None, min_length=8, description="At least 8 characters."
+    )
+    role: Role | None = None
 
 
 class UserSummaryOut(BaseModel):
     userId: str
     username: str
     role: str
+    # The verified-email link key (docs/auth-oidc.md §5); None on a plain local row.
+    email: str | None = None
     # The env-managed bootstrap admin (API_AUTH_ADMIN_*) is reconciled from env on
     # every boot, so removing it is pointless — the UI greys out its delete control.
     isEnvAdmin: bool = False
@@ -71,10 +94,15 @@ def login(body: LoginIn) -> TokenOut:
     if user is None:
         raise HTTPException(status_code=401, detail="invalid username or password")
     principal = Principal(
-        user_id=user.user_id, username=user.username, household=user.household, role=user.role
+        user_id=user.user_id,
+        username=user.username,
+        household=user.household,
+        role=user.role,
     )
     token = issue_token(
-        principal, secret=settings.auth_secret, ttl_seconds=settings.auth_token_ttl_seconds
+        principal,
+        secret=settings.auth_secret,
+        ttl_seconds=settings.auth_token_ttl_seconds,
     )
     return TokenOut(
         token=token,
@@ -151,6 +179,7 @@ def list_users(admin: Principal = Depends(require_admin)) -> list[UserSummaryOut
             userId=u.user_id,
             username=u.username,
             role=u.role,
+            email=u.email,
             isEnvAdmin=u.user_id == env_admin_id,
         )
         for u in store.list_by_household(admin.household)
@@ -158,18 +187,82 @@ def list_users(admin: Principal = Depends(require_admin)) -> list[UserSummaryOut
 
 
 @router.post("/users", response_model=PrincipalOut, status_code=201)
-def create_user(body: CreateUserIn, admin: Principal = Depends(require_admin)) -> PrincipalOut:
+def create_user(
+    body: CreateUserIn, admin: Principal = Depends(require_admin)
+) -> PrincipalOut:
     # New members join the admin's household — the team boundary (decision #6).
     try:
         user = get_user_store().create(
-            body.username, body.password, household=admin.household, role=body.role
+            body.username,
+            body.password,
+            household=admin.household,
+            role=body.role,
+            email=body.email,
         )
     except DuplicateUser as exc:
-        raise HTTPException(status_code=409, detail="username already taken") from exc
+        # username or (when supplied) email already taken — both surface as 409.
+        raise HTTPException(
+            status_code=409, detail="username or email already taken"
+        ) from exc
     return PrincipalOut.of(
         Principal(
-            user_id=user.user_id, username=user.username, household=user.household, role=user.role
+            user_id=user.user_id,
+            username=user.username,
+            household=user.household,
+            role=user.role,
         )
+    )
+
+
+@router.patch("/users/{user_id}", response_model=UserSummaryOut)
+def update_user(
+    user_id: str, body: UpdateUserIn, admin: Principal = Depends(require_admin)
+) -> UserSummaryOut:
+    """Set an existing user's email, password and/or role (XERK-661).
+
+    Unblocks the OIDC member-migration story (docs/oidc-runbook.md §4): set a local
+    member's link ``email`` so their Authentik login links in place, or set a
+    ``password`` on an OIDC-only row to restore local login after an OIDC rollback.
+    Scoped to the admin's own household, like delete.
+    """
+    if body.email is None and body.password is None and body.role is None:
+        raise HTTPException(status_code=400, detail="no changes requested")
+    store = get_user_store()
+    target = store.get_by_id(user_id)
+    # Scope to the admin's household; 404 (not 403) avoids leaking whether a user id
+    # exists in another household (mirrors delete).
+    if target is None or target.household != admin.household:
+        raise HTTPException(status_code=404, detail="user not found")
+    env_admin = store.get_env_admin()
+    if env_admin is not None and env_admin.user_id == user_id:
+        # The env-managed admin's username/password/email/household are reconciled from
+        # API_AUTH_ADMIN_* on every boot, so an API edit would be silently reverted.
+        raise HTTPException(
+            status_code=409,
+            detail="the env-managed admin's credentials are set via API_AUTH_ADMIN_*",
+        )
+    if body.role is not None and user_id == admin.user_id and body.role != admin.role:
+        # Refuse self-demotion — a lone admin demoting themselves locks the household
+        # out of every admin control (same lockout guard as self-delete).
+        raise HTTPException(status_code=400, detail="you cannot change your own role")
+    updated = target
+    try:
+        if body.email is not None or body.password is not None:
+            updated = store.update_credentials(
+                user_id, email=body.email, password=body.password
+            )
+        if body.role is not None:
+            # role lives on update_oidc (it also reconciles OIDC role); reads the row
+            # update_credentials just wrote, so a combined edit returns the final state.
+            updated = store.update_oidc(user_id, role=body.role)
+    except DuplicateUser as exc:
+        raise HTTPException(status_code=409, detail="email already in use") from exc
+    return UserSummaryOut(
+        userId=updated.user_id,
+        username=updated.username,
+        role=updated.role,
+        email=updated.email,
+        isEnvAdmin=False,  # the env-admin is refused above, so this row never is one
     )
 
 
@@ -177,7 +270,9 @@ def create_user(body: CreateUserIn, admin: Principal = Depends(require_admin)) -
 async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -> None:
     # An admin can't delete their own account (avoids locking yourself out mid-session).
     if user_id == admin.user_id:
-        raise HTTPException(status_code=400, detail="you cannot remove your own account")
+        raise HTTPException(
+            status_code=400, detail="you cannot remove your own account"
+        )
     store = get_user_store()
     target = store.get_by_id(user_id)
     # Scope deletion to the admin's own household; 404 (not 403) avoids leaking
@@ -188,7 +283,9 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
     if env_admin is not None and env_admin.user_id == user_id:
         # The env-managed admin is reconciled from API_AUTH_ADMIN_* on every boot, so
         # deleting it just resurrects on restart — refuse rather than mislead.
-        raise HTTPException(status_code=409, detail="the env-managed admin cannot be removed")
+        raise HTTPException(
+            status_code=409, detail="the env-managed admin cannot be removed"
+        )
     if target.oidc_sub is not None:
         # An OIDC account is governed by Authentik, not deleted here (docs/auth-oidc.md
         # §8). Local deletion would not revoke it: a still-valid Authentik access token
