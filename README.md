@@ -78,11 +78,17 @@ Retained audio lives on a bind mount (`API_AUDIO_DIR`, the "disk" audio
 backend). Smoke check once up: `curl localhost:8080/health`, then open
 `http://localhost:8080`.
 
-**Optional OIDC (Authentik):** for household multi-user SSO, a separate stack
-(`authentik/docker-compose.authentik.yml`) stands up Authentik as the identity
-provider Tenir authenticates against. It's optional infra with its own
-Postgres/Redis, deployed as its own Portainer stack — see
-[`docs/authentik-oidc.md`](docs/authentik-oidc.md).
+**Optional OIDC (Authentik):** for household multi-user SSO, Tenir can *also*
+accept Authentik OIDC logins alongside its built-in username/password auth. It is
+**off by default** and enabling it is a **config-only, reversible** change
+(`API_OIDC_ENABLED` + issuer/audience) — built-in auth keeps working and is never
+required to be removed, so the operator can always log in even if the IdP is down.
+The identity provider runs as a separate stack
+(`authentik/docker-compose.authentik.yml`) with its own Postgres/Redis, deployed as
+its own Portainer stack. Full enable / member-migration / rollback runbook:
+[`docs/oidc-runbook.md`](docs/oidc-runbook.md); the Authentik-side deploy and its
+published values: [`docs/authentik-oidc.md`](docs/authentik-oidc.md); the design
+contract: [`docs/auth-oidc.md`](docs/auth-oidc.md).
 
 ### STT (partials and finals)
 
@@ -117,9 +123,11 @@ compose. Key envs on the app container:
 
 ```
 API_AUTH_SECRET        bearer-token signing secret (boot refuses the default)
-API_AUTH_ADMIN_*       bootstrap admin (username / password / household)
+API_AUTH_ADMIN_*       bootstrap admin (username / password / household / email)
 API_AUTH_TOKEN_TTL_SECONDS  token lifetime (default 30d); tokens auto-renew on use,
                        so this is the max idle time before a device must re-login
+API_OIDC_ENABLED       opt-in Authentik OIDC (default false; config-only, reversible)
+API_OIDC_ISSUER/_AUDIENCE  required when enabled — see docs/oidc-runbook.md
 API_LITELLM_ENDPOINT   OpenAI-compatible base URL for STT finals + cues (…/v1)
 API_LITELLM_API_KEY    gateway key
 API_STT_BACKEND        parakeet (prod) | stub (dev/CI)

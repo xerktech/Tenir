@@ -101,6 +101,30 @@ services:
       API_AUTH_ADMIN_USERNAME: ${API_AUTH_ADMIN_USERNAME:-}
       API_AUTH_ADMIN_PASSWORD: ${API_AUTH_ADMIN_PASSWORD:-}
       API_AUTH_ADMIN_HOUSEHOLD: ${API_AUTH_ADMIN_HOUSEHOLD:-default}
+      # Email that identifies the env-admin's row so their first Authentik login
+      # links to it by verified email (docs/oidc-runbook.md). Only meaningful with
+      # OIDC on; harmless otherwise. Must equal AUTHENTIK_TENIR_ROOT_EMAIL.
+      API_AUTH_ADMIN_EMAIL: ${API_AUTH_ADMIN_EMAIL:-}
+      # ----- Optional Authentik OIDC (XERK-646). OFF BY DEFAULT: with
+      # API_OIDC_ENABLED unset/false none of the block below is reachable and auth
+      # behaves byte-for-byte as with built-in tokens only. Turning it on is a
+      # config-only, reversible change — see docs/oidc-runbook.md. The built-in
+      # API_AUTH_* backend above stays valid and is never removed; OIDC is a second
+      # backend accepted ALONGSIDE it. When on, API_OIDC_ISSUER and
+      # API_OIDC_AUDIENCE are required (the api refuses to boot half-configured).
+      API_OIDC_ENABLED: ${API_OIDC_ENABLED:-false}
+      API_OIDC_ISSUER: ${API_OIDC_ISSUER:-}
+      API_OIDC_AUDIENCE: ${API_OIDC_AUDIENCE:-}
+      # Derives to ${issuer}jwks/ when empty — set only if Authentik is fronted oddly.
+      API_OIDC_JWKS_URL: ${API_OIDC_JWKS_URL:-}
+      # Group→role claim wiring. Defaults match the seeded Authentik blueprint.
+      API_OIDC_GROUPS_CLAIM: ${API_OIDC_GROUPS_CLAIM:-groups}
+      API_OIDC_ADMIN_GROUP: ${API_OIDC_ADMIN_GROUP:-tenir-admins}
+      API_OIDC_MEMBER_GROUP: ${API_OIDC_MEMBER_GROUP:-tenir-members}
+      # Scopes advertised to clients via GET /auth/config for the PKCE request, and
+      # an optional pinned authorize endpoint (empty ⇒ the client re-discovers it).
+      API_OIDC_SCOPES: ${API_OIDC_SCOPES:-openid,email,profile,groups}
+      API_OIDC_AUTHORIZATION_ENDPOINT: ${API_OIDC_AUTHORIZATION_ENDPOINT:-}
       API_PERSISTENCE_BACKEND: postgres
       API_AUDIO_BACKEND: disk
       API_AUDIO_DIR: /data/audio

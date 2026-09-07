@@ -12,6 +12,20 @@ Working conventions for Claude Code in this repository.
   random words. Use a short `type/slug` form — e.g. `feat/rag-cues`,
   `fix/cue-dedup`, `docs/branch-naming` — so the branch is self-describing.
 
+## Auth (built-in + optional OIDC)
+
+- **Built-in username/password auth is always on and is never removed.** Every session and
+  recording is scoped to the logged-in user's household by a signed bearer token.
+- **Authentik OIDC is a second backend, opt-in and off by default** (`API_OIDC_ENABLED`, default
+  false). When on, the API accepts *both* built-in tokens *and* Authentik access tokens — never
+  OIDC-only, so the operator can always log in during an IdP outage. Enabling/disabling is a
+  config-only, reversible change; no doc may claim built-in auth must be removed.
+- **Contract lives in three docs, keep them in sync:** design contract `docs/auth-oidc.md`,
+  operator enable/migrate/rollback runbook `docs/oidc-runbook.md`, Authentik-side deploy
+  `docs/authentik-oidc.md`. The `API_OIDC_*` / `API_AUTH_ADMIN_EMAIL` vars are defined in
+  `api/src/api/config.py`, wired in `docker-compose.yml`, and documented in `.env.example` — a new
+  or changed OIDC var touches all four. See also `.claude/rules/authentik.md`.
+
 ## Product design & cross-platform parity
 
 - **Web and Android in parity**: The web UI and the Android app are two front

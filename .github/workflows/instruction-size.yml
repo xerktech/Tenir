@@ -1,0 +1,55 @@
+name: Instruction size
+
+# PR gate for the instruction files (CLAUDE.md + .claude/rules/*.md). These load
+# into every Claude Code session's context, so their size is a tax every run pays.
+# Claude Code's own threshold is 40,000 CHARACTERS — past it the CLI warns and
+# instruction adherence drops. Fail at/over 40k, warn from 36k. Path-filtered to
+# the instruction files (and this workflow) so a docs-only PR still runs it.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
+      - '.claude/rules/**'
+      - '.github/workflows/instruction-size.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    name: Instruction files under the 40k char cap
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check character counts
+        # -m (characters), not -c (bytes): these files are full of multibyte glyphs.
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+          HARD, WARN = 40_000, 36_000
+          files = sorted(set(
+              glob.glob("CLAUDE.md")
+              + glob.glob("**/CLAUDE.md", recursive=True)
+              + glob.glob(".claude/rules/*.md")
+          ))
+          failed = False
+          for path in files:
+              with open(path, encoding="utf-8") as f:
+                  n = len(f.read())
+              if n >= HARD:
+                  print(f"FAIL {path}: {n} chars >= {HARD} cap")
+                  failed = True
+              elif n >= WARN:
+                  print(f"warn {path}: {n} chars (approaching {HARD} cap)")
+              else:
+                  print(f"ok   {path}: {n} chars")
+          sys.exit(1 if failed else 0)
+          PY

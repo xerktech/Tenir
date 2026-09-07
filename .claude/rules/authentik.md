@@ -34,3 +34,9 @@ paths:
   blueprint.
 - Secrets come from `.env` (see the Authentik block in `.env.example`); the
   compose `${VAR:?}` guards refuse to start without them.
+- **The API side is opt-in and separate from this stack.** Turning OIDC on for
+  Tenir is the `API_OIDC_*` block (plus `API_AUTH_ADMIN_EMAIL`) on the *app*
+  service — defined in `api/src/api/config.py`, wired in `docker-compose.yml`,
+  documented in `.env.example`. Off by default (`API_OIDC_ENABLED=false`) and
+  reversible; the built-in `API_AUTH_*` backend stays valid and is never removed.
+  Operator runbook (enable / member migration / rollback): `docs/oidc-runbook.md`.
