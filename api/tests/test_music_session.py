@@ -699,3 +699,77 @@ def test_song_genuine_lyric_miss_is_not_retried() -> None:
         await session.close()
 
     asyncio.run(run())
+
+
+class _GatedRetryMusicService:
+    """Music spy whose retry lyric fetch blocks on an event, so a test can fire
+    `_end_music_run` while the retry is mid-fetch (the song-end-during-retry race).
+    First lyrics() call (run-open) raises transiently; the second (the retry)
+    signals `started`, awaits `release`, then returns lines."""
+
+    def __init__(self, matches: list[MusicMatch | None], recovered: list[SyncedLine]) -> None:
+        self._matches = list(matches)
+        self._recovered = recovered
+        self._calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self._calls += 1
+        if self._calls == 1:
+            raise RuntimeError("503")  # transient failure at run-open
+        self.started.set()
+        await self.release.wait()
+        return list(self._recovered)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_lyric_retry_bails_if_run_ends_mid_fetch() -> None:
+    """If the song-end task ends the run while a lyric retry is awaiting the fetch,
+    the retry must not resurrect the dead run: no orphan song-end task, no stale
+    anchor, no `song` frame for the ended run, no `song.sync` (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _GatedRetryMusicService(
+            [_match(offset_ms=60000)],
+            [SyncedLine(at_ms=0, text="one")],
+        )
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run; lyric fetch 503s -> pending
+        assert session._music_lyrics_pending is True
+        assert len(_songs(sent)) == 1
+
+        # Drive a sync (same song) whose retry will block inside lyrics().
+        sync_task = asyncio.create_task(
+            session._send_song_sync(_match(offset_ms=78000), 78000, time.monotonic())
+        )
+        await asyncio.wait_for(svc.started.wait(), timeout=1.0)
+        # The song-end task fires mid-fetch: the run ends now.
+        await session._end_music_run()
+        assert session._music_run_id is None
+        # Let the blocked retry resume and observe the ended run.
+        svc.release.set()
+        await asyncio.wait_for(sync_task, timeout=1.0)
+
+        # No resurrection: run stays ended, no orphan end task, no stale anchor.
+        assert session._music_active is False
+        assert session._music_run_id is None
+        assert session._music_end_task is None
+        assert session._music_end_ms is None
+        assert session._music_offset_ms is None
+        # Only the placeholder song frame + the end; no second song, no sync.
+        assert len(_songs(sent)) == 1
+        assert len(_syncs(sent)) == 0
+        assert len(_dones(sent)) == 1
+        await session.close()
+
+    asyncio.run(run())

@@ -1059,7 +1059,8 @@ class Session:
         synced lyrics (a genuine miss — stop retrying) or failed again transiently
         (stay pending, fall through to the normal re-anchor so the clock keeps
         moving)."""
-        if self._music_run_id is None:
+        run_id = self._music_run_id
+        if run_id is None:
             return False
         try:
             synced = await self._music.lyrics(match)
@@ -1067,6 +1068,12 @@ class Session:
             # Still failing: keep pending so the next sync tries once more.
             log.warning("session %s lyric retry failed", self.session_id, exc_info=True)
             return False
+        # The fetch awaited: the song-end task may have ended this run (or a
+        # takeover replaced it) meanwhile. Don't resurrect a dead run — that would
+        # schedule an orphan end task and emit a frame for a run the client has
+        # already dismissed. Return True so the caller sends no `song.sync` either.
+        if self._music_run_id != run_id:
+            return True
         # A clean lookup is final either way: recovered lyrics or a genuine miss.
         self._music_lyrics_pending = False
         if not synced:
@@ -1080,7 +1087,7 @@ class Session:
             await self._send(
                 Song(
                     type="song",
-                    songId=self._music_run_id,
+                    songId=run_id,
                     title=match.title,
                     artist=match.artist,
                     atMs=at_ms,
@@ -1107,10 +1114,13 @@ class Session:
         re-open (XERK-184)."""
         if self._music_run_id is None:
             return
-        if self._music_lyrics_pending and await self._retry_song_lyrics(
-            match, at_ms, window_end_monotonic
-        ):
-            return
+        if self._music_lyrics_pending:
+            if await self._retry_song_lyrics(match, at_ms, window_end_monotonic):
+                return
+            # The retry awaited a fetch; the run may have ended meanwhile. Re-guard
+            # so the normal re-anchor below never emits a `song.sync` for a dead run.
+            if self._music_run_id is None:
+                return
         # Re-anchor (XERK-192): refresh the retained offset and reschedule the
         # end-of-song dismissal off the fresh, drift-corrected position.
         self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
