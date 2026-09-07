@@ -7,8 +7,10 @@ additional household members.
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api import registry
 from api.auth.deps import current_principal, require_admin
@@ -17,6 +19,23 @@ from api.auth.users import DuplicateUser, get_user_store
 from api.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# A deliberately permissive check — one ``@`` with a dotted domain and no spaces —
+# enough to keep junk like "aaa" or a whitespace-only string out of the roster and
+# the OIDC verified-email link key (XERK-661), without pulling in a full RFC-5322
+# validator. The stored value is stripped so trailing whitespace never lands in an
+# email index.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validated_email(value: str | None) -> str | None:
+    """Strip and shape-check an optional email; ``None`` stays ``None`` (no change)."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not _EMAIL_RE.match(stripped):
+        raise ValueError("must be a valid email address")
+    return stripped
 
 
 class LoginIn(BaseModel):
@@ -57,7 +76,9 @@ class CreateUserIn(BaseModel):
     # Optional link email (XERK-661): set it at creation time so the member links in
     # place to their Authentik identity by verified email on first OIDC login, rather
     # than being JIT-provisioned as a duplicate OIDC-only row (docs/auth-oidc.md §5).
-    email: str | None = Field(default=None, min_length=3)
+    email: str | None = None
+
+    _check_email = field_validator("email")(staticmethod(_validated_email))
 
 
 class UpdateUserIn(BaseModel):
@@ -70,11 +91,13 @@ class UpdateUserIn(BaseModel):
     ``role`` promotes/demotes between member and admin.
     """
 
-    email: str | None = Field(default=None, min_length=3)
+    email: str | None = None
     password: str | None = Field(
         default=None, min_length=8, description="At least 8 characters."
     )
     role: Role | None = None
+
+    _check_email = field_validator("email")(staticmethod(_validated_email))
 
 
 class UserSummaryOut(BaseModel):
@@ -257,6 +280,10 @@ def update_user(
             updated = store.update_oidc(user_id, role=body.role)
     except DuplicateUser as exc:
         raise HTTPException(status_code=409, detail="email already in use") from exc
+    except KeyError as exc:
+        # The row was deleted between the get_by_id above and the update (a concurrent
+        # DELETE); the store raises KeyError. Report it as 404, not a 500.
+        raise HTTPException(status_code=404, detail="user not found") from exc
     return UserSummaryOut(
         userId=updated.user_id,
         username=updated.username,

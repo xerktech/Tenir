@@ -819,6 +819,91 @@ def test_update_user_guards(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.real_auth
+def test_email_must_be_valid_on_create_and_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-661: a malformed email (junk, or whitespace-only that slips past a length
+    check) is rejected with 422 rather than stored in the roster / link index. A valid
+    email is stripped before storage so no trailing whitespace lands in the index."""
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    carol = store.create("carol", "longpassword", household="acme")
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        for bad in ("aaa", "   ", "no-at-sign", "a@b", "a b@c.test"):
+            assert (
+                client.patch(
+                    f"/auth/users/{carol.user_id}", json={"email": bad}, headers=auth
+                ).status_code
+                == 422
+            ), bad
+            assert (
+                client.post(
+                    "/auth/users",
+                    json={"username": "x", "password": "longpassword", "email": bad},
+                    headers=auth,
+                ).status_code
+                == 422
+            ), bad
+        # None of the rejects stored anything.
+        assert store.get_by_id(carol.user_id).email is None
+
+        # A valid (padded) email is accepted and stored trimmed.
+        assert (
+            client.patch(
+                f"/auth/users/{carol.user_id}",
+                json={"email": "  carol@acme.test  "},
+                headers=auth,
+            ).status_code
+            == 200
+        )
+        assert store.get_by_id(carol.user_id).email == "carol@acme.test"
+
+
+@pytest.mark.real_auth
+def test_update_user_race_with_delete_is_404_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-661: if the row is deleted between the existence check and the store write
+    (a concurrent DELETE), the store raises KeyError — the endpoint maps it to 404,
+    never a 500. Simulated by deleting inside a patched update_credentials."""
+    from api.auth import get_user_store
+    from api.auth.users import InMemoryUserStore
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    bob = store.create("bob", "longpassword", household="acme")
+
+    real_update = InMemoryUserStore.update_credentials
+
+    def racing_update(self, user_id, **kwargs):
+        # Another request deletes the row after update_user's get_by_id succeeded.
+        self.delete(user_id)
+        return real_update(self, user_id, **kwargs)  # now raises KeyError
+
+    monkeypatch.setattr(InMemoryUserStore, "update_credentials", racing_update)
+
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        r = client.patch(
+            f"/auth/users/{bob.user_id}", json={"password": "newpassword"}, headers=auth
+        )
+        assert r.status_code == 404
+
+
+@pytest.mark.real_auth
 def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     from starlette.websockets import WebSocketDisconnect
 
