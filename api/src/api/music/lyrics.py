@@ -76,7 +76,7 @@ class LrcLibLyrics:
         self._cache: dict[str, list[SyncedLine]] = {}
         self._client = None  # lazily created httpx.AsyncClient (real backend only)
 
-    async def synced_lines(  # pragma: no cover - requires httpx + the live LRCLIB API
+    async def synced_lines(
         self,
         *,
         artist: str,
@@ -85,23 +85,26 @@ class LrcLibLyrics:
         album: str | None = None,
         cache_key: str | None = None,
     ) -> list[SyncedLine]:
-        """Synced lyric lines for a track, or ``[]`` when none are found.
+        """Synced lyric lines for a track, or ``[]`` when the track genuinely has
+        none.
 
-        Best-effort: any failure (miss, network error, plain-only lyrics) returns
-        ``[]`` so the song box still shows the title, just without a scroll.
+        A *definitive* outcome — synced lyrics found, or a clean lookup that turned
+        up no synced lyrics — is cached, so a locked song is fetched once. A
+        *transient* failure (network error, timeout, LRCLIB 5xx) is NOT cached and
+        is re-raised: caching an empty result on a momentary hiccup would leave the
+        whole song run showing the ``♪`` placeholder even after LRCLIB recovers
+        seconds later, so instead the caller catches this and retries on the next
+        sync (see ``_open_music_run`` / ``_send_song_sync``).
         """
         key = cache_key or f"{artist}␟{title}"
         if key in self._cache:
             return self._cache[key]
-        result: list[SyncedLine] = []
-        try:
-            synced = await self._lookup(
-                artist=artist, title=title, duration_ms=duration_ms, album=album
-            )
-            if synced:
-                result = parse_lrc(synced)
-        except Exception:
-            log.warning("LRCLIB lookup failed for %s - %s", artist, title, exc_info=True)
+        # A transient failure here propagates (not cached) so the run can retry;
+        # only a clean lookup reaches the cache below.
+        synced = await self._lookup(
+            artist=artist, title=title, duration_ms=duration_ms, album=album
+        )
+        result = parse_lrc(synced) if synced else []
         self._cache[key] = result
         return result
 

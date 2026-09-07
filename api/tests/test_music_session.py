@@ -611,3 +611,224 @@ def test_music_off_starts_no_loop() -> None:
         await session.close()
 
     asyncio.run(run())
+
+
+class _FlakyLyricMusicService:
+    """Music spy whose lyric fetch follows a scripted list of outcomes: a list of
+    SyncedLine is returned, an Exception instance is raised (a transient LRCLIB
+    failure). Records how many times lyrics() ran so a genuine miss can be shown
+    NOT to retry."""
+
+    def __init__(
+        self,
+        matches: list[MusicMatch | None],
+        lyric_outcomes: list[list[SyncedLine] | Exception],
+    ) -> None:
+        self._matches = list(matches)
+        self._lyric_outcomes = list(lyric_outcomes)
+        self.lyric_calls = 0
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self.lyric_calls += 1
+        outcome = self._lyric_outcomes.pop(0) if self._lyric_outcomes else []
+        if isinstance(outcome, Exception):
+            raise outcome
+        return list(outcome)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_song_lyrics_retried_and_recovered_on_next_sync() -> None:
+    """A transient lyric-fetch failure at run-open leaves the run pending; the next
+    sync retries, and once LRCLIB recovers a fresh `song` frame (same id) carries
+    the lyrics — no `song.sync` for that scan (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        recovered = [SyncedLine(at_ms=0, text="one"), SyncedLine(at_ms=5000, text="two")]
+        session._music = _FlakyLyricMusicService(
+            [_match(offset_ms=60000), _match(offset_ms=78000)],
+            [RuntimeError("503"), recovered],
+        )
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run — lyric fetch 503s
+        assert session._music_lyrics_pending is True
+        songs = _songs(sent)
+        assert len(songs) == 1
+        assert songs[0].lines == []  # placeholder run, no lyrics yet
+
+        await session._scan_music_once()  # same song -> retry, recovers lyrics
+        songs, syncs = _songs(sent), _syncs(sent)
+        assert len(songs) == 2  # a second `song` frame carrying the lyrics
+        assert songs[1].songId == songs[0].songId  # same run, replaced in place
+        assert [(ln.atMs, ln.text) for ln in songs[1].lines] == [(0, "one"), (5000, "two")]
+        assert 78000 <= songs[1].offsetMs < 78200  # re-anchored to the fresh offset
+        assert syncs == []  # the re-emitted song carries the anchor; no extra sync
+        assert session._music_lyrics_pending is False
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_song_genuine_lyric_miss_is_not_retried() -> None:
+    """A clean lookup that finds no synced lyrics is final: the run is not marked
+    pending, later syncs don't re-fetch, and the box just scrolls nothing."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _FlakyLyricMusicService(
+            [_match(offset_ms=60000), _match(offset_ms=78000)],
+            [[], []],  # a genuine miss at open; a second (unexpected) call would also miss
+        )
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens with no lyrics (genuine miss)
+        assert session._music_lyrics_pending is False
+        await session._scan_music_once()  # same song -> plain re-sync, no re-fetch
+
+        assert len(_songs(sent)) == 1  # no second song frame
+        assert len(_syncs(sent)) == 1  # normal re-sync path
+        assert svc.lyric_calls == 1  # the miss was not retried
+        await session.close()
+
+    asyncio.run(run())
+
+
+class _GatedRetryMusicService:
+    """Music spy whose retry lyric fetch blocks on an event, so a test can fire
+    `_end_music_run` while the retry is mid-fetch (the song-end-during-retry race).
+    First lyrics() call (run-open) raises transiently; the second (the retry)
+    signals `started`, awaits `release`, then returns lines."""
+
+    def __init__(self, matches: list[MusicMatch | None], recovered: list[SyncedLine]) -> None:
+        self._matches = list(matches)
+        self._recovered = recovered
+        self._calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self._calls += 1
+        if self._calls == 1:
+            raise RuntimeError("503")  # transient failure at run-open
+        self.started.set()
+        await self.release.wait()
+        return list(self._recovered)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_lyric_retry_bails_if_run_ends_mid_fetch() -> None:
+    """If the song-end task ends the run while a lyric retry is awaiting the fetch,
+    the retry must not resurrect the dead run: no orphan song-end task, no stale
+    anchor, no `song` frame for the ended run, no `song.sync` (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _GatedRetryMusicService(
+            [_match(offset_ms=60000)],
+            [SyncedLine(at_ms=0, text="one")],
+        )
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens the run; lyric fetch 503s -> pending
+        assert session._music_lyrics_pending is True
+        assert len(_songs(sent)) == 1
+
+        # Drive a sync (same song) whose retry will block inside lyrics().
+        sync_task = asyncio.create_task(
+            session._send_song_sync(_match(offset_ms=78000), 78000, time.monotonic())
+        )
+        await asyncio.wait_for(svc.started.wait(), timeout=1.0)
+        # The song-end task fires mid-fetch: the run ends now.
+        await session._end_music_run()
+        assert session._music_run_id is None
+        # Let the blocked retry resume and observe the ended run.
+        svc.release.set()
+        await asyncio.wait_for(sync_task, timeout=1.0)
+
+        # No resurrection: run stays ended, no orphan end task, no stale anchor.
+        assert session._music_active is False
+        assert session._music_run_id is None
+        assert session._music_end_task is None
+        assert session._music_end_ms is None
+        assert session._music_offset_ms is None
+        # Only the placeholder song frame + the end; no second song, no sync.
+        assert len(_songs(sent)) == 1
+        assert len(_syncs(sent)) == 0
+        assert len(_dones(sent)) == 1
+        await session.close()
+
+    asyncio.run(run())
+
+
+class _GatedFailAgainMusicService:
+    """Like _GatedRetryMusicService, but the retry fetch blocks then FAILS again
+    transiently — exercising the path where _retry_song_lyrics returns False while
+    the run ended mid-fetch, so _send_song_sync's re-guard must skip the sync."""
+
+    def __init__(self, matches: list[MusicMatch | None]) -> None:
+        self._matches = list(matches)
+        self._calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def identify(self, wav: bytes) -> MusicMatch | None:
+        return self._matches.pop(0) if self._matches else None
+
+    async def lyrics(self, match: MusicMatch) -> list[SyncedLine]:
+        self._calls += 1
+        if self._calls == 1:
+            raise RuntimeError("503")  # transient failure at run-open
+        self.started.set()
+        await self.release.wait()
+        raise RuntimeError("503 again")  # still failing when the run has ended
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_lyric_retry_failagain_skips_sync_if_run_ends_mid_fetch() -> None:
+    """The retry fetch fails again while the run ends mid-fetch: _send_song_sync's
+    re-guard must skip the normal re-anchor + `song.sync`, leaving no stale anchor
+    and no frame for the dead run (XERK-184)."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        svc = _GatedFailAgainMusicService([_match(offset_ms=60000)])
+        session._music = svc
+        _arm_window(session)
+        await session._scan_music_once()  # opens; fetch 503s -> pending
+        assert session._music_lyrics_pending is True
+
+        sync_task = asyncio.create_task(
+            session._send_song_sync(_match(offset_ms=78000), 78000, time.monotonic())
+        )
+        await asyncio.wait_for(svc.started.wait(), timeout=1.0)
+        await session._end_music_run()  # run ends mid-fetch
+        svc.release.set()
+        await asyncio.wait_for(sync_task, timeout=1.0)
+
+        # Re-guard held: no stale anchor, no sync for the ended run.
+        assert session._music_run_id is None
+        assert session._music_offset_ms is None
+        assert len(_syncs(sent)) == 0
+        assert len(_dones(sent)) == 1
+        await session.close()
+
+    asyncio.run(run())
