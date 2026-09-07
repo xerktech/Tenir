@@ -33,6 +33,7 @@ class ConversationStore(Protocol):
         household: str,
         conversation_id: str,
         *,
+        owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
     ) -> Conversation: ...
@@ -51,10 +52,20 @@ class ConversationStore(Protocol):
     ) -> Conversation | None: ...
     def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> None: ...
     def clear_audio_key(self, household: str, conversation_id: str) -> None: ...
-    def get(self, household: str, conversation_id: str) -> Conversation | None: ...
-    def list(self, household: str, *, limit: int = 50, offset: int = 0) -> list[Conversation]: ...
+    def get(
+        self, household: str, conversation_id: str, *, owner: str | None = None
+    ) -> Conversation | None: ...
+    def list(
+        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[Conversation]: ...
     def search(
-        self, household: str, query: str, *, limit: int = 50, offset: int = 0
+        self,
+        household: str,
+        query: str,
+        *,
+        owner: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Conversation]: ...
     def delete(self, household: str, conversation_id: str) -> bool: ...
     def households(self) -> list[str]: ...
@@ -80,18 +91,21 @@ class InMemoryConversationStore:
         household: str,
         conversation_id: str,
         *,
+        owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
     ) -> Conversation:
         with self._lock:
             convs = self._conversations(household)
-            # Idempotent so a resumed session (same id) keeps its existing record.
+            # Idempotent so a resumed session (same id) keeps its existing record —
+            # including its original owner; a resume never re-owns a recording.
             existing = convs.get(conversation_id)
             if existing is not None:
                 return existing
             conv = Conversation(
                 id=conversation_id,
                 household=household,
+                owner=owner,
                 mic_source=mic_source,
                 source_lang=source_lang,
             )
@@ -176,28 +190,53 @@ class InMemoryConversationStore:
             if conv is not None:
                 conv.audio_key = None
 
-    def get(self, household: str, conversation_id: str) -> Conversation | None:
-        with self._lock:
-            return self._conversations(household).get(conversation_id)
+    @staticmethod
+    def _owned(conv: Conversation, owner: str | None) -> bool:
+        """Whether ``owner`` may read ``conv`` (XERK-651).
 
-    def list(self, household: str, *, limit: int = 50, offset: int = 0) -> list[Conversation]:
+        ``owner is None`` is the admin/internal scope — no filter, every row visible.
+        Otherwise only the caller's own rows match; a NULL-owner (legacy/auth-off) row
+        never equals a member's id, so it stays admin-only until backfilled (§9).
+        """
+        return owner is None or conv.owner == owner
+
+    def get(
+        self, household: str, conversation_id: str, *, owner: str | None = None
+    ) -> Conversation | None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is None or not self._owned(conv, owner):
+                return None
+            return conv
+
+    def list(
+        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[Conversation]:
         with self._lock:
             convs = sorted(
-                self._conversations(household).values(),
+                (c for c in self._conversations(household).values() if self._owned(c, owner)),
                 key=lambda c: c.started_at,
                 reverse=True,
             )
             return convs[offset : offset + limit]
 
     def search(
-        self, household: str, query: str, *, limit: int = 50, offset: int = 0
+        self,
+        household: str,
+        query: str,
+        *,
+        owner: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Conversation]:
         terms = [t for t in query.lower().split() if t]
         if not terms:
-            return self.list(household, limit=limit, offset=offset)
+            return self.list(household, owner=owner, limit=limit, offset=offset)
         with self._lock:
             scored: list[tuple[int, Conversation]] = []
             for conv in self._conversations(household).values():
+                if not self._owned(conv, owner):
+                    continue
                 hay = conv.transcript.lower()
                 score = sum(hay.count(term) for term in terms)
                 if score:

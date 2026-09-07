@@ -64,6 +64,22 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS conversations_household_started_idx
     ON conversations (household, started_at DESC);
+-- Per-user ownership (XERK-651, T5 / docs/auth-oidc.md §9): the local users.id whose
+-- session produced the recording. A member reads only rows they own; an admin reads
+-- all in the household. Nullable so legacy rows and the auth-off path need no value.
+-- Additive column for data dirs created before ownership (this file is applied
+-- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip it).
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner TEXT REFERENCES users(id);
+CREATE INDEX IF NOT EXISTS conversations_owner_idx
+    ON conversations (household, owner, started_at DESC);
+-- Legacy-row backfill (§9): rows written before ownership have owner NULL. Attribute
+-- them to the env-managed admin so the household owner keeps every pre-OIDC recording
+-- after they link via OIDC (linking preserves the local id). No-op when the admin row
+-- does not exist yet (fresh volume, or admin not reconciled) — the subquery is NULL and
+-- nothing changes; a later boot with the admin present backfills. Until then a NULL
+-- owner is read as admin-only, so no recording is orphaned or leaked to a member.
+UPDATE conversations SET owner = (SELECT id FROM users WHERE is_env_admin)
+    WHERE owner IS NULL AND EXISTS (SELECT 1 FROM users WHERE is_env_admin);
 
 -- One finalized transcript turn (mirrors the caption.final contract).
 CREATE TABLE IF NOT EXISTS segments (

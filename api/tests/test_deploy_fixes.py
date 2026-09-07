@@ -150,7 +150,12 @@ def test_audio_download_accepts_query_token(monkeypatch: pytest.MonkeyPatch) -> 
     _enable_auth(monkeypatch)
     convs = get_conversation_store()
     audio = get_audio_store()
-    convs.create("acme", "11111111-1111-4111-8111-111111111111")
+    token = _token("acme")  # creates the member and their token
+    owner = get_user_store().get_by_username("u-acme-member")
+    assert owner is not None
+    # Owned by the downloading member so ownership (XERK-651) lets them fetch it —
+    # the point under test is the query-param token auth path, not the owner gate.
+    convs.create("acme", "11111111-1111-4111-8111-111111111111", owner=owner.user_id)
     convs.set_audio_key("acme", "11111111-1111-4111-8111-111111111111", "acme/11111111-1111-4111-8111-111111111111.wav")
     audio.put("acme/11111111-1111-4111-8111-111111111111.wav", b"RIFFdata")
 
@@ -158,7 +163,7 @@ def test_audio_download_accepts_query_token(monkeypatch: pytest.MonkeyPatch) -> 
         # No credentials at all -> 401 (plain navigation can't set a header).
         assert client.get("/conversations/11111111-1111-4111-8111-111111111111/audio").status_code == 401
         # The token in the query param authenticates the download.
-        r = client.get(f"/conversations/11111111-1111-4111-8111-111111111111/audio?token={_token('acme')}")
+        r = client.get(f"/conversations/11111111-1111-4111-8111-111111111111/audio?token={token}")
         assert r.status_code == 200 and r.content == b"RIFFdata"
 
 

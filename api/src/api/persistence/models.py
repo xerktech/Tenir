@@ -94,6 +94,12 @@ class Conversation:
 
     id: str
     household: str
+    # The local ``users.id`` that produced this recording (XERK-651). Ownership is
+    # per-user, not per-household: a member reads only their own recordings, an admin
+    # reads all in the household. ``None`` on legacy rows written before ownership and
+    # on the auth-off/test path; a NULL owner is treated as admin-only (never matches a
+    # member's id) until backfilled to the env-admin (docs/auth-oidc.md §9).
+    owner: str | None = None
     mic_source: str | None = None
     source_lang: str | None = None
     started_at: datetime = field(default_factory=utcnow)

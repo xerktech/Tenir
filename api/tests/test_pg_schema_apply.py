@@ -94,13 +94,16 @@ def test_apply_schema_creates_the_cues_table() -> None:
 
     assert _creates_cues(conn.statements), "boot schema apply must create the cues table"
     # Idempotent guard: every statement is safe to re-run on a converged DB — a
-    # CREATE/INSERT guarded by IF NOT EXISTS / ON CONFLICT, or an ALTER COLUMN ...
-    # DROP NOT NULL (a no-op when the column is already nullable, XERK-650).
+    # CREATE/INSERT guarded by IF NOT EXISTS / ON CONFLICT, an ALTER COLUMN ...
+    # DROP NOT NULL (a no-op when the column is already nullable, XERK-650), or a
+    # WHERE-guarded backfill UPDATE that only rewrites still-unset rows and so
+    # converges after its first run (the conversations.owner backfill, XERK-651).
     assert all(
         "IF NOT EXISTS" in s
         or "ON CONFLICT" in s
         or s.upper().startswith("INSERT")
         or "DROP NOT NULL" in s.upper()
+        or (s.upper().startswith("UPDATE") and "WHERE" in s.upper())
         for s in conn.statements
     )
 
