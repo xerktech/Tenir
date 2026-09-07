@@ -477,6 +477,33 @@ def test_env_admin_cannot_be_removed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.real_auth
+def test_oidc_account_cannot_be_locally_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OIDC account (any row carrying an ``oidc_sub``) is governed by Authentik, not
+    removed here (docs/auth-oidc.md §8): local deletion wouldn't revoke it — a still-valid
+    Authentik token would re-provision it on the next request. The admin must revoke via
+    the Tenir group in Authentik instead, so the delete endpoint refuses with 409."""
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    oidc_user = store.create_oidc(
+        oidc_sub="sub-xyz", email="jit@acme.test", username="jitter", household="acme", role="member"
+    )
+    with TestClient(app) as client:
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "longpassword"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        resp = client.delete(f"/auth/users/{oidc_user.user_id}", headers=auth)
+        assert resp.status_code == 409
+        assert "Authentik" in resp.json()["detail"]
+        # A plain local user in the same household is still deletable, unchanged.
+        local = store.create("bob", "longpassword", household="acme")
+        assert client.delete(f"/auth/users/{local.user_id}", headers=auth).status_code == 204
+
+
+@pytest.mark.real_auth
 def test_ws_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     from starlette.websockets import WebSocketDisconnect
 

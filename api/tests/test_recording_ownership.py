@@ -227,11 +227,12 @@ def test_admin_keeps_recordings_across_local_to_oidc_link() -> None:
     token = Principal(
         user_id="authentik-sub-123",
         household=HH,
-        role="member",
+        role="admin",
         username="owner",
         sub="authentik-sub-123",
         email="owner@example.com",
         email_verified=True,
+        groups=("tenir-admins",),  # in a Tenir group, so the link clears the access gate (§7)
     )
     linked = resolve_oidc_principal(token, store)
     # Same local id → same owner → the recording is still theirs after linking.

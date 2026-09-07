@@ -145,8 +145,8 @@ OIDC login both work.
 | `API_OIDC_AUDIENCE` | `""` | Required when enabled. = the Tenir application's client_id. |
 | `API_OIDC_JWKS_URL` | derived | RS256 signing keys; empty ⇒ `${issuer}jwks/`. |
 | `API_OIDC_GROUPS_CLAIM` | `groups` | Token claim carrying group membership. |
-| `API_OIDC_ADMIN_GROUP` | `tenir-admins` | Membership here ⇒ role `admin`; else `member`. |
-| `API_OIDC_MEMBER_GROUP` | `tenir-members` | Documented member group; presence is not a gate. |
+| `API_OIDC_ADMIN_GROUP` | `tenir-admins` | Membership here ⇒ role `admin`. |
+| `API_OIDC_MEMBER_GROUP` | `tenir-members` | Membership ⇒ role `member`. **Access gate:** a token in *neither* Tenir group is denied — this is how you revoke a member (see §4). |
 | `API_OIDC_SCOPES` | `openid,email,profile,groups` | Scopes advertised to clients via `/auth/config`. |
 | `API_OIDC_AUTHORIZATION_ENDPOINT` | `""` | Optional pinned authorize endpoint; empty ⇒ client re-discovers it. |
 
@@ -178,7 +178,24 @@ Authentik login**, by verified email:
    on that person can log in with **either** their password **or** Authentik.
 
 A member with no matching local row is **JIT-created** as a fresh member on first login — that is
-the normal path for a brand-new household member who never had a local account.
+the normal path for a brand-new household member who never had a local account. JIT-creation (and
+every OIDC login) requires the user to be in a **Tenir group** (`tenir-admins` or `tenir-members`);
+an Authentik user in neither group is denied and gets no Tenir account.
+
+### Revoking an OIDC user
+
+Access for an OIDC user is **governed by Authentik, not by local deletion.** Revoke them by
+**removing them from the Tenir group(s) in Authentik** (`tenir-admins` *and* `tenir-members`): their
+next access token then carries no Tenir group and the API denies it. To cut access immediately even
+within the current token's lifetime, **disable or delete the user in Authentik** — no new token is
+issued and the current one expires.
+
+> **The API refuses to locally delete an OIDC account.** `DELETE /auth/users/{id}` returns **409**
+> for any row carrying an `oidc_sub`. A local delete would *not* revoke access — a still-valid
+> Authentik token would re-provision the account (and an `tenir-admins` user would re-appear as
+> admin) on the next request — so revocation must happen in Authentik. (Built-in local-only accounts
+> are still deletable and deleting one revokes it at once, as before.) Keep access-token lifetimes
+> short in Authentik (§ `docs/auth-oidc.md` §10) so a group removal takes effect promptly.
 
 > **Setting a non-env-admin member's email today.** The env-admin's link email comes from
 > `API_AUTH_ADMIN_EMAIL`. For **other** existing local members there is currently **no admin

@@ -113,7 +113,7 @@ Everything defaults to "off/empty" so an untouched deployment is unaffected.
 | `API_OIDC_JWKS_URL` | derived | RS256 signing keys. Defaults to `{issuer}jwks/`; override only if Authentik is fronted oddly. **`«T1»` host** |
 | `API_OIDC_GROUPS_CLAIM` | `groups` | Which token claim carries group membership. |
 | `API_OIDC_ADMIN_GROUP` | `tenir-admins` | Membership here ⇒ role `admin`. |
-| `API_OIDC_MEMBER_GROUP` | `tenir-members` | Documented member group; presence is **not** required for access (see §7). |
+| `API_OIDC_MEMBER_GROUP` | `tenir-members` | Membership ⇒ role `member`; it is the **member access gate** — a token in neither this nor the admin group is denied (§7). |
 | `API_OIDC_ALLOW_USERNAME_LINK` | `false` | Secondary link key `preferred_username` (§5). **Recommend `false`.** |
 | `API_OIDC_SCOPES` | `openid,email,profile,groups` | Scopes advertised to clients via `GET /auth/config` (§10) for the PKCE request. |
 | `API_OIDC_AUTHORIZATION_ENDPOINT` | `""` | Optional pinned authorize endpoint advertised via `/auth/config`; empty ⇒ the client re-discovers it. |
@@ -160,6 +160,11 @@ Authentik's userinfo/introspection on the hot path.
 | `groups` (claim name = `API_OIDC_GROUPS_CLAIM`) | Role derivation (§7). Absent/empty ⇒ member. |
 
 ## 5. Account linking (the key decision)
+
+**Access gate first (§7).** Before any resolution, a validated token must carry a Tenir group
+(`tenir-admins` or `tenir-members`) — the env-admin excepted (§6). A token in neither group is
+denied (401) and **nothing is provisioned or linked**; this is the revocation lever (§8). The
+resolution below runs only for a token that clears the gate.
 
 On a validated OIDC token the API resolves the local user row in this **fixed order** and stops at
 the first hit:
@@ -213,16 +218,19 @@ before, and never overrides an existing `oidc_sub`.
 
 - The **groups claim** is named by `API_OIDC_GROUPS_CLAIM` (default `groups`) and carries an array
   of group names. (T1 configures Authentik to include the `groups` scope so this claim is present.)
-- **Mapping:** contains `API_OIDC_ADMIN_GROUP` (`tenir-admins`) ⇒ role **`admin`**; otherwise ⇒
-  role **`member`**. `tenir-members` is the documented member group but membership in it is **not**
-  a gate — the mapping is "admin group present or not", nothing more.
-- **No groups / unknown groups ⇒ `member`.** A token with an absent, empty, or entirely unrecognized
-  `groups` claim resolves to a plain member: full use of their **own** data, **no** access to anyone
-  else's (ownership in §9 enforces this). There is no "no access at all" state on a token that
-  otherwise validated — a validated household member is at least a member.
-- **Role is recomputed from the token on every login**, then written to the row. An Authentik group
-  change takes effect on the user's next login (subject to token lifetime, §10). The **env-admin is
-  the sole exception** (§6).
+- **Group membership is the access gate.** A validated token grants access **only** if it carries
+  `API_OIDC_ADMIN_GROUP` (`tenir-admins`) **or** `API_OIDC_MEMBER_GROUP` (`tenir-members`):
+  - contains `tenir-admins` ⇒ role **`admin`**;
+  - contains `tenir-members` (and not `tenir-admins`) ⇒ role **`member`**;
+  - **contains neither ⇒ no access.** The token is rejected (401) and **no account is provisioned
+    or linked** — a non-Tenir Authentik user can never authenticate into the household, and dropping
+    a user from every Tenir group is how you revoke them (§8). `tenir-members` **is** the member
+    access gate (it is no longer merely documentary).
+- **The env-admin is the sole exception** (§6): it is always `admin` even in no group, so an IdP
+  group change can never lock the household operator out of their own hub.
+- **Role/access is recomputed from the token on every login**, then written to the row. An Authentik
+  group change — promotion, demotion, or removal — takes effect on the user's next login (subject to
+  token lifetime, §10).
 
 ## 8. Identity & the Principal shape
 
@@ -249,11 +257,20 @@ class Principal:
   user-store liveness lookup all key on the same stable local id whether the user logged in locally
   or through Authentik. `sub` is the stable *external* id and lives in the `sub` field / `oidc_sub`
   column; it is not what downstream code keys on.
-- **Downstream is unchanged.** `is_admin`, `require_admin`, household tenancy, and
-  `principal_from_live_token`'s "does this account still exist?" check (`auth/deps.py`) all operate
-  on `user_id`/`role`/`household` exactly as today. The liveness check keeps working for OIDC users:
-  after JWT validation the API still looks the local row up by `user_id`, so a user whose local row
-  was deleted is 401'd even with an otherwise-valid Authentik token.
+- **Downstream is unchanged for built-in tokens.** `is_admin`, `require_admin`, household tenancy,
+  and `principal_from_live_token`'s "does this account still exist?" check (`auth/deps.py`) operate
+  on `user_id`/`role`/`household` exactly as today. A built-in (HMAC) token whose local row was
+  deleted is 401'd by that liveness lookup — deleting a **local** user still revokes them now.
+- **OIDC access is governed by Authentik, not by local deletion (revocation model).** The OIDC path
+  does **not** run the built-in liveness lookup: a validated token is resolved (linked or JIT) and
+  its access is gated on **Tenir group membership (§7), re-evaluated on every login**. So an OIDC
+  user is revoked by **removing them from the Tenir group in Authentik** (their next token carries no
+  Tenir group and is denied), or by disabling/deleting the user in Authentik (no new token is issued
+  and the current one expires). Deleting only the **local** row is deliberately **refused**
+  (`router.delete_user` 409s any row carrying an `oidc_sub`): a local delete would *not* revoke
+  access, because a still-valid Authentik token would re-provision the account on the very next
+  request — and an admin-group user would silently re-appear as `admin`. Account lifecycle for OIDC
+  identities belongs to the IdP; Tenir enforces it through the group gate, not through local rows.
 - **Household: single hub household.** Tenir is one self-hosted household hub. Every OIDC user
   resolves into the **one** hub household — the env-admin's household (`API_AUTH_ADMIN_HOUSEHOLD`,
   default `default`). OIDC does not introduce multi-household mapping in this epic; a group→household

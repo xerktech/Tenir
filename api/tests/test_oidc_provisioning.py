@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from api.auth import Principal
+from api.auth.tokens import AuthError
 from api.auth.users import (
     DuplicateUser,
     InMemoryUserStore,
@@ -29,14 +30,16 @@ def _oidc(
     email_verified: bool = True,
     role: str = "member",
     username: str = "",
-    groups: tuple[str, ...] = (),
+    groups: tuple[str, ...] = ("tenir-members",),
     household: str = "default",
 ) -> Principal:
     """A Principal shaped exactly as ``OidcVerifier.verify`` returns it.
 
     ``user_id`` is the raw ``sub`` at this stage (T3 interim); ``role`` has already
     been derived from the groups claim by the verifier. Resolution replaces
-    ``user_id`` with the local row id.
+    ``user_id`` with the local row id. Defaults to the member group so a "normal"
+    validated user clears the access gate (docs/auth-oidc.md §7); tests that exercise
+    the no-group path pass ``groups=()`` explicitly.
     """
     return Principal(
         user_id=sub,
@@ -261,12 +264,68 @@ def test_idempotent_relogin_never_duplicates() -> None:
 
 def test_role_flips_on_group_change() -> None:
     store = InMemoryUserStore()
-    p1 = resolve_oidc_principal(_oidc("sub-r", email="r@h.test", groups=(), role="member"), store)
+    p1 = resolve_oidc_principal(
+        _oidc("sub-r", email="r@h.test", groups=("tenir-members",), role="member"), store
+    )
     assert p1.role == "member"
-    p2 = resolve_oidc_principal(_oidc("sub-r", email="r@h.test", groups=("tenir-admins",), role="admin"), store)
+    p2 = resolve_oidc_principal(
+        _oidc("sub-r", email="r@h.test", groups=("tenir-admins",), role="admin"), store
+    )
     assert p2.role == "admin" and p2.user_id == p1.user_id
-    p3 = resolve_oidc_principal(_oidc("sub-r", email="r@h.test", groups=(), role="member"), store)
+    # Demoted back to the member group on the next login.
+    p3 = resolve_oidc_principal(
+        _oidc("sub-r", email="r@h.test", groups=("tenir-members",), role="member"), store
+    )
     assert p3.role == "member" and p3.user_id == p1.user_id
+
+
+def test_no_tenir_group_is_denied_and_provisions_nothing() -> None:
+    """Access gate (docs/auth-oidc.md §7): a validated token in neither Tenir group has
+    no Tenir account. It is denied (⇒ 401 at the deps layer) and — critically — leaves no
+    provisioned or mutated row behind, so a denied login can't seed a future account."""
+    store = InMemoryUserStore()
+    with pytest.raises(AuthError):
+        resolve_oidc_principal(
+            _oidc("sub-nogroup", email="ng@h.test", email_verified=True, groups=()), store
+        )
+    assert store.get_by_oidc_sub("sub-nogroup") is None
+    assert store.get_by_email("ng@h.test") is None
+    # An unrelated (non-Tenir) group is not a Tenir group either.
+    with pytest.raises(AuthError):
+        resolve_oidc_principal(
+            _oidc("sub-other", email="o@h.test", groups=("some-other-app",)), store
+        )
+    assert store.get_by_oidc_sub("sub-other") is None
+
+
+def test_removal_from_tenir_group_revokes_access_on_next_login() -> None:
+    """The OIDC revocation lever: a user is dropped from every Tenir group in Authentik,
+    so their *next* token carries no Tenir group and is denied — even though the local row
+    provisioned by their earlier login still exists (deletion is refused for OIDC rows)."""
+    store = InMemoryUserStore()
+    p = resolve_oidc_principal(
+        _oidc("sub-rev", email="rev@h.test", groups=("tenir-members",)), store
+    )
+    assert store.get_by_oidc_sub("sub-rev").user_id == p.user_id  # provisioned, has access
+    # Removed from the group in Authentik → next token has no Tenir group → denied.
+    with pytest.raises(AuthError):
+        resolve_oidc_principal(_oidc("sub-rev", email="rev@h.test", groups=()), store)
+
+
+def test_env_admin_denied_group_gate_exemption_by_sub() -> None:
+    """The env-admin stays admin with no group even when resolved by an already-linked
+    ``oidc_sub`` (not just by verified-email match) — the gate exemption is by identity,
+    not by which resolution branch hits (docs/auth-oidc.md §6)."""
+    store = InMemoryUserStore()
+    admin = store.create(
+        "root", "longpassword", household="default", role="admin",
+        is_env_admin=True, email="admin@h.test",
+    )
+    store.update_oidc(admin.user_id, oidc_sub="sub-admin")  # already linked
+    p = resolve_oidc_principal(
+        _oidc("sub-admin", email="admin@h.test", groups=()), store
+    )
+    assert p.user_id == admin.user_id and p.role == "admin"
 
 
 def test_username_refreshes_on_login_for_linked_user() -> None:
@@ -282,7 +341,10 @@ def test_username_collision_on_refresh_is_non_fatal() -> None:
     colliding one keeps its current username, and its role change still applies."""
     store = InMemoryUserStore()
     store.create("taken", "longpassword", household="default")  # a local user owns "taken"
-    p1 = resolve_oidc_principal(_oidc("sub-c", email="c@h.test", username="carol", groups=(), role="member"), store)
+    p1 = resolve_oidc_principal(
+        _oidc("sub-c", email="c@h.test", username="carol", groups=("tenir-members",), role="member"),
+        store,
+    )
     # Next login wants to rename to the taken name AND become admin.
     p2 = resolve_oidc_principal(
         _oidc("sub-c", email="c@h.test", username="taken", groups=("tenir-admins",), role="admin"), store
