@@ -456,7 +456,10 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
   `{"status":"ok","model": "nvidia/parakeet-tdt-0.6b-v3"}`; it serves
   `/v1/audio/transcriptions` but NOT `/v1/models`, so probe `/health`). The
   cue/translation LLM is on the GPU box (`maxai.xerktech.com:8890`) — Qwen3.8-27B
-  served by SGLang, not Ollama; it needs no key and does serve `/health`.
+  served by SGLang, not Ollama; it needs no key. It does NOT usefully serve
+  `GET /health` or `GET /v1/models`: both hang and reset at ~21s even when the
+  model is healthy (a fronting proxy resets non-completion routes). Liveness-check
+  it only with a real `POST /v1/chat/completions` (see XERK-680).
 
   Point the QA stack at the real models with (substitute your STT host):
 
