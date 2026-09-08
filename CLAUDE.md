@@ -78,8 +78,9 @@ npm install && npm run typecheck && npm run test && npm run build
 
 ### Testing against the real models (bypass LiteLLM)
 
-The GPU model servers run on the host at **`10.10.10.22`** and can be hit
-**directly**, bypassing the LiteLLM gateway — useful for exercising real
+The GPU model servers run on the host **`maxai.xerktech.com`** (its IP drifts —
+currently `10.10.10.26`) and can be hit **directly**, bypassing the LiteLLM
+gateway — useful for exercising real
 model behaviour (e.g. cue/translation accuracy) instead of only unit tests or
 the stub. Both expose an OpenAI-compatible API:
 
@@ -89,10 +90,18 @@ the stub. Both expose an OpenAI-compatible API:
   `OpenAICueGenerator(endpoint="http://maxai.xerktech.com:9402/v1", model="qwen3.8-27b", api_key="")`
   (or `OpenAITranslator(...)`) straight at it to drive the real model. Thinking
   is toggled via `chat_template_kwargs.enable_thinking` (on by default for cues,
-  off by default for translations — see `api/src/api/config.py`). Probe
-  `GET /v1/models` first and use the id it reports — a wrong model name comes
-  back as a 404 on /chat/completions, which looks like a missing route.
-- **`10.10.10.22:9401`** — Parakeet STT (`GET /health`).
+  off by default for translations — see `api/src/api/config.py`). The model id
+  is `qwen3.8-27b` (a wrong id 404s on /chat/completions, which looks like a
+  missing route). `GET /v1/models` returns 200 here and is a reliable liveness
+  probe (`/health` also returns 200, occasionally slow to first respond). The
+  authoritative production check is still a real completion through the LiteLLM
+  proxy for `qwen3.8-27b-dflash`. (The retired port **8890** fronted SGLang behind
+  a proxy that hung `GET /v1/models` and `/health` at ~21s even when healthy and
+  only passed `POST /v1/chat/completions` — the XERK-680 confusion; 8890 is now
+  dead on every route (XERK-681), so use 9402.)
+- **`10.10.10.22:9401`** — Parakeet STT (`GET /health`). The host IP drifts
+  (currently `maxai.xerktech.com` resolves to `10.10.10.26`); prefer the DNS name
+  and don't trust a hard-coded IP here.
 
 These are the same servers the gateway routes to (the `qwen3.8-27b-dflash` alias);
 talking to them directly skips the gateway alias and auth so you can iterate on
