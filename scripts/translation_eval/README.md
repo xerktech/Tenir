@@ -36,7 +36,7 @@ cd api && pip install -e '.[dev]'   # replay imports the installed package
 
 # production setup (Qwen3.8-27B on SGLang; the shipped payload already sets
 # chat_template_kwargs.enable_thinking=false)
-python replay.py eval_set.json --endpoint http://maxai.xerktech.com:8890/v1 \
+python replay.py eval_set.json --endpoint http://maxai.xerktech.com:9402/v1 \
   --model qwen3.8-27b --out results.qwen3.8-27b.json
 ```
 
@@ -58,7 +58,7 @@ python replay.py eval_set.json --endpoint http://maxai.xerktech.com:8890/v1 \
 
 ```bash
 python judge.py results.qwen3.8-27b.json \
-  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b
+  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b
 python report.py results.*.judged.json
 ```
 

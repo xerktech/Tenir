@@ -455,11 +455,11 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
   runs wherever you point `API_STT_ENDPOINT` (`GET /health` →
   `{"status":"ok","model": "nvidia/parakeet-tdt-0.6b-v3"}`; it serves
   `/v1/audio/transcriptions` but NOT `/v1/models`, so probe `/health`). The
-  cue/translation LLM is on the GPU box (`maxai.xerktech.com:8890`) — Qwen3.8-27B
-  served by SGLang, not Ollama; it needs no key. It does NOT usefully serve
-  `GET /health` or `GET /v1/models`: both hang and reset at ~21s even when the
-  model is healthy (a fronting proxy resets non-completion routes). Liveness-check
-  it only with a real `POST /v1/chat/completions` (see XERK-680).
+  cue/translation LLM is on the GPU box (`maxai.xerktech.com:9402`) — Qwen3.8-27B
+  served by SGLang, not Ollama; it needs no key and serves `GET /v1/models` (200,
+  the reliable liveness probe) and `GET /health`. (It moved off the retired port
+  8890, which fronted SGLang behind a proxy that hung those routes at ~21s even
+  when healthy — the XERK-680 red herring; 8890 is now dead, XERK-681.)
 
   Point the QA stack at the real models with (substitute your STT host):
 
@@ -467,7 +467,7 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
   API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://<stt-host>:9401/v1 \
   API_STATUS_STT_URL=http://<stt-host>:9401 \
   API_CUE_BACKEND=openai API_TRANSLATION_BACKEND=openai \
-  API_LITELLM_ENDPOINT=http://maxai.xerktech.com:8890/v1 \
+  API_LITELLM_ENDPOINT=http://maxai.xerktech.com:9402/v1 \
   API_LLM_MODEL=qwen3.8-27b API_TRANSLATION_MODEL=qwen3.8-27b \
     docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
   ```

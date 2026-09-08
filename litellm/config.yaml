@@ -40,7 +40,7 @@ model_list:
   - model_name: qwen3.8-27b-dflash
     litellm_params:
       model: openai/qwen3.8-27b
-      api_base: http://maxai.xerktech.com:8890/v1
+      api_base: http://maxai.xerktech.com:9402/v1
       api_key: sk-none
       # Without this allowlist, drop_params silently strips chat_template_kwargs
       # and the model keeps thinking on, spending the whole token budget on
@@ -57,7 +57,7 @@ model_list:
   - model_name: qwen3.8-27b-dflash-translate
     litellm_params:
       model: openai/qwen3.8-27b
-      api_base: http://maxai.xerktech.com:8890/v1
+      api_base: http://maxai.xerktech.com:9402/v1
       api_key: sk-none
       allowed_openai_params: ["chat_template_kwargs"]
 

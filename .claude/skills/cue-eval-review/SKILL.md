@@ -74,10 +74,10 @@ backstops), then LLM-judges every cue.
 ```bash
 cd api && pip install -e '.[dev]'    # replay imports the installed package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
+  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
   --out results.json
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://maxai.xerktech.com:8890/v1 --model qwen3.8-27b \
+  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
   --max-tokens 500
 python scripts/cue_eval/report.py results.judged.json
 ```
