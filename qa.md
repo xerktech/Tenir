@@ -17,12 +17,10 @@ the first pass found and did **not** fix.
 # 0. one-time toolchain (see "Toolchain" for what's already on the usual box)
 npm install                                   # workspaces: packages/*, even, mobile, web
 uv venv --python 3.12 .venv && VIRTUAL_ENV=.venv uv pip install -e './api[dev]'
-(cd veiller && bun install --frozen-lockfile)
 
 # 1. the cheap gates
 (cd api && ../.venv/bin/pytest -q)            # 467 tests, 85 % coverage gate
 npm run typecheck && npm run test && npm run build
-(cd veiller && bun run typecheck && bun test && bun run build)
 node --test .github/scripts/tests/*.test.js   # release-pipeline scripts
 
 # 2. a REAL running stack
@@ -172,7 +170,7 @@ serve the web UI — that is baked into the image at `/srv/web`.
   `http://127.0.0.1:18080` **is** the real app. Prefer it over `vite dev`: it is
   what ships.
 - `VITE_API_HTTP=http://127.0.0.1:18080 npm run dev --workspace @tenir/web` for HMR.
-- **Getting a browser**: `bunx playwright-core install chromium` from `veiller/`
+- **Getting a browser**: `npx playwright-core install chromium`
   installs it, but the headless shell is missing system libs and there is no
   sudo on this box. Fetch them without root:
   ```bash
@@ -212,38 +210,6 @@ serve the web UI — that is baked into the image at `/srv/web`.
 - jsdom's WebSocket drops a frame sent in the same tick as `close()`; node's
   undici and the `ws` package do not. Never file a "frame lost on close" bug
   without re-running it on a second stack.
-
-### Veiller miniapp (`veiller/`)
-
-Self-contained: Bun, vendored SDK tarballs, its own lockfile — **not** an npm
-workspace member, so root-level `npm run test` does not cover it.
-
-The simulator harnesses in `veiller/sim/` walk the whole miniapp off-hardware
-(`walkthrough.ts` = the lens over 21 steps, `phone-tour.ts` = the phone page in a
-browser over 13, `fake-server.ts` = a scriptable Tenir server). Both exit
-non-zero on a finding.
-
-They are **not** in CI (`veiller.yml` is typecheck + test + build; the sims need
-a Veiller checkout for the simulator), so run them by hand for any change to
-`veiller/` — they are the only thing that exercises the built bundle against a
-real host and a real browser.
-
-On a headless box the phone tour needs Chromium's shared libraries
-(`libnspr4`, `libnss3`, `libasound2`); without root, `apt-get download` them and
-point `LD_LIBRARY_PATH` at the extracted `usr/lib/x86_64-linux-gnu`.
-
-```bash
-export VEILLER_REPO=~/git/Veiller     # see the gotcha below
-cd veiller && bun run build           # the harnesses run dist/, not src/
-bun run sim/walkthrough.ts            # ~90 s; --step N for one step
-bun run sim/phone-tour.ts --shots ./out
-TENIR_BUNDLE=./tenir-veiller-vX.zip bun run sim/walkthrough.ts   # a released bundle
-```
-
-> **Gotcha:** they need the Veiller monorepo's `sdk/miniapp-simulator`, and
-> `~/git/Veiller` may sit on a branch that predates it — the failure is
-> `Could not find the Veiller miniapp simulator`. Fetch upstream `main`, or
-> clone it somewhere scratch, and point `VEILLER_REPO` there.
 
 `phone-tour.ts --shots` captures the frame *after* each step's teardown, so some
 screenshots show no card at all. Read the step's assertions, not the picture.
@@ -344,9 +310,8 @@ security-relevant mediums). Each was reproduced; none is speculative.
 - **The `#token=` handoff is still an unauthenticated write into a signed-out
   browser.** XERK-236 stopped it replacing an existing session; closing it fully
   needs a one-time, server-issued handoff code instead of a raw token in a URL.
-- **The account password is stored in plaintext** on the glasses and the
-  miniapp (`even/src/state/credentials.ts`,
-  `veiller/.../TenirController.ts`), and the bearer token sits in plain
+- **The account password is stored in plaintext** on the glasses
+  (`even/src/state/credentials.ts`), and the bearer token sits in plain
   AsyncStorage on Android despite `mobile/src/secureStorage.ts` claiming
   "EncryptedSharedPreferences-class storage". Deliberate today — it powers the
   silent re-login — but the comment is wrong and the stored secret is the
@@ -390,13 +355,9 @@ security-relevant mediums). Each was reproduced; none is speculative.
 - **422 validation errors render as `[object Object]`** — `detail` is typed as
   `string` but FastAPI returns a list.
 - **A live cue's transcript anchor doesn't follow the bounded segment window**
-  in `even/` and `veiller/` (the past-cue anchors do).
+  in `even/` (the past-cue anchors do).
 - **`ApiClient.dispatch` throws on a JSON `null` text frame.**
 - **Two clients on one session id: the first is silently orphaned.**
-- **A veiller "Web app" button emits `https://http://…`**
-  (`veiller/src/ui/main.ts`).
-- **A 401 on the miniapp's proxied REST path never triggers the silent
-  re-login**, though the WS path heals itself.
 - **The server URL is persisted before the login is attempted**, so a typo
   sticks as the boot server.
 - **Audio-store failure is invisible to the client**: the session completes
@@ -404,10 +365,6 @@ security-relevant mediums). Each was reproduced; none is speculative.
 
 ### Test-suite gaps
 
-- **`veiller/sim/**`, every `*.test.ts`, `build.ts` and `scripts/pack.mjs` are
-  typechecked by nothing** (`veiller/tsconfig.json` excludes them), and the
-  simulator harnesses run in no CI job despite `sim/README.md` calling them CI
-  checks.
 - **No lint anywhere in the JS/TS workspaces** — no ESLint config, no `lint`
   script. The `eslint-disable react-hooks/exhaustive-deps` in
   `web/src/lib/hooks.ts` is decorative.
@@ -417,9 +374,7 @@ security-relevant mediums). Each was reproduced; none is speculative.
   should too.
 - Confirmed escapes worth pinning: web logout never clicked
   (`App.test.tsx` only asserts the button exists); web search term never
-  asserted; `even/src/lens/layout.ts` `CAPTION_LINES` can exceed the screen;
-  veiller's queued-cue-after-song promotion can be deleted with all 115 tests
-  and all 20 walkthrough steps still green.
+  asserted; `even/src/lens/layout.ts` `CAPTION_LINES` can exceed the screen.
 - **`web/tests/App.test.tsx` mocks the entire `@tenir/client-core` module**, so
   the real REST client, 422 handling and sliding renewal are unexercised at the
   web layer.

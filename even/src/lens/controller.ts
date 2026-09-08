@@ -533,7 +533,7 @@ export async function wireLens(
     // Reconnects (e.g. after a re-login) replace the previous client; the
     // session id is kept so the api resumes the same conversation.
     client?.stop();
-    // NOT reset here — see veiller/src/background/controllers/TenirController.ts.
+    // reauthAttempted is NOT reset here.
     // The unauthorized handler calls connect() after a silent re-login, so
     // clearing the one-shot guard on every connect re-armed it every time round
     // the loop, giving an unbounded backoff-free re-login storm against a
