@@ -83,10 +83,10 @@ The GPU model servers run on the host at **`10.10.10.22`** and can be hit
 model behaviour (e.g. cue/translation accuracy) instead of only unit tests or
 the stub. Both expose an OpenAI-compatible API:
 
-- **`maxai.xerktech.com:8890`** — cue/summary/translation LLM: `qwen3.8-27b`
+- **`maxai.xerktech.com:9402`** — cue/summary/translation LLM: `qwen3.8-27b`
   served by SGLang (NVFP4 + DFlash speculative decoding; `GET /v1/models`,
   `POST /v1/chat/completions`). Point
-  `OpenAICueGenerator(endpoint="http://maxai.xerktech.com:8890/v1", model="qwen3.8-27b", api_key="")`
+  `OpenAICueGenerator(endpoint="http://maxai.xerktech.com:9402/v1", model="qwen3.8-27b", api_key="")`
   (or `OpenAITranslator(...)`) straight at it to drive the real model. Thinking
   is toggled via `chat_template_kwargs.enable_thinking` (on by default for cues,
   off by default for translations — see `api/src/api/config.py`). Probe
