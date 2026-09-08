@@ -9,7 +9,6 @@ const ALL_CHANGED = {
   "parakeet-stt": true,
   even: true,
   mobile: true,
-  veiller: true,
 };
 
 function firstRelease() {
@@ -35,21 +34,7 @@ test("first release: every component fresh and built", () => {
   assert.equal(m.components.even.asset, undefined); // the portal is the channel, not a release asset
   assert.equal(m.components.mobile.asset, "tenir-android-v0.1.0.apk");
   assert.equal(m.components.mobile.version_code, 10000);
-  assert.equal(m.components.veiller.kind, "asset");
-  assert.equal(m.components.veiller.asset, "tenir-veiller-v0.1.0.zip");
-  assert.equal(m.components.veiller.release_tag, "v0.1.0");
   for (const c of Object.values(m.components)) assert.equal(c.built, true);
-});
-
-test("veiller is a plain release asset (the miniapp .zip)", () => {
-  const c = M.freshComponent("veiller", "0.2.3", "v0.2.3", {});
-  assert.deepEqual(c, {
-    version: "0.2.3",
-    kind: "asset",
-    asset: "tenir-veiller-v0.2.3.zip",
-    release_tag: "v0.2.3",
-    built: true,
-  });
 });
 
 test("even package_id is overridable (EVENHUB_PACKAGE_ID repo variable path)", () => {

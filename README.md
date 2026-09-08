@@ -35,9 +35,8 @@ chat, …) was stripped back to; features return one at a time, slowly.
   conversation is scoped to the user's household
 - **Clients** — the web UI, an Even G2 glasses app (live captions on the lens,
   with dedicated Session + History pages on the phone, either surface starting
-  and stopping a session), an Android app
-  (phone-mic capture + history), and a Veiller miniapp (`veiller/`) — the
-  same G2 client packaged for the Veiller app's bundled-miniapp runtime
+  and stopping a session), and an Android app
+  (phone-mic capture + history)
 
 ## Quick start
 

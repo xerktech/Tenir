@@ -23,11 +23,7 @@
 //                     (and the api image's web build stage) install from.
 // Over-building a shared change wastes runner time; under-building ships a
 // manifest that lies. We take the former.
-//   - veiller/** is the exception: the Veiller miniapp build of the Tenir G2
-//     client is fully self-contained (Bun, its own lockfile, vendored SDK
-//     tarballs — NOT an npm workspace member), so no shared prefix or root
-//     file fans out to it.
-const COMPONENTS = ["api", "parakeet-stt", "even", "mobile", "veiller"];
+const COMPONENTS = ["api", "parakeet-stt", "even", "mobile"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
@@ -40,7 +36,6 @@ const PREFIX_MAP = [
   { prefix: "parakeet-stt/", components: ["parakeet-stt"] },
   { prefix: "even/", components: ["even"] },
   { prefix: "mobile/", components: ["mobile"] },
-  { prefix: "veiller/", components: ["veiller"] },
 ];
 
 // Repo-root files (no dir prefix) that still touch components: the npm workspace

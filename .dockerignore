@@ -31,6 +31,4 @@ mobile/android/app/*.keystore
 # runs schema.sql on a fresh volume, so it can't be excluded from the context.
 scripts
 litellm
-# Self-contained Veiller miniapp — the api image build never reads it.
-veiller
 *.log

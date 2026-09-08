@@ -64,7 +64,6 @@ function main() {
     build_parakeet_stt: changed["parakeet-stt"],
     build_even: changed.even,
     build_mobile: changed.mobile,
-    build_veiller: changed.veiller,
   });
 
   // Human-readable summary for the Actions run log / step summary.
