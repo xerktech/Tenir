@@ -20,9 +20,8 @@ const COMPONENT_HEADING = {
   "parakeet-stt": "Parakeet STT",
   even: "Even",
   mobile: "Mobile",
-  veiller: "Veiller",
 };
-const HEADING_ORDER = ["API", "Parakeet STT", "Even", "Mobile", "Veiller", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "Even", "Mobile", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
@@ -30,9 +29,8 @@ const COMPONENT_LABEL = {
   "parakeet-stt": "Parakeet STT (image)",
   even: "Even (Even Hub)",
   mobile: "Android (.apk)",
-  veiller: "Veiller (miniapp .zip)",
 };
-const TABLE_ORDER = ["api", "parakeet-stt", "even", "mobile", "veiller"];
+const TABLE_ORDER = ["api", "parakeet-stt", "even", "mobile"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.
@@ -137,8 +135,6 @@ const INSTALL_DETAILS = [
   "- **Even**: published to the Even Hub developer portal (no release asset);",
   "  promote the build there, then update the app from the Even phone app.",
   "- **Android** (`.apk`): download below and install (enable \"install unknown apps\").",
-  "- **Veiller** (`.zip`): the Tenir miniapp for the Veiller app; bundled into that",
-  "  repo's `mobile/assets/miniapps/` (not user-installed from here).",
   "",
   "Carried components are unchanged since the version shown; their artifact name reflects the",
   "build it actually is. `manifest.json` (attached) is the machine-readable source of truth.",
