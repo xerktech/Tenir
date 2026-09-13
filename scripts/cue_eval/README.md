@@ -67,7 +67,8 @@ calibration removed. The shipped combination restores volume (~3.5x the
 replayed baseline, before grounding adds more) at equal-or-better judged
 quality; greedy decoding (t=0.0) cut judged-wrong cues 5 -> 1 at equal volume.
 The August 2026 re-baseline after the Qwen3.8-27B cutover is in
-`RESULTS-2026-08.md`.
+`RESULTS-2026-08.md`. The September 2026 Qwen3-30B-A3B (FP8) candidate spike — which
+found no A3B variant reaches 27B cue accuracy — is in `RESULTS-2026-09.md`.
 
 ## Prompt-variant replays (Aug 2026, Qwen3.8-27B retune)
 

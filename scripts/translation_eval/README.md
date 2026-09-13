@@ -5,7 +5,8 @@ measures cues: replay real deployment utterances through the **shipped**
 `OpenAITranslator` payload/parser from the installed `api` package, then
 LLM-judge the outputs and compare runs. Built for XERK-180 (dedicated
 translation model investigation); results narrative in
-`RESULTS-2026-08.md`.
+`RESULTS-2026-08.md`. The September 2026 Qwen3-30B-A3B (FP8) candidate spike is in
+`RESULTS-2026-09.md`.
 
 Deployment transcripts are private family conversations: keep exports and
 results in a scratch directory outside the repo, and never paste transcript
