@@ -3,7 +3,7 @@
  *
  * Browser localStorage/IndexedDB do NOT survive the headless-WebView migration in
  * this host; the SDK's `setLocalStorage`/`getLocalStorage` are the only reliable
- * store. (SDK 0.0.10 does not export the `setBackgroundState` helper, so we persist
+ * store. (The SDK (through 0.0.15) does not export the `setBackgroundState` helper, so we persist
  * explicitly here.) Writes share the BLE link, so they're debounced and flushed on
  * `FOREGROUND_EXIT`.
  */

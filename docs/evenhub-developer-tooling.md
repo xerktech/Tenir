@@ -21,7 +21,7 @@ Your app (HTML + TypeScript, Vite)  ──►  EvenAppBridge (SDK)  ──►  E
 
 | Package | Purpose | Notes |
 |---|---|---|
-| `@evenrealities/even_hub_sdk` | The bridge SDK (v0.0.10) | UI containers, audio, IMU, storage, events |
+| `@evenrealities/even_hub_sdk` | The bridge SDK (v0.0.15; needs Even App ≥ 2.2.10) | UI containers, audio, IMU, storage, events |
 | `@evenrealities/evenhub-cli` | CLI (`evenhub`, v0.1.11) | `login`, `init`, `qr`, `pack` |
 | `@evenrealities/evenhub-simulator` | Desktop simulator (v0.7.1) | renders 576×288, feeds mic audio, HTTP automation API |
 | `@evenrealities/pretext` | Pixel-accurate font measurement | matches firmware LVGL layout; line height **27px** |
@@ -146,8 +146,8 @@ Register at module init, before `onEvenHubEvent`. Snapshot copies (not refs), ca
   "edition": "202601",                            // must be exactly this
   "name": "Tenir",                     // ≤ 20 chars
   "version": "0.1.0",                             // x.y.z semver
-  "min_app_version": "2.0.0",
-  "min_sdk_version": "0.0.10",
+  "min_app_version": "2.2.10",
+  "min_sdk_version": "0.0.15",
   "entrypoint": "index.html",
   "permissions": [],                              // array of objects (NOT a map)
   "supported_languages": ["en"]                   // en,de,fr,es,it,zh,ja,ko
