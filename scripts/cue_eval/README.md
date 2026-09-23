@@ -82,7 +82,12 @@ python scripts/cue_eval/cue_replay_prompt.py segments.json \
   --out results.json --variant v5 --thinking on --max-tokens 2048
 ```
 
-Variant v5 (now the shipped frame) is a full system-prompt replacement; the
-tail variants v1–v4 anchor on the July frame's closing sentence
-(`_SHIPPED_TAIL`), which no longer ships — re-baseline against the current
-shipped prompt before comparing those tails.
+Full-prompt variants (v5–v7) replace only the frame — the text before the
+shipped worked examples — and keep the examples, avoid list, and final reply
+line, so `--variant v5` reproduces the shipped ungrounded prompt byte for byte.
+If the shipped prompt loses its `Examples of the standard:` anchor the harness
+raises rather than silently dropping those blocks (which it did before
+2026-09-23 — see the caveat in `RESULTS-2026-09.md`). The tail variants v1–v4
+anchor on the July frame's closing sentence (`_SHIPPED_TAIL`), which no longer
+ships — re-baseline against the current shipped prompt before comparing those
+tails.

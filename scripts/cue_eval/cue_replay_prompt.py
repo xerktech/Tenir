@@ -113,6 +113,8 @@ _GOOD_EXAMPLES = (
     "trade-off the speakers had not mentioned).\n"
 )
 _EXAMPLE_ANCHOR = "Reply with a single JSON object and nothing else: "
+# Where the shipped frame ends and its worked examples begin.
+_FRAME_END = "\n\nExamples of the standard:"
 EXAMPLES = {"v3": _GOOD_EXAMPLES, "v4": _GOOD_EXAMPLES}
 
 # v5: a SHORT, emission-first full-prompt rewrite. Keeps the core accuracy
@@ -184,12 +186,20 @@ class VariantGen(OpenAICueGenerator):
         payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
         full = FULL_PROMPTS.get(self.variant)
         if full is not None:
-            # v5 replaces the entire system prompt; keep the avoid/evidence
-            # blocks that super() appended, then swap the base frame.
+            # Full-prompt variants swap only the frame — the text before the
+            # shipped worked examples. The examples, the avoid list, the
+            # evidence block and the final reply line that super() built all
+            # stay, so v5 reproduces the shipped prompt byte for byte.
             sysmsg = payload["messages"][0]
-            content = sysmsg["content"]
-            base, sep, tail_blocks = content.partition(_SHIPPED_TAIL)
-            sysmsg["content"] = full + ("\n" + tail_blocks if tail_blocks else "")
+            _, sep, rest = sysmsg["content"].partition(_FRAME_END)
+            if not sep:
+                # Fail loudly: a silent fallback here once dropped the worked
+                # examples and the avoid list from every v5 replay.
+                raise RuntimeError(
+                    f"shipped cue prompt has no {_FRAME_END.strip()!r} anchor; "
+                    "update _FRAME_END in cue_replay_prompt.py"
+                )
+            sysmsg["content"] = full + sep + rest
             return payload
         tail = VARIANTS.get(self.variant)
         if tail is not None:
@@ -320,6 +330,9 @@ def main() -> None:
         api_key=args.api_key,
     )
     url = args.endpoint.rstrip("/") + "/chat/completions"
+    # Build one payload up front: a prompt-layout error must abort the run
+    # here, not die silently inside a worker thread and leave an empty --out.
+    gen._build_payload("")
 
     results = [None] * len(conv_ids)
     lock = threading.Lock()
