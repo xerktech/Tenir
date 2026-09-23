@@ -295,9 +295,10 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
   // zero-omission fallback read as CLICK — so a long press started a session, or
   // confirmed Exit session in the popup. Parse the raw host payload with the SDK's
   // own parser (as the real bridge does) so this pins the SDK behaviour too.
-  const longPress = async (t: Awaited<ReturnType<typeof boot>>) => {
+  const longPress = async (t: Awaited<ReturnType<typeof boot>>, channel = "sys_event") => {
     for (const eventType of [9, 10]) {
-      t.emit(evenHubEventFromJson({ type: "sys_event", jsonData: { eventType, eventSource: 1 } }));
+      const jsonData = { containerID: 5, eventType, eventSource: 1 };
+      t.emit(evenHubEventFromJson({ type: channel, jsonData }));
       await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
     }
   };
@@ -308,6 +309,13 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await longPress(t);
     expect(t.api.calls).toHaveLength(0);
     expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+  });
+
+  it("a long press on the touch overlay (textEvent) does not start a session", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await longPress(t, "text_event");
+    expect(t.api.calls).toHaveLength(0);
   });
 
   it("a long press in the popup does not confirm Exit session", async () => {
