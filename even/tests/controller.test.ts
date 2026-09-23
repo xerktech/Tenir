@@ -6,7 +6,12 @@
  * phone-side Session page mirrors it all in real time (XERK-93).
  */
 
-import { OsEventTypeList, type EvenAppBridge, type EvenHubEvent } from "@evenrealities/even_hub_sdk";
+import {
+  OsEventTypeList,
+  evenHubEventFromJson,
+  type EvenAppBridge,
+  type EvenHubEvent,
+} from "@evenrealities/even_hub_sdk";
 import type { ApiHandlers, SessionParams } from "@tenir/client-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -283,6 +288,37 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     await settle();
     expect(t.api.stops).toHaveLength(1); // the session ended…
     expect(t.api.calls).toHaveLength(1); // …and the mirror did not start a new one
+  });
+
+  // Even App ≥2.2.9 sends LONG_PRESS (9) / LONG_PRESS_RELEASE (10). SDK ≤0.0.13
+  // dropped those unknown ordinals to an omitted eventType, which the controller's
+  // zero-omission fallback read as CLICK — so a long press started a session, or
+  // confirmed Exit session in the popup. Parse the raw host payload with the SDK's
+  // own parser (as the real bridge does) so this pins the SDK behaviour too.
+  const longPress = async (t: Awaited<ReturnType<typeof boot>>) => {
+    for (const eventType of [9, 10]) {
+      t.emit(evenHubEventFromJson({ type: "sys_event", jsonData: { eventType, eventSource: 1 } }));
+      await vi.advanceTimersByTimeAsync(controllerMod.GESTURE_DEDUPE_MS + 50);
+    }
+  };
+
+  it("a long press while idle does not start a session", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await longPress(t);
+    expect(t.api.calls).toHaveLength(0);
+    expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+  });
+
+  it("a long press in the popup does not confirm Exit session", async () => {
+    const t = await boot();
+    t.controls.enable();
+    await t.click();
+    await t.doubleTap();
+    await t.swipeDown(); // highlight Exit session
+    await longPress(t);
+    expect(t.api.stops).toHaveLength(0);
+    expect(t.text(C().menu)).toBe("  Continue\n› Exit session");
   });
 
   it("Continue (the default) dismisses the popup and keeps recording", async () => {
