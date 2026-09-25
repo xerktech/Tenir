@@ -112,6 +112,14 @@ Rules that keep the comparison honest:
 - The judge shares the generator's weights — use its numbers **only to
   compare runs on identical data**, never as ground-truth accuracy.
   Spot-check every cue it flags wrong or duplicate.
+- **Comparing models: judge blind, cross-family.** A model judge misses its own
+  error class (gpt-oss-120b passed 270 of its own 273 cues; a blind review
+  failed 37). Pool the runs with `blind_judge.py`, keep an anchor run in every
+  batch, and trust perfect-cue counts over wrong-rates (±3 pts batch noise).
+- **Comparing speeds: replay with `--realtime --workers 1`.** The fixed 2.5 s
+  attempt spacing credits a slow model with attempts it would never get live.
+  Replay `--grounded` too: production cues carry evidence, and it shifts both
+  volume and error mix.
 
 Editing prompt source mid-run does not affect a replay already running
 (Python imports are resolved at process start), but re-`pip install -e` isn't

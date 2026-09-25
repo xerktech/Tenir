@@ -21,6 +21,10 @@ on:
       - 'litellm/config.yaml'
       # tests/test_cue_replay_harness.py pins this harness to the shipped prompt.
       - 'scripts/cue_eval/cue_replay_prompt.py'
+      # tests/test_cue_eval_replay.py pins these harness behaviours.
+      - 'scripts/cue_eval/replay.py'
+      - 'scripts/cue_eval/blind_judge.py'
+      - 'scripts/cue_eval/latency_probe.py'
       - 'web/**'
       - 'packages/**'
       - 'package.json'

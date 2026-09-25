@@ -30,8 +30,35 @@ Replays each conversation with the exact session gating: an 8-turn rolling
 context window, one attempt in flight at a time (modelled as 2.5 s of
 transcript time), the 1.5 s min interval between emitted cues, and all three
 dedupe backstops (normalized title + substance fingerprint + title-subject
-containment). Ungrounded only — the retrieval tiers need the live
-SearXNG/Kiwix/RSS infrastructure.
+containment). Ungrounded by default.
+
+Options that make the replay match production more closely:
+
+- `--grounded` adds evidence from Tenir's own `LiveEvidenceRetriever`
+  (`--wikipedia`, `--kiwix`, `--searxng`; the news FTS tier lives in the
+  deployment DB and is skipped). Evidence is cached per transcript window in
+  `--evidence-cache`, so every model compared on the same cache sees identical
+  evidence — reuse one cache file across all runs of a comparison. Wikipedia
+  rate-limits bursts (HTTP 429), and a rate-limited window caches as empty:
+  warm the cache with `--workers 1`, then rerun with `--refetch-empty` until the
+  reported empty count stops falling, and only then compare models on it.
+- `--realtime` spaces attempts by the measured call (+ verify) latency instead
+  of a fixed 2.5 s, as a live session's one-in-flight rule does. Without it a
+  slow model is credited with attempts it would never get. Use `--workers 1` so
+  latency isn't inflated by queueing (a run then takes about as long as the
+  conversations themselves).
+- `--verify off|low|medium` runs the self-check pass (`VERIFY_SYSTEM`) on each
+  emitted cue and drops the ones it calls unsafe. Verifier failures (HTTP
+  errors, unparseable verdicts) also drop the cue but are counted separately
+  as `verify_errors` — a non-zero count means the verifier, not the model, is
+  shaping the result.
+- `--max-tokens N` and `--extra JSON` override the shipped payload, e.g.
+  `--extra '{"custom_params": {"thinking_budget": 512}}'` (SGLang thinking cap)
+  or `'{"chat_template_kwargs": {"reasoning_effort": "low"}}'` (Qwen3.8 effort;
+  the template default is `xhigh`).
+
+For single-request latency (the number that matters live), use
+`latency_probe.py` on an otherwise idle server rather than replay call times.
 
 ## 3. Judge and report
 
@@ -46,6 +73,13 @@ in the transcript — 0 is a pure restatement), **relevance**, and **accuracy**,
 and flags **duplicates** of earlier cues. The judge shares the generator's
 weights, so treat absolute accuracy numbers as comparative, not ground truth —
 spot-check the flagged cues by hand.
+
+Model judges miss their own failure class (gpt-oss-120b judged 3 of its own 273
+cues wrong where a blind review found 37). For a model comparison, pool the
+runs with `blind_judge.py pack`, hand each pack plus the generated `RUBRIC.md`
+to an independent cross-family reviewer (e.g. one Claude subagent per pack),
+and score with `blind_judge.py report`. Include an anchor run in every batch:
+batch-to-batch drift is a few points.
 
 ## Baseline numbers (2026-07, 12 recorded conversations)
 
@@ -68,7 +102,10 @@ replayed baseline, before grounding adds more) at equal-or-better judged
 quality; greedy decoding (t=0.0) cut judged-wrong cues 5 -> 1 at equal volume.
 The August 2026 re-baseline after the Qwen3.8-27B cutover is in
 `RESULTS-2026-08.md`. The September 2026 Qwen3-30B-A3B (FP8) candidate spike — which
-found no A3B variant reaches 27B cue accuracy — is in `RESULTS-2026-09.md`.
+found no A3B variant reaches 27B cue accuracy — is in `RESULTS-2026-09.md`. The
+late-September model/VRAM/latency shoot-out (Qwen3.8-27B vs gpt-oss-120b, Qwen3-30B-A3B,
+Granite 4.2, Nemotron 3.5 Lightning; thinking caps; the self-check; sizing for a
+24–48 GB card) is in `RESULTS-2026-09-shootout.md`.
 
 ## Prompt-variant replays (Aug 2026, Qwen3.8-27B retune)
 
