@@ -197,7 +197,26 @@ serve the web UI — that is baked into the image at `/srv/web`.
 ### Even G2 glasses client (`even/`)
 
 - `VITE_API_WS=ws://127.0.0.1:18080/ws npm run dev --workspace tenir-even`, then
-  `npx @evenrealities/evenhub-simulator -g http://localhost:5173`.
+  `scripts/evenhub-sim-guarded.sh --no-glow --automation-port <port> http://localhost:5173`.
+- **Never launch the simulator headless without that guard** (XERK-1020). While the app
+  is recording, the simulator reads the capture device unpaced. `--aid alsa:null` returns
+  zeros as fast as it can (~20× real time), and the simulator *host* process grows
+  ~120–330 MB/s. Xvfb stays flat, and WebKit can spike briefly. On a shared
+  pod that took every session down.
+- The guard runs xvfb-run + simulator in their own session and kills the group once
+  summed RSS passes `SIM_RSS_LIMIT_MB` (default 4096), exiting 137. Expect that exit
+  within ~15 s of starting a recording on `alsa:null`. Keep simulator recordings to a
+  few seconds and soak-test audio through the node harness below.
+- The guard dies with its wrapper: if the wrapper is SIGKILLed (e.g. a tool timeout),
+  the simulator runs on unguarded. Where `systemd-run --user` works, also launch it inside
+  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` as a hard backstop.
+  Otherwise run the wrapper in the background and stop it with SIGTERM. A backgrounded
+  script ignores SIGINT.
+- After a click, check `api.log` for the `/ws` accept before trusting that a recording
+  started. A click sent too soon after the autologin sometimes doesn't start one.
+- The simulator's automation API cannot type into the phone page. To sign in, add a
+  throwaway `<script>` to `even/index.html` that fills `#server-url`/`#username`/
+  `#password` and clicks `#login-submit`. Revert it afterwards.
 - No hardware needed for the logic: only `EvenAppBridge` needs stubbing.
   `even/tests/controller.test.ts` has the shape — swap in the *real* `ApiClient`
   and you have a full loop against a live api.
