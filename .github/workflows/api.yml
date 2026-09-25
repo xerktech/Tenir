@@ -19,6 +19,8 @@ on:
       # The stack the api is deployed as. No gate ran on these at all before.
       - 'docker-compose*.yml'
       - 'litellm/config.yaml'
+      # tests/test_cue_replay_harness.py pins this harness to the shipped prompt.
+      - 'scripts/cue_eval/cue_replay_prompt.py'
       - 'web/**'
       - 'packages/**'
       - 'package.json'

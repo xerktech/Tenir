@@ -14,6 +14,13 @@ against cutover.** The August round (27B retune) is `RESULTS-2026-08.md`.
 - **Replay**: `cue_replay_prompt.py --variant v5` (the shipped emission-first
   frame), t=0.0, ungrounded, exact session gating. Thinking on where the model
   supports it (see per-row), `--max-tokens 2048`.
+- **Caveat (found 2026-09-23)**: at the time of this run `--variant v5` did NOT
+  reproduce the shipped prompt. It anchored on a July-frame sentence the shipped
+  prompt no longer contains, so every row here (the 27B baseline included) ran
+  without the shipped worked examples and without the already-shown-cues avoid
+  list. The candidates were compared on equal terms, so the ranking stands, but
+  the absolute numbers are not the shipped prompt's. The harness now splices the
+  frame correctly (see `README.md`).
 - **Judge**: **fixed = qwen3.8-27b** for every row (`judge.py`, thinking off).
   Candidates do not share the judge's weights — a cleaner judge than self-grading,
   but absolute scores are still comparative, not ground truth. All acc=0 cues were
