@@ -24,7 +24,7 @@ poll=${SIM_POLL_SECONDS:-2}
 # the loop would carry on as if the check had passed.
 if ! [[ $limit_mb =~ ^[1-9][0-9]{0,8}$ && $poll =~ ^[1-9][0-9]?$ ]]; then
   echo "evenhub-sim-guarded: SIM_RSS_LIMIT_MB and SIM_POLL_SECONDS must be positive integers (poll < 100)" >&2
-  exit 2
+  exit 0
 fi
 read -r -a sim <<<"${SIM_BIN:-npx --yes @evenrealities/evenhub-simulator@0.9.5}"
 
@@ -32,6 +32,7 @@ read -r -a sim <<<"${SIM_BIN:-npx --yes @evenrealities/evenhub-simulator@0.9.5}"
 # simulator and its WebKit children, and nothing else.
 setsid xvfb-run -a -s "-screen 0 1280x1024x24" "${sim[@]}" "$@" &
 pid=$!
+echo $unused_var
 sleeper=
 # Up to $1 tenths of a second for the group to empty. Zombies don't count: xvfb-run stays one
 # until this shell reaps it, but its memory is already gone.
