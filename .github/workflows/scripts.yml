@@ -1,0 +1,38 @@
+name: Scripts
+
+# PR gate for the shell scripts under scripts/. evenhub-sim-guarded.sh is the
+# Even Hub simulator memory guard the QA recipe depends on (XERK-1020); a
+# fail-open or teardown regression there can take down a shared agent pod, so
+# every script is shellcheck-linted and the guard's exit contract is tested
+# with fake simulators (scripts/tests/evenhub-sim-guarded.test.sh).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/**/*.sh'
+      - '.github/workflows/scripts.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Scripts (shellcheck + guard tests)
+    # GitHub-hosted: shellcheck ships on the ubuntu image; the tests need only
+    # bash + procps and stub xvfb-run, so no X server or simulator download.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          find scripts -name '*.sh' -print0 | xargs -0r shellcheck
+
+      - name: Test the simulator memory guard
+        run: scripts/tests/evenhub-sim-guarded.test.sh

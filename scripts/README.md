@@ -15,3 +15,10 @@ then checks the session persisted and can be deleted.
 docker compose up --build        # from the repo root
 TENIR_USERNAME=<admin> TENIR_PASSWORD=<password> python scripts/functional_test.py
 ```
+
+## `evenhub-sim-guarded.sh`
+
+Runs the Even Hub simulator headless with a memory guard (XERK-1020); see the
+script's header for its env and exit contract. CI (`.github/workflows/scripts.yml`)
+shellchecks every `scripts/**/*.sh` and runs `tests/evenhub-sim-guarded.test.sh`,
+which drives the guard with fake simulators — run it by hand the same way.
