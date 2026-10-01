@@ -1,6 +1,7 @@
 name: Scripts
 
-# PR gate for the shell scripts under scripts/. evenhub-sim-guarded.sh is the
+# PR gate for the shell scripts under scripts/, plus the translation-eval harness tests.
+# evenhub-sim-guarded.sh is the
 # Even Hub simulator memory guard the QA recipe depends on (XERK-1020); a
 # fail-open or teardown regression there can take down a shared agent pod, so
 # every script is shellcheck-linted and the guard's exit contract is tested
@@ -10,6 +11,10 @@ on:
     branches: [main]
     paths:
       - 'scripts/**/*.sh'
+      - 'scripts/translation_eval/public/**'
+      # the harness tests build requests from the shipped translator prompt, so a
+      # change there must re-run them (prompt-drift guard)
+      - 'api/src/api/translate/**'
       - '.github/workflows/scripts.yml'
 
 concurrency:
@@ -36,3 +41,26 @@ jobs:
 
       - name: Test the simulator memory guard
         run: scripts/tests/evenhub-sim-guarded.test.sh
+
+  translation-eval:
+    name: Translation eval harness (unit tests)
+    # scripts/translation_eval/public: the prompt-adapter shim (driven as a real FastAPI
+    # app), the app's translate trigger and the replay subset. Imports the api package,
+    # so it installs it the way api.yml does.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Install the api package
+        run: pip install -e 'api[dev]'
+
+      - name: Run the harness tests
+        run: python -m pytest scripts/translation_eval/public/tests -q

@@ -6,7 +6,8 @@ measures cues: replay real deployment utterances through the **shipped**
 LLM-judge the outputs and compare runs. Built for XERK-180 (dedicated
 translation model investigation); results narrative in
 `RESULTS-2026-08.md`. The September 2026 Qwen3-30B-A3B (FP8) candidate spike is in
-`RESULTS-2026-09.md`.
+`RESULTS-2026-09.md`. The October 2026 dedicated-model sweep on public data (Hy-MT2,
+MiLMMT-46, TranslateGemma) is in `RESULTS-2026-10.md`, harness in `public/` (§4).
 
 Deployment transcripts are private family conversations: keep exports and
 results in a scratch directory outside the repo, and never paste transcript
@@ -80,3 +81,37 @@ unchanged". Honesty rules carry over from `scripts/cue_eval`:
   items where candidates disagree.
 - One replay per candidate is enough at temperature 0 only for coarse gaps;
   re-run before claiming a close win.
+
+## 4. Public-data sweep through the live app (`public/`)
+
+No private transcripts: FLEURS es_419 audio + references, OPUS-100 es→en, English
+passthrough. Runs in one pod on talos04 that holds the RTX PRO 6000 (vLLM) next to the
+production Tenir image (the app under test), with real STT from `tenir-parakeet`.
+
+```bash
+cd scripts/translation_eval/public
+export EVAL_PASSWORD=$(openssl rand -hex 12) EVAL_AUTH_SECRET=$(openssl rand -hex 32) \
+  TENIR_IMAGE=$(kubectl -n ai get deploy tenir -o jsonpath='{.spec.template.spec.containers[0].image}')
+envsubst < mt-eval.yaml | kubectl apply -f -          # claim + pod (whole Blackwell card)
+kubectl -n ai exec mt-eval -c vllm -- mkdir -p /work
+for f in *.py *.sh ../../../api/src/api/translate/openai.py; do
+  kubectl -n ai cp "$f" mt-eval:/work/"$(basename "$f" | sed 's/^openai.py$/openai_translator.py/')" -c vllm
+done
+echo "$EVAL_PASSWORD" | kubectl -n ai exec -i mt-eval -c vllm -- tee /work/eval_pw >/dev/null
+# then, inside the pod, detached (kubectl exec streams drop on long commands):
+#   setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &
+#   STT capture (the frozen fleurs_asr set; waits 20 s per clip):
+#     TENIR_USERNAME=evaluser TENIR_PASSWORD=$(cat eval_pw) \
+#     python3 ws_driver.py data/clips.json --out results/stt_capture.json --concurrency 4 --no-wait \
+#     && echo STT_OK > stt.log
+#   setsid nohup bash run_all.sh > run_all.log 2>&1 < /dev/null &
+#   /work/venv/bin/python score.py results/*/text_*.json results/*/e2e_*.json --out results/scores.json
+#   /work/venv/bin/python boot.py      # paired bootstrap vs Qwen, per set (--cpu off-GPU)
+kubectl -n ai delete pod mt-eval && kubectl -n ai delete resourceclaim mt-eval-rtx6000
+```
+
+- `shim.py` is the prompt adapter (shipped prompt forwarded vs each model's native one);
+  `run_model.sh` serves one model with a fixed 2 GiB KV cache and records VRAM.
+- Unit tests: `python -m pytest scripts/translation_eval/public/tests/` (needs `api[dev]`).
+- Pitfalls that cost real time (vLLM image, Hy-MT2, TranslateGemma, kubectl):
+  `.claude/rules/translation-eval.md`.
