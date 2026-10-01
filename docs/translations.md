@@ -110,7 +110,7 @@ language:
   turn is lost, while one English word in a Spanish turn ("Has visto…") is common.
 
 Production runs the model on vLLM behind the gateway alias `milmmt-46-4b-translate`
-(ArgoCD `ai/tenir/milmmt.yaml`, XERK-1355). Cues stay on the chat model.
+(ArgoCD `ai/tenir/translator.yaml`, the model-neutral `tenir-translator` Deployment, XERK-1355). Cues stay on the chat model.
 
 The stub is what CI exercises end-to-end (run state → WS messages →
 persistence → history). The real prompt and route were evaluated in the Aug
