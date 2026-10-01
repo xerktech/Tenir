@@ -199,6 +199,41 @@ def test_unknown_lang_mid_run_inherits_the_run(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(run())
 
 
+def test_inherited_turn_carries_the_run_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    # XERK-1354: a completion-prompt backend must name a source language. The
+    # inherited turn has none of its own, so the session hands the translator the
+    # run's language; an opener passes its own, and a closed run forgets it.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    calls: list[tuple[str, str | None, str | None]] = []
+
+    class Recorder:
+        def translate(
+            self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
+        ) -> str | None:
+            calls.append((text, source_lang, run_lang))
+            return f"EN {text}"
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._translator = Recorder()
+        session._consider_translation(_final("los planetas", segment_id="a", lang="pt"))
+        session._consider_translation(_final("hola amigo", segment_id="b", lang="es"))
+        session._consider_translation(_final("Mercurio, Venus.", segment_id="c", lang=None))
+        session._consider_translation(_final("ok then", segment_id="d", lang="en"))
+        assert session._translation_run_lang is None
+        await _drain_translations(session)
+        await session.close()
+
+    asyncio.run(run())
+    # The run language follows the LAST non-English turn, captured at queue time.
+    assert calls == [
+        ("los planetas", "pt", "pt"),
+        ("hola amigo", "es", "es"),
+        ("Mercurio, Venus.", None, "es"),
+    ]
+
+
 def test_echoed_translation_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:
     # An English turn that reached the queue as an ambiguous run-continuation
     # comes back unchanged from the model ("return it unchanged"); rendering it
@@ -206,7 +241,9 @@ def test_echoed_translation_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(settings, "translation_backend", "stub")
 
     class EchoTranslator:
-        def translate(self, text: str, *, source_lang: str | None = None) -> str | None:
+        def translate(
+            self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
+        ) -> str | None:
             return f"  {text.upper()}  "  # cosmetic differences only
 
     async def run() -> None:
@@ -316,7 +353,9 @@ def test_translator_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(settings, "translation_backend", "stub")
 
     class ExplodingTranslator:
-        def translate(self, text: str, *, source_lang: str | None = None) -> str | None:
+        def translate(
+            self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
+        ) -> str | None:
             raise RuntimeError("boom")
 
     async def run() -> None:

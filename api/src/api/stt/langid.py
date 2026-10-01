@@ -100,25 +100,51 @@ def _latin(text: str) -> bool:
     return True
 
 
-def detect_lang(text: str) -> str | None:
-    """Best-effort language of one finalized turn, as a contract code, or None.
-
-    Conservative by design (see module docstring): returns a code only when one
-    language clearly wins with enough evidence for the turn's length.
-    """
+def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
+    """Per-language evidence for one turn (distinctive-word hits, +2 for a unique
+    character), with its words; None when the text can't be any contract language."""
     if not text or not _latin(text):
         return None
     lowered = text.lower()
     words = _TOKEN_RE.findall(lowered)
     if not words:
         return None
-
     scores: dict[str, int] = {}
     for code, vocab in _WORDS.items():
         scores[code] = sum(1 for w in words if w in vocab)
     for code, chars in _CHARS.items():
         if any(c in lowered for c in chars):
             scores[code] += 2
+    return scores, words
+
+
+def leans_english(text: str, versus: str) -> bool:
+    """Whether an undetected turn has more English evidence than ``versus`` (the run's
+    language) — a far lower bar than ``detect_lang`` labeling it ``en``.
+
+    For the inherited turns of a run: ``detect_lang`` returned None (too short or too
+    mixed to call), so the turn is translated as a continuation. A prompt that must
+    name a source language would then tell the model this is ``versus``; on English
+    text a translation model rewrites it instead of returning it (XERK-1354), so the
+    caller skips those. A tie is not a lean.
+    """
+    scored = _scores(text)
+    if scored is None:
+        return False
+    scores, _ = scored
+    return scores["en"] > scores.get(versus, 0)
+
+
+def detect_lang(text: str) -> str | None:
+    """Best-effort language of one finalized turn, as a contract code, or None.
+
+    Conservative by design (see module docstring): returns a code only when one
+    language clearly wins with enough evidence for the turn's length.
+    """
+    scored = _scores(text)
+    if scored is None:
+        return None
+    scores, words = scored
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     (best, best_score), (_, second_score) = ranked[0], ranked[1]

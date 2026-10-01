@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     # per-utterance translation latency with it — hence a separate flag from
     # cue_disable_thinking.
     translation_disable_thinking: bool = True
+    # Request format for the "openai" backend (XERK-1354):
+    #   "chat-json" — system prompt + {"translation": …} envelope on /chat/completions
+    #                 (default; what the Qwen chat models are run with).
+    #   "milmmt"    — a dedicated MT model's bare completion prompt on /completions
+    #                 ("Translate this from Spanish to English: …"), e.g. MiLMMT-46-4B
+    #                 (scripts/translation_eval/RESULTS-2026-10.md). Such models can't
+    #                 follow the chat-json prompt. translation_disable_thinking is unused.
+    translation_prompt_style: str = "chat-json"  # chat-json | milmmt
     # How long speech may go quiet after the last non-English activity before the
     # run is declared done. Finals only land at pauses, so partial captions also
     # count as activity — the window only starts once the speaker actually stops.

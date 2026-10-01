@@ -178,10 +178,18 @@ class Session:
         # transcript order even when the model is slow; the `done` marker rides
         # the same queue, so it always follows the run's last translation.
         self._translator: Translator | None = None
-        self._translation_queue: asyncio.Queue[tuple[str, CaptionFinal | None]] | None = None
+        # Queue entries are (kind, final, run_lang): run_lang is the language of the
+        # run the turn belongs to, captured when it is queued, so an inherited turn
+        # (no lang of its own) can still be translated "from Spanish" by a backend
+        # that needs a source language (XERK-1354).
+        self._translation_queue: (
+            asyncio.Queue[tuple[str, CaptionFinal | None, str | None]] | None
+        ) = None
         self._translation_worker: asyncio.Task[None] | None = None
         self._translation_hold: asyncio.Task[None] | None = None
         self._translation_active = False
+        # The language of the turn that last opened or extended the live run.
+        self._translation_run_lang: str | None = None
         # Music ID (XERK-184): when a song is playing, the session periodically
         # fingerprints a short window of the live audio, identifies the track, and
         # shows its time-synced lyrics in the cue box, auto-scrolling as the song
@@ -528,14 +536,15 @@ class Session:
         if lang is not None and lang != "en":
             assert self._translation_queue is not None
             self._translation_active = True
+            self._translation_run_lang = lang
             self._touch_translation_hold()
-            self._translation_queue.put_nowait(("translate", result))
+            self._translation_queue.put_nowait(("translate", result, lang))
         elif lang == "en" and self._translation_active:
             self._end_translation_run()
         elif lang is None and self._translation_active:
             assert self._translation_queue is not None
             self._touch_translation_hold()
-            self._translation_queue.put_nowait(("translate", result))
+            self._translation_queue.put_nowait(("translate", result, self._translation_run_lang))
 
     def _touch_translation_hold(self) -> None:
         """Restart the run's silence hold: any speech activity (a partial or a
@@ -562,17 +571,18 @@ class Session:
             return
         assert self._translation_queue is not None
         self._translation_active = False
+        self._translation_run_lang = None
         if self._translation_hold is not None:
             self._translation_hold.cancel()
             self._translation_hold = None
-        self._translation_queue.put_nowait(("done", None))
+        self._translation_queue.put_nowait(("done", None, None))
 
     async def _translation_worker_loop(self) -> None:
         """Serialized translation delivery: one queue, one worker, transcript
         order preserved no matter how slow individual model calls are."""
         assert self._translation_queue is not None
         while True:
-            kind, final = await self._translation_queue.get()
+            kind, final, run_lang = await self._translation_queue.get()
             try:
                 if kind == "stop":
                     return
@@ -587,22 +597,24 @@ class Session:
                         metrics.incr("translation.send_errors")
                     continue
                 assert final is not None
-                await self._translate_final(final)
+                await self._translate_final(final, run_lang)
             finally:
                 # Matched to the get() above so Queue.join() tracks the backlog
                 # (tests await it to know the worker is idle).
                 self._translation_queue.task_done()
 
-    async def _translate_final(self, final: CaptionFinal) -> None:
+    async def _translate_final(self, final: CaptionFinal, run_lang: str | None = None) -> None:
         """Translate one finalized turn and deliver + persist the result.
         Best-effort throughout, like cues: any failure is logged/counted and
-        swallowed so the caption stream is never disturbed."""
+        swallowed so the caption stream is never disturbed. ``run_lang`` is the
+        live run's language, which an inherited turn (``final.lang`` None) has no
+        other way to carry."""
         assert self._translator is not None
         lang = final.lang.value if final.lang is not None else None
         try:
             with metrics.timer("translation.ms"):
                 translated = await asyncio.to_thread(
-                    self._translator.translate, final.text, source_lang=lang
+                    self._translator.translate, final.text, source_lang=lang, run_lang=run_lang
                 )
         except Exception:
             log.warning("session %s translation failed", self.session_id, exc_info=True)
@@ -1228,7 +1240,7 @@ class Session:
             # call must not hold teardown hostage.
             self._end_translation_run()
             assert self._translation_queue is not None
-            self._translation_queue.put_nowait(("stop", None))
+            self._translation_queue.put_nowait(("stop", None, None))
             try:
                 await asyncio.wait_for(self._translation_worker, timeout=15)
             except asyncio.TimeoutError:

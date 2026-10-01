@@ -7,6 +7,7 @@ import pytest
 
 from api.config import settings
 from api.translate import make_translator
+from api.translate.completion import CompletionTranslator
 from api.translate.openai import OpenAITranslator
 from api.translate.stub import StubTranslator
 
@@ -161,3 +162,93 @@ def test_message_content_falls_back_to_reasoning_content() -> None:
     assert OpenAITranslator._message_content({"content": "", "reasoning_content": "b"}) == "b"
     assert OpenAITranslator._message_content({"content": None, "reasoning_content": "b"}) == "b"
     assert OpenAITranslator._message_content({}) == ""
+
+
+# ---- completion-prompt backend (XERK-1354) -----------------------------------
+
+
+def test_factory_milmmt_style_selects_the_completion_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "openai")
+    monkeypatch.setattr(settings, "translation_prompt_style", "milmmt")
+    monkeypatch.setattr(settings, "translation_model", "milmmt-46-4b-translate")
+    translator = make_translator()
+    assert isinstance(translator, CompletionTranslator)
+    assert translator._url.endswith("/completions")
+    assert translator._build_payload("hola", "es")["model"] == "milmmt-46-4b-translate"
+
+
+def test_factory_rejects_an_unknown_prompt_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "openai")
+    monkeypatch.setattr(settings, "translation_prompt_style", "chatml")
+    with pytest.raises(ValueError, match="prompt style"):
+        make_translator()
+
+
+def test_prompt_style_defaults_to_chat_json() -> None:
+    assert type(settings).model_fields["translation_prompt_style"].default == "chat-json"
+
+
+def _ct() -> CompletionTranslator:
+    return CompletionTranslator(endpoint="http://gw/v1/", model="m")
+
+
+def test_completion_payload_is_the_documented_milmmt_prompt() -> None:
+    body = _ct()._build_payload("Mañana vamos a la playa.", "es")
+    assert body == {
+        "model": "m",
+        "prompt": "Translate this from Spanish to English:\nSpanish: Mañana vamos a la playa.\nEnglish:",
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "stop": ["\n"],
+    }
+    assert _ct()._url == "http://gw/v1/completions"
+
+
+def test_completion_payload_flattens_newlines() -> None:
+    # A newline inside the turn would end the prompt's source line early.
+    body = _ct()._build_payload("hola\n  qué tal", "es")
+    assert "Spanish: hola qué tal\nEnglish:" in body["prompt"]
+
+
+def test_inherited_turn_is_translated_from_the_run_language() -> None:
+    body = _ct()._build_payload("Mercurio, Venus, Tierra.", None, run_lang="pt")
+    assert body["prompt"].startswith("Translate this from Portuguese to English:")
+
+
+def test_own_language_wins_over_the_run_language() -> None:
+    body = _ct()._build_payload("bonjour à tous", "fr", run_lang="es")
+    assert body["prompt"].startswith("Translate this from French to English:")
+
+
+def test_inherited_turn_leaning_english_is_not_sent() -> None:
+    # Told English is Spanish, an MT model paraphrases it instead of returning it.
+    assert _ct()._build_payload("I think that is the one", None, run_lang="es") is None
+
+
+def test_tagged_turn_is_sent_even_if_it_looks_english() -> None:
+    # The English guard is only for inherited turns; a tagged turn's label stands.
+    assert _ct()._build_payload("the menu del día", "es") is not None
+
+
+@pytest.mark.parametrize(
+    ("source", "run"),
+    [(None, None), ("en", None), (None, "en"), ("xx", None)],
+)
+def test_no_nameable_source_language_means_no_call(source, run) -> None:
+    assert _ct()._build_payload("hola", source, run_lang=run) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"choices": [{"text": " Tomorrow we go to the beach. "}]}, "Tomorrow we go to the beach."),
+        ({"choices": [{"text": "   "}]}, None),
+        ({"choices": []}, None),
+        ({}, None),
+        ({"choices": [None]}, None),
+    ],
+)
+def test_completion_parse(body, expected) -> None:
+    assert CompletionTranslator._parse(body) == expected

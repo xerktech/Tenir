@@ -98,8 +98,10 @@ class OpenAITranslator:
         return message.get("content") or message.get("reasoning_content") or ""
 
     def translate(  # pragma: no cover - requires httpx + a live chat endpoint
-        self, text: str, *, source_lang: str | None = None
+        self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
     ) -> str | None:
+        # run_lang is unused: an inherited turn deliberately goes out with no claimed
+        # source language, so the model identifies it (and returns English unchanged).
         import httpx
 
         if not text.strip():

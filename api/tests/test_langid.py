@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from api.stt.langid import detect_lang
+from api.stt.langid import detect_lang, leans_english
 
 # The stored transcript of session a6ef5cad, verbatim, with the language a
 # human labels each turn. The turns marked None are genuinely undecidable from
@@ -86,3 +86,21 @@ def test_single_hit_needs_a_short_turn() -> None:
     assert detect_lang("los planetas") == "es"
     # ...but one hit buried in a long proper-noun list is noise, not evidence.
     assert detect_lang("los Beatles Rolling Stones Metallica Nirvana Oasis Blur") is None
+
+
+# ---- leans_english (XERK-1354) ------------------------------------------------
+
+
+def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
+    # One English hit in six words is under detect_lang's floor, so the turn
+    # inherits a Spanish run — but it leans English, not Spanish.
+    text = "Okay so Mercurio Venus Tierra Marte"
+    assert detect_lang(text) is None
+    assert leans_english(text, versus="es")
+
+
+def test_no_lean_on_run_language_or_tie_or_no_evidence() -> None:
+    assert not leans_english("Mercurio, Venus, Tierra, Marte.", versus="es")
+    assert not leans_english("el que the", versus="es")  # 1-2: run language wins
+    assert not leans_english("the casa de", versus="es")  # tie is not a lean
+    assert not leans_english("Привет", versus="es")

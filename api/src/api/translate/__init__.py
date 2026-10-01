@@ -1,4 +1,5 @@
-"""Translation seam: "off" (disabled), "stub" (model-free) or "openai" (LiteLLM chat)."""
+"""Translation seam: "off" (disabled), "stub" (model-free) or "openai" (LiteLLM: the
+chat-json prompt, or a dedicated MT model's completion prompt — translation_prompt_style)."""
 
 from __future__ import annotations
 
@@ -25,6 +26,19 @@ def make_translator() -> Translator | None:
         return StubTranslator()
 
     if backend == "openai":
+        style = settings.translation_prompt_style
+        if style == "milmmt":
+            from api.translate.completion import CompletionTranslator
+
+            return CompletionTranslator(
+                endpoint=settings.litellm_endpoint,
+                model=settings.translation_model,
+                api_key=settings.litellm_api_key,
+            )
+        if style != "chat-json":
+            raise ValueError(
+                f"unknown translation prompt style: {style!r} (expected 'chat-json' or 'milmmt')"
+            )
         # Imported lazily so httpx loads only when the real backend is selected.
         from api.translate.openai import OpenAITranslator
 
