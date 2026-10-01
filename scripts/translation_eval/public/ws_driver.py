@@ -67,13 +67,13 @@ async def run_clip(base, token, clip, wait=True):
             # real-time pacing against the wall clock, not cumulative sleeps
             await asyncio.sleep(max(0, start + (i + frame) / 32000 - time.monotonic()))
         # wait for every final to have its translation (or the run to close)
-        deadline = time.monotonic() + (20 if wait else 30)
+        # STT-only capture (--no-wait) has no translations to wait for, so it waits the
+        # same fixed 20 s as the e2e runs. Its earlier "stop 6 s after the last final"
+        # rule came back with no finals for 23/200 clips (the Oct 2026 frozen set) that
+        # every e2e run captured; the exact mechanism wasn't isolated.
+        deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if not wait:
-                # STT-only capture: done once no final has arrived for 6 s
-                last = max([f["t"] for f in finals], default=start + len(audio) / 32000)
-                if time.monotonic() - max(last, start + len(audio) / 32000) > 6:
-                    break
                 await asyncio.sleep(0.1)
                 continue
             fin_ids = {f["segmentId"] for f in finals if f["lang"] != "en"}
@@ -99,7 +99,7 @@ async def main():
     ap.add_argument("--base", default="http://127.0.0.1:8080")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--no-wait", action="store_true",
-                    help="STT-only capture: don't wait for translations")
+                    help="STT-only capture: no translations expected; wait a fixed 20 s")
     a = ap.parse_args()
     clips = json.load(open(a.clips))
     r = httpx.post(f"{a.base}/auth/login", json={"username": os.environ["TENIR_USERNAME"],

@@ -76,3 +76,67 @@ def test_subset_caps_text_sets_and_keeps_whole_clips():
     asr = [i for i in got if i["set"] == "fleurs_asr"]
     assert len({i["clip"] for i in asr}) == SUBSET_ASR_CLIPS and len(asr) == 2 * SUBSET_ASR_CLIPS
     assert json.dumps(got) == json.dumps(subset(items))  # deterministic
+
+
+class TestShimApp:
+    """The real FastAPI app against a recording fake upstream — the route itself, not
+    just the helpers (a string-annotated `req: Request` once made every call 422)."""
+
+    @staticmethod
+    def _drive(monkeypatch, mode: str, upstream_reply: dict, status: int = 200):
+        import httpx
+        from fastapi.testclient import TestClient
+
+        import shim
+
+        seen: list[tuple[str, dict]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(status, json=upstream_reply)
+
+        monkeypatch.setenv("SERVED_MODEL", "cand")
+        monkeypatch.setenv("MODE", mode)
+        monkeypatch.setenv("UPSTREAM", "http://up/v1")
+        app = shim._make_app(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        payload = OpenAITranslator(endpoint="http://shim/v1", model="candidate")._build_payload(
+            "Hola, ¿qué tal?", "es"
+        )
+        resp = TestClient(app).post("/v1/chat/completions", json=payload)
+        return resp, seen
+
+    def test_shipped_forwards_the_request_with_the_model_rewritten(self, monkeypatch):
+        reply = {"choices": [{"message": {"content": '{"translation": "Hi"}'}}]}
+        resp, seen = self._drive(monkeypatch, "shipped", reply)
+        assert resp.status_code == 200 and resp.json() == reply
+        path, body = seen[0]
+        assert path == "/v1/chat/completions" and body["model"] == "cand"
+        assert body["response_format"] == {"type": "json_object"}
+
+    def test_native_milmmt_round_trips_through_the_shipped_parser(self, monkeypatch):
+        resp, seen = self._drive(monkeypatch, "milmmt", {"choices": [{"text": " Hi, how are you?"}]})
+        assert resp.status_code == 200
+        content = resp.json()["choices"][0]["message"]["content"]
+        assert OpenAITranslator._parse(content) == "Hi, how are you?"
+        assert seen[0][0] == "/v1/completions"
+        assert seen[0][1]["prompt"].startswith("Translate this from Spanish to English:")
+
+    def test_native_hymt_upstream_body(self, monkeypatch):
+        resp, seen = self._drive(monkeypatch, "hymt", {"choices": [{"message": {"content": "Hi"}}]})
+        assert resp.status_code == 200
+        body = seen[0][1]
+        assert body["temperature"] == 0.0 and body["repetition_penalty"] == 1.05
+
+    def test_upstream_error_status_is_passed_through(self, monkeypatch):
+        resp, _ = self._drive(monkeypatch, "tgemma", {"error": "bad"}, status=400)
+        assert resp.status_code == 400
+
+
+def test_native_chat_requests_are_greedy():
+    for mode in ("hymt", "tgemma"):
+        _, body = native_request(mode, "m", "Hola", "Spanish")
+        assert body["temperature"] == 0.0
+    _, hymt = native_request("hymt", "m", "Hola", "Spanish")
+    assert hymt["repetition_penalty"] == 1.05  # Hy-MT2's documented setting
+    _, tg = native_request("tgemma", "m", "Hola", "Spanish")
+    assert "repetition_penalty" not in tg

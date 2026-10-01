@@ -19,8 +19,9 @@ Run: UPSTREAM=http://127.0.0.1:8000/v1 SERVED_MODEL=<id> MODE=<mode> \
      python3 -m uvicorn shim:app --port 9000
 """
 
-from __future__ import annotations
-
+# No `from __future__ import annotations`: FastAPI resolves the route's `req: Request`
+# annotation at runtime, and Request is imported inside _make_app — as a string it
+# can't be resolved and every request 422s (a required query parameter "req").
 import json
 import os
 import re
@@ -60,7 +61,9 @@ def wrap(out: str, usage: dict | None) -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": content}}], "usage": usage}
 
 
-def _make_app():  # pragma: no cover - needs fastapi + a live upstream
+def _make_app(client=None):
+    """The shim app, configured from the environment. ``client`` (an httpx.AsyncClient)
+    is injectable so tests can drive it against a fake upstream."""
     import httpx
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
@@ -70,7 +73,7 @@ def _make_app():  # pragma: no cover - needs fastapi + a live upstream
     mode = os.environ.get("MODE", "shipped")
     run_lang = os.environ.get("RUN_LANG", "Spanish")
     app = FastAPI()
-    client = httpx.AsyncClient(timeout=120)
+    client = client or httpx.AsyncClient(timeout=120)
 
     @app.post("/v1/chat/completions")
     async def chat(req: Request):

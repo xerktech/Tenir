@@ -100,12 +100,13 @@ done
 echo "$EVAL_PASSWORD" | kubectl -n ai exec -i mt-eval -c vllm -- tee /work/eval_pw >/dev/null
 # then, inside the pod, detached (kubectl exec streams drop on long commands):
 #   setsid nohup bash setup.sh > setup.log 2>&1 < /dev/null &
-#   STT capture: TENIR_USERNAME=evaluser TENIR_PASSWORD=$(cat eval_pw) \
+#   STT capture (the frozen fleurs_asr set; waits 20 s per clip):
+#     TENIR_USERNAME=evaluser TENIR_PASSWORD=$(cat eval_pw) \
 #     python3 ws_driver.py data/clips.json --out results/stt_capture.json --concurrency 4 --no-wait \
 #     && echo STT_OK > stt.log
 #   setsid nohup bash run_all.sh > run_all.log 2>&1 < /dev/null &
 #   /work/venv/bin/python score.py results/*/text_*.json results/*/e2e_*.json --out results/scores.json
-#   /work/venv/bin/python boot.py      # paired bootstrap vs the Qwen baseline
+#   /work/venv/bin/python boot.py      # paired bootstrap vs Qwen, per set (--cpu off-GPU)
 kubectl -n ai delete pod mt-eval && kubectl -n ai delete resourceclaim mt-eval-rtx6000
 ```
 

@@ -7,21 +7,26 @@ python3 build_asr_items.py
 # Hy-MT2 on vLLM 0.30 only runs via the Transformers backend, whose "dynamic" RoPE wrapper
 # breaks CUDA-graph capture. Below 262K tokens it never changes the frequencies, so the
 # same static base (theta * alpha^(d/(d-2)) = 1e4 * 1000^(128/126)) as rope_type "default"
-# is exact — verified token-identical (eager stock vs eager override, 40/40).
+# is exact — verified token-identical (eager stock vs eager override, 40/40; with the
+# CUDA graphs it is served with, 35/40 match stock — kernel drift).
 ROPE='{"rope_parameters": {"rope_type": "default", "rope_theta": 11158839.92507748}}'
 
 # The ungated Infomaniak TranslateGemma repack flattened rope_parameters for an older vLLM;
 # transformers 5.17 rejects that shape. Restore the legacy rope_scaling key (same values as
 # every Gemma3 config, e.g. MiLMMT's) in the local snapshot.
-for m in Infomaniak-AI--vllm-translategemma-4b-it Infomaniak-AI--vllm-translategemma-12b-it; do
-  f=$(ls /models/hf/hub/models--$m/snapshots/*/config.json)
-  python3 - "$f" <<'PY'
+# Fetch the whole snapshot first (on a fresh cache there is nothing to patch, and a
+# later partial download must not restore the original file), then patch it.
+for repo in Infomaniak-AI/vllm-translategemma-4b-it Infomaniak-AI/vllm-translategemma-12b-it; do
+  python3 - "$repo" <<'PY' || { echo "TranslateGemma config fix failed for $repo"; exit 1; }
 import json, os, sys
-f = sys.argv[1]; c = json.load(open(f)); t = c.get("text_config", c)
+from huggingface_hub import snapshot_download
+f = os.path.join(snapshot_download(sys.argv[1]), "config.json")
+c = json.load(open(f)); t = c.get("text_config", c)
 if "rope_parameters" in t:
     t["rope_scaling"] = t.pop("rope_parameters")
     os.remove(f)  # replace the HF-cache symlink, leave the blob intact
     json.dump(c, open(f, "w"), indent=2)
+print("patched", f)
 PY
 done
 
