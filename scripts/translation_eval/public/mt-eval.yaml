@@ -46,7 +46,7 @@ spec:
     - {name: API_PORT, value: "8080"}
     - {name: API_STT_BACKEND, value: parakeet}
     - {name: API_STT_MODEL, value: parakeet}
-    - {name: API_STT_ENDPOINT, value: "http://tenir-parakeet.ai.svc.cluster.local:8000/v1"}
+    - {name: API_STT_ENDPOINT, value: "http://tenir-stt.ai.svc.cluster.local:8000/v1"}
     - {name: API_STT_PARTIAL_INTERVAL_MS, value: "350"}
     - {name: API_LITELLM_ENDPOINT, value: "http://127.0.0.1:9000/v1"}
     - {name: API_TRANSLATION_BACKEND, value: openai}
