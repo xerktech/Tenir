@@ -29,7 +29,7 @@ paths:
 ## Prompts / product contract
 
 - Dedicated MT models do not follow the shipped JSON-envelope prompt: MiLMMT-1B rambles to
-  `max_tokens`, the 4B/12B mostly answer `{}`, TranslateGemma's template 400s. Only Hy-MT2
+  `max_tokens`, the 4B mostly answers `{}`, TranslateGemma's template 400s. Only Hy-MT2
   (1.8B and 7B) survives it. Otherwise a swap needs a native-prompt mode
   (`API_TRANSLATION_PROMPT_STYLE`, `api/src/api/translate/completion.py`).
 - Source-language prompts can inherit Tenir's langid errors: a Spanish turn tagged pt

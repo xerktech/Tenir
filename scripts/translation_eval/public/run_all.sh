@@ -26,7 +26,9 @@ if "rope_parameters" in t:
     t["rope_scaling"] = t.pop("rope_parameters")
     os.remove(f)  # replace the HF-cache symlink, leave the blob intact
     json.dump(c, open(f, "w"), indent=2)
-print("patched", f)
+    print("patched", f)
+else:
+    print("already patched", f)
 PY
 done
 

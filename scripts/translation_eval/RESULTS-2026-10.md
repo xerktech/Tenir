@@ -31,10 +31,10 @@ models are significantly *worse* on app STT.
   - `fleurs_gold`: 200 FLEURS es_419 test sentences, gold Spanish text → English refs.
   - `fleurs_asr`: the same clips' audio through the app; the app's own Parakeet finals and
     language tags captured once and replayed identically to every model with the
-    production translate trigger (349 finals from 177 clips). The capture's early-stop
-    rule lost finals for 23 clips that every e2e run captured, and coverage is lower
-    (0.73 of reference words vs 0.89 e2e); the harness now waits a fixed 20 s.
-    Identical for every model, so comparisons hold.
+    production translate trigger (349 finals from 177 clips). The capture came back with
+    no finals for 23 clips that every e2e run captured, and covers fewer reference words
+    than the e2e runs (cause not isolated — an old-driver rerun outside the pod got all 23;
+    the harness now waits a fixed 20 s). Identical for every model, so comparisons hold.
   - `fleurs_e2e`: each model live end to end — 200 clips over the WebSocket, the app
     translates, `translation` messages scored (STT re-runs per model; 0/200 clips lost).
   - `opus_conv`: 300 short conversational OPUS-100 es→en lines (subtitle-style; refs are
@@ -106,20 +106,22 @@ turns langid can't call inside a run.
 ## Findings
 
 - **Parity, not a win.** On speech every candidate from 4B up sits within ±0.4 COMET of
-  Qwen, none significantly better. MiLMMT-4B/12B and Hy-MT2-7B win on OPUS, whose refs are
-  noisy — treat that as "at least as good on short conversational lines", not as proof.
+  Qwen, none significantly better. MiLMMT-4B/12B are significantly ahead on OPUS (Hy-MT2-7B
+  +0.60, CI spans 0), whose refs are noisy — treat that as "at least as good on short
+  conversational lines", not as proof.
 - **Small models lose on speech.** MiLMMT-1B and Hy-MT2-1.8B are significantly worse on
   the app's STT output; their parity on clean gold text doesn't survive recognition errors.
 - **Size buys little past 4B.** MiLMMT-4B → 12B: +0.05 on speech at 2.4× the VRAM and 2.8×
   the latency.
 - **Latency collapses.** MiLMMT-4B is ~4.5× faster than the FP8 Qwen baseline on the same
-  card, and ~1.3× faster than production's NVFP4+DFlash 132 ms.
+  card (98 vs 452 ms). Deployed on a 3090 it measured 187 ms — slower than production
+  Qwen's NVFP4+DFlash 132 ms on the RTX PRO 6000, but at ~11 GB instead of 41.5 GB.
 - **Only Hy-MT2 survives the shipped prompt** (1.8B and 7B, 0 parse failures). MiLMMT-1B
-  rambles to the 1,000-token cap (1.2 s/call); MiLMMT-4B/12B mostly answer `{}`;
+  rambles to the 1,000-token cap (1.2 s/call); MiLMMT-4B mostly answers `{}` (12B: 40% `{}`);
   TranslateGemma's chat template rejects the request. Everything else needs an adapter
   (`public/shim.py` is a working reference; Tenir's is XERK-1354).
 - **Source-language prompts can inherit langid errors, model-dependently.** 7/100 frozen
-  clips carry a non-`es` tag on Spanish speech (pt/fr/it on short turns). On those clips
+  clips carry a non-`es` tag on Spanish speech (fr/pt on short turns). On those clips
   MiLMMT loses vs Qwen (4B −0.2, 1B −0.9, 12B −1.3 COMET); TranslateGemma, also told the
   wrong language, gains (+0.6 / +1.0); Hy-MT2-7B, told none, gains +2.6. Seen e2e: "Hielo o
   polvo" tagged pt → MiLMMT "Ice the octopus" (*polvo* = octopus in pt). Langid's recall on
