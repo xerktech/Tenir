@@ -1,8 +1,9 @@
 """Completion-prompt translator for dedicated MT models (XERK-1354).
 
 Dedicated translation models such as MiLMMT-46 are trained on a bare completion
-prompt, not chat: under the shipped system prompt + JSON envelope they ramble to
-the token cap (scripts/translation_eval/RESULTS-2026-10.md). This backend sends
+prompt, not chat: under the shipped system prompt + JSON envelope they answer
+``{}`` or ramble to the token cap (scripts/translation_eval/RESULTS-2026-10.md).
+This backend sends
 their documented format to ``/completions`` through the same LiteLLM gateway:
 
     Translate this from Spanish to English:
@@ -13,8 +14,8 @@ greedy, stopping at the first newline. The output is the translation itself.
 
 Unlike the chat prompt, this one must name the source language. A turn with no
 detected language (an inherited run continuation) is translated from the run's
-language, unless it leans English: told English text is Spanish, the model
-rewrites it rather than returning it, so those turns are skipped.
+language, unless it is clearly English (``leans_english``): told English text is
+Spanish, the model rewrites it rather than returning it, so those turns are skipped.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ class CompletionTranslator:
             return None
         return out or None
 
-    def translate(  # pragma: no cover - requires httpx + a live completion endpoint
+    def translate(
         self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
     ) -> str | None:
         import httpx

@@ -229,6 +229,21 @@ def test_unknown_stt_backend_is_refused_at_config_time() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("translation_backend", "Openai", "unknown translation backend"),
+        ("translation_prompt_style", "MiLMMT", "unknown translation prompt style"),
+    ],
+)
+def test_unknown_translation_selector_is_refused_at_config_time(field, value, message) -> None:
+    """XERK-1354 QA: API_TRANSLATION_PROMPT_STYLE=MiLMMT booted with /health 200 and
+    /status ready, then failed every session.start."""
+    with pytest.raises(ValueError, match=message):
+        Settings(**{field: value})
+    assert Settings(translation_prompt_style="milmmt").translation_prompt_style == "milmmt"
+
+
+@pytest.mark.parametrize(
     "field",
     [
         "auth_token_ttl_seconds",

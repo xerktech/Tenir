@@ -464,6 +464,27 @@ class Settings(BaseSettings):
             raise ValueError(f"unknown STT backend: {value!r} (expected 'stub' or 'parakeet')")
         return value
 
+    # Same failure class for translations (XERK-1354 QA): a typo'd backend or prompt
+    # style booted healthy, then failed every session.start — taking captions down
+    # with it, not just translation.
+    @field_validator("translation_backend")
+    @classmethod
+    def _known_translation_backend(cls, value: str) -> str:
+        if value not in ("off", "stub", "openai"):
+            raise ValueError(
+                f"unknown translation backend: {value!r} (expected 'off', 'stub' or 'openai')"
+            )
+        return value
+
+    @field_validator("translation_prompt_style")
+    @classmethod
+    def _known_translation_prompt_style(cls, value: str) -> str:
+        if value not in ("chat-json", "milmmt"):
+            raise ValueError(
+                f"unknown translation prompt style: {value!r} (expected 'chat-json' or 'milmmt')"
+            )
+        return value
+
     # Durations and intervals: zero and negative are never meaningful and each
     # fails in a way that looks like something else (XERK-236). Notably
     # API_AUTH_TOKEN_TTL_SECONDS=0 issued a token from /auth/login that was

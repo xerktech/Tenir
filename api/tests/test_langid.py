@@ -92,15 +92,28 @@ def test_single_hit_needs_a_short_turn() -> None:
 
 
 def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
-    # One English hit in six words is under detect_lang's floor, so the turn
-    # inherits a Spanish run — but it leans English, not Spanish.
-    text = "Okay so Mercurio Venus Tierra Marte"
+    # English and French tie (2-2), so detect_lang won't call it and the turn would
+    # inherit a Spanish run — but it is clearly not Spanish.
+    text = "the chef est très and"
     assert detect_lang(text) is None
     assert leans_english(text, versus="es")
 
 
-def test_no_lean_on_run_language_or_tie_or_no_evidence() -> None:
-    assert not leans_english("Mercurio, Venus, Tierra, Marte.", versus="es")
-    assert not leans_english("el que the", versus="es")  # 1-2: run language wins
-    assert not leans_english("the casa de", versus="es")  # tie is not a lean
-    assert not leans_english("Привет", versus="es")
+@pytest.mark.parametrize(
+    ("text", "versus"),
+    [
+        # QA (XERK-1354): monolingual turns whose one "English" hit is a native word.
+        ("Has visto a Marco ayer.", "es"),
+        ("Was kostet Brot beim Bäcker?", "de"),
+        ("So bene cosa vuole Marco", "it"),
+        ("Mi hermano trabaja in Miami", "es"),
+        ("Vamos al mall, so whatever", "es"),
+        # no evidence / run language wins / tie / not Latin
+        ("Mercurio, Venus, Tierra, Marte.", "es"),
+        ("el que the", "es"),
+        ("the casa de", "es"),
+        ("Привет", "es"),
+    ],
+)
+def test_no_lean_without_real_english_evidence(text: str, versus: str) -> None:
+    assert not leans_english(text, versus=versus)

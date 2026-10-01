@@ -95,16 +95,19 @@ once the run ends.
 | `chat-json` | Default. System prompt + `{"translation": …}` envelope on `/chat/completions` — the chat models (Qwen). |
 | `milmmt`    | A dedicated MT model's bare prompt on `/completions`: `Translate this from Spanish to English:\nSpanish: …\nEnglish:`, greedy, stop at newline (XERK-1354). |
 
-`milmmt` is for MiLMMT-46-4B, which the Oct 2026 sweep picked over Qwen3.8-27B
-(`scripts/translation_eval/RESULTS-2026-10.md`: +0.54 COMET on Spanish→English at a
-fraction of the VRAM and latency). Such models cannot follow the chat-json prompt —
-they ramble to the token cap. Two behaviours differ from `chat-json`, both because the
-prompt must name a source language:
+`milmmt` is for MiLMMT-46-4B, the smallest model the Oct 2026 sweep found at parity
+with Qwen3.8-27B on Spanish speech (and ahead on conversational subtitles), in ~11 GB
+and a fraction of the latency (`scripts/translation_eval/RESULTS-2026-10.md`). Such
+models cannot follow the chat-json prompt: they answer `{}` or ramble to the token cap.
+Two behaviours differ from `chat-json`, both because the prompt must name a source
+language:
 
 - An inherited turn (no detected language) is translated from the **run's** language
   — the last non-English turn's — instead of letting the model identify it.
-- An inherited turn that leans English (`langid.leans_english`) is not sent: told
-  English is Spanish, the model rewrites it rather than returning it unchanged.
+- An inherited turn that is clearly English (`langid.leans_english`: at least two English
+  hits, more than the run language) is not sent: told English is Spanish, the model
+  rewrites it rather than returning it. The bar is strict on purpose — a skipped real
+  turn is lost, while one English word in a Spanish turn ("Has visto…") is common.
 
 Production runs the model on vLLM behind the gateway alias `milmmt-46-4b-translate`
 (ArgoCD `ai/tenir/milmmt.yaml`, XERK-1355). Cues stay on the chat model.

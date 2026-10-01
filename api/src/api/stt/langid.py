@@ -118,21 +118,27 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
     return scores, words
 
 
+# One English "hit" is not evidence on its own: has/was/in/so are everyday words of the
+# other contract languages too ("Has visto a Marco", "Was kostet das", "So bene").
+_LEAN_MIN_EN_HITS = 2
+
+
 def leans_english(text: str, versus: str) -> bool:
-    """Whether an undetected turn has more English evidence than ``versus`` (the run's
-    language) — a far lower bar than ``detect_lang`` labeling it ``en``.
+    """Whether an undetected turn is English enough to skip translating "from ``versus``"
+    (the run's language).
 
     For the inherited turns of a run: ``detect_lang`` returned None (too short or too
-    mixed to call), so the turn is translated as a continuation. A prompt that must
-    name a source language would then tell the model this is ``versus``; on English
-    text a translation model rewrites it instead of returning it (XERK-1354), so the
-    caller skips those. A tie is not a lean.
+    mixed to call), so the turn is translated as a continuation. A prompt that must name
+    a source language would then tell the model this is ``versus``; on English text a
+    translation model rewrites it instead of returning it (XERK-1354), so the caller
+    skips those. Deliberately strict — a skipped real turn is lost, a translated English
+    one is only reworded: at least two English hits, and more than ``versus`` has.
     """
     scored = _scores(text)
     if scored is None:
         return False
     scores, _ = scored
-    return scores["en"] > scores.get(versus, 0)
+    return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
 
 
 def detect_lang(text: str) -> str | None:
