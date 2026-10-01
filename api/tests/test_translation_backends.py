@@ -303,7 +303,8 @@ def test_completion_translate_degrades_to_none(monkeypatch: pytest.MonkeyPatch) 
 
     def failing_post(url, **kwargs):
         calls.append(url)
-        return _Resp({"error": "nope"}, status=500)
+        # A body that WOULD parse: only the status check can turn this into None.
+        return _Resp({"choices": [{"text": "upstream error page"}]}, status=500)
 
     monkeypatch.setattr(httpx, "post", failing_post)
     t = CompletionTranslator(endpoint="http://gw/v1", model="m")

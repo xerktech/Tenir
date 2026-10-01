@@ -108,6 +108,8 @@ def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
         ("So bene cosa vuole Marco", "it"),
         ("Mi hermano trabaja in Miami", "es"),
         ("Vamos al mall, so whatever", "es"),
+        # two English hits, but just as much Spanish: the "more than the run" half
+        ("Vamos al mall and the store de la esquina", "es"),
         # no evidence / run language wins / tie / not Latin
         ("Mercurio, Venus, Tierra, Marte.", "es"),
         ("el que the", "es"),
