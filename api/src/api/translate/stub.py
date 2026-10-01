@@ -10,7 +10,9 @@ from __future__ import annotations
 
 
 class StubTranslator:
-    def translate(self, text: str, *, source_lang: str | None = None) -> str | None:
+    def translate(
+        self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
+    ) -> str | None:
         stripped = text.strip()
         if not stripped:
             return None

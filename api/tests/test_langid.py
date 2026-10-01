@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from api.stt.langid import detect_lang
+from api.stt.langid import detect_lang, leans_english
 
 # The stored transcript of session a6ef5cad, verbatim, with the language a
 # human labels each turn. The turns marked None are genuinely undecidable from
@@ -86,3 +86,36 @@ def test_single_hit_needs_a_short_turn() -> None:
     assert detect_lang("los planetas") == "es"
     # ...but one hit buried in a long proper-noun list is noise, not evidence.
     assert detect_lang("los Beatles Rolling Stones Metallica Nirvana Oasis Blur") is None
+
+
+# ---- leans_english (XERK-1354) ------------------------------------------------
+
+
+def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
+    # English and French tie (2-2), so detect_lang won't call it and the turn would
+    # inherit a Spanish run — but it is clearly not Spanish.
+    text = "the chef est très and"
+    assert detect_lang(text) is None
+    assert leans_english(text, versus="es")
+
+
+@pytest.mark.parametrize(
+    ("text", "versus"),
+    [
+        # QA (XERK-1354): monolingual turns whose one "English" hit is a native word.
+        ("Has visto a Marco ayer.", "es"),
+        ("Was kostet Brot beim Bäcker?", "de"),
+        ("So bene cosa vuole Marco", "it"),
+        ("Mi hermano trabaja in Miami", "es"),
+        ("Vamos al mall, so whatever", "es"),
+        # two English hits, but just as much Spanish: the "more than the run" half
+        ("Vamos al mall and the store de la esquina", "es"),
+        # no evidence / run language wins / tie / not Latin
+        ("Mercurio, Venus, Tierra, Marte.", "es"),
+        ("el que the", "es"),
+        ("the casa de", "es"),
+        ("Привет", "es"),
+    ],
+)
+def test_no_lean_without_real_english_evidence(text: str, versus: str) -> None:
+    assert not leans_english(text, versus=versus)

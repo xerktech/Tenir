@@ -73,6 +73,10 @@ services:
       # Translations keep thinking off (per-utterance latency on the live
       # caption path) — separate knob from the cue thinking toggle.
       API_TRANSLATION_DISABLE_THINKING: ${API_TRANSLATION_DISABLE_THINKING:-true}
+      # Request format (XERK-1354): chat-json (the Qwen prompt above) or milmmt — a
+      # dedicated MT model's completion prompt on /completions (MiLMMT-46-4B; set
+      # API_TRANSLATION_MODEL to its gateway alias). See docs/translations.md.
+      API_TRANSLATION_PROMPT_STYLE: ${API_TRANSLATION_PROMPT_STYLE:-chat-json}
       # How long speech may go quiet after the last non-English activity before
       # the run is declared done and the glasses' dismiss countdown starts.
       API_TRANSLATION_HOLD_MS: ${API_TRANSLATION_HOLD_MS:-3000}

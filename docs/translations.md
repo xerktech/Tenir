@@ -88,6 +88,30 @@ once the run ends.
 | `stub`   | Model-free, deterministic (`[es→en] …`) for CI/dev — no GPU.          |
 | `openai` | Real chat model via the LiteLLM gateway: `API_TRANSLATION_MODEL`, default `qwen3.8-27b-dflash-translate` — the cue model's weights on a dedicated route (XERK-180). |
 
+### Prompt style (`API_TRANSLATION_PROMPT_STYLE`, `openai` backend)
+
+| Value       | Request                                                             |
+|-------------|---------------------------------------------------------------------|
+| `chat-json` | Default. System prompt + `{"translation": …}` envelope on `/chat/completions` — the chat models (Qwen). |
+| `milmmt`    | A dedicated MT model's bare prompt on `/completions`: `Translate this from Spanish to English:\nSpanish: …\nEnglish:`, greedy, stop at newline (XERK-1354). |
+
+`milmmt` is for MiLMMT-46-4B, the smallest model the Oct 2026 sweep found at parity
+with Qwen3.8-27B on Spanish speech (and ahead on conversational subtitles), in ~11 GB
+and a fraction of the latency (`scripts/translation_eval/RESULTS-2026-10.md`). Such
+models cannot follow the chat-json prompt: they answer `{}` or ramble to the token cap.
+Two behaviours differ from `chat-json`, both because the prompt must name a source
+language:
+
+- An inherited turn (no detected language) is translated from the **run's** language
+  — the last non-English turn's — instead of letting the model identify it.
+- An inherited turn that is clearly English (`langid.leans_english`: at least two English
+  hits, more than the run language) is not sent: told English is Spanish, the model
+  rewrites it rather than returning it. The bar is strict on purpose — a skipped real
+  turn is lost, while one English word in a Spanish turn ("Has visto…") is common.
+
+Production runs the model on vLLM behind the gateway alias `milmmt-46-4b-translate`
+(ArgoCD `ai/tenir/milmmt.yaml`, XERK-1355). Cues stay on the chat model.
+
 The stub is what CI exercises end-to-end (run state → WS messages →
 persistence → history). The real prompt and route were evaluated in the Aug
 2026 translation eval (`scripts/translation_eval/RESULTS-2026-08.md`): all 594

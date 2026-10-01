@@ -100,25 +100,57 @@ def _latin(text: str) -> bool:
     return True
 
 
-def detect_lang(text: str) -> str | None:
-    """Best-effort language of one finalized turn, as a contract code, or None.
-
-    Conservative by design (see module docstring): returns a code only when one
-    language clearly wins with enough evidence for the turn's length.
-    """
+def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
+    """Per-language evidence for one turn (distinctive-word hits, +2 for a unique
+    character), with its words; None when the text can't be any contract language."""
     if not text or not _latin(text):
         return None
     lowered = text.lower()
     words = _TOKEN_RE.findall(lowered)
     if not words:
         return None
-
     scores: dict[str, int] = {}
     for code, vocab in _WORDS.items():
         scores[code] = sum(1 for w in words if w in vocab)
     for code, chars in _CHARS.items():
         if any(c in lowered for c in chars):
             scores[code] += 2
+    return scores, words
+
+
+# One English "hit" is not evidence on its own: has/was/in/so are everyday words of the
+# other contract languages too ("Has visto a Marco", "Was kostet das", "So bene").
+_LEAN_MIN_EN_HITS = 2
+
+
+def leans_english(text: str, versus: str) -> bool:
+    """Whether an undetected turn is English enough to skip translating "from ``versus``"
+    (the run's language).
+
+    For the inherited turns of a run: ``detect_lang`` returned None (too short or too
+    mixed to call), so the turn is translated as a continuation. A prompt that must name
+    a source language would then tell the model this is ``versus``; on English text a
+    translation model rewrites it instead of returning it (XERK-1354), so the caller
+    skips those. Deliberately strict — a skipped real turn is lost, a translated English
+    one is only reworded: at least two English hits, and more than ``versus`` has.
+    """
+    scored = _scores(text)
+    if scored is None:
+        return False
+    scores, _ = scored
+    return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
+
+
+def detect_lang(text: str) -> str | None:
+    """Best-effort language of one finalized turn, as a contract code, or None.
+
+    Conservative by design (see module docstring): returns a code only when one
+    language clearly wins with enough evidence for the turn's length.
+    """
+    scored = _scores(text)
+    if scored is None:
+        return None
+    scores, words = scored
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     (best, best_score), (_, second_score) = ranked[0], ranked[1]
