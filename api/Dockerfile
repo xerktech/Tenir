@@ -38,12 +38,13 @@ LABEL org.opencontainers.image.source="https://github.com/xerktech/tenir" \
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
 # The floating python:3.11-slim base can trail Debian security updates. Upgrade
-# the OpenSSL packages Trivy flags (CVE-2026-14456: libssl3t64/openssl/
-# openssl-provider-legacy) so the image-scan gate stays green; a no-op once the
-# base image itself ships the fix.
+# the packages Trivy flags so the image-scan gate stays green; each is a no-op
+# once the base image itself ships the fix:
+#   CVE-2026-14456: libssl3t64/openssl/openssl-provider-legacy
+#   CVE-2026-103111: libpcre2-8-0 (fixed in 10.46-1~deb13u3)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade \
-       libssl3t64 openssl openssl-provider-legacy \
+       libssl3t64 openssl openssl-provider-legacy libpcre2-8-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv
