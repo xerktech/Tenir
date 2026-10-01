@@ -86,7 +86,7 @@ unchanged". Honesty rules carry over from `scripts/cue_eval`:
 
 No private transcripts: FLEURS es_419 audio + references, OPUS-100 es→en, English
 passthrough. Runs in one pod on talos04 that holds the RTX PRO 6000 (vLLM) next to the
-production Tenir image (the app under test), with real STT from `tenir-parakeet`.
+production Tenir image (the app under test), with real STT from `tenir-stt` (ArgoCD `ai/tenir/stt.yaml`; `tenir-parakeet` before XERK-1384).
 
 ```bash
 cd scripts/translation_eval/public
