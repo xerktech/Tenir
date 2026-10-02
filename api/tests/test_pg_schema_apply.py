@@ -250,3 +250,67 @@ def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch)
         assert resp.status_code == 503
         assert resp.json()["checks"]["conversations"].startswith("error:")
         assert len(attempts) == before + 1, "/ready must retry opening the pool"
+
+
+def test_user_store_failed_schema_apply_is_retried_not_cached(monkeypatch) -> None:
+    """Same regression in SqlUserStore (XERK-1409): a failed ensure-schema must
+    leave no cached pool, so the next call retries it."""
+    from api.auth.sql_users import SqlUserStore
+
+    conn = _FailingConn()
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = SqlUserStore("postgresql://unused")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            store._ensure_pool()
+
+    assert conn.calls == 2, "the second call must re-attempt the schema apply"
+    assert all(p.closed for p in pools)
+    assert store._pool is None
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -> None:
+    """Concurrent first callers must not each open a pool and run the DDL in
+    parallel — on real Postgres that deadlocks and reads as a rejected schema
+    (QA on XERK-1409). The first caller applies; the rest wait and reuse it."""
+    import importlib
+    import threading
+    import time
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+
+    in_apply = 0
+    max_in_apply = 0
+    guard = threading.Lock()
+
+    class _SlowConn:
+        def execute(self, sql: str, params: object = None) -> None:
+            nonlocal in_apply, max_in_apply
+            with guard:
+                in_apply += 1
+                max_in_apply = max(max_in_apply, in_apply)
+            time.sleep(0.001)
+            with guard:
+                in_apply -= 1
+
+    pools = _install_fake_pool(monkeypatch, _SlowConn())
+    store = store_cls("postgresql://unused")
+    start = threading.Barrier(8)
+
+    def first_use() -> None:
+        start.wait()
+        store._ensure_pool()
+
+    threads = [threading.Thread(target=first_use) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(pools) == 1, "only one pool may be opened"
+    assert max_in_apply == 1, "schema statements must never run concurrently"

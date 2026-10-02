@@ -15,6 +15,7 @@ is exercised by the compose stack.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Iterator
 
@@ -79,10 +80,24 @@ class SchemaApplyError(RuntimeError):
     a pod that looks healthy and can't record."""
 
 
+def _is_connection_error(exc: BaseException) -> bool:
+    """True for a lost/refused connection (psycopg ``OperationalError``, e.g. the
+    server restarting mid-apply) — that heals on its own, so it is not a rejected
+    schema. False when psycopg isn't importable (the unit-test fakes)."""
+    try:
+        from psycopg import OperationalError
+    except ImportError:
+        return False
+    return isinstance(exc, OperationalError)
+
+
 class SqlConversationStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool = None
+        # Serializes pool open + schema apply. Without it, concurrent first callers
+        # each open a pool and run the DDL in parallel, which Postgres deadlocks on.
+        self._pool_lock = threading.Lock()
 
     def open(self) -> None:  # pragma: no cover - requires psycopg + a live database
         """Eagerly open the pool and apply the schema at boot.
@@ -93,13 +108,18 @@ class SqlConversationStore:
         ``/ready`` reports it meanwhile."""
         try:
             self._ensure_pool()
-        except SchemaApplyError:
+        except (SchemaApplyError, ImportError):
+            # A missing driver is a permanent misconfiguration, not a DB outage.
             raise
         except Exception as exc:  # noqa: BLE001 - unreachable DB is non-fatal at boot
             log.warning("database not reachable at startup; will retry lazily: %s", exc)
 
     def _ensure_pool(self):  # pragma: no cover - requires psycopg + a live database
-        if self._pool is None:
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is not None:
+                return self._pool
             from psycopg_pool import ConnectionPool
 
             log.info("opening Postgres connection pool")
@@ -134,6 +154,8 @@ class SqlConversationStore:
             try:
                 apply_schema(conn, sql)
             except Exception as exc:
+                if _is_connection_error(exc):
+                    raise
                 raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
         log.info("applied idempotent schema from %s on pool open", path)
 
