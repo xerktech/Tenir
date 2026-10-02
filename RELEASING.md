@@ -133,6 +133,28 @@ Android versions an install by the version baked *inside* the file — the name
 must describe the bits. A carried **even** component needs nothing physical:
 the Even Hub portal already holds its version, and the manifest references it.
 
+## Deploying the api (automatic)
+
+A real release from `main` that builds the api image also deploys it: the
+`build-api` job's last step commits `image: ghcr.io/xerktech/tenir:<version>` into
+xerktech/ArgoCD `ai/tenir/deployment.yaml`. That Application is `automated` +
+`selfHeal`, so the commit is the deploy (XERK-1407; same mechanism as Turma).
+Skipped on a dry run and off `main`. If the manifest has no matching `image:` line,
+or the key is missing, the step fails loudly: a cluster that quietly never updates
+is the failure it exists to prevent. Only the api image is deployed this way;
+`tenir-parakeet-stt` and the clients are not.
+
+It authenticates with a **write deploy key** on xerktech/ArgoCD, held here as the
+secret **`ARGOCD_DEPLOY_KEY`** (the private half; the public half is the deploy key
+titled `tenir-release` on that repo). Not a PAT: `GITHUB_TOKEN` is scoped to this
+repo, a classic PAT would carry a whole account into CI, and a fine-grained one
+expires. Revoke by deleting the deploy key.
+
+There is no human gate between merge and production any more, so the gate is CI.
+api.yml applies `schema.sql` to a real Postgres (`tests/test_pg_schema_live.py`,
+XERK-1406); a migration Postgres refuses would otherwise fail every `session.start`
+the moment the release rolls out.
+
 ## Minor / major releases (manual)
 
 Run the **release** workflow from the Actions tab with `release_type: minor` (or
