@@ -53,7 +53,7 @@ services:
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
       # model through the SAME LiteLLM gateway. The cue LLM is Qwen3.8-27B on the
-      # external SGLang server (no local container); litellm/config.yaml aliases it
+      # in-cluster stack (ArgoCD repo); litellm/config.yaml aliases it
       # as qwen3.8-27b-dflash.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
       API_LLM_MODEL: ${API_LLM_MODEL:-qwen3.8-27b-dflash}
