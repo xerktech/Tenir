@@ -253,11 +253,14 @@ class StreamingTranscriber:
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         if pad_ms:
             # Word times back onto the unpadded turn's timeline (rounded to the ms so
-            # float error can't shave a millisecond off when they're truncated later).
+            # float error can't shave a millisecond off when they're truncated later),
+            # clamped to the turn: a word the model placed in either pad still lies
+            # within the caption it belongs to.
             off = pad_ms / 1000
+            dur = round(len(buf) / BYTES_PER_SEC, 3)
             for w in result.words:
-                w.start = max(0.0, round(w.start - off, 3))
-                w.end = max(0.0, round(w.end - off, 3))
+                w.start = min(dur, max(0.0, round(w.start - off, 3)))
+                w.end = min(dur, max(0.0, round(w.end - off, 3)))
         return result
 
     async def _emit_partial(self) -> None:
@@ -292,18 +295,33 @@ class StreamingTranscriber:
         self._turn_partial = caption
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
+    async def _retry_blank_final(self, blank):
+        """Speech, but the whole-turn decode is blank: decode once more with silence
+        padding (see _EMPTY_FINAL_RETRY_PAD_MS). Returns the retry's result when it
+        carries a real turn, else ``blank`` so _finalize falls through to the XERK-174
+        partial fallback exactly as without the retry:
+        - a retry that raises (STT timeout/connect error) must not lose the turn — the
+          exception would skip the per-turn reset and re-enter _finalize every frame;
+        - a retry below _RECOVERY_MIN_WORDS is held to the same filler gate as a
+          recovered partial (XERK-182): padding non-speech can conjure 1-2 words."""
+        try:
+            retry = await self._run_engine(
+                stage="final_retry", want_words=self._final_words, pad_ms=_EMPTY_FINAL_RETRY_PAD_MS
+            )
+        except Exception:
+            log.warning("padded retry of a blank final failed", exc_info=True)
+            metrics.incr("stage.stt.final_retry_errors")
+            return blank
+        if len(retry.text.split()) < _RECOVERY_MIN_WORDS:
+            metrics.incr("stage.stt.final_retry_empty")
+            return blank
+        metrics.incr("stage.stt.final_retry_recovered")
+        return retry
+
     async def _finalize(self) -> None:
         result = await self._run_engine(stage="final", want_words=self._final_words)
         if not result.text.strip() and self._has_speech:
-            # Speech, but the whole-turn decode is blank: retry once with silence
-            # padding before falling back to the partial (see _EMPTY_FINAL_RETRY_PAD_MS).
-            result = await self._run_engine(
-                stage="final", want_words=self._final_words, pad_ms=_EMPTY_FINAL_RETRY_PAD_MS
-            )
-            metrics.incr(
-                "stage.stt.final_retry_recovered" if result.text.strip()
-                else "stage.stt.final_retry_empty"
-            )
+            result = await self._retry_blank_final(result)
         start = self._segment_start_ms
         end = start + _bytes_to_ms(len(self._buf))
 

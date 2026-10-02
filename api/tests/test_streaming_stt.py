@@ -1087,6 +1087,105 @@ def test_empty_final_is_retried_with_silence_padding() -> None:
     asyncio.run(run())
 
 
+def test_silent_forced_final_is_not_retried() -> None:
+    # A max-segment final with no speech in it still reaches _finalize; the speech
+    # gate keeps it to one decode (the retry costs a GPU call). flush() alone can't
+    # test this — it never finalizes a speechless buffer.
+    async def run() -> None:
+        eng = PadSensitiveEngine()
+        t = StreamingTranscriber(
+            eng, language=None, partial_interval_ms=10000, silence_ms=10000,
+            max_segment_ms=1000,
+        )
+        for _ in range(10):
+            await t.push(_pcm(100, amplitude=0))
+        assert eng.final_calls == 1
+
+    asyncio.run(run())
+
+
+class _RetryEngine:
+    """Partials say ``partial``; the unpadded final is blank; the padded final is
+    ``retry`` (an EngineResult) or raises when ``retry`` is an exception."""
+
+    def __init__(self, retry, partial: str = "uno dos tres cuatro") -> None:
+        self.retry, self.partial, self.calls = retry, partial, 0
+
+    def transcribe(self, samples, *, language, want_words=True):
+        self.calls += 1
+        if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+            return EngineResult(text="", words=[], language=None)
+        if not want_words:
+            return EngineResult(text=self.partial, words=[], language=None)
+        if samples[0] != 0.0:
+            return EngineResult(text="", words=[], language=None)
+        if isinstance(self.retry, Exception):
+            raise self.retry
+        return self.retry
+
+
+async def _one_turn(eng, *, partials: bool):
+    t = StreamingTranscriber(
+        eng, language=None, partial_interval_ms=100 if partials else 10000,
+        silence_ms=300, min_segment_ms=100, max_segment_ms=5000, final_words=True,
+    )
+    for _ in range(5):
+        await t.push(_pcm(100, amplitude=4000))
+    for _ in range(3):
+        await t.push(_pcm(100, amplitude=0))
+    return [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+
+
+def test_failed_retry_falls_back_to_the_partial() -> None:
+    # A retry that raises (STT timeout) must keep the XERK-174 fallback, not lose the
+    # turn and re-run both decodes on every following frame.
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        eng = _RetryEngine(TimeoutError("stt stalled"))
+        finals = await _one_turn(eng, partials=True)
+        assert [f.text for f in finals] == ["uno dos tres cuatro"]
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_errors"] == 1
+        assert counters["stage.stt.final_recovered"] == 1
+        metrics.reset()
+
+    asyncio.run(run())
+
+
+def test_short_retry_output_is_held_to_the_filler_gate() -> None:
+    # Padding non-speech can conjure a 1-2 word filler; like a recovered partial it
+    # needs _RECOVERY_MIN_WORDS words, else the turn takes the normal fallback path.
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        eng = _RetryEngine(EngineResult(text="mm", words=[], language=None))
+        assert await _one_turn(eng, partials=False) == []
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_empty"] == 1
+        assert "stage.stt.final_retry_recovered" not in counters
+        metrics.reset()
+
+    asyncio.run(run())
+
+
+def test_retry_word_times_are_clamped_to_the_turn() -> None:
+    # Words the model put in the leading/trailing pad land on the turn's edges.
+    async def run() -> None:
+        words = [EngineWord("a", 0.2, 0.4, 0.9), EngineWord("b", 0.6, 0.9, 0.9),
+                 EngineWord("c", 1.0, 1.6, 0.9)]
+        eng = _RetryEngine(EngineResult(text="a b c", words=words, language="es"))
+        (f,) = await _one_turn(eng, partials=False)
+        turn_ms = f.endMs - f.startMs
+        assert [(w.startMs - f.startMs, w.endMs - f.startMs) for w in f.words] == [
+            (0, 0), (100, 400), (500, turn_ms)
+        ]
+
+    asyncio.run(run())
+
+
 def test_silent_turn_is_not_retried() -> None:
     # No speech in the buffer -> no extra decode (the retry costs a GPU call).
     async def run() -> None:
