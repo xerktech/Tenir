@@ -31,7 +31,7 @@ SESSION_A6EF5CAD = [
     ("Ya es un poco.", "es"),
     ("un planeta enano, no forma parte del sistema solar.", "es"),
     ("That totally did not translate. It just talked about planet.", "en"),
-    ("That's", None),  # single fragment — no evidence
+    ("That's", "en"),  # an English contraction is evidence (XERK-1415)
 ]
 
 
@@ -77,8 +77,9 @@ def test_empty_and_wordless_input() -> None:
 
 
 def test_ambiguous_ties_stay_none() -> None:
-    # "no" scores Spanish and "so" scores English — a tie is a guess, not a call.
-    assert detect_lang("no, so") is None
+    # "que" scores Spanish (and French, Portuguese) and "so" scores English — a tie
+    # is a guess, not a call.
+    assert detect_lang("so, que") is None
 
 
 def test_single_hit_needs_a_short_turn() -> None:
@@ -119,3 +120,96 @@ def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
 )
 def test_no_lean_without_real_english_evidence(text: str, versus: str) -> None:
     assert not leans_english(text, versus=versus)
+
+
+# ---- English homographs (XERK-1415) ---------------------------------------------
+# Across the recorded sessions most turns tagged non-English were plain English whose
+# only "evidence" was an everyday English word that is also a distinctive word of
+# another contract language — each one sent an English turn to the translator. These
+# are synthetic turns of the same shapes (not transcript text).
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # "i" (it): English turns that are just "I" plus words in no vocabulary
+        ("I did.", "en"),
+        ("I don't remember.", "en"),
+        ("I moved back.", None),
+        ("Yeah, I guess.", "en"),
+        # "ha" (it)
+        ("Ha ha ha.", None),
+        # "um" / "do" / "as" (pt)
+        ("Um", None),
+        ("Um, okay.", None),
+        ("Do that.", None),
+        ("What do we do?", "en"),
+        ("As far as I know, it's fine.", "en"),
+        # "no" (es)
+        ("No.", None),
+        ("No way.", None),
+        ("No, it's okay.", None),
+        # "a" (fr) / "in", "come" (it) / "yo" (es)
+        ("It's a good one.", "en"),
+        ("A little bit.", None),
+        ("Come in.", None),
+        ("Yo, what's up.", "en"),
+        ("Yo", None),
+        # "ma" / "per" (it), "com" (pt), "pour" (fr)
+        ("Thanks Ma.", None),
+        ("Five dollars per day.", None),
+        ("Visit tenir.com", None),
+        ("Pour.", None),
+        # "die" / "hat" / "war" / "den" (de)
+        ("Die hard fans.", None),
+        ("Another hat.", None),
+        ("War is coming.", None),
+        ("Back to the den.", "en"),
+    ],
+)
+def test_english_homographs_alone_are_not_foreign(text: str, expected: str | None) -> None:
+    # None is safe: outside a run nothing is translated, inside one the turn inherits.
+    assert detect_lang(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ...but they still count once the turn has other evidence for the language.
+        ("No me importa lo que pase.", "es"),
+        ("Yo no sé, pero está bien.", "es"),
+        ("Eu não sei o que fazer.", "pt"),
+        ("Do meu lado, tudo bem.", "pt"),
+        ("I ragazzi sono in giardino.", "it"),
+        ("Il a dit que c'est fini.", "fr"),
+        ("Die Kinder sind in der Schule.", "de"),
+        ("Er hat nicht die Zeit.", "de"),
+    ],
+)
+def test_english_homographs_still_corroborate(text: str, expected: str) -> None:
+    assert detect_lang(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Code-switched turns inside a Spanish run: one English word must not make them
+        # en, which would close the run and leave the Spanish untranslated.
+        "Like, no sé.",
+        "Ya, it's ok.",
+        "No quiero, I'm tired.",
+        # an accented letter is the only foreign signal
+        "It's qué?",
+        # "will" is a German verb, so it is not English vocab.
+        "Was will sie?",
+    ],
+)
+def test_one_english_word_beside_foreign_signal_is_not_english(text: str) -> None:
+    assert detect_lang(text) is None
+
+
+def test_new_english_vocab_counts() -> None:
+    # Contractions and short verbs are English evidence on their own.
+    assert detect_lang("Like, whatever.") == "en"
+    assert detect_lang("I did.") == "en"
+    assert detect_lang("Can't.") == "en"
