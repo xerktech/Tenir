@@ -141,3 +141,13 @@ def test_spanish_a_y_le_lo_ha_are_not_french_or_italian(text: str) -> None:
 def test_french_still_detected_without_a_y_le() -> None:
     assert detect_lang("Je ne sais pas") == "fr"
     assert detect_lang("C'est une très bonne idée pour nous") == "fr"
+
+
+def test_spanish_y_is_not_french_evidence() -> None:
+    # "y" is Spanish "and"; as a French word it tied this turn (margin 0 -> None).
+    assert detect_lang("y la gente y la familia") == "es"
+
+
+def test_english_i_is_not_italian_evidence() -> None:
+    # Lower-cased English "I" used to score as the Italian article "i".
+    assert detect_lang("I think I can") == "en"
