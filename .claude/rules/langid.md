@@ -14,6 +14,9 @@ paths:
   of ~11.4k recorded turns non-English ("Um" → pt, "I did." → it, "No." → es, "It's a" → fr).
 - A short turn left `None` is cheap: outside a run nothing is translated, inside one it inherits
   the run's language. A wrong `en` cuts a live run, so new English vocab must be English-only
-  (contractions, not `me`/`he`/`on`, which are es/fr words).
+  (contractions; not `me`/`he`/`on`/`will`, which are es/fr/de words).
+- A one-hit `en` call beside a homograph or an accented letter returns `None` (`_foreign_doubt`):
+  code-switched turns like "Like, no sé." otherwise close a live Spanish run.
+  `i`/`a` don't count as doubt, or "I did." stops being English.
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
   `detect_lang`, hand-read every changed label), not intuition. Keep transcript text out of tests.

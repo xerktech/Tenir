@@ -142,18 +142,29 @@ def test_no_lean_without_real_english_evidence(text: str, versus: str) -> None:
         # "um" / "do" / "as" (pt)
         ("Um", None),
         ("Um, okay.", None),
-        ("Do that.", "en"),
+        ("Do that.", None),
         ("What do we do?", "en"),
         ("As far as I know, it's fine.", "en"),
         # "no" (es)
         ("No.", None),
         ("No way.", None),
-        ("No, it's okay.", "en"),
+        ("No, it's okay.", None),
         # "a" (fr) / "in", "come" (it) / "yo" (es)
         ("It's a good one.", "en"),
         ("A little bit.", None),
-        ("Come in.", "en"),
+        ("Come in.", None),
         ("Yo, what's up.", "en"),
+        ("Yo", None),
+        # "ma" / "per" (it), "com" (pt), "pour" (fr)
+        ("Thanks Ma.", None),
+        ("Five dollars per day.", None),
+        ("Visit tenir.com", None),
+        ("Pour.", None),
+        # "die" / "hat" / "war" / "den" (de)
+        ("Die hard fans.", None),
+        ("Another hat.", None),
+        ("War is coming.", None),
+        ("Back to the den.", "en"),
     ],
 )
 def test_english_homographs_alone_are_not_foreign(text: str, expected: str | None) -> None:
@@ -172,7 +183,31 @@ def test_english_homographs_alone_are_not_foreign(text: str, expected: str | Non
         ("I ragazzi sono in giardino.", "it"),
         ("Il a dit que c'est fini.", "fr"),
         ("Die Kinder sind in der Schule.", "de"),
+        ("Er hat nicht die Zeit.", "de"),
     ],
 )
 def test_english_homographs_still_corroborate(text: str, expected: str) -> None:
     assert detect_lang(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Code-switched turns inside a Spanish run: one English word must not make them
+        # en, which would close the run and leave the Spanish untranslated.
+        "Like, no sé.",
+        "Ya, it's ok.",
+        "No quiero, I'm tired.",
+        # "will" is a German verb, so it is not English vocab.
+        "Was will sie?",
+    ],
+)
+def test_one_english_word_beside_foreign_signal_is_not_english(text: str) -> None:
+    assert detect_lang(text) is None
+
+
+def test_new_english_vocab_counts() -> None:
+    # Contractions and short verbs are English evidence on their own.
+    assert detect_lang("Like, whatever.") == "en"
+    assert detect_lang("I did.") == "en"
+    assert detect_lang("Can't.") == "en"

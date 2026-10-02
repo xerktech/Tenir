@@ -39,7 +39,7 @@ _WORDS: dict[str, frozenset[str]] = {
     "en": frozenset(
         "the and is are was were of to in that it you they this with for not have "
         "has had but what there about just so would could should think know "
-        "really because did can like get got be if out up how who will some mean "
+        "really because did can like get got be if out up how who some mean "
         "guess we my your i'm i'd i'll i've don't didn't can't it's that's what's "
         "there's we're they're you're gonna wanna".split()
     ),
@@ -82,7 +82,8 @@ _WORDS: dict[str, frozenset[str]] = {
 # but these is undecidable, and inside a live run it still inherits the run's
 # language, so a Spanish "No." mid-conversation is translated as before.
 _ENGLISH_HOMOGRAPHS = frozenset(
-    "i a ha um em do no in come as die hat war den son plus non ya yo".split()
+    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non "
+    "ya yo".split()
 )
 
 # Characters that pin a language on their own (strong evidence — they are typed
@@ -183,4 +184,22 @@ def detect_lang(text: str) -> str | None:
         return None
     if best_score < _MIN_HITS and len(words) > _SINGLE_HIT_MAX_WORDS:
         return None
+    if best == "en" and best_score < _MIN_HITS and _foreign_doubt(text, words):
+        # One English word next to a homograph or an accented letter is a
+        # code-switched turn ("Like, no sé.", "Ya, it's ok."), not an English one:
+        # calling it en would close a live run mid-Spanish (XERK-1415 QA).
+        return None
     return best
+
+
+# Homographs that cast doubt on a one-word English call. "i" and "a" are left out:
+# they are in nearly every English turn, and real it/fr text has other evidence.
+_DOUBT_WORDS = _ENGLISH_HOMOGRAPHS - _WORDS["en"] - {"i", "a"}
+
+
+def _foreign_doubt(text: str, words: list[str]) -> bool:
+    """Whether a turn carries any non-English signal that isn't scored: an English
+    homograph that isn't English vocab ("no", "ya") or a non-ASCII letter ("sé")."""
+    if any(w in _DOUBT_WORDS for w in words):
+        return True
+    return any(ch.isalpha() and not ch.isascii() for ch in text)
