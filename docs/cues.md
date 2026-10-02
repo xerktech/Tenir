@@ -182,8 +182,8 @@ history), so the whole path is covered without a GPU.
 
 ## The model
 
-The production cue model is **Qwen3.8-27B**, served by SGLang on the GPU box
-(`maxai.xerktech.com:9402`) with NVFP4 weights and DFlash speculative decoding,
+The production cue model is **Qwen3.8-27B**, served by SGLang in the cluster
+(ArgoCD `ai/tenir/qwen.yaml`; disabled pending XERK-1422) with NVFP4 weights and DFlash speculative decoding,
 and aliased `qwen3.8-27b-dflash` on the shared LiteLLM gateway. It replaced the
 retired gpt-oss-120b Ollama deployment (the `ollama-cue` container, whose July
 2026 cue-model eval record is `scripts/cue_eval/RESULTS-2026-07.md`). Cues are
