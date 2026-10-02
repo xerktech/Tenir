@@ -93,6 +93,10 @@ jobs:
       android_version_code: ${{ steps.plan.outputs.android_version_code }}
       base_major: ${{ steps.plan.outputs.base_major }}
       base_minor: ${{ steps.plan.outputs.base_minor }}
+      # plan.js emits these; the minor/major bump job's changelog rollup reads them
+      # (undeclared, they reached it empty).
+      prev_base_major: ${{ steps.plan.outputs.prev_base_major }}
+      prev_base_minor: ${{ steps.plan.outputs.prev_base_minor }}
       release_type: ${{ steps.plan.outputs.release_type }}
       build_api: ${{ steps.plan.outputs.build_api }}
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
@@ -247,6 +251,54 @@ jobs:
           git fetch origin main
           echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
 
+  # ------------------------------------------------------- gate: schema ------
+  # Every release that ships the api image auto-deploys it (deploy-argocd below),
+  # so nothing human stands between a merge and production. This job is the gate,
+  # on EVERY release path (push and dispatch alike — PR CI is not required by the
+  # ruleset and never runs on a dispatch): schema.sql must apply, via the shipped
+  # apply_schema, to Postgres 18 + pgvector like production's CNPG cluster. An
+  # impossible migration (XERK-1406: ~11 h of no captions) fails here, before any
+  # image is pushed.
+  schema-gate:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[dev,persistence]'
+      - name: schema.sql applies to a real Postgres (fresh + pre-upgrade)
+        env:
+          TENIR_TEST_PG_DSN: postgresql://postgres:test@localhost:5432/test
+        # --no-cov: one file can't meet the suite-wide coverage floor. A skip would
+        # mean the gate checked nothing, so a skipped test fails the job.
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_pg_schema_live.py --no-cov -q -rs | tee "$RUNNER_TEMP/gate.log"
+          if grep -qi skipped "$RUNNER_TEMP/gate.log"; then
+            echo "::error::schema gate skipped its tests — nothing was checked"; exit 1
+          fi
+
   # ------------------------------------------------------------- build: api ---
   # Self-hosted: the api image is a multi-stage build with the REPO ROOT as its
   # context — a node stage compiles the @tenir/web SPA (npm workspace: root
@@ -254,12 +306,14 @@ jobs:
   # api/ and serves the SPA from /srv/web. One image, one component. On dry_run
   # the composite builds without pushing.
   build-api:
-    needs: [plan, bump]
+    needs: [plan, bump, schema-gate]
     if: >-
       !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
-      && needs.plan.outputs.build_api == 'true'
+      && needs.plan.outputs.build_api == 'true' && needs.schema-gate.result == 'success'
     runs-on: [self-hosted, linux]
     timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -268,6 +322,7 @@ jobs:
         id: owner
         run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
       - name: Build + push tenir
+        id: build
         uses: ./.github/actions/build-push-image
         with:
           image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir
@@ -281,65 +336,91 @@ jobs:
             API_EXTRAS=persistence,music
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
-      # Point the cluster at the image just pushed. The api runs as `ai/tenir` in
-      # xerktech/ArgoCD, whose Application is `automated` + `selfHeal`, so this
-      # commit IS the deploy (same mechanism as Turma's release.yml, XERK-1407).
-      #
-      # Authenticated by a WRITE DEPLOY KEY on that repo (secret ARGOCD_DEPLOY_KEY),
-      # not a PAT: GITHUB_TOKEN is scoped to this repo, a classic PAT would carry a
-      # human's whole account into CI, and a fine-grained one expires — which fails
-      # as a deploy that silently stops happening.
-      #
-      # Skipped on a dry run (no image pushed) and off main (a dispatch takes any
-      # ref, and this is the step that reaches production). What stands between a
-      # bad migration and production is CI: api.yml applies schema.sql to a real
-      # Postgres (tests/test_pg_schema_live.py, XERK-1406).
-      - name: Update the tenir image tag in ArgoCD
-        if: needs.plan.outputs.dry_run != 'true' && github.ref == 'refs/heads/main'
+
+  # ------------------------------------------------------- deploy: argocd ----
+  # Point the cluster at the image just pushed (XERK-1407; Turma's mechanism). The
+  # api runs as `ai/tenir` in xerktech/ArgoCD, whose Application auto-syncs, so
+  # this commit IS the deploy.
+  #
+  # - Pins `<version>@<digest>`: the digest is what was actually pushed, so a
+  #   version number reused after a failed release still changes the pod spec and
+  #   rolls out (a tag-only pin would no-op and leave production on stale code).
+  # - Auth: a WRITE DEPLOY KEY on that repo, held in the `argocd-deploy`
+  #   Environment, which only `main` may use — so no workflow on another branch can
+  #   read it. Not a PAT: GITHUB_TOKEN is scoped to this repo, a classic PAT carries
+  #   a whole account, a fine-grained one expires (a deploy that silently stops).
+  # - Skipped on a dry run (no image) and off main.
+  deploy-argocd:
+    needs: [plan, build-api]
+    if: >-
+      !cancelled() && needs.build-api.result == 'success'
+      && needs.plan.outputs.dry_run != 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: argocd-deploy
+    steps:
+      - name: Update the tenir image in ArgoCD
         env:
           GITOPS_DEPLOY_KEY: ${{ secrets.ARGOCD_DEPLOY_KEY }}
           GITOPS_REPO: ${{ github.repository_owner }}/ArgoCD
           MANIFEST: ai/tenir/deployment.yaml
-          IMAGE: ghcr.io/${{ steps.owner.outputs.lc }}/tenir
+          OWNER: ${{ github.repository_owner }}
           VERSION: ${{ needs.plan.outputs.version }}
+          DIGEST: ${{ needs.build-api.outputs.digest }}
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
+          IMAGE="ghcr.io/${OWNER,,}/tenir"
           if [ -z "$GITOPS_DEPLOY_KEY" ]; then
-            echo "::error::ARGOCD_DEPLOY_KEY is not set — the cluster will stay on the previous tenir image. See RELEASING.md." >&2
+            echo "::error::ARGOCD_DEPLOY_KEY is not set in the argocd-deploy environment — the cluster will stay on the previous tenir image. See RELEASING.md." >&2
             exit 1
           fi
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::build-api produced no image digest ('$DIGEST') — refusing to deploy an unpinned image." >&2
+            exit 1
+          fi
+          REF="${IMAGE}:${VERSION}@${DIGEST}"
           KEY="$RUNNER_TEMP/argocd_deploy_key"
           KNOWN="$RUNNER_TEMP/argocd_known_hosts"
+          trap 'rm -f "$KEY"' EXIT
           printf '%s\n' "$GITOPS_DEPLOY_KEY" > "$KEY"
           chmod 600 "$KEY"
-          # GitHub's published ed25519 host key, PINNED rather than accepted on first
-          # use: never trust whatever answers on the day.
+          # GitHub's published ed25519 host key, PINNED rather than trusted on first
+          # use (a runner is a fresh VM every time).
           printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$KNOWN"
           export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN"
-          GITOPS="$RUNNER_TEMP/gitops"
-          rm -rf "$GITOPS"  # self-hosted runners keep RUNNER_TEMP between jobs
-          git clone --quiet "git@github.com:${GITOPS_REPO}.git" "$GITOPS"
-          cd "$GITOPS"
-          # Only the api's own line: anchored on the exact repository image, so
-          # tenir-parakeet-stt never matches. The old pin may be a tag, a @digest,
-          # or neither.
-          sed -i -E "s#^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$#\1${IMAGE}:${VERSION}#" "$MANIFEST"
-          # A sed that matched nothing is silent; a cluster that quietly never
-          # updates is the failure this step exists to prevent.
-          grep -q "image: ${IMAGE}:${VERSION}$" "$MANIFEST" || {
-            echo "::error::${MANIFEST} has no \`image: ${IMAGE}\` line to update — the cluster is still on the previous image." >&2
-            exit 1
-          }
-          if git diff --quiet -- "$MANIFEST"; then
-            echo "Already at ${VERSION}; nothing to commit."
-            exit 0
-          fi
+          git clone --quiet "git@github.com:${GITOPS_REPO}.git" "$RUNNER_TEMP/gitops"
+          cd "$RUNNER_TEMP/gitops"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --quiet -m "Tenir api ${VERSION} (${TAG})" -- "$MANIFEST"
-          git push --quiet origin HEAD:main
-          rm -f "$KEY"
+          # Other repos' bots push to this main too; a push that lost the race is
+          # rebased onto the new main and retried rather than failing the release.
+          for attempt in 1 2 3; do
+            # Only the api's own line: anchored on the exact image, so
+            # tenir-parakeet-stt never matches. The old pin may be a tag, a digest,
+            # both, or neither.
+            sed -i -E "s#^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$#\1${REF}#" "$MANIFEST"
+            # A sed that matched nothing is silent; anchored at line start so a
+            # comment can't satisfy it.
+            grep -Eq "^[[:space:]]*image: ${REF}\$" "$MANIFEST" || {
+              echo "::error::${MANIFEST} has no \`image: ${IMAGE}\` line to update — the cluster is still on the previous image." >&2
+              exit 1
+            }
+            if git diff --quiet -- "$MANIFEST"; then
+              echo "Already at ${REF}; nothing to commit."
+              exit 0
+            fi
+            git commit --quiet -m "Tenir api ${VERSION} (${TAG})" -- "$MANIFEST"
+            if git push --quiet origin HEAD:main; then
+              echo "Deployed ${REF}"
+              exit 0
+            fi
+            echo "::warning::push to ${GITOPS_REPO} main lost a race (attempt ${attempt}); rebasing"
+            git reset --quiet --hard origin/main
+            git pull --quiet --ff-only origin main
+          done
+          echo "::error::could not push to ${GITOPS_REPO} main after 3 attempts" >&2
+          exit 1
 
   # ---------------------------------------------------- build: parakeet-stt ---
   # Self-hosted: builds on the NGC NeMo container, a multi-GB base a hosted runner
@@ -528,7 +609,9 @@ jobs:
       [
         plan,
         bump,
+        schema-gate,
         build-api,
+        deploy-argocd,
         build-parakeet-stt,
         build-even,
         build-mobile,
@@ -536,7 +619,9 @@ jobs:
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.bump.result != 'failure'
+      && needs.schema-gate.result != 'failure'
       && needs.build-api.result != 'failure'
+      && needs.deploy-argocd.result != 'failure'
       && needs.build-parakeet-stt.result != 'failure'
       && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'

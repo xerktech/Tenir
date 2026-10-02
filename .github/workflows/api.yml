@@ -51,7 +51,8 @@ jobs:
     # nothing ever ran it against Postgres, and it took production captions down).
     services:
       postgres:
-        image: postgres:16
+        # Production is CNPG Postgres 18 + pgvector; test against the same major.
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: test
