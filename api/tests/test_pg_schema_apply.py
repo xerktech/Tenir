@@ -314,3 +314,61 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
 
     assert len(pools) == 1, "only one pool may be opened"
     assert max_in_apply == 1, "schema statements must never run concurrently"
+
+
+class _SqlStateError(Exception):
+    """Stands in for a psycopg error carrying a SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"sqlstate {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+class _RaisingConn:
+    def __init__(self, exc: Exception, broken: bool = False) -> None:
+        self.exc = exc
+        self.broken = broken
+
+    def execute(self, sql: str, params: object = None) -> None:
+        raise self.exc
+
+
+@pytest.mark.parametrize("sqlstate", ["54000", "53100", "40P01", "23505"])
+def test_database_rejections_are_schema_errors(monkeypatch, sqlstate) -> None:
+    """A rejection that psycopg happens to class as OperationalError (54000 index
+    row too large, 53100 disk full, 40P01 deadlock) is still a broken schema and
+    must abort boot — not be mistaken for an outage (QA on XERK-1409)."""
+    from api.persistence.postgres import SchemaApplyError, SqlConversationStore
+
+    _install_fake_pool(monkeypatch, _RaisingConn(_SqlStateError(sqlstate)))
+    store = SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(SchemaApplyError):
+        store.open()
+
+
+@pytest.mark.parametrize(("sqlstate", "broken"), [("57P01", False), ("08006", False), ("", True)])
+def test_connection_lost_mid_apply_is_not_fatal(monkeypatch, sqlstate, broken) -> None:
+    """The server going away mid-apply (admin shutdown, connection failure, a
+    broken connection) is an outage, not a rejected schema: it propagates as-is,
+    boot carries on, and the next use retries."""
+    from api.persistence.postgres import SqlConversationStore
+
+    exc = _SqlStateError(sqlstate)
+    _install_fake_pool(monkeypatch, _RaisingConn(exc, broken=broken))
+    store = SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(_SqlStateError):
+        store._ensure_pool()
+    store.open()  # logged, not raised
+    assert store._pool is None
+
+
+def test_missing_driver_is_fatal_at_boot(monkeypatch) -> None:
+    """The postgres backend without psycopg installed is a permanent
+    misconfiguration, not a DB outage: open() must raise, not log 'not reachable'."""
+    from api.persistence.postgres import SqlConversationStore
+
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)  # import -> ImportError
+    with pytest.raises(ImportError):
+        SqlConversationStore("postgresql://unused").open()

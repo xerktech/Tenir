@@ -80,15 +80,17 @@ class SchemaApplyError(RuntimeError):
     a pod that looks healthy and can't record."""
 
 
-def _is_connection_error(exc: BaseException) -> bool:
-    """True for a lost/refused connection (psycopg ``OperationalError``, e.g. the
+def _is_connection_lost(conn, exc: BaseException) -> bool:
+    """True when a statement failed because the connection itself went away (the
     server restarting mid-apply) — that heals on its own, so it is not a rejected
-    schema. False when psycopg isn't importable (the unit-test fakes)."""
-    try:
-        from psycopg import OperationalError
-    except ImportError:
-        return False
-    return isinstance(exc, OperationalError)
+    schema. Deliberately NOT "any psycopg OperationalError": that class also covers
+    real rejections such as 54000 (index row too large) or 53100 (disk full), and
+    treating those as an outage booted a Ready pod on a broken schema again."""
+    if getattr(conn, "broken", False):
+        return True
+    sqlstate = getattr(exc, "sqlstate", None) or ""
+    # Class 08: connection exception; 57P01-57P03: admin/crash shutdown, cannot connect.
+    return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
 
 
 class SqlConversationStore:
@@ -154,7 +156,7 @@ class SqlConversationStore:
             try:
                 apply_schema(conn, sql)
             except Exception as exc:
-                if _is_connection_error(exc):
+                if _is_connection_lost(conn, exc):
                     raise
                 raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
         log.info("applied idempotent schema from %s on pool open", path)
