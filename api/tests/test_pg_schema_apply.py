@@ -333,14 +333,18 @@ class _RaisingConn:
         raise self.exc
 
 
-@pytest.mark.parametrize("sqlstate", ["54000", "53100", "40P01", "23505"])
-def test_database_rejections_are_schema_errors(monkeypatch, sqlstate) -> None:
-    """A rejection that psycopg happens to class as OperationalError (54000 index
-    row too large, 53100 disk full, 40P01 deadlock) is still a broken schema and
-    must abort boot — not be mistaken for an outage (QA on XERK-1409)."""
+@pytest.mark.parametrize(
+    "error", ["ProgramLimitExceeded", "DiskFull", "DeadlockDetected", "UniqueViolation"]
+)
+def test_database_rejections_are_schema_errors(monkeypatch, error) -> None:
+    """A rejection that psycopg classes as OperationalError (54000 index row too
+    large, 53100 disk full, 40P01 deadlock) is still a broken schema and must abort
+    boot — not be mistaken for an outage (QA on XERK-1409). Real psycopg error
+    classes, so a classifier keyed on OperationalError would fail this."""
+    errors = pytest.importorskip("psycopg.errors")
     from api.persistence.postgres import SchemaApplyError, SqlConversationStore
 
-    _install_fake_pool(monkeypatch, _RaisingConn(_SqlStateError(sqlstate)))
+    _install_fake_pool(monkeypatch, _RaisingConn(getattr(errors, error)("rejected")))
     store = SqlConversationStore("postgresql://unused")
 
     with pytest.raises(SchemaApplyError):
