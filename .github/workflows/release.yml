@@ -616,12 +616,18 @@ jobs:
         build-even,
         build-mobile,
       ]
+    # A release that claims an api change must have the gate AND the image: a
+    # cancelled (e.g. timed-out) gate or build-api is not 'failure', and without the
+    # build_api clause the tag would ship with no image behind it, and the next run's
+    # diff would treat that api change as already released.
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.bump.result != 'failure'
       && needs.schema-gate.result != 'failure'
       && needs.build-api.result != 'failure'
       && needs.deploy-argocd.result != 'failure'
+      && (needs.plan.outputs.build_api != 'true'
+          || (needs.schema-gate.result == 'success' && needs.build-api.result == 'success'))
       && needs.build-parakeet-stt.result != 'failure'
       && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'
