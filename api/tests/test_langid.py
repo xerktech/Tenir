@@ -119,3 +119,25 @@ def test_leans_english_where_detect_lang_leaves_it_undecided() -> None:
 )
 def test_no_lean_without_real_english_evidence(text: str, versus: str) -> None:
     assert not leans_english(text, versus=versus)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Le dije a mi madre",
+        "Fui a la tienda y le compré pan",
+        "A ella le gusta",
+        "Lo ha visto",
+        "Lo ha hecho a propósito",
+    ],
+)
+def test_spanish_a_y_le_lo_ha_are_not_french_or_italian(text: str) -> None:
+    # Everyday Spanish words that used to count as French ("a", "y", "le") or Italian
+    # ("lo", "le", "ha") evidence tagged these turns fr/it, so they were translated
+    # "from French" (XERK-1414). Spanish or undecided (inherits the run) is fine.
+    assert detect_lang(text) in ("es", None)
+
+
+def test_french_still_detected_without_a_y_le() -> None:
+    assert detect_lang("Je ne sais pas") == "fr"
+    assert detect_lang("C'est une très bonne idée pour nous") == "fr"

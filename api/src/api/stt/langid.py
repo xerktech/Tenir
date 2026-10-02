@@ -44,9 +44,14 @@ _WORDS: dict[str, frozenset[str]] = {
         "no sí pero como más muy este esta esto ese esa eso porque cuando también "
         "hace tiene ser estar todo nada algo yo tú usted nosotros ya".split()
     ),
+    # No "a", "y" or "le": Spanish's commonest preposition, its "and", and a
+    # high-frequency Spanish pronoun. Listed here they read ordinary Spanish turns
+    # as French ("y" scores for both; "a" and "le" only for fr) — 26 of 867 turns
+    # of a Spanish conversation were tagged fr and translated "from French"
+    # (XERK-1414).
     "fr": frozenset(
-        "le la les est sont et de du des que un une dans pour avec ne pas mais "
-        "comme plus très ce cette c'est je tu vous nous ils elle il y a été être "
+        "la les est sont et de du des que un une dans pour avec ne pas mais "
+        "comme plus très ce cette c'est je tu vous nous ils elle il été être "
         "avoir tout rien quelque parce quand aussi oui non".split()
     ),
     "de": frozenset(
@@ -61,10 +66,12 @@ _WORDS: dict[str, frozenset[str]] = {
         "este esta isso esse essa porque quando também já faz tem ser estar tudo "
         "nada algo eu você nós vocês ele ela eles elas para com por".split()
     ),
+    # No "lo", "le" or "ha" (everyday Spanish words) and no "i" (English "I"
+    # lower-cased): each tagged Spanish or English turns as Italian (XERK-1414).
     "it": frozenset(
-        "il lo la i gli le è sono e di del della che un una uno in per con non "
+        "il la gli è sono e di del della che un una uno in per con non "
         "ma come più molto questo questa quello quella perché quando anche già "
-        "fa ha essere stare tutto niente qualcosa io tu lei noi voi loro sì".split()
+        "fa essere stare tutto niente qualcosa io tu lei noi voi loro sì".split()
     ),
 }
 
