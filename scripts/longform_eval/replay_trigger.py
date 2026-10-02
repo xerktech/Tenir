@@ -57,6 +57,18 @@ def _same(a: str, b: str) -> bool:
     return " ".join(a.lower().split()) == " ".join(b.lower().split())
 
 
+def translate_job(tr, job: tuple[dict, str | None, str | None]) -> None:
+    """Translate one decided final in place, as the session would: echoes dropped, and a
+    turn that was sent but came back empty recorded as ``translate_error``."""
+    f, source_lang, run_lang = job
+    t = time.monotonic()
+    hyp = tr.translate(f["text"], source_lang=source_lang, run_lang=run_lang)
+    if not hyp and expects_call(tr, f["text"], source_lang, run_lang):
+        f["translate_error"] = "no output from the translator (failed call or empty)"
+    f["latency_ms"] = round((time.monotonic() - t) * 1000)
+    f["translation"] = None if not hyp or _same(hyp, f["text"]) else hyp
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
@@ -76,17 +88,8 @@ def main() -> None:
             f["translation"], f["latency_ms"] = None, None
         jobs += [d for d in decide(clip.get("finals", []), a.hold_ms) if d is not None]
 
-    def one(job):
-        f, source_lang, run_lang = job
-        t = time.monotonic()
-        hyp = tr.translate(f["text"], source_lang=source_lang, run_lang=run_lang)
-        if not hyp and expects_call(tr, f["text"], source_lang, run_lang):
-            f["translate_error"] = "no output from the translator (failed call or empty)"
-        f["latency_ms"] = round((time.monotonic() - t) * 1000)
-        f["translation"] = None if not hyp or _same(hyp, f["text"]) else hyp
-
     with ThreadPoolExecutor(a.workers) as ex:
-        list(ex.map(one, jobs))
+        list(ex.map(lambda j: translate_job(tr, j), jobs))
     json.dump(run, open(a.out, "w"), ensure_ascii=False, indent=1)
     errors = sum(1 for f, _, _ in jobs if f.get("translate_error"))
     print(f"{len(jobs)} sent to the translator of {sum(len(c.get('finals', [])) for c in run)} "

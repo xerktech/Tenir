@@ -135,3 +135,27 @@ def test_score_run_counts_unscored_turns_and_translate_errors():
     assert r["translate_errors"] == 1
     assert r["unscored_translated_turns"] == 1
     assert r["units"] == 1 and r["untranslated_units"] == 1
+
+
+def test_translate_job_records_failures_and_drops_echoes():
+    from replay_trigger import translate_job
+
+    class Tr:
+        def __init__(self, out):
+            self.out = out
+
+        def _build_payload(self, text, source_lang=None):
+            return {"messages": [text]}
+
+        def translate(self, text, *, source_lang=None, run_lang=None):
+            return self.out
+
+    f = final(0, 1000, "hola")
+    translate_job(Tr(None), (f, "es", "es"))
+    assert f["translation"] is None and "translate_error" in f
+    f = final(0, 1000, "hola")
+    translate_job(Tr("Hola"), (f, "es", "es"))  # echo: dropped, not an error
+    assert f["translation"] is None and "translate_error" not in f
+    f = final(0, 1000, "hola")
+    translate_job(Tr("hello"), (f, "es", "es"))
+    assert f["translation"] == "hello"
