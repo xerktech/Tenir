@@ -133,6 +133,49 @@ Android versions an install by the version baked *inside* the file — the name
 must describe the bits. A carried **even** component needs nothing physical:
 the Even Hub portal already holds its version, and the manifest references it.
 
+## Deploying the api (automatic)
+
+A real release from `main` that builds the api image also deploys it (XERK-1407,
+Turma's mechanism). Three jobs in `release.yml`:
+
+1. **`schema-gate`** applies `schema.sql`, via the shipped `apply_schema`, to
+   Postgres 18 + pgvector, as production's CNPG cluster runs: fresh, and a
+   pre-ownership data dir (`tests/test_pg_schema_live.py`). It runs on every release
+   path, push and dispatch alike; PR CI is not a required check, and never runs on a
+   dispatch. A skipped test fails the job. `build-api` doesn't start unless it
+   passes, so an impossible migration never reaches the registry, let alone
+   production (XERK-1406: one did, and every `session.start` failed for ~11 h).
+2. **`build-api`** pushes the image and outputs its registry digest.
+3. **`deploy-argocd`** commits `image: ghcr.io/xerktech/tenir:<version>@<digest>`
+   into xerktech/ArgoCD `ai/tenir/deployment.yaml`; that Application auto-syncs, so
+   the commit is the deploy.
+   - **Pins the digest.** A version number reused after a failed release then
+     still changes the pod spec and rolls out. A tag-only pin would no-op and leave
+     production on stale code.
+   - **Loses a push race gracefully.** Other bots push to that `main`, so it
+     rebases and retries.
+   - **Fails loudly** if the key, the digest or the manifest line is missing.
+   - **Skipped** on a dry run and off `main`.
+
+Only the api image is deployed this way; `tenir-parakeet-stt` and the clients are
+not. The deploy runs before `publish`, so a release whose other builds fail can
+still be serving in production without a tag. Re-run the failed jobs.
+
+**Credentials.**
+- A **write deploy key** on xerktech/ArgoCD (title `tenir-release`). Its private
+  half is the secret `ARGOCD_DEPLOY_KEY` in this repo's **`argocd-deploy`
+  Environment**, which only `main` may use, so no workflow on another branch can
+  read it.
+- Not a PAT: `GITHUB_TOKEN` is scoped to this repo, a classic PAT carries a whole
+  account, and a fine-grained one expires (a deploy that silently stops).
+- ArgoCD's `main` has no branch protection on this plan, so the key is repo-wide
+  write. Revoke it by deleting the deploy key.
+
+**Still not covered by the gate:** a migration that fails only on production's
+*data* (the gate's databases are empty or synthetic). The api applies its schema
+lazily on first pool use and `/health` doesn't check the database, so a broken
+schema still rolls out "Ready" (XERK-1409).
+
 ## Minor / major releases (manual)
 
 Run the **release** workflow from the Actions tab with `release_type: minor` (or

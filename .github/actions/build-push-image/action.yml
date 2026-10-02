@@ -46,6 +46,13 @@ inputs:
     required: false
     default: "true"
 
+outputs:
+  digest:
+    description: >-
+      The pushed manifest digest (sha256:…) — the immutable identity of what went
+      to the registry, so a deploy can pin `<tag>@<digest>` and never be fooled by a
+      reused tag (XERK-1407). Empty on a dry run.
+    value: ${{ steps.build.outputs.digest }}
 runs:
   using: composite
   steps:
@@ -69,6 +76,7 @@ runs:
         echo "Disk after reclaim:"; df -h / || true
 
     - name: Build and push ${{ inputs.image }}
+      id: build
       shell: bash
       # No `set -u`: empty arrays expand unbound on older bash, and the build-args
       # input is often empty.
@@ -118,6 +126,18 @@ runs:
             echo "Dry run — built ${{ inputs.image }}:$tag, not pushing"
           fi
         done
+
+        # After a push, RepoDigests holds the registry digest; every tag was pushed
+        # from one local image, so they share it.
+        if [ "$PUSH" = "true" ]; then
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "${{ inputs.image }}:$first" | grep -m1 "^${{ inputs.image }}@" | cut -d@ -f2)
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::build-push-image: no registry digest for ${{ inputs.image }}:$first after push"; exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${{ inputs.image }}@$digest"
+        fi
 
     # The image now lives in GHCR, so the local copy and its build cache are dead
     # weight that would otherwise accumulate on this persistent runner until the

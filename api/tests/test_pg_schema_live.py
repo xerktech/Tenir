@@ -11,9 +11,11 @@ schema with the shipped ``apply_schema`` to a real database:
 - a pre-XERK-651 data dir (no ``owner`` column), which must gain it and backfill
   legacy rows to the env admin.
 
-Skipped unless ``TENIR_TEST_PG_DSN`` points at a disposable Postgres (CI provides one
-as a service container; see .github/workflows/api.yml). Each test works in its own
-throwaway schema, so the database itself is never modified outside it.
+Skipped unless ``TENIR_TEST_PG_DSN`` points at a disposable Postgres. CI provides
+Postgres 18 + pgvector, like production, as a service container: api.yml on PRs, and
+release.yml's schema-gate job on every release, which fails if these are skipped.
+Each test works in its own throwaway schema, so the database itself is never
+modified outside it.
 """
 
 from __future__ import annotations
