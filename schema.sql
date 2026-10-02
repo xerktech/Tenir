@@ -69,7 +69,11 @@ CREATE INDEX IF NOT EXISTS conversations_household_started_idx
 -- all in the household. Nullable so legacy rows and the auth-off path need no value.
 -- Additive column for data dirs created before ownership (this file is applied
 -- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip it).
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner TEXT REFERENCES users(id);
+-- TEXT with NO foreign key (XERK-1406): users.id is UUID, so `TEXT REFERENCES
+-- users(id)` cannot be created — Postgres refuses it, the boot apply aborts, the
+-- column never exists, and every session.start fails. The code compares owner as a
+-- string (users.id rendered), so TEXT is the type it expects.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner TEXT;
 CREATE INDEX IF NOT EXISTS conversations_owner_idx
     ON conversations (household, owner, started_at DESC);
 -- Legacy-row backfill (§9): rows written before ownership have owner NULL. Attribute

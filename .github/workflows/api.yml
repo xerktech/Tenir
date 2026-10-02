@@ -46,6 +46,19 @@ jobs:
     # on disk, so self-hosting only added queue time behind the image builds.
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A real Postgres for tests/test_pg_schema_live.py: schema.sql must apply to a fresh
+    # and a pre-upgrade database (XERK-1406 — an impossible migration shipped because
+    # nothing ever ran it against Postgres, and it took production captions down).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     defaults:
       run:
         working-directory: api
@@ -70,13 +83,15 @@ jobs:
         # a future re-pin to self-hosted and a very confusing import bug.
         run: |
           pip uninstall -y tenir-api tenir-gateway 2>/dev/null || true
-          pip install -e '.[dev]'
+          pip install -e '.[dev,persistence]'
 
       - name: Lint (ruff)
         run: ruff check .
 
       # Coverage threshold (--cov-fail-under) is enforced via pyproject.toml addopts.
       - name: Run tests with coverage
+        env:
+          TENIR_TEST_PG_DSN: postgresql://postgres:test@localhost:5432/test
         run: pytest --cov-report=xml
 
       - name: Upload coverage report
