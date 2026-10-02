@@ -198,6 +198,8 @@ def test_english_homographs_still_corroborate(text: str, expected: str) -> None:
         "Like, no sé.",
         "Ya, it's ok.",
         "No quiero, I'm tired.",
+        # an accented letter is the only foreign signal
+        "It's qué?",
         # "will" is a German verb, so it is not English vocab.
         "Was will sie?",
     ],
