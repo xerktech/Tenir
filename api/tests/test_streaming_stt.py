@@ -1032,3 +1032,68 @@ def test_engine_reported_language_outranks_text_langid() -> None:
         assert finals[0].lang is not None and finals[0].lang.value == "en"
 
     asyncio.run(run())
+
+
+# ----- empty-final retry (XERK-1414) ----------------------------------------
+
+
+class PadSensitiveEngine:
+    """Blanks a turn that starts on speech, transcribes it once it is silence-padded —
+    the deterministic Parakeet blank-window failure, reduced to its trigger."""
+
+    def __init__(self) -> None:
+        self.final_calls = 0
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        if want_words:
+            self.final_calls += 1
+        if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+            return EngineResult(text="", words=[], language=None)
+        if samples[0] != 0.0:  # unpadded turn
+            return EngineResult(text="", words=[], language=None)
+        return EngineResult(
+            text="hola a todos", words=[EngineWord("hola", 0.6, 0.9, 0.9)], language="es"
+        )
+
+
+def test_empty_final_is_retried_with_silence_padding() -> None:
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        eng = PadSensitiveEngine()
+        t = StreamingTranscriber(
+            eng, language=None, partial_interval_ms=10000, silence_ms=300,
+            min_segment_ms=100, max_segment_ms=5000,
+        )
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        # Without the retry the turn had no partial to recover from and was dropped.
+        assert [f.text for f in finals] == ["hola a todos"]
+        assert eng.final_calls == 2
+        # Word timing is reported on the unpadded turn: 0.6 s into the padded audio
+        # is 0.1 s into the turn.
+        assert finals[0].words is not None and finals[0].words[0].startMs == 100
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_recovered"] == 1
+        assert "stage.stt.final_recovered" not in counters
+        metrics.reset()
+
+    asyncio.run(run())
+
+
+def test_silent_turn_is_not_retried() -> None:
+    # No speech in the buffer -> no extra decode (the retry costs a GPU call).
+    async def run() -> None:
+        eng = PadSensitiveEngine()
+        t = StreamingTranscriber(eng, language=None, partial_interval_ms=10000)
+        await t.push(_pcm(300, amplitude=0))
+        await t.flush()
+        assert eng.final_calls == 0
+
+    asyncio.run(run())
