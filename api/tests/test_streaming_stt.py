@@ -70,10 +70,10 @@ def _drain(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
 
 @pytest.fixture(autouse=True)
 def _frozen_decode_clock(monkeypatch):
-    """Decode latency reads 0 unless a test drives the clock itself. These tests pin
-    exact partial counts at short cadences; on a loaded host a fake engine's
-    to_thread hop alone can exceed half the cadence and trip the partial back-off
-    (_PARTIAL_BACKOFF_RATIO), which only the back-off tests below mean to exercise."""
+    """Wall time stands still unless a test drives the clock itself. These tests push
+    frames back to back and pin exact partial counts; on a real clock a loaded host
+    could make intake look >1 s behind real time and trip the partial lag skip
+    (_PARTIAL_SKIP_LAG_S), which only the real-time simulation tests below exercise."""
     import api.stt.streaming as streaming
 
     monkeypatch.setattr(streaming, "time", _Clock())
@@ -1056,8 +1056,6 @@ def test_engine_reported_language_outranks_text_langid() -> None:
     asyncio.run(run())
 
 
-
-
 class SlowEngine(FakeEngine):
     """FakeEngine whose decodes take ``partial`` / ``final`` seconds on the fake clock."""
 
@@ -1139,3 +1137,71 @@ def test_fast_partials_keep_the_configured_cadence(monkeypatch) -> None:
     # (4 s turn at 350 ms -> 11 partials).
     eng, max_lag, _ = _realtime(monkeypatch, 0.05, [(40, 8000), (6, 0)])
     assert max_lag < 0.2 and len(eng.partial_at) == 11
+
+
+def test_buffered_burst_does_not_bank_lag_credit(monkeypatch) -> None:
+    # A client flushing 10 s of buffered audio at once is *ahead* of real time. The
+    # origin must rebase to it, or that 10 s becomes credit that hides real lag later:
+    # slow partials afterwards would push intake ~10 s behind before any skip.
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    eng = SlowEngine(clock, 0.6)
+    lags: list[float] = []
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=350, silence_ms=500, max_segment_ms=8000
+        )
+        for _ in range(100):  # the burst: all 100 frames are already there
+            await t.push(_pcm(100, amplitude=0))
+        arrive = clock.now
+        for _ in range(300):  # then 30 s of real-time speech
+            arrive += 0.1
+            clock.now = max(clock.now, arrive)
+            lags.append(clock.now - arrive)
+            await t.push(_pcm(100, amplitude=8000))
+
+    asyncio.run(go())
+    assert max(lags) < 2.0
+
+
+def test_a_partial_that_raises_still_counts_toward_lag(monkeypatch) -> None:
+    # A partial decode that times out (15 s, then raises) leaves intake ~15 s behind.
+    # While the backlog drains, partials must be skipped — the push that raised still
+    # has to stamp its end time, or the lag clock rebases as if intake had been idle
+    # and partials fire on seconds-old audio.
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    frame_arrival = [0.0]
+    lag_at_partial: list[float] = []
+
+    class TimeoutOnce(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+            if not want_words:
+                lag_at_partial.append(clock.now - frame_arrival[0])
+                if len(lag_at_partial) == 2:
+                    clock.now += 15.0
+                    raise TimeoutError("stt stalled")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            TimeoutOnce(), language="en", partial_interval_ms=350, silence_ms=500,
+            max_segment_ms=8000,
+        )
+        for i in range(400):
+            frame_arrival[0] = (i + 1) * 0.1
+            clock.now = max(clock.now, frame_arrival[0])
+            try:
+                await t.push(_pcm(100, amplitude=8000))
+            except TimeoutError:
+                pass  # main.py logs a failed frame and keeps reading
+
+    asyncio.run(go())
+    after = lag_at_partial[2:]
+    assert after, "partials must resume after the stall"
+    assert max(after) < 1.5, max(after)
