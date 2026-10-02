@@ -1057,50 +1057,85 @@ def test_engine_reported_language_outranks_text_langid() -> None:
 
 
 
-class SlowEngine(FakeEngine):
-    """FakeEngine whose every decode takes ``delay`` seconds on the fake clock."""
 
-    def __init__(self, clock: _Clock, delay: float) -> None:
+class SlowEngine(FakeEngine):
+    """FakeEngine whose decodes take ``partial`` / ``final`` seconds on the fake clock."""
+
+    def __init__(self, clock: _Clock, partial: float, final: float = 0.05) -> None:
         super().__init__()
-        self.clock = clock
-        self.delay = delay
+        self.clock, self.partial, self.final = clock, partial, final
+        self.partial_at: list[float] = []
 
     def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
-        self.clock.now += self.delay
+        if not want_words:
+            self.partial_at.append(self.clock.now)
+        self.clock.now += self.final if want_words else self.partial
         return super().transcribe(samples, language=language, want_words=want_words)
 
 
-def _partial_calls(monkeypatch, delay: float, interval_ms: int, pushes: int, push_ms: int) -> int:
+def _realtime(monkeypatch, eng_partial: float, script: list[tuple[int, int]]):
+    """Drive a transcriber the way a live client does: frame i (100 ms) *arrives* at
+    its real-time instant, and the receive loop reads it no earlier than that — or
+    later, if decodes kept it busy (that delay is the intake lag). ``script`` is
+    (frames, amplitude) runs; amplitude None is a gap with no frames sent at all.
+    Returns (engine, max lag seen in s, lag at the end in s)."""
     import api.stt.streaming as streaming
 
     clock = _Clock()
     monkeypatch.setattr(streaming, "time", clock)
-    eng = SlowEngine(clock, delay)
+    eng = SlowEngine(clock, eng_partial)
+    lags: list[float] = []
 
     async def go() -> None:
         t = StreamingTranscriber(
-            eng,
-            language="en",
-            partial_interval_ms=interval_ms,
-            silence_ms=100000,
-            max_segment_ms=100000,
+            eng, language="en", partial_interval_ms=350, silence_ms=500, max_segment_ms=8000
         )
-        for _ in range(pushes):
-            await t.push(_pcm(push_ms, amplitude=8000))
+        arrive = 0.0
+        for frames, amp in script:
+            if amp is None:
+                arrive += frames * 0.1
+                continue
+            for _ in range(frames):
+                arrive += 0.1
+                clock.now = max(clock.now, arrive)
+                lags.append(clock.now - arrive)
+                await t.push(_pcm(100, amplitude=amp))
 
     asyncio.run(go())
-    return eng.calls
+    return eng, max(lags), lags[-1]
 
 
-def test_slow_partial_decodes_back_off_instead_of_stalling_intake(monkeypatch) -> None:
-    # Decodes run inline on the WS intake path. A 600 ms decode against a 100 ms cadence
-    # used to run on every 100 ms push: intake falls ever further behind real time until
-    # the socket drops (XERK-1414). With the back-off the next partial waits for >= 2x
-    # the last decode's latency of audio: 10 s of speech -> ~8 decodes, not 100.
-    calls = _partial_calls(monkeypatch, delay=0.6, interval_ms=100, pushes=100, push_ms=100)
-    assert 7 <= calls <= 9
+# 60 s of talk: 4 s turns with 0.6 s pauses between them.
+_TALK = [(40, 8000), (6, 0)] * 13
 
 
-def test_fast_partial_decodes_keep_the_configured_cadence(monkeypatch) -> None:
-    # Decodes faster than half the cadence never stretch it.
-    assert _partial_calls(monkeypatch, delay=0.04, interval_ms=100, pushes=20, push_ms=100) == 20
+def test_slow_partials_cannot_put_intake_unboundedly_behind(monkeypatch) -> None:
+    # 600 ms partial decodes against a 350 ms cadence: without the skip, intake falls
+    # ~0.25 s further behind per partial for as long as speech continues, until the
+    # socket's frame queue fills and the server drops the session with 1011
+    # (XERK-1414). With it, lag stays near _PARTIAL_SKIP_LAG_S.
+    _, max_lag, end_lag = _realtime(monkeypatch, 0.6, _TALK)
+    assert max_lag < 2.0 and end_lag < 2.0
+
+
+def test_partials_keep_running_while_intake_is_slow(monkeypatch) -> None:
+    # The skip must not latch: partials still reach the client in every stretch of the
+    # session (a back-off that carried across turns switched them off for good).
+    eng, _, _ = _realtime(monkeypatch, 0.6, _TALK)
+    per_10s = [sum(1 for t in eng.partial_at if a <= t < a + 10) for a in range(0, 60, 10)]
+    assert all(n >= 3 for n in per_10s), per_10s
+
+
+def test_client_pause_is_not_counted_as_lag(monkeypatch) -> None:
+    # 20 s with no frames (mic paused) then speech: intake was waiting, not behind, so
+    # partials run at the normal cadence right away.
+    eng, max_lag, _ = _realtime(monkeypatch, 0.05, [(10, 8000), (200, None), (30, 8000)])
+    assert max_lag < 0.2
+    assert sum(1 for t in eng.partial_at if t > 21) >= 7
+
+
+def test_fast_partials_keep_the_configured_cadence(monkeypatch) -> None:
+    # Decodes well inside the cadence: never behind, every cadence tick decodes
+    # (4 s turn at 350 ms -> 11 partials).
+    eng, max_lag, _ = _realtime(monkeypatch, 0.05, [(40, 8000), (6, 0)])
+    assert max_lag < 0.2 and len(eng.partial_at) == 11

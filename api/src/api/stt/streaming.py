@@ -55,16 +55,21 @@ _VAD_PEAK_FRACTION = 0.5
 # longer. Below the gate the turn stays dropped, exactly as before XERK-174.
 _RECOVERY_MIN_WORDS = 3
 
-# Partial back-off: after a partial decode that took L ms, the next partial waits for
-# at least this many times L of new audio (never less than the configured cadence).
-# Decodes run inline on the WebSocket intake path, so while one runs no audio frames
-# are read. With a fixed cadence, any stretch where decodes outlast the cadence (a
-# loaded STT server, a starved pod) puts intake permanently behind real time: the lag
-# grows for as long as speech continues, the socket's frame queue fills, keepalive
-# pongs go unread and the server drops the session with 1011 (XERK-1414, reproduced
-# on 10-minute chunks of continuous conversation). Spending at most 1/ratio of real
-# time on partials keeps intake ahead; a fast engine never triggers it.
-_PARTIAL_BACKOFF_RATIO = 2
+# Partials are skipped while audio intake runs more than this far behind real time.
+# Decodes run inline on the WebSocket intake path (no frame is read while one runs),
+# so whenever they outlast the partial cadence — a loaded STT server, a starved pod —
+# intake falls behind; on continuous speech the lag only grows, the socket's frame
+# queue fills, keepalive pongs go unread and the server drops the session with 1011
+# (XERK-1414: every 10-minute chunk of a continuous conversation dropped in ~1 min).
+# A partial of audio that is already seconds old is not a live caption anyway, so
+# while behind only finals decode, intake catches up, and partials resume. A fixed
+# back-off on decode latency was tried first and either latched partials off for good
+# (carried across turns) or, reset per turn, still dropped the session.
+_PARTIAL_SKIP_LAG_S = 1.0
+
+# A gap this long between frames means intake was waiting on the client — it is
+# caught up by definition (a paused mic, a slow network), so the lag clock rebases.
+_INTAKE_IDLE_S = 0.5
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -110,9 +115,6 @@ class StreamingTranscriber:
         # CaptionFinal.words stays None.
         self._final_words = final_words
         self._partial_bytes = _ms_to_bytes(partial_interval_ms)
-        # Audio the next partial waits for: the cadence, stretched by the last partial
-        # decode's latency (see _PARTIAL_BACKOFF_RATIO).
-        self._partial_due_bytes = self._partial_bytes
         # Partials decode only this trailing window so their latency stays bounded
         # regardless of how long the in-flight turn has grown (master plan §10);
         # 0 means "decode the whole segment" (the legacy behaviour).
@@ -167,6 +169,12 @@ class StreamingTranscriber:
 
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._closed = False
+        # Real-time lag tracking for the partial skip (see _PARTIAL_SKIP_LAG_S): the
+        # wall-clock time audio position 0 corresponds to, the audio pushed so far, and
+        # when the previous push returned.
+        self._rt_origin: float | None = None
+        self._rt_audio_s = 0.0
+        self._rt_last_push_end: float | None = None
 
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
@@ -176,9 +184,26 @@ class StreamingTranscriber:
         `Transcriber` seam, which lets the session warm every backend uniformly."""
         return None
 
+    def _intake_lag_s(self, now: float) -> float:
+        """How far behind real time this push's audio arrives (>= 0). Rebased when
+        intake was idle-waiting on the client, or when the client is ahead."""
+        idle = self._rt_last_push_end is None or now - self._rt_last_push_end > _INTAKE_IDLE_S
+        if self._rt_origin is None or idle or now - self._rt_origin < self._rt_audio_s:
+            self._rt_origin = now - self._rt_audio_s
+        return (now - self._rt_origin) - self._rt_audio_s
+
     async def push(self, pcm: bytes) -> None:
         if not pcm:
             return
+        now = time.perf_counter()
+        behind = self._intake_lag_s(now) > _PARTIAL_SKIP_LAG_S
+        self._rt_audio_s += len(pcm) / BYTES_PER_SEC
+        try:
+            await self._push(pcm, behind)
+        finally:
+            self._rt_last_push_end = time.perf_counter()
+
+    async def _push(self, pcm: bytes, behind: bool) -> None:
         self._buf.extend(pcm)
         self._since_partial += len(pcm)
         self._update_vad(pcm)
@@ -191,7 +216,13 @@ class StreamingTranscriber:
             and len(self._buf) >= self._min_segment_bytes
         ):
             await self._finalize()
-        elif self._has_speech and self._since_partial >= self._partial_due_bytes:
+        elif self._has_speech and self._since_partial >= self._partial_bytes:
+            if behind:
+                # Seconds-stale audio: skip the decode and let intake catch up. The
+                # cadence counter keeps running, so the next push after catching up
+                # emits one immediately.
+                metrics.incr("stage.stt.partial_skipped_lag")
+                return
             await self._emit_partial()
 
     def _speech_threshold(self) -> float:
@@ -245,13 +276,7 @@ class StreamingTranscriber:
         result = await asyncio.to_thread(
             self._engine.transcribe, samples, language=self._language, want_words=want_words
         )
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        metrics.observe(f"stage.stt.{stage}_latency_ms", elapsed_ms)
-        if stage == "partial":
-            due = max(self._partial_bytes, _ms_to_bytes(int(_PARTIAL_BACKOFF_RATIO * elapsed_ms)))
-            if due > self._partial_bytes:
-                metrics.incr("stage.stt.partial_backoff")
-            self._partial_due_bytes = due
+        metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         return result
 
     async def _emit_partial(self) -> None:
