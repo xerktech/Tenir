@@ -55,6 +55,17 @@ _VAD_PEAK_FRACTION = 0.5
 # longer. Below the gate the turn stays dropped, exactly as before XERK-174.
 _RECOVERY_MIN_WORDS = 3
 
+# Partial back-off: after a partial decode that took L ms, the next partial waits for
+# at least this many times L of new audio (never less than the configured cadence).
+# Decodes run inline on the WebSocket intake path, so while one runs no audio frames
+# are read. With a fixed cadence, any stretch where decodes outlast the cadence (a
+# loaded STT server, a starved pod) puts intake permanently behind real time: the lag
+# grows for as long as speech continues, the socket's frame queue fills, keepalive
+# pongs go unread and the server drops the session with 1011 (XERK-1414, reproduced
+# on 10-minute chunks of continuous conversation). Spending at most 1/ratio of real
+# time on partials keeps intake ahead; a fast engine never triggers it.
+_PARTIAL_BACKOFF_RATIO = 2
+
 
 def _ms_to_bytes(ms: int) -> int:
     return ms * BYTES_PER_SEC // 1000
@@ -99,6 +110,9 @@ class StreamingTranscriber:
         # CaptionFinal.words stays None.
         self._final_words = final_words
         self._partial_bytes = _ms_to_bytes(partial_interval_ms)
+        # Audio the next partial waits for: the cadence, stretched by the last partial
+        # decode's latency (see _PARTIAL_BACKOFF_RATIO).
+        self._partial_due_bytes = self._partial_bytes
         # Partials decode only this trailing window so their latency stays bounded
         # regardless of how long the in-flight turn has grown (master plan §10);
         # 0 means "decode the whole segment" (the legacy behaviour).
@@ -177,7 +191,7 @@ class StreamingTranscriber:
             and len(self._buf) >= self._min_segment_bytes
         ):
             await self._finalize()
-        elif self._has_speech and self._since_partial >= self._partial_bytes:
+        elif self._has_speech and self._since_partial >= self._partial_due_bytes:
             await self._emit_partial()
 
     def _speech_threshold(self) -> float:
@@ -231,7 +245,13 @@ class StreamingTranscriber:
         result = await asyncio.to_thread(
             self._engine.transcribe, samples, language=self._language, want_words=want_words
         )
-        metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        metrics.observe(f"stage.stt.{stage}_latency_ms", elapsed_ms)
+        if stage == "partial":
+            due = max(self._partial_bytes, _ms_to_bytes(int(_PARTIAL_BACKOFF_RATIO * elapsed_ms)))
+            if due > self._partial_bytes:
+                metrics.incr("stage.stt.partial_backoff")
+            self._partial_due_bytes = due
         return result
 
     async def _emit_partial(self) -> None:

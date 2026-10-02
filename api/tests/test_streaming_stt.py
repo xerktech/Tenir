@@ -44,6 +44,17 @@ class FakeEngine:
         )
 
 
+class _Clock:
+    """Fake perf_counter: decodes advance it explicitly, so latency is deterministic
+    however loaded the test host is."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+
 def _pcm(ms: int, *, amplitude: int) -> bytes:
     """ms of 16 kHz s16le mono PCM at a constant amplitude (0 == silence)."""
     n = 16000 * ms // 1000
@@ -55,6 +66,17 @@ def _drain(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
     while not t._queue.empty():
         out.append(t._queue.get_nowait())
     return out
+
+
+@pytest.fixture(autouse=True)
+def _frozen_decode_clock(monkeypatch):
+    """Decode latency reads 0 unless a test drives the clock itself. These tests pin
+    exact partial counts at short cadences; on a loaded host a fake engine's
+    to_thread hop alone can exceed half the cadence and trip the partial back-off
+    (_PARTIAL_BACKOFF_RATIO), which only the back-off tests below mean to exercise."""
+    import api.stt.streaming as streaming
+
+    monkeypatch.setattr(streaming, "time", _Clock())
 
 
 # ----- helpers --------------------------------------------------------------
@@ -1032,3 +1054,53 @@ def test_engine_reported_language_outranks_text_langid() -> None:
         assert finals[0].lang is not None and finals[0].lang.value == "en"
 
     asyncio.run(run())
+
+
+
+class SlowEngine(FakeEngine):
+    """FakeEngine whose every decode takes ``delay`` seconds on the fake clock."""
+
+    def __init__(self, clock: _Clock, delay: float) -> None:
+        super().__init__()
+        self.clock = clock
+        self.delay = delay
+
+    def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+        self.clock.now += self.delay
+        return super().transcribe(samples, language=language, want_words=want_words)
+
+
+def _partial_calls(monkeypatch, delay: float, interval_ms: int, pushes: int, push_ms: int) -> int:
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    eng = SlowEngine(clock, delay)
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=interval_ms,
+            silence_ms=100000,
+            max_segment_ms=100000,
+        )
+        for _ in range(pushes):
+            await t.push(_pcm(push_ms, amplitude=8000))
+
+    asyncio.run(go())
+    return eng.calls
+
+
+def test_slow_partial_decodes_back_off_instead_of_stalling_intake(monkeypatch) -> None:
+    # Decodes run inline on the WS intake path. A 600 ms decode against a 100 ms cadence
+    # used to run on every 100 ms push: intake falls ever further behind real time until
+    # the socket drops (XERK-1414). With the back-off the next partial waits for >= 2x
+    # the last decode's latency of audio: 10 s of speech -> ~8 decodes, not 100.
+    calls = _partial_calls(monkeypatch, delay=0.6, interval_ms=100, pushes=100, push_ms=100)
+    assert 7 <= calls <= 9
+
+
+def test_fast_partial_decodes_keep_the_configured_cadence(monkeypatch) -> None:
+    # Decodes faster than half the cadence never stretch it.
+    assert _partial_calls(monkeypatch, delay=0.04, interval_ms=100, pushes=20, push_ms=100) == 20
