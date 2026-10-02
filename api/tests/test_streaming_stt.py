@@ -1082,6 +1082,10 @@ def test_empty_final_is_retried_with_silence_padding() -> None:
         counters = metrics.snapshot()["counters"]
         assert counters["stage.stt.final_retry_recovered"] == 1
         assert "stage.stt.final_recovered" not in counters
+        # The retry's decode is timed on its own histogram, not folded into finals'.
+        latency = metrics.snapshot()["latency_ms"]
+        assert latency["stage.stt.final_retry_latency_ms"]["count"] == 1
+        assert latency["stage.stt.final_latency_ms"]["count"] == 1
         metrics.reset()
 
     asyncio.run(run())
