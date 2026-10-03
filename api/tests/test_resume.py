@@ -125,6 +125,35 @@ def test_grace_window_expiry_finalizes_and_unregisters() -> None:
     asyncio.run(run())
 
 
+def test_stale_grace_close_does_not_evict_a_live_session_with_the_same_id() -> None:
+    """Regression (XERK-1507): two Sessions can share an id (racing cold resumes),
+    the later one registered over the earlier. The stale one's grace close must
+    not unregister the live one, or it drops out of /health, resume and shutdown."""
+
+    async def run() -> None:
+        async def send(_msg: ServerMessage) -> None:
+            pass
+
+        stale = Session(send, session_id="dup-1")
+        await stale.start(mic_source="g2-microphone", source_lang=None)
+        registry.register(stale)
+        live = Session(send, session_id="dup-1")
+        await live.start(mic_source="g2-microphone", source_lang=None)
+        registry.register(live)
+
+        stale.detach(grace_seconds=0)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert stale.is_closed
+        assert registry.get("dup-1") is live
+
+        registry.unregister(live)
+        assert registry.get("dup-1") is None
+        await live.close()
+
+    asyncio.run(run())
+
+
 def test_detach_after_close_is_noop() -> None:
     async def run() -> None:
         async def send(_msg: ServerMessage) -> None:

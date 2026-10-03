@@ -21,7 +21,10 @@ def register(session: "Session") -> None:
 
 
 def unregister(session: "Session") -> None:
-    _active.pop(session.session_id, None)
+    # Only if it is still this session: two Sessions can share an id (racing cold
+    # resumes), and a stale one's grace close must not evict the live one (XERK-1507).
+    if _active.get(session.session_id) is session:
+        del _active[session.session_id]
 
 
 def get(session_id: str) -> "Session | None":
