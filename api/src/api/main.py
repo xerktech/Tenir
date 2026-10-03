@@ -47,7 +47,12 @@ from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
 from api.persistence import get_conversation_store, stale
-from api.persistence.postgres import SqlConversationStore
+from api.persistence.postgres import (
+    OPEN_TIMEOUT_SECONDS,
+    SqlConversationStore,
+    database_error_types,
+    is_database_unavailable,
+)
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
 from api.session import Session, is_valid_session_id, teardowns_in_flight
@@ -171,6 +176,57 @@ async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
 
+# The 503 contract for a database outage (XERK-1510): clients read the status as
+# "retryable, keep the session" — not a 401 to re-login over, not a generic 500.
+DB_UNAVAILABLE_DETAIL = "the server can't reach its database — try again shortly"
+
+
+def _outage_summary(exc: BaseException) -> str:
+    # First line only: a server-side error message carries a "LINE 1: <sql>" excerpt.
+    return f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+
+
+async def _database_unavailable(conn: Request | WebSocket, exc: Exception) -> Response | None:
+    """Answer a database outage with 503 + Retry-After, logged as one WARNING line.
+
+    Unhandled, it was a 500 with a full traceback per request, and uvicorn then
+    dropped the connection, so a keepalive client's NEXT request failed too.
+    Starlette runs this for websocket routes too: there it closes 1013 (try again
+    later), accepting first if needed so the client gets the code, not a 1006."""
+    if not is_database_unavailable(exc):
+        raise exc  # e.g. an OperationalError that is a real fault (disk full): stays a 500
+    metrics.incr("db.unavailable")
+    if isinstance(conn, WebSocket):
+        log.warning("database unavailable: ws -> 1013 (%s)", _outage_summary(exc))
+        if WebSocketState.DISCONNECTED in (conn.client_state, conn.application_state):
+            return None
+        try:
+            if conn.application_state == WebSocketState.CONNECTING:
+                await conn.accept()
+            await conn.close(code=1013, reason="database unavailable")
+        except Exception as close_exc:
+            # Best-effort: the client may have left while we waited on the database.
+            # The state can't show it (starlette only learns of a disconnect on a
+            # receive), and the server raises a different class per ws implementation.
+            log.info("ws gone before its 1013 close: %r", close_exc)
+        return None
+    log.warning(
+        "database unavailable: %s %s -> 503 (%s)",
+        conn.method,
+        conn.url.path,
+        _outage_summary(exc),
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": DB_UNAVAILABLE_DETAIL},
+        # The pool shares an open failure with every caller for this long.
+        headers={"Retry-After": str(int(OPEN_TIMEOUT_SECONDS))},
+    )
+
+
+for _exc_type in database_error_types():
+    app.add_exception_handler(_exc_type, _database_unavailable)
+
 # Sliding token renewal (XERK-168): the header a renewed bearer token rides back
 # on. Clients adopt it in their shared request path, so an actively-used device
 # keeps refreshing its token and is never logged out by plain expiry.
@@ -205,6 +261,9 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
     hard expiry) and only runs when a renewal is actually due.
     """
     response = await call_next(request)
+    if response.status_code == 503:
+        # The database is down: a renewal lookup would only wait out the pool again.
+        return response
     authorization = request.headers.get("authorization", "")
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
     if not token:
@@ -214,7 +273,16 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
     )
     if fresh is None:
         return response
-    user = await asyncio.to_thread(get_user_store().get_by_id, principal_from_token(fresh).user_id)
+    try:
+        user = await asyncio.to_thread(
+            get_user_store().get_by_id, principal_from_token(fresh).user_id
+        )
+    except Exception as exc:
+        # Renewal is best-effort and the next request retries it; a database outage
+        # here must not turn the route's own response into a 500 (XERK-1510).
+        if not is_database_unavailable(exc):
+            raise
+        return response
     if user is None:
         return response
     response.headers[RENEWED_TOKEN_HEADER] = fresh
@@ -326,6 +394,8 @@ def _ws_reject_reason(ws: WebSocket) -> str:
 async def ws_endpoint(ws: WebSocket) -> None:
     # Off the event loop: resolving a token reads the user store, and a blocking
     # read here (database down) froze every request on the server until it gave up.
+    # A database outage here (or anywhere below) reaches ``_database_unavailable``,
+    # which closes 1013 — "try again later", not the 1008 that means re-login.
     principal = await asyncio.to_thread(_ws_principal, ws)
     if principal is None:
         # Reject AFTER accepting, and log it. Closing before accept surfaces to
@@ -398,8 +468,17 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # here so it can't start recording into the household (XERK-1504).
                 try:
                     alive = await _account_exists(principal.user_id)
-                except Exception:
-                    log.exception("account check failed for household %s", principal.household)
+                except Exception as exc:
+                    if not is_database_unavailable(exc):
+                        log.exception(
+                            "account check failed for household %s", principal.household
+                        )
+                    else:  # an outage, not a bug: one line, no traceback (XERK-1510)
+                        log.warning(
+                            "account check failed for household %s: database unavailable (%s)",
+                            principal.household,
+                            _outage_summary(exc),
+                        )
                     await send(_err("internal", "could not start session"))
                     continue
                 if not alive:

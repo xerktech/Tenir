@@ -165,9 +165,47 @@ def _is_connection_lost(conn, exc: BaseException) -> bool:
     treating those as an outage booted a Ready pod on a broken schema again."""
     if getattr(conn, "broken", False):
         return True
-    sqlstate = getattr(exc, "sqlstate", None) or ""
+    return _is_connection_sqlstate(getattr(exc, "sqlstate", None) or "")
+
+
+def _is_connection_sqlstate(sqlstate: str) -> bool:
     # Class 08: connection exception; 57P01-57P03: admin/crash shutdown, cannot connect.
     return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
+
+
+def database_error_types() -> tuple[type[BaseException], ...]:
+    """The exception classes ``is_database_unavailable`` may accept, for registering
+    handlers by class. psycopg's only exist when the persistence extra is installed."""
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:
+        return (DatabaseUnavailable,)
+    return (DatabaseUnavailable, PoolTimeout, psycopg.OperationalError)
+
+
+def is_database_unavailable(exc: BaseException) -> bool:
+    """True when ``exc`` means "the database can't be reached right now" — a
+    retryable outage the API answers with 503 rather than a 500 (XERK-1510).
+
+    Covers ``DatabaseUnavailable`` (the pool can't open), psycopg_pool's
+    ``PoolTimeout`` (no connection within the request's wait) and a connection-level
+    ``OperationalError``: a lost/refused connection carries no SQLSTATE (the server
+    never answered) or a class-08/57P0x one. Other OperationalErrors (disk full, a
+    too-large index row) are real faults and stay 500s, as in ``_is_connection_lost``."""
+    if isinstance(exc, DatabaseUnavailable):
+        return True
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:  # in-memory install: no Postgres to be unavailable
+        return False
+    if isinstance(exc, PoolTimeout):
+        return True
+    if isinstance(exc, psycopg.OperationalError):
+        sqlstate = exc.sqlstate
+        return sqlstate is None or _is_connection_sqlstate(sqlstate)
+    return False
 
 
 class SqlConversationStore:
