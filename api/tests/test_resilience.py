@@ -282,10 +282,11 @@ def test_second_close_waits_for_an_in_flight_teardown() -> None:
     asyncio.run(run())
 
 
-def test_drain_teardowns_waits_for_orphaned_teardowns() -> None:
+def test_shutdown_waits_for_orphaned_teardowns() -> None:
     """Lifespan shutdown drains teardowns whose close() caller was cancelled, so the
     process can't exit before they persist (XERK-1460)."""
-    from api.session import _teardowns, drain_teardowns
+    from api.main import close_all_sessions
+    from api.session import _teardowns
     from api.stt.stub import StubTranscriber
 
     class SlowFlush(StubTranscriber):
@@ -297,7 +298,7 @@ def test_drain_teardowns_waits_for_orphaned_teardowns() -> None:
         closer = asyncio.create_task(session.close())
         await asyncio.sleep(0.05)
         closer.cancel()
-        await asyncio.wait_for(drain_teardowns(), timeout=5)
+        await asyncio.wait_for(close_all_sessions(), timeout=5)
         assert not _is_live(session)
         assert not _teardowns
 

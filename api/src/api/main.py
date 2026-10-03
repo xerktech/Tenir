@@ -49,7 +49,7 @@ from api.persistence import get_conversation_store
 from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session, drain_teardowns, is_valid_session_id
+from api.session import Session, is_valid_session_id, teardowns_in_flight
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -118,12 +118,49 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         status_task.cancel()
     # Finalize any still-live (incl. detached, grace-pending) sessions on shutdown so
     # their audio/transcript is persisted and resources are released cleanly.
-    for session in registry.active():
+    await close_all_sessions()
+
+
+# Pod shutdown is SIGKILLed at terminationGracePeriodSeconds (30 s in prod), and
+# uvicorn spends some of that draining connections before the lifespan exits. Stay
+# well under it so every session is finalized rather than killed mid-close.
+_SHUTDOWN_DEADLINE_S = 20.0
+_SHUTDOWN_FINALIZE_S = 5.0
+
+
+async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
+    """Finalize every still-live (incl. detached, grace-pending) session on shutdown.
+
+    Closes run concurrently under one deadline (XERK-1458). One at a time, a single
+    session against a hung model (STT flush + translation drain, ~30 s) used up the
+    whole grace period and every later one was killed before persisting its audio.
+    A teardown still running at the deadline is cancelled; it retains its audio
+    first and finalizes the conversation even when cancelled.
+    """
+    sessions = registry.active()
+    for session in sessions:
         registry.unregister(session)
-        await session.close()
-    # Sessions already unregistered may still be tearing down (their close() caller
-    # was cancelled); wait for them so the process doesn't exit before they persist.
-    await drain_teardowns()
+    closes = [asyncio.create_task(session.close()) for session in sessions]
+    # Teardowns already under way elsewhere (grace lapse, session.end, revoke, a
+    # cancelled close() caller): their sessions left the registry first, and the
+    # process exits as soon as this returns, so they must be waited on too.
+    others = teardowns_in_flight()
+    if not closes and not others:
+        return
+    _, pending = await asyncio.wait([*closes, *others], timeout=deadline)
+    if pending:
+        # close() only awaits its shielded teardown, so cancel the teardowns
+        # themselves — the closes started above included.
+        stuck = {*pending, *teardowns_in_flight()}
+        log.warning("cancelling %d session teardown(s) past the shutdown deadline", len(stuck))
+        for task in stuck:
+            task.cancel()
+        # A cancelled teardown still finalizes in its finally; bound that too, so
+        # a hung store can't hold shutdown until the SIGKILL.
+        await asyncio.wait(stuck, timeout=_SHUTDOWN_FINALIZE_S)
+    for session, task in zip(sessions, closes, strict=True):
+        if task.done() and not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("session %s close failed", session.session_id, exc_info=exc)
 
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
