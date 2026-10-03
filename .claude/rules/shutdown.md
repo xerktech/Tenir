@@ -23,5 +23,17 @@ paths:
   cancel can't stop, and a racing second write stores the audio twice.
 - `_persist_audio` trims the buffer right after `put`, before `set_audio_key`. Trimming later
   re-stores the audio behind its own stored copy whenever the key write fails.
-- Tests: `api/tests/test_shutdown.py`. Some mutants hang rather than fail, so give hang-shaped
-  tests their own `wait_for` timeout.
+- A resume landing mid-teardown (grace lapsed, so the old Session is unregistered) takes its
+  offset from `_closing`, the closing sitting's in-memory timeline end (XERK-1500). Never make
+  `start()` wait on the old teardown: that held session.ready 9-29 s, and a second reconnect in
+  that window started a duplicate sitting with overlapping segments.
+- A resumed sitting's audio retain is ordered behind the closing sitting's (via `_first_retain`
+  and, when that failed, `_prior_teardown` in `_persist`). The stored WAV is append-only, so
+  storing out of order desyncs History playback.
+- The deadline cancel lands on whatever the teardown is awaiting, including an await in its
+  `finally`. An await there that must finish catches that one `CancelledError`, completes,
+  then re-raises (see `_persist`).
+- Tests: `api/tests/test_shutdown.py`; resume-during-teardown in
+  `api/tests/test_session_persistence.py` (`test_resume_during_prior_teardown_*`,
+  `test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio`).
+- Some mutants hang rather than fail, so give hang-shaped tests their own `wait_for` timeout.
