@@ -1430,15 +1430,25 @@ class Session:
             return
         # A resumed sitting whose earlier sitting's first retain failed stores
         # only after that sitting's own retry, to keep the recording in order.
-        if self._prior_teardown is not None:
-            await asyncio.wait({self._prior_teardown})
-            self._prior_teardown = None
+        cancelled = False
+        prior, self._prior_teardown = self._prior_teardown, None
+        if prior is not None:
+            try:
+                await asyncio.wait({prior})
+            except asyncio.CancelledError:
+                # The shutdown deadline: it cancels that teardown too and gives
+                # both a bounded finalize window. Spend ours finishing the wait
+                # and storing, or this sitting's audio would never be stored.
+                cancelled = True
+                await asyncio.wait({prior})
         # Picks up any audio that arrived after close() retained the buffer
         # (a no-op when it is empty), then finalizes.
         await self._retain_audio()
         await asyncio.to_thread(
             self._conversations.finish, self._household, self.session_id, status="ready"
         )
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _retain_audio_after_prior(self) -> bool:
         """Retain, but never ahead of the sitting this one resumed mid-teardown:

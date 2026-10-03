@@ -496,3 +496,69 @@ def test_earlier_teardown_finishing_keeps_a_later_closing_sitting() -> None:
         await closing2
 
     asyncio.run(run())
+
+
+def test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio() -> None:
+    """The shutdown deadline cancels a resumed sitting's teardown while its final
+    _persist waits on the earlier sitting (whose first retain failed). Its audio
+    must still be stored, after the earlier sitting's, once that one finishes
+    within the finalize window (XERK-1500)."""
+    from api.session import teardowns_in_flight
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_audio_store()
+        real_put = store.put
+        fails = [1]
+
+        def flaky_put(key, wav) -> None:
+            if fails:
+                fails.pop()
+                raise OSError("disk hiccup")
+            real_put(key, wav)
+
+        store.put = flaky_put
+        try:
+            leg1 = Session(send, session_id="conv-deadline")
+            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            for _ in range(25):
+                await leg1.on_audio(_voice_chunk(freq=200))
+            release = _hold_flush(leg1)
+            closing = asyncio.create_task(leg1.close())
+            await asyncio.sleep(0)
+
+            leg2 = Session(send, session_id="conv-deadline")
+            await leg2.start(mic_source="g2-microphone", source_lang=None)
+            for _ in range(10):
+                await leg2.on_audio(_voice_chunk(freq=400))
+            closing2 = asyncio.create_task(leg2.close())
+            # leg2 gets through its flush to the _persist wait on leg1.
+            conv = get_conversation_store().get("default", "conv-deadline")
+            for _ in range(200):
+                if max(s.end_ms for s in conv.segments) == 3500:
+                    break
+                await asyncio.sleep(0.01)
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+            # What close_all_sessions does at the deadline: cancel every teardown,
+            # then give them a bounded window to finalize.
+            stuck = set(teardowns_in_flight())
+            assert leg2._teardown in stuck
+            for task in stuck:
+                task.cancel()
+            release.set()
+            await asyncio.wait(stuck, timeout=2)
+            assert all(t.done() for t in stuck)
+        finally:
+            store.put = real_put
+        for t in (closing, closing2):
+            with pytest.raises(asyncio.CancelledError):
+                await t
+
+        pcm = wav_to_pcm16(store.get(audio_key("default", "conv-deadline")))
+        assert pcm == _voice_chunk(freq=200) * 25 + _voice_chunk(freq=400) * 10
+
+    asyncio.run(run())
