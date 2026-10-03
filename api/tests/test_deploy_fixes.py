@@ -243,3 +243,20 @@ def test_startup_logs_an_unreachable_backend(
     with caplog.at_level("WARNING", logger="api.readiness"), TestClient(app):
         pass
     assert "backend audio not ready: RuntimeError: bucket unreachable" in caplog.text
+
+
+def test_uvicorn_bounds_its_graceful_shutdown_under_the_kill() -> None:
+    """XERK-1496: without --timeout-graceful-shutdown uvicorn waits with no limit for
+    in-flight handlers on SIGTERM, so a session.end or revoke against a hung model ran
+    past the 30 s SIGKILL. The lifespan's session close needs 25 s of the 30 after it.
+    """
+    from pathlib import Path
+
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+    cmd = next(
+        line for line in dockerfile.read_text().splitlines() if line.startswith("CMD ")
+    )
+    argv = json.loads(cmd.removeprefix("CMD "))
+    assert argv[0] == "uvicorn"
+    timeout = float(argv[argv.index("--timeout-graceful-shutdown") + 1])
+    assert 0 < timeout + 20 + 5 < 30

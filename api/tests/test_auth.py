@@ -1333,3 +1333,73 @@ def test_sql_user_store_get_by_oidc_sub_and_email_scope_dict_row(fake_psycopg) -
     )
     assert conn2.calls[0][2] is fake_psycopg.dict_row
     assert conn2.row_factory is None
+
+
+@pytest.mark.real_auth
+def test_deleting_a_user_revokes_their_sessions_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revokes run side by side, and one failing revoke doesn't skip the rest.
+
+    XERK-1496: each revoke finalizes a session, which against a hung model can take
+    ~30 s (STT flush + translation drain). One after another, a user with several
+    sessions held the DELETE — and on SIGTERM the whole pod's shutdown, since uvicorn
+    waits for in-flight requests — past the 30 s SIGKILL.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from api import registry
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    bob = store.create("bob", "longpassword", household="acme")
+    in_flight = 0
+    peak = 0
+    revoked: list[str] = []
+
+    def _session(sid: str, user_id: str, *, fails: bool = False) -> SimpleNamespace:
+        async def revoke(reason: str) -> None:
+            nonlocal in_flight, peak
+            # Every doomed session leaves the registry before any revoke starts, so
+            # nothing (shutdown, a resume) can reach one that's being finalized.
+            assert all(registry.get(f"bob-{i}") is None for i in (1, 2, 3))
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+            if fails:
+                raise RuntimeError("store down")
+            revoked.append(sid)
+
+        async def close() -> None:  # the lifespan shutdown closes what's left
+            pass
+
+        return SimpleNamespace(session_id=sid, user_id=user_id, revoke=revoke, close=close)
+
+    sessions = [
+        _session("bob-1", bob.user_id, fails=True),
+        _session("bob-2", bob.user_id),
+        _session("bob-3", bob.user_id),
+        _session("other", "someone-else"),
+    ]
+    for s in sessions:
+        registry.register(s)  # type: ignore[arg-type]
+    try:
+        with TestClient(app) as client:
+            token = client.post(
+                "/auth/login", json={"username": "admin", "password": "longpassword"}
+            ).json()["token"]
+            r = client.delete(
+                f"/auth/users/{bob.user_id}", headers={"Authorization": f"Bearer {token}"}
+            )
+            assert r.status_code == 204
+            assert registry.get("other") is not None  # another user's session untouched
+        assert peak == 3  # all of bob's sessions at once, not one after another
+        assert sorted(revoked) == ["bob-2", "bob-3"]  # bob-1 raising skipped neither
+        assert all(registry.get(f"bob-{i}") is None for i in (1, 2, 3))
+    finally:
+        for s in sessions:
+            registry.unregister(s)  # type: ignore[arg-type]

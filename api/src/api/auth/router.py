@@ -7,6 +7,8 @@ additional household members.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +19,8 @@ from api.auth.deps import current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
 from api.auth.users import DuplicateUser, get_user_store
 from api.config import settings
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -332,7 +336,16 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
     # recording into the household after its account is gone. Close them here so
     # "removed" means removed on every surface (XERK-236). Each session is
     # finalized normally, so nothing already captured is lost.
-    for session in registry.active():
-        if session.user_id == user_id:
-            registry.unregister(session)
-            await session.revoke("account deleted")
+    doomed = [s for s in registry.active() if s.user_id == user_id]
+    for session in doomed:
+        registry.unregister(session)
+    # Concurrently (XERK-1496): one close against a hung model takes ~30 s, so one
+    # after another a user with several sessions held this request — and, since
+    # uvicorn drains in-flight requests on SIGTERM, the pod's shutdown — past the
+    # SIGKILL. A failing revoke is logged and doesn't skip the others.
+    results = await asyncio.gather(
+        *(s.revoke("account deleted") for s in doomed), return_exceptions=True
+    )
+    for session, result in zip(doomed, results, strict=True):
+        if isinstance(result, Exception):
+            log.error("session %s revoke failed", session.session_id, exc_info=result)
