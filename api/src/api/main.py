@@ -288,6 +288,16 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
         return None
 
 
+async def _account_exists(user_id: str) -> bool:
+    return await asyncio.to_thread(get_user_store().get_by_id, user_id) is not None
+
+
+async def _close_removed(ws: WebSocket) -> None:
+    log.warning("ws closed: account no longer exists")
+    metrics.incr("ws.account_removed")
+    await ws.close(code=1008, reason="account removed")
+
+
 def _ws_reject_reason(ws: WebSocket) -> str:
     """Why ``_ws_principal`` returned None, for the rejection log line."""
     auth_header = ws.headers.get("authorization", "")
@@ -360,6 +370,26 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 continue
 
             if isinstance(msg, SessionStart):
+                # Auth runs at the handshake, and deleting a user only revokes the
+                # sessions in the registry — so a socket with none at that moment (not
+                # yet started, or after session.end) outlives its account. Re-check
+                # here so it can't start recording into the household (XERK-1504).
+                try:
+                    alive = await _account_exists(principal.user_id)
+                except Exception:
+                    log.exception("account check failed for household %s", principal.household)
+                    await send(_err("internal", "could not start session"))
+                    continue
+                if not alive:
+                    if session is not None:
+                        # The delete's revoke normally got here first; if not, finalize
+                        # it now rather than let the finally below park it for resume.
+                        registry.unregister(session)
+                        await session.revoke("account deleted")
+                        session = None
+                    else:
+                        await _close_removed(ws)
+                    break
                 # A resume id the server could not have issued is not a resume id.
                 # It reaches the conversation store AND the audio object key
                 # ({household}/{id}.wav), so an id like "../other-hh/<their-id>"
@@ -457,6 +487,22 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 session = new_session
                 registry.register(session)
                 metrics.incr("sessions.started")
+                # A delete that ran while start() was awaiting scanned the registry
+                # before this session was in it. Checking only now that it is
+                # registered closes that window: either the delete's scan sees it,
+                # or its store.delete already happened and this check sees that.
+                try:
+                    alive = await _account_exists(principal.user_id)
+                except Exception:
+                    # The check above passed moments ago; don't drop a live
+                    # recording over a transient store error.
+                    log.exception("account re-check failed for session %s", session.session_id)
+                    alive = True
+                if not alive:
+                    registry.unregister(session)
+                    await session.revoke("account deleted")
+                    session = None
+                    break
             elif isinstance(msg, Ping):
                 await send(Pong(type="pong", t=msg.t))
             elif session is None:

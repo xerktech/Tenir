@@ -273,12 +273,21 @@ def _voice(freq: int = 200, *, ms: int = 100, amp: int = 8000) -> bytes:
     return (amp * np.sin(2 * np.pi * freq * t)).astype(np.int16).tobytes()
 
 
-def _as_user(monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+def _as_user(monkeypatch: pytest.MonkeyPatch, username: str) -> str:
+    """Route the next WS connection to a real member (session.start re-checks that the
+    account exists, XERK-1504) and return its user id."""
+    store = get_user_store()
+    user = store.get_by_username(username) or store.create(
+        username, "pw", household=HH, role="member"
+    )
     monkeypatch.setattr(
         main,
         "_ws_principal",
-        lambda ws: Principal(user_id=user_id, username=user_id, household=HH, role="member"),
+        lambda ws: Principal(
+            user_id=user.user_id, username=username, household=HH, role="member"
+        ),
     )
+    return user.user_id
 
 
 def _capture(client: TestClient, *, session_id: str | None, freq: int) -> dict:
@@ -326,11 +335,11 @@ def test_ws_cold_resume_of_another_users_recording_is_denied(
     client = TestClient(app)
 
     # User A records a session to completion.
-    _as_user(monkeypatch, "user-a")
+    user_a = _as_user(monkeypatch, "user-a")
     first = _capture(client, session_id=None, freq=200)
     sid = first["sessionId"]
     a_conv = get_conversation_store().get(HH, sid, owner=None)
-    assert a_conv is not None and a_conv.owner == "user-a"
+    assert a_conv is not None and a_conv.owner == user_a
     a_segments = len(a_conv.segments)
 
     # Clear A's lingering (detached, grace-window) session so the resume is a genuine
@@ -340,17 +349,17 @@ def test_ws_cold_resume_of_another_users_recording_is_denied(
         registry.unregister(s)
 
     # User B tries to cold-resume A's recording by presenting its id.
-    _as_user(monkeypatch, "user-b")
+    user_b = _as_user(monkeypatch, "user-b")
     ready = _capture(client, session_id=sid, freq=900)
     # B did not resume onto A's id — a fresh, different id was issued.
     assert ready["sessionId"] != sid
     assert ready.get("resumed") is not True
     # A's recording is intact and still owned by A; B's landed under its own id/owner.
     a_after = get_conversation_store().get(HH, sid, owner=None)
-    assert a_after is not None and a_after.owner == "user-a"
+    assert a_after is not None and a_after.owner == user_a
     assert len(a_after.segments) == a_segments  # B's audio never appended to A's row
     b_conv = get_conversation_store().get(HH, ready["sessionId"], owner=None)
-    assert b_conv is not None and b_conv.owner == "user-b"
+    assert b_conv is not None and b_conv.owner == user_b
 
     for s in registry.active():
         registry.unregister(s)
@@ -363,12 +372,12 @@ def test_ws_owner_resume_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     for s in registry.active():
         registry.unregister(s)
     client = TestClient(app)
-    _as_user(monkeypatch, "user-a")
+    user_a = _as_user(monkeypatch, "user-a")
     first = _capture(client, session_id=None, freq=200)
     sid = first["sessionId"]
     second = _capture(client, session_id=sid, freq=200)
     assert second["sessionId"] == sid
-    conv = get_conversation_store().get(HH, sid, owner="user-a")
+    conv = get_conversation_store().get(HH, sid, owner=user_a)
     assert conv is not None
     for s in registry.active():
         registry.unregister(s)
