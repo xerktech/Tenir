@@ -42,5 +42,17 @@ paths:
   score lost ~13% of English and let "The Las Vegas trip." win es. Costs ~3.5% of short English.
 - `is_english_word` excludes English vocab that is also a native word (`_SHARED_EN`: de `was`,
   pt `to`/`for`, fr `but`/`the`, …): "…, Pedro, was?" → "…, what?" is a real translation.
+- Non-English calls come from word frequencies (`_frequency_lang`, XERK-1349) when they beat
+  every other language by 3 Zipf; the word lists' few shared words tied es/fr ("a", "un")
+  and left ~1/3 of Spanish None. It never returns `en` (closing a run stays with the lists).
+- `_frequency_lang` must stay out of any turn with English evidence (an English vocab hit or
+  an `is_english_word`). On a turn the lists left None it needs the winner's own list hit
+  AND ≥4 distinct words: short English names/places/food/filler win on frequency, and one
+  shared word ("del", "de") is not real evidence ("Playa del Carmen." es, "Cul de sac." fr).
+- Correcting a non-English list call (es tagged fr) needs neither; that is where most of the
+  short-turn gain is. Loosening the None-turn gate re-opens runs on English (two QA FAILs).
+- Written corpora (Tatoeba, FLEURS) barely reach that path: written English almost always has
+  list hits. Check English false positives on spoken lines (Cornell movie dialogs, 422k) and
+  hand-written place/food/name-list probes; Spanish recall on Tatoeba + comma-split FLEURS.
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
   `detect_lang`, hand-read every changed label), not intuition. Keep transcript text out of tests.

@@ -268,3 +268,76 @@ def test_new_english_vocab_counts() -> None:
 def test_english_word_classes(word: str, english: bool, shared: bool) -> None:
     assert is_english_word(word) is english
     assert is_shared_english_word(word) is shared
+
+
+# Public FLEURS es_419 sentences (XERK-1349) the word lists left None or tagged fr: a
+# Spanish turn that starts a conversation that way is never translated.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Después del accidente, trasladaron a Gibson a un hospital, pero falleció al poco tiempo.",
+        "trasladaron a Gibson a un hospital,",
+        "descubrió la isla y le dio su nombre.",
+        "introdujo la enfermedad a Haití.",
+    ],
+)
+def test_word_frequencies_call_spanish_the_word_lists_miss(text: str) -> None:
+    assert detect_lang(text) == "es"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bon appetit everyone",
+        "Do you want tacos?",
+        "Come on, man.",
+        "The Las Vegas trip.",
+        "Marco will my new car",
+        "Okay, gracias.",
+        # QA (XERK-1349): names, places, food and filler win on frequency alone.
+        "Terre Haute.",
+        "Grande latte.",
+        "Um hum.",
+        "Ho ho ho.",
+        "J.J.",
+        "Yves Saint Laurent.",
+        "Sault Sainte Marie.",
+        # ...and English evidence beside them keeps the word lists' call.
+        "Penne alla vodka, please.",
+        "The pate de fois gras, sir.",
+        "the chef est très and",
+        # QA (XERK-1349): one shared function word is not the winner's own evidence.
+        "Playa del Carmen.",
+        "Cul de sac.",
+        "Arroz con pollo.",
+        "Playa del Carmen, Playa del Carmen.",
+        "Pierre, Marie, Jacques, Louise.",
+        "Mozart, Beethoven, Bach, Brahms.",
+    ],
+)
+def test_word_frequencies_never_make_english_foreign(text: str) -> None:
+    assert detect_lang(text) in ("en", None)
+
+
+def test_word_frequencies_never_decide_english() -> None:
+    # Closing a run stays with the word lists' bar: plain English with no
+    # distinctive-word hit is still undecided.
+    assert detect_lang("Yeah, okay.") is None
+    assert detect_lang("Seen twice.") is None
+
+
+def test_word_frequencies_open_a_call_only_with_own_evidence_and_four_words() -> None:
+    # Undecided by the word lists: frequencies call it only with a word-list hit of
+    # the winner's own and four distinct words.
+    assert detect_lang("Gracias.") is None
+    assert detect_lang("fue cuestionada.") is None
+    assert detect_lang("Hielo o polvo") is None
+    assert detect_lang("introdujo la enfermedad") is None
+    assert detect_lang("introdujo la enfermedad grave.") == "es"
+
+
+def test_word_frequencies_correct_a_short_word_list_call() -> None:
+    # The word lists say it / fr on shared words; a correction to es needs neither four
+    # words nor an own hit (Tatoeba es wrong 1.1% -> 0.4%).
+    assert detect_lang("Se lo dije.") == "es"
+    assert detect_lang("Tu pelo volverá a crecer.") == "es"
