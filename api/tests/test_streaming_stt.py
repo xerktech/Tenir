@@ -1448,3 +1448,38 @@ def test_finalizing_holds_through_the_blank_final_retry() -> None:
         ]
 
     asyncio.run(run())
+
+
+def test_partial_queued_behind_a_slow_final_is_dropped_when_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial that waited out a slow final decode would caption seconds-old audio;
+    past _PARTIAL_STALE_S it is skipped, while a fresh one still decodes."""
+    import api.stt.streaming as streaming_mod
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming_mod, "time", clock)
+
+    async def run() -> None:
+        eng = GatedEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=400, silence_ms=300, min_segment_ms=100
+        )
+        # Turn 1 closes before its first cadence; its final blocks the worker. Turn
+        # 2's partial queues behind it.
+        for chunk in [_pcm(100, amplitude=4000)] * 1 + [_pcm(100, amplitude=0)] * 3:
+            await t.push(chunk)
+        await asyncio.sleep(0.05)
+        for _ in range(4):
+            await t.push(_pcm(100, amplitude=4000))
+        assert [job[0] for job in t._jobs._queue] == ["partial"]
+        clock.now += 2.0  # the final took 2 s
+        eng.gate.set()
+        await t._jobs.join()
+        assert eng.calls == [True]  # the stale partial never reached the engine
+
+        await _push(t, _pcm(400, amplitude=4000))  # fresh cadence decodes normally
+        assert eng.calls == [True, False]
+        await t.close()
+
+    asyncio.run(run())

@@ -73,6 +73,12 @@ _RECOVERY_MIN_WORDS = 3
 # instead of falling back to the partial text, or being dropped below the gate.
 _EMPTY_FINAL_RETRY_PAD_MS = 500
 
+# A partial whose audio has waited longer than this in the decode queue (behind a
+# slow final) is dropped instead of decoded: a caption of seconds-old audio is not a
+# live caption, and decoding it delays the next turn's final (XERK-1414's 1 s bound,
+# kept now that decodes run off the intake path).
+_PARTIAL_STALE_S = 1.0
+
 
 def _ms_to_bytes(ms: int) -> int:
     return ms * BYTES_PER_SEC // 1000
@@ -178,10 +184,11 @@ class StreamingTranscriber:
         self._closed = False
 
         # Decode jobs, run strictly in order by one worker task (started on first use):
-        # ("partial", pcm, 0, True) or ("final", pcm, segment_start_ms, has_speech).
+        # ("partial", pcm, queued_at, True) or ("final", pcm, segment_start_ms,
+        # has_speech); queued_at is perf_counter() at submit, for _PARTIAL_STALE_S.
         # Ordering is what keeps a turn's partials ahead of its final and lets the
         # worker own the per-turn state (_turn_partial, _agreement) without locking.
-        self._jobs: asyncio.Queue[tuple[str, bytes, int, bool]] = asyncio.Queue()
+        self._jobs: asyncio.Queue[tuple[str, bytes, float, bool]] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
         self._partial_pending = False
 
@@ -224,12 +231,12 @@ class StreamingTranscriber:
             if self._agreement is None and self._partial_window_bytes:
                 buf = buf[-self._partial_window_bytes :]
             self._partial_pending = True
-            self._submit("partial", bytes(buf), 0, True)
+            self._submit("partial", bytes(buf), time.perf_counter(), True)
 
-    def _submit(self, kind: str, pcm: bytes, start_ms: int, has_speech: bool) -> None:
+    def _submit(self, kind: str, pcm: bytes, arg: float, has_speech: bool) -> None:
         if self._worker is None:
             self._worker = asyncio.create_task(self._work())
-        self._jobs.put_nowait((kind, pcm, start_ms, has_speech))
+        self._jobs.put_nowait((kind, pcm, arg, has_speech))
 
     def _close_turn(self) -> None:
         """Hand the in-flight segment to the worker for its final decode and reset the
@@ -250,13 +257,16 @@ class StreamingTranscriber:
 
     async def _work(self) -> None:
         while True:
-            kind, pcm, start_ms, has_speech = await self._jobs.get()
+            kind, pcm, arg, has_speech = await self._jobs.get()
             try:
                 if kind == "partial":
-                    await self._emit_partial(pcm)
+                    if time.perf_counter() - arg > _PARTIAL_STALE_S:
+                        metrics.incr("stage.stt.partial_skipped_stale")
+                    else:
+                        await self._emit_partial(pcm)
                 else:
                     try:
-                        await self._finalize(pcm, start_ms, has_speech)
+                        await self._finalize(pcm, int(arg), has_speech)
                     finally:
                         # After _finalize queued its caption.final (counted as
                         # undelivered), so `finalizing` never dips in between.
