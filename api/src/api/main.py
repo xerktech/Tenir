@@ -171,7 +171,10 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
     )
     if fresh is None:
         return response
-    user = await asyncio.to_thread(get_user_store().get_by_id, principal_from_token(fresh).user_id)
+    # get_user_store() itself may hit the database (it retries the env-admin seed
+    # while Postgres is down), so it runs in the thread too, never on the event loop.
+    user_id = principal_from_token(fresh).user_id
+    user = await asyncio.to_thread(lambda: get_user_store().get_by_id(user_id))
     if user is None:
         return response
     response.headers[RENEWED_TOKEN_HEADER] = fresh

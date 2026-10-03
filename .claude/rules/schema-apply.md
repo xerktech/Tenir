@@ -26,9 +26,12 @@ paths:
   - Per-store locks don't see each other or other replicas; on an empty DB the user and
     conversation stores raced (UndefinedTable households / UniqueViolation pg_type, XERK-1430).
   - The users DDL references households, so the user store must run schema.sql first.
-- `get_user_store` retries `reconcile_admin` until it succeeds once; the store alone is cached.
+- `get_user_store` retries `reconcile_admin` only while the DB is unreachable
+  (`_database_unreachable`); any other failure is logged once and not retried.
   - Caching after a failed reconcile (DB down at boot, back empty) never seeded the env admin.
-  - So `reconcile_admin` must not raise on a permanent config clash (taken username) — it logs.
+  - Retrying a permanent failure (e.g. FK on a non-default admin household) 500s every login
+    and authenticated request, since they all go through `get_user_store`.
+  - It may block on the DB, so never call it on the event loop (`main.py` renewal middleware).
 - Unit tests use fake *pools*, but CI installs `[persistence]` (psycopg): keep it.
   `test_database_rejections_are_schema_errors` raises real psycopg errors and skips without it,
   so dropping the extra silently disarms the OperationalError-misclassification guard.

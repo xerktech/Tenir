@@ -372,6 +372,8 @@ def reconcile_admin(store: UserStore) -> None:
                 email=email,
             )
         except DuplicateUser:
+            if store.get_env_admin() is not None:
+                return  # another replica seeded it concurrently, from the same env
             # The email (or username) collides with another row — seed the admin
             # without the email rather than fail boot; the operator can resolve the
             # clash and reboot.
@@ -389,9 +391,10 @@ def reconcile_admin(store: UserStore) -> None:
                     is_env_admin=True,
                 )
             except DuplicateUser:
-                # The username itself is taken by another row: a config clash, not
-                # a transient failure, so don't raise — get_user_store retries a
-                # raising reconcile on every access, which would fail every request.
+                if store.get_env_admin() is not None:
+                    return  # another replica seeded it concurrently
+                # The username itself is taken by another row: a config clash, not a
+                # transient failure — log it rather than fail this access.
                 log.error(
                     "could not seed env admin: username %r is already taken by "
                     "another user; rename one of them and restart",
@@ -589,17 +592,41 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
     raise last_exc or DuplicateUser(sub)
 
 
+def _database_unreachable(exc: BaseException) -> bool:
+    """Whether ``exc`` means the database could not be reached (or the connection
+    dropped) — a failure that heals on its own — rather than one that recurs on every
+    attempt, like a constraint the env admin's config violates. Mirrors
+    ``persistence.postgres._is_connection_lost``: no SQLSTATE (connect failure, pool
+    timeout), class 08, or 57P01-57P03."""
+    try:
+        from psycopg import OperationalError
+    except ImportError:  # in-memory deployment without the persistence extra
+        OperationalError = ()  # type: ignore[assignment]  # noqa: N806
+    if OperationalError and isinstance(exc, OperationalError):
+        sqlstate = getattr(exc, "sqlstate", None) or ""
+        return not sqlstate or sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
 def get_user_store() -> UserStore:
     """The process-wide user store, with the env admin reconciled on first use.
 
-    A reconcile that raises propagates (the caller fails) and is retried on the
-    next access, until it succeeds once."""
+    A reconcile that fails because the database is unreachable propagates (the caller
+    fails) and is retried on the next access, until it succeeds — so an api booted
+    with Postgres down still seeds the env admin once it is up (XERK-1430). Any other
+    failure recurs on every attempt, so it is logged once and not retried: retrying
+    it would fail every login and authenticated request instead of only seeding."""
     global _store, _admin_reconciled
     with _store_lock:
         if _store is None:
             _store = _build_user_store()
         if not _admin_reconciled:
-            reconcile_admin(_store)
+            try:
+                reconcile_admin(_store)
+            except Exception as exc:
+                if _database_unreachable(exc):
+                    raise
+                log.exception("could not reconcile the env admin; not retrying")
             _admin_reconciled = True
         return _store
 

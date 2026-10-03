@@ -368,6 +368,79 @@ def test_failed_admin_reconcile_is_retried_on_next_access(monkeypatch: pytest.Mo
     reset_user_store()
 
 
+def test_permanent_admin_reconcile_failure_is_logged_not_retried(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reconcile failure that recurs on every attempt (e.g. a non-default admin
+    household Postgres rejects with a foreign-key error) must not be retried on every
+    access: that failed every login and authenticated request, not just the seed."""
+    from api.auth import get_user_store, users
+
+    calls = 0
+
+    class _Rejecting(users.InMemoryUserStore):
+        def get_env_admin(self):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("violates foreign key constraint users_household_fkey")
+
+    store = _Rejecting()
+    monkeypatch.setattr(users, "_build_user_store", lambda: store)
+    _set_admin_env(monkeypatch, "root", "rootpassword")
+    reset_user_store()
+
+    assert get_user_store() is store  # logged, not raised
+    assert get_user_store() is store
+    assert calls == 1, "a permanent failure is not retried"
+    assert "could not reconcile the env admin" in caplog.text
+    reset_user_store()
+
+
+def test_database_unreachable_classification() -> None:
+    """Only an unreachable/lost database is retried (XERK-1430)."""
+    psycopg = pytest.importorskip("psycopg")
+    from api.auth.users import _database_unreachable
+
+    from psycopg.errors import lookup
+    from psycopg_pool import PoolTimeout
+
+    def _op(sqlstate: str) -> Exception:
+        return lookup(sqlstate)("x")
+
+    assert _database_unreachable(PoolTimeout("couldn't get a connection after 30 sec"))
+    assert _database_unreachable(psycopg.OperationalError("connection refused"))
+    assert _database_unreachable(_op("08006"))
+    assert _database_unreachable(_op("57P01"))
+    assert _database_unreachable(ConnectionError())
+    assert not _database_unreachable(_op("53100"))  # disk full is a real rejection
+    assert not _database_unreachable(RuntimeError("fk"))
+
+
+def test_concurrently_seeded_admin_is_not_reported_as_a_clash(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Replicas seeding an empty database at once: the losers' create collides with
+    the env admin the winner just seeded — that is success, not a config clash."""
+    from api.auth.users import DuplicateUser, InMemoryUserStore, reconcile_admin
+
+    store = InMemoryUserStore()
+    _set_admin_env(monkeypatch, "root", "rootpassword")
+    lookups = iter([None])  # first get_env_admin: not seeded yet; then the real row
+
+    real_get = store.get_env_admin
+    monkeypatch.setattr(store, "get_env_admin", lambda: next(lookups, real_get()))
+    real_create = store.create
+
+    def _winner_got_there_first(*args, **kwargs):
+        real_create(*args, **kwargs)  # the other replica's insert
+        raise DuplicateUser(args[0])
+
+    monkeypatch.setattr(store, "create", _winner_got_there_first)
+    reconcile_admin(store)
+    assert store.get_env_admin() is not None
+    assert "already taken" not in caplog.text
+
+
 def test_reconcile_noop_when_admin_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.auth.users import InMemoryUserStore, reconcile_admin
 
@@ -1094,6 +1167,44 @@ def test_rest_renews_token_past_half_life(monkeypatch: pytest.MonkeyPatch) -> No
         assert r.status_code == 200 and RENEWED_TOKEN_HEADER not in r.headers
         r = client.get("/auth/me", headers={"Authorization": "Bearer nope"})
         assert r.status_code == 401 and RENEWED_TOKEN_HEADER not in r.headers
+
+
+@pytest.mark.real_auth
+def test_token_renewal_never_touches_the_user_store_on_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_user_store() may block on the database (it retries the env-admin seed while
+    Postgres is down, XERK-1430). The renewal middleware evaluated it on the event
+    loop, freezing every request and WS session for the pool timeout."""
+    import asyncio
+
+    from api import main
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    user = get_user_store().create("maya", "longpassword", household="acme")
+    ttl = settings.auth_token_ttl_seconds
+    aged = issue_token(
+        Principal(user.user_id, "acme", "member", username="maya"),
+        secret=TEST_AUTH_SECRET,
+        ttl_seconds=ttl,
+        now=time.time() - 0.6 * ttl,
+    )
+    on_loop: list[bool] = []
+
+    def _recording_get_user_store():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return get_user_store()
+
+    monkeypatch.setattr(main, "get_user_store", _recording_get_user_store)
+    with TestClient(app) as client:
+        r = client.get("/health", headers={"Authorization": f"Bearer {aged}"})
+    assert r.status_code == 200 and main.RENEWED_TOKEN_HEADER in r.headers
+    assert on_loop == [False]
 
 
 @pytest.mark.real_auth
