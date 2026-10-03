@@ -6,6 +6,8 @@ paths:
   - "api/src/api/main.py"
   - "api/tests/test_pg_schema_apply.py"
   - "api/tests/test_pg_list_live.py"
+  - "api/tests/test_pg_users_live.py"
+  - "schema.sql"
 ---
 
 # Boot schema apply (Postgres stores)
@@ -71,3 +73,9 @@ paths:
 - Tests: `test_pg_schema_apply.py` — `test_boot_fails_when_the_database_rejects_the_schema`,
   `test_database_rejections_are_schema_errors`, `test_connection_lost_mid_apply_is_not_fatal`,
   `test_concurrent_first_use_applies_the_schema_once`.
+- Never add a unique index that existing data can violate as a plain boot statement: the apply
+  aborts and the pod crashloops. Guard it in a `DO` block that skips it when violated, and log the
+  offending rows (`users_username_lower_idx`, XERK-1535).
+  - A `DO $$ ... $$` body can't go in schema.sql: `iter_statements` splits on `;`. Put it in the
+    store's `_ENSURE_SCHEMA`.
+  - Tests: `test_pg_users_live.py` `test_legacy_case_variant_duplicates_do_not_abort_boot`.

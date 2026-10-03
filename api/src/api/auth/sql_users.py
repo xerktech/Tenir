@@ -50,6 +50,27 @@ _ENSURE_SCHEMA = (
     "CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL",
+    # Usernames are looked up case-insensitively, so they must be unique that way too:
+    # the column's own UNIQUE let "alice" and "ALICE" coexist, and login then matched
+    # whichever row Postgres returned first (XERK-1535). A database that already holds
+    # case-variant duplicates can't take the index; creating it unconditionally would
+    # abort boot (SchemaApplyError), so it is skipped there and _ensure_schema logs the
+    # rows to rename. The next boot after the rename creates it.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM users GROUP BY lower(username) HAVING count(*) > 1) THEN
+            CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
+        END IF;
+    END
+    $$
+    """,
+)
+
+# Case-variant duplicate usernames, which block users_username_lower_idx.
+_DUPLICATE_USERNAMES = (
+    "SELECT array_agg(username ORDER BY created_at, id) FROM users"
+    " GROUP BY lower(username) HAVING count(*) > 1"
 )
 
 # Every read selects the same column set so a row maps cleanly to ``User``.
@@ -82,6 +103,15 @@ class SqlUserStore:
         # store's apply: the users DDL references households, which on an empty
         # database doesn't exist until schema.sql ran (XERK-1430).
         apply_boot_schema(pool, _ENSURE_SCHEMA)
+        with pool.connection() as conn:
+            dupes = [row[0] for row in conn.execute(_DUPLICATE_USERNAMES).fetchall()]
+        if dupes:
+            log.error(
+                "users holds case-variant duplicate usernames %s; case-insensitive username"
+                " uniqueness is NOT enforced until all but one of each group is renamed or"
+                " deleted (login resolves to the exact-case match, else the oldest row)",
+                dupes,
+            )
 
     @staticmethod
     def _row_to_user(row) -> User:  # pragma: no cover - requires a live database
@@ -156,8 +186,12 @@ class SqlUserStore:
 
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
-                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(username) = lower(%s)",
-                (username.strip(),),
+                # Unique once users_username_lower_idx exists; on a database whose
+                # legacy duplicates blocked it, prefer the exact-case row, then the
+                # oldest, so login is deterministic (XERK-1535).
+                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(username) = lower(%s)"
+                " ORDER BY (username = %s) DESC, created_at, id LIMIT 1",
+                (username.strip(), username.strip()),
             ).fetchone()
         return self._row_to_user(row) if row else None
 
