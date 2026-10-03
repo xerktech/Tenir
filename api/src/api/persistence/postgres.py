@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from api.persistence.models import (
     Conversation,
@@ -77,6 +77,20 @@ def apply_schema(conn, sql: str) -> None:
     a no-op once the database has converged."""
     for statement in iter_statements(sql):
         conn.execute(statement)
+
+
+# pg_advisory_xact_lock key every boot-time DDL apply takes first ("Tenir" in ASCII).
+# The stores' ``_pool_lock`` only serializes within one process: two api processes
+# booting at once (a rolling update, >1 replica) raced the same CREATE ... IF NOT
+# EXISTS and Postgres failed one with 40P01 or a pg_type unique violation, which
+# reads as a rejected schema and aborts startup (XERK-1509).
+SCHEMA_LOCK_KEY = 0x54656E6972
+
+
+def lock_schema(conn) -> None:
+    """Block until no other connection is applying DDL, holding the lock until this
+    transaction ends. ``conn`` must not be autocommit, or it is released at once."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
 
 
 class SchemaApplyError(RuntimeError):
@@ -151,9 +165,77 @@ def _is_connection_lost(conn, exc: BaseException) -> bool:
     treating those as an outage booted a Ready pod on a broken schema again."""
     if getattr(conn, "broken", False):
         return True
-    sqlstate = getattr(exc, "sqlstate", None) or ""
+    return _is_connection_sqlstate(getattr(exc, "sqlstate", None) or "")
+
+
+def _is_connection_sqlstate(sqlstate: str) -> bool:
     # Class 08: connection exception; 57P01-57P03: admin/crash shutdown, cannot connect.
     return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
+
+
+def database_error_types() -> tuple[type[BaseException], ...]:
+    """The exception classes ``is_database_unavailable`` may accept, for registering
+    handlers by class. psycopg's only exist when the persistence extra is installed."""
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:
+        return (DatabaseUnavailable,)
+    return (DatabaseUnavailable, PoolTimeout, psycopg.OperationalError)
+
+
+def is_database_unavailable(exc: BaseException) -> bool:
+    """True when ``exc`` means "the database can't be reached right now" — a
+    retryable outage the API answers with 503 rather than a 500 (XERK-1510).
+
+    Covers ``DatabaseUnavailable`` (the pool can't open), psycopg_pool's
+    ``PoolTimeout`` (no connection within the request's wait) and a connection-level
+    ``OperationalError``: a lost/refused connection carries no SQLSTATE (the server
+    never answered) or a class-08/57P0x one. Other OperationalErrors (disk full, a
+    too-large index row) are real faults and stay 500s, as in ``_is_connection_lost``."""
+    if isinstance(exc, DatabaseUnavailable):
+        return True
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:  # in-memory install: no Postgres to be unavailable
+        return False
+    if isinstance(exc, PoolTimeout):
+        return True
+    if isinstance(exc, psycopg.OperationalError):
+        sqlstate = exc.sqlstate
+        return sqlstate is None or _is_connection_sqlstate(sqlstate)
+    return False
+
+
+def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
+    """Apply schema.sql, then a store's ``extra`` DDL, in one transaction under the
+    cross-process schema lock.
+
+    Both stores apply through here (XERK-1430): the users DDL references households,
+    which on an empty database only exists once schema.sql ran, so the user store
+    applying its own DDL alone failed (UndefinedTable) whenever it opened first —
+    and its env-admin seed with it. A statement the database rejects raises
+    ``SchemaApplyError``; failing to get a connection, or losing it mid-apply,
+    propagates as-is (database unreachable)."""
+    path = find_schema_file()
+    if path is None:
+        log.warning("schema.sql not found; skipping it in the boot schema apply")
+    sql = path.read_text(encoding="utf-8") if path is not None else ""
+    with pool.connection() as conn:
+        try:
+            lock_schema(conn)
+            apply_schema(conn, sql)
+            for statement in extra:
+                conn.execute(statement)
+        except Exception as exc:
+            if _is_connection_lost(conn, exc):
+                raise
+            raise SchemaApplyError(
+                f"boot schema (schema.sql from {path}) failed to apply: {exc}"
+            ) from exc
+    if path is not None:
+        log.info("applied idempotent schema from %s on pool open", path)
 
 
 class SqlConversationStore:
@@ -200,21 +282,7 @@ class SqlConversationStore:
         return self._pool
 
     def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
-        path = find_schema_file()
-        if path is None:
-            log.warning("schema.sql not found; skipping boot schema apply")
-            return
-        sql = path.read_text(encoding="utf-8")
-        with pool.connection() as conn:
-            # Only errors from the statements themselves are schema errors; failing
-            # to get a connection above propagates as-is (database unreachable).
-            try:
-                apply_schema(conn, sql)
-            except Exception as exc:
-                if _is_connection_lost(conn, exc):
-                    raise
-                raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
-        log.info("applied idempotent schema from %s on pool open", path)
+        apply_boot_schema(pool)
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover

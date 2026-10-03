@@ -85,6 +85,18 @@ _DETACHED_BUFFER_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
+# A caption.final whose turn's last audio arrived more than this long ago is stored
+# but not pushed live, translated or cued. Finals queue through an STT outage and
+# land as one burst on recovery (XERK-1447); on the glasses that buried the present
+# under seconds-old turns. A healthy final lands within ~1-2 s of its turn's end.
+_STALE_FINAL_S = 10.0
+
+# How many (audio position, arrival time) samples the session keeps to date a final's
+# audio. Pruned as finals land; the cap only bounds a long silent stretch with no
+# finals. A final older than the oldest sample counts as stale: even at 20 ms chunks
+# this spans minutes, far past _STALE_FINAL_S.
+_AUDIO_ARRIVALS_MAX = 6000
+
 # Every running session teardown. Paths like the grace-window lapse, session.end
 # and revoke unregister the session before closing it, and a cancelled close()
 # caller orphans its teardown, so shutdown waits on these rather than the registry
@@ -303,6 +315,9 @@ class Session:
         # timeline cues/segments use), independent of the STT seam.
         self._start_offset_ms = 0
         self._audio_bytes_pushed = 0
+        # (session-timeline ms after a push, monotonic time of that push), oldest
+        # first, so a final can be dated by when its audio arrived (_final_age_s).
+        self._audio_arrivals: deque[tuple[int, float]] = deque(maxlen=_AUDIO_ARRIVALS_MAX)
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -320,6 +335,9 @@ class Session:
         # socket ever bound: a resume can take the session over while the socket it
         # displaced is still open, and that socket must close too (XERK-1504).
         self._disconnects: list[Callable[[], Awaitable[None]]] = []
+        # Set by revoke(): the account is gone, so audio the handler still reads
+        # before the socket close lands is dropped, not recorded (XERK-1525).
+        self._revoked = False
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -338,6 +356,10 @@ class Session:
         self._first_retain: asyncio.Future[bool] | None = None
         self._prior_retain: asyncio.Future[bool] | None = None
         self._prior_teardown: asyncio.Task[None] | None = None
+        # A start() that raised is torn down by close() without ever going live
+        # (XERK-1511); _row_opened says whether it got as far as the store row.
+        self._start_failed = False
+        self._row_opened = False
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -359,6 +381,32 @@ class Session:
         return self._send
 
     async def start(
+        self,
+        *,
+        mic_source: MicSource,
+        source_lang: Lang | None,
+    ) -> None:
+        # _start() spawns the worker/scan/pump/warmup tasks and creates the live
+        # conversation row before its last await (the session.ready send, which
+        # raises on a socket that just died). The caller only registers the session
+        # once start() returns, so a raise past that point left those tasks running
+        # and the row "live" with nobody to close them (XERK-1511). close() tolerates
+        # any partial state, and a cancel lands here too.
+        try:
+            await self._start(mic_source=mic_source, source_lang=source_lang)
+        except BaseException:
+            self._start_failed = True
+            # No audio of ours to keep in order behind a prior sitting's, so don't
+            # hold this cleanup (and the WS handler) behind its teardown.
+            self._prior_retain = None
+            self._prior_teardown = None
+            try:
+                await self.close()
+            except Exception:
+                log.exception("session %s cleanup after failed start failed", self.session_id)
+            raise
+
+    async def _start(
         self,
         *,
         mic_source: MicSource,
@@ -402,6 +450,10 @@ class Session:
             # finalize a recording this process started (XERK-1428).
             await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
+            # Set before the call: a create that raises may still have written the
+            # live row, which close() then finishes. (A cancel here can let the
+            # INSERT commit after that finish; the next boot's stale sweep repairs it, XERK-1529.)
+            self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
             # path — never run a blocking store call on the event loop.
@@ -474,6 +526,11 @@ class Session:
             log.warning("session %s STT warmup failed", self.session_id, exc_info=exc)
 
     async def on_audio(self, pcm: bytes) -> None:
+        # Not is_closed: a shutdown close still keeps audio arriving during its
+        # teardown (the final _persist() stores it). Only a revoke drops it — its
+        # teardown runs before the socket closes, and the account is already gone.
+        if self._revoked:
+            return
         # Retain the full audio for the stored session: buffered in memory for the
         # session, flushed to the audio store on end.
         if self._audio_store is not None:
@@ -481,6 +538,7 @@ class Session:
         # Track the session-timeline position so the music scan can stamp a song
         # at "now" (cheap counter; independent of any backend being on).
         self._audio_bytes_pushed += len(pcm)
+        self._audio_arrivals.append((self._current_audio_ms(), time.monotonic()))
         # Music ID (XERK-184): keep a bounded rolling window of the most recent
         # audio for the scan loop to fingerprint. The one place music diverges
         # from cues/translations — it needs the audio, not the transcript.
@@ -569,19 +627,29 @@ class Session:
         async for result in self._transcriber.results():
             if isinstance(result, CaptionPartial) and not result.text:
                 continue  # close() sentinel
-            try:
-                await self._send(result)
-            except Exception:
-                # The socket can be gone before the drain finishes: a client that
-                # sends session.end and closes immediately is torn down while the
-                # end-of-session flush is still producing finals. Delivery is
-                # best-effort, the transcript is not — swallow the send failure and
-                # keep draining so those turns are still persisted below (XERK-58).
-                log.warning("session %s could not deliver a caption (client gone)", self.session_id)
-                metrics.incr("caption.send_errors")
-            metrics.incr(
-                "caption.partial" if isinstance(result, CaptionPartial) else "caption.final"
+            # A final that sat out an STT outage is history, not a live caption: it
+            # goes to the stored transcript only (XERK-1447).
+            is_stale = (
+                isinstance(result, CaptionFinal) and self._final_age_s(result) > _STALE_FINAL_S
             )
+            if is_stale:
+                metrics.incr("caption.final_stale")
+            else:
+                try:
+                    await self._send(result)
+                except Exception:
+                    # The socket can be gone before the drain finishes: a client that
+                    # sends session.end and closes immediately is torn down while the
+                    # end-of-session flush is still producing finals. Delivery is
+                    # best-effort, the transcript is not — swallow the send failure and
+                    # keep draining so those turns are still persisted below (XERK-58).
+                    log.warning(
+                        "session %s could not deliver a caption (client gone)", self.session_id
+                    )
+                    metrics.incr("caption.send_errors")
+                metrics.incr(
+                    "caption.partial" if isinstance(result, CaptionPartial) else "caption.final"
+                )
             if isinstance(result, CaptionFinal) and self._conversations is not None:
                 # Persist the finalized turn to the conversation transcript.
                 # Offloaded: a real (Postgres) store does a blocking round-trip;
@@ -603,13 +671,28 @@ class Session:
                 # Speech is still flowing: keep a live translation run's silence
                 # hold from expiring mid-utterance (finals only land at pauses).
                 self._touch_translation_hold()
-            if isinstance(result, CaptionFinal):
+            if isinstance(result, CaptionFinal) and not is_stale:
                 # A non-English turn opens/extends a translation run (XERK-160);
                 # an English one closes it. Considered before the cue so the same
                 # turn that opens a run never also produces a cue.
                 self._consider_translation(result)
                 # A finalized turn may be cue-worthy; consider it out of band.
                 self._consider_cue(result)
+
+    def _final_age_s(self, final: CaptionFinal) -> float:
+        """Seconds since the audio that ends `final` reached the session.
+
+        Dated by arrival rather than by the session timeline, so audio pushed faster
+        than real time (tests, a simulator) doesn't read as old. Finals land in
+        timeline order, so samples before this one's end are pruned as they go."""
+        arrivals = self._audio_arrivals
+        if not arrivals or final.endMs > arrivals[-1][0]:
+            return 0.0  # no dated audio covers it (e.g. a backend's own timeline)
+        # The first sample at or past its end is the push that delivered that audio.
+        # If the cap already dropped it, the oldest kept sample is minutes old anyway.
+        while len(arrivals) > 1 and arrivals[0][0] < final.endMs:
+            arrivals.popleft()
+        return time.monotonic() - arrivals[0][1]
 
     def _consider_translation(self, result: CaptionFinal) -> None:
         """Track the translation run across finalized turns (XERK-160).
@@ -657,8 +740,9 @@ class Session:
             # the way and may belong to this run (an inherited turn arriving after
             # the run closed is dropped). Finals take ~6 s on a loaded STT server
             # against a 3 s hold (XERK-1377), so wait it out; the final's own touch
-            # then restarts the hold. Bounded by the STT request timeout. A dead pump
-            # never consumes that final, so it can't hold the run either.
+            # then restarts the hold. Bounded by the STT request timeout plus the
+            # failed-final retry budget (XERK-1499). A dead pump never consumes
+            # that final, so it can't hold the run either.
             while (
                 self._transcriber is not None
                 and self._transcriber.finalizing
@@ -1309,8 +1393,9 @@ class Session:
 
         Order matters: close() first, so everything captured up to this moment
         is persisted, THEN drop the transport so nothing further can be sent
-        (XERK-236).
+        (XERK-236). Audio still arriving from the socket meanwhile is dropped.
         """
+        self._revoked = True
         await self.close()
         # A copy: a handler ending mid-loop drops its hook, which would skip the next.
         for disconnect in list(self._disconnects):
@@ -1357,7 +1442,12 @@ class Session:
         _teardowns.add(self._teardown)
         self._teardown.add_done_callback(_teardowns.discard)
         key = (self._household, self.session_id)
-        _closing[key] = self
+        # A failed start never buffered audio, so a resume has nothing to order
+        # behind it — and registering would evict the sitting it resumed from if
+        # that one is still tearing down, restarting the next resume's timeline
+        # inside that sitting's (XERK-1500, XERK-1511).
+        if not self._start_failed:
+            _closing[key] = self
         self._teardown.add_done_callback(
             lambda _t: _closing.pop(key) if _closing.get(key) is self else None
         )
@@ -1498,6 +1588,10 @@ class Session:
         # Picks up any audio that arrived after close() retained the buffer
         # (a no-op when it is empty), then finalizes.
         await self._retain_audio()
+        if self._start_failed and not self._row_opened:
+            # Never reached the store: there is no live row of ours to finalize, and
+            # finish() on a resumed recording would rewrite its ended_at.
+            return
         await asyncio.to_thread(
             self._conversations.finish, self._household, self.session_id, status="ready"
         )

@@ -42,6 +42,19 @@ export class NetworkError extends Error {
   }
 }
 
+/**
+ * The api answered 503: it is up but can't reach its database (XERK-1510). A
+ * `NetworkError` on purpose — like an unreachable server it is transient and says
+ * nothing about the token, so every client keeps the session and retries rather
+ * than dropping to a login form; `describeLoginError` still tells it apart.
+ */
+export class ServerUnavailableError extends NetworkError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ServerUnavailableError";
+  }
+}
+
 interface RequestOptions {
   /**
    * Send the bearer token. Default true; `/auth/login` opts out (see `login`).
@@ -109,6 +122,7 @@ async function request<T>(
     } catch {
       /* non-JSON error body */
     }
+    if (res.status === 503) throw new ServerUnavailableError(detail);
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
@@ -242,6 +256,9 @@ export async function login(username: string, password: string): Promise<Princip
  * detail for anything else (keeping the detail aids debugging).
  */
 export function describeLoginError(err: unknown): string {
+  if (err instanceof ServerUnavailableError) {
+    return "The server can't reach its database right now — try again shortly.";
+  }
   if (err instanceof NetworkError) {
     return "Can't reach the server — check it's running and the server URL is correct.";
   }

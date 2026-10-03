@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from api.contract import ServerMessage
 from api.main import app
+from api.config import settings
 from api.metrics import metrics
 from api.persistence import get_audio_store, get_conversation_store
 from api.session import Session
@@ -377,3 +378,254 @@ def test_close_is_bounded_when_transcriber_close_hangs(monkeypatch: pytest.Monke
         assert not _is_live(session)
 
     asyncio.run(run())
+
+
+def test_start_that_raises_late_does_not_leak_the_half_started_session() -> None:
+    """XERK-1511: start() creates the pump/warmup tasks and the live conversation row
+    before its final session.ready send. A send that raises there (the socket just
+    died) used to leave those tasks running and the row 'live' with nobody to close
+    them; start() must tear its partial state down before re-raising."""
+
+    async def run() -> None:
+        async def dying_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                raise RuntimeError("socket gone")
+
+        session = Session(dying_send, household="h1")
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await session.start(mic_source="phone", source_lang=None)
+        assert session.is_closed
+        assert session._pump is not None and session._pump.done()
+        conv = get_conversation_store().get("h1", session.session_id)
+        assert conv is not None and conv.status == "ready"
+
+    asyncio.run(run())
+
+
+def test_start_that_raises_in_create_does_not_leak_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store error in conversations.create() came after the translation worker and
+    music scan were spawned; those must not outlive the failed start."""
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    monkeypatch.setattr(settings, "music_backend", "stub")
+
+    async def run() -> None:
+        session = Session(_noop_send(None), household="h1")
+
+        def boom(*_a, **_k) -> None:
+            raise RuntimeError("store down")
+
+        monkeypatch.setattr(session._conversations, "create", boom)
+        before = asyncio.all_tasks()
+        with pytest.raises(RuntimeError, match="store down"):
+            await session.start(mic_source="phone", source_lang=None)
+        assert session.is_closed
+        leaked = [t for t in asyncio.all_tasks() - before if not t.done()]
+        assert session._translation_worker is None and session._music_scan is None
+        assert leaked == []
+
+    asyncio.run(run())
+
+
+def test_failed_resume_does_not_evict_the_sitting_still_tearing_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1511 QA: sitting B resumed behind A (still draining a slow flush) and
+    failed at session.ready. B's own cleanup took A's place in the closing registry
+    and popped it, so the next resume C found no prior, read the stores before A's
+    tail final was written and restarted its timeline at 0 (audio backend off)."""
+    from api.session import _closing
+    from api.stt.stub import StubTranscriber
+
+    monkeypatch.setattr("api.session.get_audio_store", lambda: None)
+
+    async def dying_send(msg: ServerMessage) -> None:
+        if msg.type == "session.ready":
+            raise RuntimeError("socket gone")
+
+    async def run() -> None:
+        a = Session(_noop_send(None), household="h", session_id="conv1")
+        await a.start(mic_source="phone", source_lang=None)
+        await a.on_audio(b"\x00\x00" * 24000)  # 1.5 s, finalized only by the flush
+        a_end = a._current_audio_ms()
+        orig = StubTranscriber.flush
+
+        async def slow_flush(self) -> None:
+            await asyncio.sleep(0.5)
+            await orig(self)
+
+        monkeypatch.setattr(StubTranscriber, "flush", slow_flush)
+        a_close = asyncio.create_task(a.close())
+        await asyncio.sleep(0.05)
+        monkeypatch.setattr(StubTranscriber, "flush", orig)
+
+        b = Session(dying_send, household="h", session_id="conv1")
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await b.start(mic_source="phone", source_lang=None)
+        assert not a._teardown.done()
+        assert _closing.get(("h", "conv1")) is a
+
+        c = Session(_noop_send(None), household="h", session_id="conv1")
+        await c.start(mic_source="phone", source_lang=None)
+        assert c._start_offset_ms == a_end
+        await a_close
+        await c.close()
+
+    asyncio.run(run())
+
+
+def test_start_that_fails_before_the_row_leaves_a_finished_recording_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed cold resume that never reached conversations.create must not run
+    finish() on the existing recording: that rewrote its ended_at."""
+
+    async def run() -> None:
+        first = Session(_noop_send(None), household="h", session_id="conv1")
+        await first.start(mic_source="phone", source_lang=None)
+        await first.close()
+        ended = get_conversation_store().get("h", "conv1").ended_at
+        assert ended is not None
+
+        def boom(**_k):
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr("api.session.make_transcriber", boom)
+        again = Session(_noop_send(None), household="h", session_id="conv1")
+        with pytest.raises(RuntimeError, match="no model"):
+            await again.start(mic_source="phone", source_lang=None)
+        assert again.is_closed
+        conv = get_conversation_store().get("h", "conv1")
+        assert conv.ended_at == ended and conv.status == "ready"
+
+    asyncio.run(run())
+
+
+def test_cancelled_start_still_tears_down() -> None:
+    """A cancel (the WS handler cancelled mid-start) is cleaned up like an error."""
+
+    async def run() -> None:
+        reached = asyncio.Event()
+
+        async def hanging_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                reached.set()
+                await asyncio.Event().wait()
+
+        session = Session(hanging_send, household="h1")
+        before = asyncio.all_tasks()
+        task = asyncio.create_task(session.start(mic_source="phone", source_lang=None))
+        await reached.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert session.is_closed
+        assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+        assert get_conversation_store().get("h1", session.session_id).status == "ready"
+
+    asyncio.run(run())
+
+
+def test_failed_start_whose_cleanup_raises_reraises_the_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close() that raises during that cleanup is logged; the caller still sees
+    the start failure, not the cleanup's."""
+
+    async def run() -> None:
+        async def dying_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                raise RuntimeError("socket gone")
+
+        session = Session(dying_send, household="h1")
+
+        async def bad_close() -> None:
+            raise ValueError("cleanup broke")
+
+        monkeypatch.setattr(session, "close", bad_close)
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await session.start(mic_source="phone", source_lang=None)
+
+    asyncio.run(run())
+
+
+def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an STT outage the queued finals land as one burst (XERK-1447). A final
+    whose audio arrived longer ago than _STALE_FINAL_S goes to the stored transcript
+    only — not to the caption band, translation or cues — while a fresh one is pushed."""
+    import api.session as session_mod
+    from api.config import settings
+    from api.contract import CaptionFinal, MicSource
+    from api.stt.stub import StubTranscriber
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    class Outage(StubTranscriber):
+        """Holds every final until release(), as a hung upstream holds the queue."""
+
+        async def push(self, pcm: bytes) -> None:
+            self._total_bytes += len(pcm)
+
+        async def release(self, *ends_ms: int) -> None:
+            start = 0
+            for end in ends_ms:
+                await self._queue.put(
+                    CaptionFinal(
+                        type="caption.final",
+                        segmentId=f"seg-{end}",
+                        text=f"turn {end}",
+                        lang="en",
+                        startMs=start,
+                        endMs=end,
+                    )
+                )
+                start = end
+
+    outage = Outage()
+    monkeypatch.setattr(session_mod, "make_transcriber", lambda *a, **k: outage)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+        await session.on_audio(b"\x00" * 64000)  # 0-2000 ms, spoken before the outage
+        # That audio arrived 40 s ago; the next turn's audio arrives now.
+        session._audio_arrivals = type(session._audio_arrivals)(
+            ((ms, t - 40.0) for ms, t in session._audio_arrivals),
+            maxlen=session._audio_arrivals.maxlen,
+        )
+        await session.on_audio(b"\x00" * 64000)  # 2000-4000 ms
+        considered: list[str] = []
+        session._consider_translation = lambda f: considered.append(f"tr:{f.segmentId}")  # type: ignore[method-assign]
+        session._consider_cue = lambda f: considered.append(f"cue:{f.segmentId}")  # type: ignore[method-assign]
+        await outage.release(2000, 4000)
+        await session.close()
+
+        live = [m.segmentId for m in sent if isinstance(m, CaptionFinal)]
+        assert live == ["seg-4000"]
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None
+        assert [s.segment_id for s in conv.segments] == ["seg-2000", "seg-4000"]
+        # Only the fresh turn reached translation and cue consideration.
+        assert considered == ["tr:seg-4000", "cue:seg-4000"]
+        assert metrics.snapshot()["counters"]["caption.final_stale"] == 1
+
+    asyncio.run(run())
+
+
+def test_final_with_no_dated_audio_is_not_stale() -> None:
+    """A final past the last audio sample (or before any audio) can't be dated; it is
+    treated as fresh rather than silently withheld from the caption band."""
+    from api.contract import CaptionFinal
+
+    session = Session(_noop_send(None))
+    final = CaptionFinal(type="caption.final", segmentId="s", text="t", startMs=0, endMs=500)
+    assert session._final_age_s(final) == 0.0  # before any audio
+    session._audio_arrivals.append((400, 0.0))  # one push, dated long ago
+    assert session._final_age_s(final) == 0.0  # final runs past the last sample

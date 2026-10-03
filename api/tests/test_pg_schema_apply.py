@@ -32,14 +32,22 @@ from api.persistence.postgres import (
 )
 
 
+class _NoRows:
+    """An empty query result, for the user store's post-apply duplicate-username read."""
+
+    def fetchall(self) -> list:
+        return []
+
+
 class _RecordingConn:
     """Captures the statements a schema-apply runs, normalized to single spaces."""
 
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    def execute(self, sql: str, params: object = None) -> None:
+    def execute(self, sql: str, params: object = None) -> _NoRows:
         self.statements.append(" ".join(sql.split()))
+        return _NoRows()
 
 
 def _creates_cues(statements: list[str]) -> bool:
@@ -311,7 +319,7 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
     guard = threading.Lock()
 
     class _SlowConn:
-        def execute(self, sql: str, params: object = None) -> None:
+        def execute(self, sql: str, params: object = None) -> _NoRows:
             nonlocal in_apply, max_in_apply
             with guard:
                 in_apply += 1
@@ -319,6 +327,7 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
             time.sleep(0.001)
             with guard:
                 in_apply -= 1
+            return _NoRows()
 
     pools = _install_fake_pool(monkeypatch, _SlowConn())
     store = store_cls("postgresql://unused")
@@ -336,6 +345,55 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
 
     assert len(pools) == 1, "only one pool may be opened"
     assert max_in_apply == 1, "schema statements must never run concurrently"
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path) -> None:
+    """``_pool_lock`` only serializes one process: two api processes booting at once
+    raced the DDL and Postgres failed one, aborting its startup (XERK-1509). Both
+    stores must take the shared advisory lock before any DDL."""
+    import importlib
+
+    from api.persistence.postgres import SCHEMA_LOCK_KEY
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    calls: list[tuple[str, object]] = []
+
+    class _Conn:
+        def execute(self, sql: str, params: object = None) -> _NoRows:
+            calls.append((" ".join(sql.split()), params))
+            return _NoRows()
+
+    _install_fake_pool(monkeypatch, _Conn())
+    store_cls("postgresql://unused")._ensure_pool()
+
+    assert calls[0] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+    assert len(calls) > 1, "the DDL runs after the lock"
+
+
+def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:
+    """The users DDL references households, which on an empty database only exists
+    once schema.sql ran. The user store applying its own DDL alone failed with
+    UndefinedTable whenever it opened before the conversation store — and the env-admin
+    seed with it, so a DB-down boot never seeded the admin (XERK-1430)."""
+    from api.auth.sql_users import SqlUserStore
+
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+    SqlUserStore("postgresql://unused")._ensure_pool()
+
+    households = next(
+        i for i, s in enumerate(conn.statements) if "TABLE IF NOT EXISTS households" in s
+    )
+    users = [
+        i
+        for i, s in enumerate(conn.statements)
+        if s.upper().startswith(("CREATE", "ALTER")) and " users " in f"{s} "
+    ]
+    assert users and households < min(users)
 
 
 class _SqlStateError(Exception):

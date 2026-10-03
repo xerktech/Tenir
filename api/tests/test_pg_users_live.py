@@ -1,23 +1,21 @@
-"""SqlUserStore writes into a non-default household against a REAL Postgres (XERK-1508).
+"""SqlUserStore username uniqueness against a REAL Postgres (XERK-1535).
 
-``users.household REFERENCES households(id)`` and schema.sql seeds only 'default', so
-creating the env admin with ``API_AUTH_ADMIN_HOUSEHOLD=home`` (or any member/OIDC user
-created or moved into a new household) failed ``users_household_fkey``. The in-memory
-store has no such constraint, so only a real database shows it.
-
-Skipped unless ``TENIR_TEST_PG_DSN`` points at a disposable Postgres (CI provides one,
-see test_pg_schema_live.py). Each test works in its own throwaway schema.
+``users.username`` was only case-sensitively UNIQUE while every lookup matches
+``lower(username)``, so "alice" and "ALICE" could both be created and login resolved
+to whichever row Postgres returned first. InMemoryUserStore rejects case variants, so
+only a real database shows the gap. Skipped unless ``TENIR_TEST_PG_DSN`` is set (see
+test_pg_schema_live.py); each test works in its own dropped-after schema.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
 import pytest
 
 from api.auth.users import DuplicateUser
-from api.persistence.postgres import apply_schema, find_schema_file
 
 DSN = os.environ.get("TENIR_TEST_PG_DSN", "")
 psycopg = pytest.importorskip("psycopg") if DSN else None
@@ -26,24 +24,108 @@ pytestmark = pytest.mark.skipif(not DSN, reason="TENIR_TEST_PG_DSN not set (need
 
 
 @pytest.fixture
-def db():
-    """(store, admin conn) over a fresh schema with schema.sql applied, dropped after."""
+def make_store():
+    """Build SqlUserStores on one fresh schema (each a separate "boot"); yields the
+    factory and an autocommit admin connection on that schema."""
     from psycopg.conninfo import make_conninfo
 
     from api.auth.sql_users import SqlUserStore
 
     schema = f"t_{uuid.uuid4().hex[:12]}"
+    dsn = make_conninfo(DSN, options=f"-c search_path={schema},public")
+    stores: list[SqlUserStore] = []
+
+    def make() -> SqlUserStore:
+        store = SqlUserStore(dsn)
+        store._ensure_pool()
+        stores.append(store)
+        return store
+
     with psycopg.connect(DSN, autocommit=True) as admin:
         admin.execute(f"CREATE SCHEMA {schema}")
         admin.execute(f"SET search_path TO {schema}, public")
-        apply_schema(admin, find_schema_file().read_text(encoding="utf-8"))
-        s = SqlUserStore(make_conninfo(DSN, options=f"-c search_path={schema},public"))
         try:
-            yield s, admin
+            yield make, admin
         finally:
-            if s._pool is not None:
-                s._pool.close()
+            for store in stores:
+                store._pool.close()
             admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
+def _has_lower_index(admin) -> bool:
+    return (
+        admin.execute(
+            "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema()"
+            " AND indexname = 'users_username_lower_idx'"
+        ).fetchone()
+        is not None
+    )
+
+
+def test_case_variant_usernames_are_duplicates(make_store) -> None:
+    make, admin = make_store
+    store = make()
+    assert _has_lower_index(admin)
+    alice = store.create("alice", "alice-pw-1", household="default")
+    with pytest.raises(DuplicateUser):
+        store.create("ALICE", "mallory-pw", household="default")
+    with pytest.raises(DuplicateUser):
+        store.create_oidc(
+            oidc_sub="sub-1", email=None, username="Alice", household="default", role="member"
+        )
+    bob = store.create("bob", "bob-pw-1", household="default")
+    with pytest.raises(DuplicateUser):
+        store.update_credentials(bob.user_id, username="ALICE")
+    with pytest.raises(DuplicateUser):
+        store.update_oidc(bob.user_id, username="aLiCe")
+
+    assert store.authenticate("ALICE", "alice-pw-1").user_id == alice.user_id
+    assert store.authenticate("ALICE", "mallory-pw") is None
+
+
+def test_legacy_case_variant_duplicates_do_not_abort_boot(make_store, caplog) -> None:
+    make, admin = make_store
+    make()
+    # A database from before the index, already holding a case-variant pair.
+    admin.execute("DROP INDEX users_username_lower_idx")
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash, created_at)"
+        " VALUES ('default', 'alice', 'x', now() - interval '1 day'),"
+        "        ('default', 'ALICE', 'y', now())"
+    )
+
+    with caplog.at_level(logging.ERROR, logger="api.auth.sql_users"):
+        store = make()  # boot on the upgraded image
+    assert not _has_lower_index(admin)
+    assert "['alice', 'ALICE']" in caplog.text
+
+    # Deterministic: the exact-case row, else the oldest.
+    assert store.get_by_username("ALICE").username == "ALICE"
+    assert store.get_by_username("alice").username == "alice"
+    assert store.get_by_username("Alice").username == "alice"
+
+    # Once the operator removes the duplicate, the next boot enforces uniqueness.
+    store.delete(store.get_by_username("ALICE").user_id)
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="api.auth.sql_users"):
+        store = make()
+    assert _has_lower_index(admin)
+    assert caplog.text == ""
+    with pytest.raises(DuplicateUser):
+        store.create("ALICE", "mallory-pw", household="default")
+
+
+# --- Users in a non-default household (XERK-1508) -----------------------------
+#
+# users.household REFERENCES households(id) and schema.sql seeds only 'default', so
+# creating the env admin with API_AUTH_ADMIN_HOUSEHOLD=home (or any member/OIDC user
+# created or moved into a new household) failed users_household_fkey.
+
+
+@pytest.fixture
+def db(make_store):
+    make, admin = make_store
+    return make(), admin
 
 
 def _households(admin) -> set[str]:
