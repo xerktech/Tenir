@@ -14,7 +14,7 @@ import time
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from api import main, registry
 from api.auth import Principal, get_user_store
@@ -441,6 +441,51 @@ def test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alon
             assert b.receive_json()["type"] == "pong"
             assert registry.get(sid) is live and not live.is_closed
             assert registry.get(ended) is None
+
+
+def test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1526, QA): the 4001 goes out in a background task. A frame
+    already queued on the displaced socket wakes its handler first; returning then
+    let uvicorn drop the transport and the 4001 with it, so the client saw 1006,
+    reconnected with the same id and displaced the new socket. TestClient delivers
+    a close sent after the app returns, so watch the ASGI order directly."""
+    real_close = WebSocket.close
+
+    async def slow_close(self: WebSocket, code: int = 1000, reason: str | None = None) -> None:
+        if code == WS_CLOSE_RESUMED_ELSEWHERE:
+            await asyncio.sleep(0.3)  # let the queued frame reach the handler first
+        await real_close(self, code=code, reason=reason)
+
+    events: list[str] = []
+
+    async def observed(scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        async def watch(message) -> None:  # type: ignore[no-untyped-def]
+            if message.get("code") == WS_CLOSE_RESUMED_ELSEWHERE:
+                events.append("4001 sent")
+            await send(message)
+
+        if scope["type"] != "websocket":
+            return await app(scope, receive, send)
+        await app(scope, receive, watch)
+        events.append("handler returned")
+
+    monkeypatch.setattr(WebSocket, "close", slow_close)
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(observed) as client:
+        with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+            a.send_text(json.dumps(start))
+            sid = a.receive_json()["sessionId"]
+            b.send_text(json.dumps({**start, "sessionId": sid}))
+            assert b.receive_json()["resumed"] is True
+            a.send_text(json.dumps({"type": "ping", "t": 1}))  # queued behind the takeover
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    a.receive_json()
+            assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+            # A's handler has returned once its close is out; B's is still running.
+            assert events == ["4001 sent", "handler returned"]
 
 
 def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
