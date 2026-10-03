@@ -364,6 +364,28 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
     assert len(calls) > 1, "the DDL runs after the lock"
 
 
+def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:
+    """The users DDL references households, which on an empty database only exists
+    once schema.sql ran. The user store applying its own DDL alone failed with
+    UndefinedTable whenever it opened before the conversation store — and the env-admin
+    seed with it, so a DB-down boot never seeded the admin (XERK-1430)."""
+    from api.auth.sql_users import SqlUserStore
+
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+    SqlUserStore("postgresql://unused")._ensure_pool()
+
+    households = next(
+        i for i, s in enumerate(conn.statements) if "TABLE IF NOT EXISTS households" in s
+    )
+    users = [
+        i
+        for i, s in enumerate(conn.statements)
+        if s.upper().startswith(("CREATE", "ALTER")) and " users " in f"{s} "
+    ]
+    assert users and households < min(users)
+
+
 class _SqlStateError(Exception):
     """Stands in for a psycopg error carrying a SQLSTATE."""
 

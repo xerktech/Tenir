@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from api.persistence.models import (
     Conversation,
@@ -208,6 +208,36 @@ def is_database_unavailable(exc: BaseException) -> bool:
     return False
 
 
+def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
+    """Apply schema.sql, then a store's ``extra`` DDL, in one transaction under the
+    cross-process schema lock.
+
+    Both stores apply through here (XERK-1430): the users DDL references households,
+    which on an empty database only exists once schema.sql ran, so the user store
+    applying its own DDL alone failed (UndefinedTable) whenever it opened first —
+    and its env-admin seed with it. A statement the database rejects raises
+    ``SchemaApplyError``; failing to get a connection, or losing it mid-apply,
+    propagates as-is (database unreachable)."""
+    path = find_schema_file()
+    if path is None:
+        log.warning("schema.sql not found; skipping it in the boot schema apply")
+    sql = path.read_text(encoding="utf-8") if path is not None else ""
+    with pool.connection() as conn:
+        try:
+            lock_schema(conn)
+            apply_schema(conn, sql)
+            for statement in extra:
+                conn.execute(statement)
+        except Exception as exc:
+            if _is_connection_lost(conn, exc):
+                raise
+            raise SchemaApplyError(
+                f"boot schema (schema.sql from {path}) failed to apply: {exc}"
+            ) from exc
+    if path is not None:
+        log.info("applied idempotent schema from %s on pool open", path)
+
+
 class SqlConversationStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -252,22 +282,7 @@ class SqlConversationStore:
         return self._pool
 
     def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
-        path = find_schema_file()
-        if path is None:
-            log.warning("schema.sql not found; skipping boot schema apply")
-            return
-        sql = path.read_text(encoding="utf-8")
-        with pool.connection() as conn:
-            # Only errors from the statements themselves are schema errors; failing
-            # to get a connection above propagates as-is (database unreachable).
-            try:
-                lock_schema(conn)
-                apply_schema(conn, sql)
-            except Exception as exc:
-                if _is_connection_lost(conn, exc):
-                    raise
-                raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
-        log.info("applied idempotent schema from %s on pool open", path)
+        apply_boot_schema(pool)
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover

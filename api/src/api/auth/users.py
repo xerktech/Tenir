@@ -329,6 +329,10 @@ class InMemoryUserStore:
 
 
 _store: UserStore | None = None
+# Whether reconcile_admin has succeeded for ``_store``. Tracked apart from the store
+# so a failed reconcile (database down, or up but still empty) is retried on the
+# next access instead of leaving the env admin unseeded until restart (XERK-1430).
+_admin_reconciled = False
 _store_lock = threading.Lock()
 
 
@@ -368,6 +372,8 @@ def reconcile_admin(store: UserStore) -> None:
                 email=email,
             )
         except DuplicateUser:
+            if store.get_env_admin() is not None:
+                return  # another replica seeded it concurrently, from the same env
             # The email (or username) collides with another row — seed the admin
             # without the email rather than fail boot; the operator can resolve the
             # clash and reboot.
@@ -376,13 +382,24 @@ def reconcile_admin(store: UserStore) -> None:
                 "without an email link key",
                 email,
             )
-            store.create(
-                settings.auth_admin_username,
-                settings.auth_admin_password,
-                household=settings.auth_admin_household,
-                role="admin",
-                is_env_admin=True,
-            )
+            try:
+                store.create(
+                    settings.auth_admin_username,
+                    settings.auth_admin_password,
+                    household=settings.auth_admin_household,
+                    role="admin",
+                    is_env_admin=True,
+                )
+            except DuplicateUser:
+                if store.get_env_admin() is not None:
+                    return  # another replica seeded it concurrently
+                # The username itself is taken by another row: a config clash, not a
+                # transient failure — log it rather than fail this access.
+                log.error(
+                    "could not seed env admin: username %r is already taken by "
+                    "another user; rename one of them and restart",
+                    settings.auth_admin_username,
+                )
         return
     try:
         store.update_credentials(
@@ -575,18 +592,52 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
     raise last_exc or DuplicateUser(sub)
 
 
+def _reconcile_is_retryable(exc: BaseException) -> bool:
+    """Whether a failed env-admin seed should be retried on the next access, rather
+    than a failure that recurs on every attempt (e.g. a constraint the admin's
+    config violates), which is logged once instead.
+
+    - The database is unreachable (``is_database_unavailable``).
+    - A serialization failure or deadlock (40001, 40P01): transient by definition.
+    - The user store's boot schema apply failed (``SchemaApplyError``), e.g. the
+      database came back read-only: its pool isn't cached, so every user-store access
+      fails until it heals anyway — retrying costs nothing and seeds once it does.
+
+    A read-only database (25006) or statement timeout (57014) from the seed's own
+    statements stays log-once: retrying would fail logins that reads can serve."""
+    from api.persistence.postgres import SchemaApplyError, is_database_unavailable
+
+    if isinstance(exc, SchemaApplyError) or is_database_unavailable(exc):
+        return True
+    return getattr(exc, "sqlstate", None) in ("40001", "40P01")
+
+
 def get_user_store() -> UserStore:
-    """The process-wide user store, with the env admin reconciled on first use."""
-    global _store
+    """The process-wide user store, with the env admin reconciled on first use.
+
+    A reconcile that fails because the database is unreachable propagates (the caller
+    fails) and is retried on the next access, until it succeeds — so an api booted
+    with Postgres down still seeds the env admin once it is up (XERK-1430). Any other
+    failure recurs on every attempt, so it is logged once and not retried: retrying
+    it would fail every login and authenticated request instead of only seeding."""
+    global _store, _admin_reconciled
     with _store_lock:
         if _store is None:
             _store = _build_user_store()
-            reconcile_admin(_store)
+        if not _admin_reconciled:
+            try:
+                reconcile_admin(_store)
+            except Exception as exc:
+                if _reconcile_is_retryable(exc):
+                    raise
+                log.exception("could not reconcile the env admin; not retrying")
+            _admin_reconciled = True
         return _store
 
 
 def reset_user_store() -> None:
     """Drop the singleton so tests start from a clean store (re-seeds on next use)."""
-    global _store
+    global _store, _admin_reconciled
     with _store_lock:
         _store = None
+        _admin_reconciled = False

@@ -273,10 +273,12 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
     )
     if fresh is None:
         return response
+    # get_user_store() itself may hit the database (it retries the env-admin seed
+    # while Postgres is down, XERK-1430), so it runs in the thread too, never on
+    # the event loop.
+    user_id = principal_from_token(fresh).user_id
     try:
-        user = await asyncio.to_thread(
-            get_user_store().get_by_id, principal_from_token(fresh).user_id
-        )
+        user = await asyncio.to_thread(lambda: get_user_store().get_by_id(user_id))
     except Exception as exc:
         # Renewal is best-effort and the next request retries it; a database outage
         # here must not turn the route's own response into a 500 (XERK-1510).
@@ -373,7 +375,9 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
 
 
 async def _account_exists(user_id: str) -> bool:
-    return await asyncio.to_thread(get_user_store().get_by_id, user_id) is not None
+    # get_user_store() itself may block on the database (XERK-1430): resolve it in
+    # the thread too, not as an argument evaluated on the event loop.
+    return await asyncio.to_thread(lambda: get_user_store().get_by_id(user_id)) is not None
 
 
 def _ws_reject_reason(ws: WebSocket) -> str:
