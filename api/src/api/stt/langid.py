@@ -229,13 +229,22 @@ def detect_lang(text: str) -> str | None:
     """Best-effort language of one finalized turn, as a contract code, or None.
 
     Conservative by design (see module docstring): returns a code only when one
-    language clearly wins with enough evidence for the turn's length.
+    language clearly wins with enough evidence for the turn's length. ``en`` comes
+    from the word lists alone; a non-English language from word frequencies when
+    they clearly name one (``_frequency_lang``), else from the word lists.
     """
     scored = _scores(text)
     if scored is None:
         return None
     scores, words = scored
+    by_words = _word_list_lang(text, scores, words)
+    if by_words == "en":
+        return by_words
+    return _frequency_lang(scores, words, by_words) or by_words
 
+
+def _word_list_lang(text: str, scores: dict[str, int], words: list[str]) -> str | None:
+    """The distinctive-word decision: one language must clearly win on hits."""
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     (best, best_score), (_, second_score) = ranked[0], ranked[1]
     if best_score == 0:
@@ -252,6 +261,52 @@ def detect_lang(text: str) -> str | None:
     if best == "en" and best_score < _MIN_HITS and any(w in _SHARED_EN for w in words):
         # The one English hit is a shared word, as native as it is English: pt "to cansado",
         # de "is mir egal", fr "the vert" closed live runs as en (XERK-1516).
+        return None
+    return best
+
+
+# A non-English call from word frequencies (XERK-1349): a unigram model over wordfreq's
+# "small" lists. The word lists leave much real speech undecided or wrong because their
+# few words are shared: "Después del accidente, trasladaron a Gibson a un hospital, ..."
+# ties es with fr (un, and the homograph "a"), so a Spanish turn that starts a
+# conversation was never translated (FLEURS es: 21% of finals None, 5% mislabelled).
+# A word missing from a language's list scores the floor (below the lists' ~3.0 cutoff).
+_FREQ_FLOOR = 1.5
+# The winner's summed Zipf must beat every other language, English included, by this
+# much: a likelihood ratio of 1000.
+_FREQ_MARGIN = 3.0
+# A turn the word lists left undecided is called only with a word-list hit or character
+# of the winner's own and this many distinct words. Short English turns of names, places,
+# food or filler win on frequency, often helped by one shared word: "Terre Haute." fr,
+# "Um hum." pt, "Playa del Carmen." es, "Cul de sac." fr (XERK-1349 QA). Correcting a
+# non-English word-list call (es tagged fr) needs neither.
+_FREQ_MIN_DISTINCT = 4
+
+
+def _frequency_lang(scores: dict[str, int], words: list[str], by_words: str | None) -> str | None:
+    """The non-English language the turn's word frequencies clearly favour, or None.
+
+    Never returns ``en``: closing a live run stays with the word lists' stricter bar,
+    so this can only open or extend a run, or correct which language one is in. Any
+    English evidence leaves the call to the word lists: an English vocab hit ("The pate
+    de fois gras, sir.") or an English-only word ("Penne alla vodka, please.").
+
+    Measured on Tatoeba (20k sentences per language), FLEURS test (sentences and their
+    comma-split chunks) and 422k Cornell movie-dialog lines: no Tatoeba or FLEURS English
+    sentence newly tagged foreign, ~3 movie lines (foreign names and phrases); Spanish
+    right 65% -> 85% (Tatoeba), 75% -> 85% (FLEURS), wrong 2.4% -> 0.4% (FLEURS)."""
+    if scores["en"] or any(is_english_word(w) for w in words):
+        return None
+    totals = {
+        code: sum(max(zipf_frequency(w, code, wordlist="small"), _FREQ_FLOOR) for w in words)
+        for code in _WORDS
+    }
+    (best, best_total), (_, second_total) = sorted(
+        totals.items(), key=lambda kv: kv[1], reverse=True
+    )[:2]
+    if best == "en" or best_total - second_total < _FREQ_MARGIN:
+        return None
+    if by_words is None and (not scores[best] or len(set(words)) < _FREQ_MIN_DISTINCT):
         return None
     return best
 

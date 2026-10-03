@@ -26,3 +26,6 @@ htmlcov/
 # Visual brainstorm companion (local only)
 .superpowers/
 .venv-work/
+
+# setuptools build output (pip install . from api/)
+api/build/
