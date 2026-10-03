@@ -253,9 +253,10 @@ def test_new_english_vocab_counts() -> None:
         ("yesterday", True, False),
         # English, but a native word of another contract language
         ("he", False, True),  # es "I have"
-        ("was", False, True),  # de "what"
-        ("so", False, True),
-        ("in", False, True),
+        ("was", False, False),  # de "what"
+        ("so", False, False),
+        ("will", False, False),  # de "want"
+        ("also", False, False),  # de "so"
         # foreign-dominant
         ("sin", False, False),
         ("vale", False, False),

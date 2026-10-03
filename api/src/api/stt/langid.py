@@ -85,8 +85,7 @@ _WORDS: dict[str, frozenset[str]] = {
 # but these is undecidable, and inside a live run it still inherits the run's
 # language, so a Spanish "No." mid-conversation is translated as before.
 _ENGLISH_HOMOGRAPHS = frozenset(
-    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non "
-    "ya yo".split()
+    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non ya yo".split()
 )
 
 # English vocab that is also an everyday word of another contract language, ASR-spelled
@@ -212,14 +211,18 @@ def is_english_word(word: str) -> bool:
     return word in _WORDS["en"] or _english_margin(word) >= _EN_ONLY_MARGIN
 
 
+# English subject pronouns that are also an everyday word of another contract language:
+# es "he" (I have). In "he don't care" it is English; the rewording check
+# (``_same_text``) needs that to catch "he" -> "I". Deliberately not frequency-derived:
+# that class holds de "will"/"also"/"kind" and fr "place", which code-switched turns
+# translate for real (XERK-1520 QA).
+_SHARED_EN_PRONOUNS = frozenset({"he"})
+
+
 def is_shared_english_word(word: str) -> bool:
-    """Whether a lowercased token is English but also a native word of another contract
-    language: Spanish "he" (I have), German "was", "so", "in". English inside an English
-    turn, a translation inside a foreign one. Foreign-dominant words ("sin", "a", "die")
-    are not, nor are words only English has (see ``is_english_word``)."""
-    if is_english_word(word):
-        return False
-    return word in _SHARED_EN or _english_margin(word) >= 0
+    """Whether a lowercased token is an English pronoun that is also a native word of
+    another contract language: English beside English words, a translation otherwise."""
+    return word in _SHARED_EN_PRONOUNS
 
 
 def detect_lang(text: str) -> str | None:

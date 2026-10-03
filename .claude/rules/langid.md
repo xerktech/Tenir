@@ -30,8 +30,13 @@ paths:
   dropped real translations, while "seen"/"care" weren't on it (XERK-1520).
 - wordfreq has no ASR spellings of accented words (pt "tô" → "to", fr "thé" → "the"), so
   `_SHARED_EN` stays an explicit exclusion; don't drop it for the frequency check.
-- A shared word (es "he", de "was") counts as English only with ≥2 English-only words kept
-  around it: "…, Pedro, was?" → "…, what?" is a translation, "…, Pedro, he don't care" isn't.
+- Only es "he" may count as an English shared word in a rewording (before a kept English-only
+  word, ≥2 such kept). A frequency-derived "shared" class (margin ≥0) also holds de
+  `will`/`also`/`kind`, fr `place`: real code-switched turns ("Marco will my new car") dropped.
+- `_same_text` must count deleted source words as changed: SequenceMatcher encodes a reorder
+  as delete+insert ("Ana incluida" → "including Ana"). Only an output made solely of source
+  words skips the check.
+- Mid-turn capitals aren't reliably names: German nouns ("Kind") and words after `.!?` aren't.
 - A one-hit `en` call whose hit is a `_SHARED_EN` word returns `None` ("to cansado", "the vert"
   closed live runs, XERK-1516). Gate the decision, not `_scores`: dropping shared words from the
   score lost ~13% of English and let "The Las Vegas trip." win es. Costs ~3.5% of short English.

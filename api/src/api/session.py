@@ -155,21 +155,25 @@ _ECHO_MIN_WORD_RATIO = 0.75
 _REWORD_MIN_CONTEXT = 2
 
 _WORD_RE = re.compile(r"\w+(?:'\w+)?")
+_SENTENCE_END = re.compile(r"[.!?]\s*$")
 
 
 def _words(text: str) -> list[str]:
-    return [w.casefold() for w in _raw_words(text)]
+    return _WORD_RE.findall(text.casefold().replace("\u2019", "'"))
 
 
-def _raw_words(text: str) -> list[str]:
-    return _WORD_RE.findall(text.replace("\u2019", "'"))
-
-
-def _is_name(raw: list[str], i: int) -> bool:
-    """Whether the ``i``-th source word looks like a name: capitalized, not the turn's
-    first word and not the pronoun "I" ("I'm")."""
-    word = raw[i]
-    return i > 0 and word[0].isupper() and word.casefold().split("'")[0] != "i"
+def _name_positions(text: str) -> set[int]:
+    """Indexes (into ``_words(text)``) of words that look like names: capitalized but
+    not starting the turn or a sentence, and not the pronoun "I" ("I'm")."""
+    text = text.replace("\u2019", "'")
+    names = set()
+    for i, match in enumerate(_WORD_RE.finditer(text)):
+        word = match.group()
+        if not word[0].isupper() or word.casefold().split("'")[0] == "i":
+            continue
+        if i > 0 and not _SENTENCE_END.search(text, 0, match.start()):
+            names.add(i)
+    return names
 
 
 def _same_text(translated: str, source: str) -> bool:
@@ -178,36 +182,41 @@ def _same_text(translated: str, source: str) -> bool:
     caption doesn't, and a rewording misquotes the speaker.
 
     Reworded: the casefolded word sequences, punctuation ignored, match at least
-    ``_ECHO_MIN_WORD_RATIO`` and every source word the model replaced is English:
-    - a word only English has ("can" -> "could", "seen" -> "saw");
-    - or a word English shares with another contract language (es "he" -> "I"), when
-      the words the model left alone hold ``_REWORD_MIN_CONTEXT`` English-only words
-      ("..., Pedro, he don't care" -> "..., I don't care").
-    A replaced foreign word ("sin" -> "without", "y" -> "and"), or a shared one with no
-    English around it ("..., Pedro, was?" -> "..., what?"), is a real translation, however
-    few words it touches, and is kept. Words the model only deleted don't count: an
-    output made of the source's own words ("uh Marco left" -> "Marco left") adds nothing.
-    Nor do names (capitalized past the first word) replaced alongside other words: the
-    model drops "Pedro" while rewording "Pedro, he" -> "I", and a name is no language.
+    ``_ECHO_MIN_WORD_RATIO`` and either
+    - the output uses only the source's own words ("uh Marco left" -> "Marco left"), or
+    - every source word the model replaced or deleted is English: a word only English
+      has ("can" -> "could", "seen" -> "saw"), or the shared pronoun "he" (es "I have")
+      right before a kept English-only word, with ``_REWORD_MIN_CONTEXT`` such words
+      kept in all ("..., Pedro, he don't care" -> "..., I don't care").
+    A changed foreign word ("sin" -> "without", "Ana incluida" -> "including Ana") or
+    shared one ("..., Pedro, was?" -> "..., what?") is a real translation, however few
+    words it touches, and is kept. Names (capitalized mid-sentence) changed alongside
+    other words don't count: the model drops "Pedro" while rewording "Pedro, he" -> "I".
     """
-    raw = _raw_words(source)
-    src = [w.casefold() for w in raw]
+    src = _words(source)
     out = _words(translated)
     if not src or not out:
         return " ".join(translated.split()).casefold() == " ".join(source.split()).casefold()
     matcher = SequenceMatcher(None, src, out, autojunk=False)
     if matcher.ratio() < _ECHO_MIN_WORD_RATIO:
         return False
-    opcodes = matcher.get_opcodes()
-    spans = [range(i1, i2) for op, i1, i2, _, _ in opcodes if op == "replace"]
-    replaced = [src[i] for span in spans for i in span if not _is_name(raw, i)]
-    replaced = replaced or [src[i] for span in spans for i in span]
-    if all(is_english_word(w) for w in replaced):
+    if set(out) <= set(src):
         return True
-    kept = [w for op, i1, i2, _, _ in opcodes if op == "equal" for w in src[i1:i2]]
-    if sum(is_english_word(w) for w in kept) < _REWORD_MIN_CONTEXT:
+    opcodes = matcher.get_opcodes()
+    # A reorder is a delete plus an insert, so deleted words count as changed.
+    changed = [i for op, i1, i2, _, _ in opcodes if op != "equal" for i in range(i1, i2)]
+    names = _name_positions(source)
+    changed = [i for i in changed if i not in names] or changed
+    if all(is_english_word(src[i]) for i in changed):
+        return True
+    kept = {i for op, i1, i2, _, _ in opcodes if op == "equal" for i in range(i1, i2)}
+    if sum(is_english_word(src[i]) for i in kept) < _REWORD_MIN_CONTEXT:
         return False
-    return all(is_english_word(w) or is_shared_english_word(w) for w in replaced)
+    return all(
+        is_english_word(src[i])
+        or (is_shared_english_word(src[i]) and i + 1 in kept and is_english_word(src[i + 1]))
+        for i in changed
+    )
 
 
 def is_valid_session_id(value: str) -> bool:

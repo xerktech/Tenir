@@ -565,6 +565,28 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
             "the cheesecake factory with Marco, okay",
             False,
         ),
+        # XERK-1520 QA (real model): a reorder is a deletion plus an insertion, so the
+        # moved foreign word still counts...
+        ("Marco, Sofia, Lucia, Ana incluida", "Marco, Sofia, Lucia, including Ana", False),
+        ("Juan, Marco, Ana incluida", "Juan, Marco, including Ana", False),
+        # ...and code-switched turns whose shared or capitalized word is native are kept.
+        ("Marco will my new car", "Marco wants my new car", False),
+        (
+            "Marco, Sofia, Pedro, Er will my new job",
+            "Marco, Sofia, Pedro, He wants my new job",
+            False,
+        ),
+        (
+            "Marco, Sofia, Lucia, my best friend's Kind",
+            "Marco, Sofia, Lucia, my best friend's child",
+            False,
+        ),
+        ("Marco, Sofia, Lucia, I love you, also", "Marco, Sofia, Lucia, I love you, too", False),
+        (
+            "Marco, Sofia, Lucia, Ok. Allora, gonna go",
+            "Marco, Sofia, Lucia, OK. So, I'll go",
+            False,
+        ),
         # curly apostrophes from the model don't disguise an echo
         ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
