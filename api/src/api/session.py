@@ -316,8 +316,10 @@ class Session:
         # enough: the WS handler is parked in receive() and keeps feeding audio
         # into a session that is already finalized, so a revoked account went on
         # streaming until it chose to hang up. Set by the WS endpoint that owns
-        # the socket; None for a Session driven directly (tests, tooling).
-        self._disconnect: Callable[[], Awaitable[None]] | None = None
+        # the socket; empty for a Session driven directly (tests, tooling). One per
+        # socket ever bound: a resume can take the session over while the socket it
+        # displaced is still open, and that socket must close too (XERK-1504).
+        self._disconnects: list[Callable[[], Awaitable[None]]] = []
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -1288,8 +1290,19 @@ class Session:
         metrics.incr("music.done")
 
     def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
-        """Register how to drop this session's transport (see ``revoke``)."""
-        self._disconnect = fn
+        """Register how to drop a transport bound to this session (see ``revoke``).
+
+        Each must be safe to call on a socket that has already gone away. The
+        caller drops it with :meth:`drop_disconnect` when its socket ends, or a
+        session resumed over and over keeps every dead socket alive.
+        """
+        if fn not in self._disconnects:  # a socket re-resuming its own session
+            self._disconnects.append(fn)
+
+    def drop_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
+        """Forget a hook registered with :meth:`on_disconnect` (no-op if absent)."""
+        if fn in self._disconnects:
+            self._disconnects.remove(fn)
 
     async def revoke(self, reason: str) -> None:
         """Finalize the session AND close its socket — the account is gone.
@@ -1299,9 +1312,10 @@ class Session:
         (XERK-236).
         """
         await self.close()
-        if self._disconnect is not None:
+        # A copy: a handler ending mid-loop drops its hook, which would skip the next.
+        for disconnect in list(self._disconnects):
             try:
-                await self._disconnect()
+                await disconnect()
             except Exception:
                 log.warning("session %s could not close its socket", self.session_id)
         log.info("session %s revoked: %s", self.session_id, reason)

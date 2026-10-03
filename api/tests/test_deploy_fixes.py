@@ -91,6 +91,7 @@ def test_session_id_collision_across_households_does_not_evict(
 # --- resilient session start -------------------------------------------------
 
 
+@pytest.mark.real_auth
 def test_session_start_failure_sends_error_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """A backend that raises on start (model/DB/GPU init) returns an error frame and
     keeps the socket open, instead of aborting the connection unhandled."""
@@ -100,7 +101,9 @@ def test_session_start_failure_sends_error_frame(monkeypatch: pytest.MonkeyPatch
         raise RuntimeError("model backend unavailable")
 
     monkeypatch.setattr(session_mod, "make_transcriber", boom)
-    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+    # _reset wiped conftest's seeded admin; session.start re-checks the account
+    # exists (XERK-1504), so present a real one.
+    with TestClient(app) as client, client.websocket_connect(f"/ws?token={_token('acme')}") as ws:
         ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
         msg = ws.receive_json()
         assert msg["type"] == "error" and msg["code"] == "internal"

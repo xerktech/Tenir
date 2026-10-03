@@ -130,6 +130,9 @@ def test_ws_audio_error_is_isolated_not_fatal(monkeypatch: pytest.MonkeyPatch) -
             # session behind it (XERK-236).
             self._closer = fn
 
+        def drop_disconnect(self, fn) -> None:
+            self._closer = None
+
         async def start(self, **_kwargs) -> None:
             from api.contract import SessionReady
 
