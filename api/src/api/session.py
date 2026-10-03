@@ -335,6 +335,9 @@ class Session:
         # socket ever bound: a resume can take the session over while the socket it
         # displaced is still open, and that socket must close too (XERK-1504).
         self._disconnects: list[Callable[[], Awaitable[None]]] = []
+        # Set by revoke(): the account is gone, so audio the handler still reads
+        # before the socket close lands is dropped, not recorded (XERK-1525).
+        self._revoked = False
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -523,6 +526,11 @@ class Session:
             log.warning("session %s STT warmup failed", self.session_id, exc_info=exc)
 
     async def on_audio(self, pcm: bytes) -> None:
+        # Not is_closed: a shutdown close still keeps audio arriving during its
+        # teardown (the final _persist() stores it). Only a revoke drops it — its
+        # teardown runs before the socket closes, and the account is already gone.
+        if self._revoked:
+            return
         # Retain the full audio for the stored session: buffered in memory for the
         # session, flushed to the audio store on end.
         if self._audio_store is not None:
@@ -1385,8 +1393,9 @@ class Session:
 
         Order matters: close() first, so everything captured up to this moment
         is persisted, THEN drop the transport so nothing further can be sent
-        (XERK-236).
+        (XERK-236). Audio still arriving from the socket meanwhile is dropped.
         """
+        self._revoked = True
         await self.close()
         # A copy: a handler ending mid-loop drops its hook, which would skip the next.
         for disconnect in list(self._disconnects):
