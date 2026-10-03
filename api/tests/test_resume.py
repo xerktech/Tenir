@@ -374,3 +374,37 @@ def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
                 )
             )
             assert ws.receive_json()["sessionId"] == sid
+
+
+def test_resume_owner_check_fails_closed_on_a_transient_store_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner check is the cross-user gate (XERK-651): a store error there must
+    refuse the start, not treat the recording as unowned and go ahead — even when
+    the store recovers by the time start() reads it again."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+
+            store = get_conversation_store()
+            real_get = store.get
+            calls = 0
+
+            def flaky_get(*args: object) -> object:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("store blip")
+                return real_get(*args)
+
+            monkeypatch.setattr(store, "get", flaky_get)
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws.receive_json()["type"] == "error"
+            assert calls == 1
+            assert registry.count() == 0
