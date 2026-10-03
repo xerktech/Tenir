@@ -44,3 +44,11 @@ paths:
   pt `to`/`for`, fr `but`/`the`, …): "…, Pedro, was?" → "…, what?" is a real translation.
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
   `detect_lang`, hand-read every changed label), not intuition. Keep transcript text out of tests.
+- A word everyday in two Romance languages goes in both vocabs, never one (XERK-1419): es "le"/"a"
+  scored only for fr tipped real Spanish to fr. (pt "está" was tried: "Está bien." became None.)
+- Spanish loanwords in English (hay, hola, gracias, bueno, mucho, donde, aquí) are homographs, not
+  plain es vocab: with "a" corroborating, "a bale of hay" was tagged es and translated (XERK-1419 QA).
+- `_FOREIGN_CHARS` zeroes a language for letters it never writes (fr: á í ó ú ñ), in lowercase
+  words only: French turns name "María"/"Cancún". Don't add `en` (English names "José" too).
+- New es vocab must be ≥10× rarer (wordfreq) in pt/it: pt `vamos`/`estás`, it `tengo`/`ella`
+  are Spanish-looking but native there, so they stay out.
