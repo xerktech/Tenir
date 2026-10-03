@@ -1,6 +1,7 @@
 name: Scripts
 
-# PR gate for the shell scripts under scripts/, plus the translation-eval harness tests.
+# PR gate for the shell scripts under scripts/, plus the translation-eval and long-form
+# eval harness tests.
 # evenhub-sim-guarded.sh is the
 # Even Hub simulator memory guard the QA recipe depends on (XERK-1020); a
 # fail-open or teardown regression there can take down a shared agent pod, so
@@ -12,6 +13,9 @@ on:
     paths:
       - 'scripts/**/*.sh'
       - 'scripts/translation_eval/public/**'
+      - 'scripts/longform_eval/**'
+      # the long-form replay test decides language with the shipped langid
+      - 'api/src/api/stt/langid.py'
       # the harness tests build requests from the shipped translator prompt, so a
       # change there must re-run them (prompt-drift guard)
       - 'api/src/api/translate/**'
@@ -64,3 +68,12 @@ jobs:
 
       - name: Run the harness tests
         run: python -m pytest scripts/translation_eval/public/tests -q
+
+      # scripts/longform_eval (XERK-1414): scorer alignment, replay of the translation
+      # trigger, OCR mask. Its tests importorskip the scoring libs, so install them —
+      # otherwise a green run would mean "skipped".
+      - name: Install the long-form harness deps
+        run: pip install jiwer sacrebleu numpy pillow
+
+      - name: Run the long-form harness tests
+        run: python -m pytest scripts/longform_eval/tests -q -rs
