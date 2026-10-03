@@ -100,8 +100,8 @@ EXPOSE 8080
 # shutdown, so a close driven from a handler (session.end, an admin revoke) against
 # a hung model ran past the SIGKILL at 30 s (k8s terminationGracePeriodSeconds,
 # compose stop_grace_period). After it, uvicorn cancels those handlers; their
-# session teardowns are shielded tasks, so they keep running and the lifespan's
-# bounded session close waits on them. Budget: this + that close (20 s deadline
-# + 5 s finalize, close_all_sessions in api/src/api/main.py, XERK-1458) must
-# stay under 30 s.
+# session teardowns are shielded tasks, so they keep running and the lifespan
+# shutdown waits on them. Budget: this + the lifespan's session close (bounded at
+# 20 s deadline + 5 s finalize by XERK-1458) must stay under 30 s. Trade-off: a
+# response still streaming at SIGTERM (e.g. a long audio download) is cut at 3 s.
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "3"]

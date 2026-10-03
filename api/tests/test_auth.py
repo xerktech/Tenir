@@ -1363,6 +1363,9 @@ def test_deleting_a_user_revokes_their_sessions_concurrently(
     def _session(sid: str, user_id: str, *, fails: bool = False) -> SimpleNamespace:
         async def revoke(reason: str) -> None:
             nonlocal in_flight, peak
+            # Every doomed session leaves the registry before any revoke starts, so
+            # nothing (shutdown, a resume) can reach one that's being finalized.
+            assert all(registry.get(f"bob-{i}") is None for i in (1, 2, 3))
             in_flight += 1
             peak = max(peak, in_flight)
             await asyncio.sleep(0.05)
