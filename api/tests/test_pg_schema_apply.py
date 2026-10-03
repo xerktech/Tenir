@@ -32,14 +32,22 @@ from api.persistence.postgres import (
 )
 
 
+class _NoRows:
+    """An empty query result, for the user store's post-apply duplicate-username read."""
+
+    def fetchall(self) -> list:
+        return []
+
+
 class _RecordingConn:
     """Captures the statements a schema-apply runs, normalized to single spaces."""
 
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    def execute(self, sql: str, params: object = None) -> None:
+    def execute(self, sql: str, params: object = None) -> _NoRows:
         self.statements.append(" ".join(sql.split()))
+        return _NoRows()
 
 
 def _creates_cues(statements: list[str]) -> bool:
@@ -311,7 +319,7 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
     guard = threading.Lock()
 
     class _SlowConn:
-        def execute(self, sql: str, params: object = None) -> None:
+        def execute(self, sql: str, params: object = None) -> _NoRows:
             nonlocal in_apply, max_in_apply
             with guard:
                 in_apply += 1
@@ -319,6 +327,7 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
             time.sleep(0.001)
             with guard:
                 in_apply -= 1
+            return _NoRows()
 
     pools = _install_fake_pool(monkeypatch, _SlowConn())
     store = store_cls("postgresql://unused")
@@ -354,8 +363,9 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
     calls: list[tuple[str, object]] = []
 
     class _Conn:
-        def execute(self, sql: str, params: object = None) -> None:
+        def execute(self, sql: str, params: object = None) -> _NoRows:
             calls.append((" ".join(sql.split()), params))
+            return _NoRows()
 
     _install_fake_pool(monkeypatch, _Conn())
     store_cls("postgresql://unused")._ensure_pool()
