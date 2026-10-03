@@ -13,10 +13,12 @@ paths:
 - uvicorn waits for in-flight WS handlers and HTTP requests *before* the lifespan shutdown runs,
   with no timeout. Closes driven from a handler (session.end, revoke) are not bounded by
   that deadline.
-- Grace-lapse, session.end and revoke unregister the session before closing it, so shutdown
-  can't find those closes in the registry. It waits on `session.closes_in_flight()`.
-- `Session.close()` retains audio *before* the model drains, and finalizes in a `finally`, so a
-  close cancelled at the deadline still writes its WAV and marks the conversation ready.
+- Grace-lapse, session.end, revoke and a cancelled close() caller all leave a teardown the
+  registry can't see. Shutdown waits on `session.teardowns_in_flight()`.
+- `close()` only awaits its shielded `_teardown` task (XERK-1460), so cancelling a `close()`
+  call stops nothing. The deadline cancels the teardown tasks themselves.
+- `_close_teardown()` retains audio *before* the model drains and finalizes in a `finally`. A
+  teardown cancelled at the deadline still writes its WAV and marks the conversation ready.
 - The first retain is shielded and awaited in the finally. The store write runs in a thread a
   cancel can't stop, and a racing second write stores the audio twice.
 - `_persist_audio` trims the buffer right after `put`, before `set_audio_key`. Trimming later

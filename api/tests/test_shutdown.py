@@ -95,7 +95,7 @@ def test_sessions_close_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
         assert registry.active() == []
         _assert_persisted(sessions)
         # Finished closes leave the in-flight set, or it pins every Session forever.
-        assert not session_mod._closing
+        assert not session_mod._teardowns
 
     asyncio.run(run())
 
@@ -292,7 +292,7 @@ def test_a_close_hung_after_cancel_does_not_hold_shutdown(monkeypatch: pytest.Mo
         # Own timeout so a missing bound fails here instead of hanging the suite.
         await asyncio.wait_for(close_all_sessions(deadline=0.1), timeout=2)
         assert time.monotonic() - t0 < 1
-        for task in session_mod.closes_in_flight():
+        for task in session_mod.teardowns_in_flight():
             task.cancel()
 
     asyncio.run(run())

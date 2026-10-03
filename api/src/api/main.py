@@ -49,7 +49,7 @@ from api.persistence import get_conversation_store
 from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session, closes_in_flight, is_valid_session_id
+from api.session import Session, is_valid_session_id, teardowns_in_flight
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -116,6 +116,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         rss_task.cancel()
     if status_task is not None:
         status_task.cancel()
+    # Finalize any still-live (incl. detached, grace-pending) sessions on shutdown so
+    # their audio/transcript is persisted and resources are released cleanly.
     await close_all_sessions()
 
 
@@ -132,28 +134,31 @@ async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
     Closes run concurrently under one deadline (XERK-1458). One at a time, a single
     session against a hung model (STT flush + translation drain, ~30 s) used up the
     whole grace period and every later one was killed before persisting its audio.
-    A close still running at the deadline is cancelled; Session.close() retains its
-    audio first and finalizes the conversation even when cancelled.
+    A teardown still running at the deadline is cancelled; it retains its audio
+    first and finalizes the conversation even when cancelled.
     """
     sessions = registry.active()
     for session in sessions:
         registry.unregister(session)
-    tasks = [asyncio.create_task(session.close()) for session in sessions]
-    # Closes already under way elsewhere (grace lapse, session.end, revoke): their
-    # sessions left the registry first, and the process exits as soon as this
-    # returns, so they must be waited on too or they die before persisting.
-    others = closes_in_flight()
-    if not tasks and not others:
+    closes = [asyncio.create_task(session.close()) for session in sessions]
+    # Teardowns already under way elsewhere (grace lapse, session.end, revoke, a
+    # cancelled close() caller): their sessions left the registry first, and the
+    # process exits as soon as this returns, so they must be waited on too.
+    others = teardowns_in_flight()
+    if not closes and not others:
         return
-    _, pending = await asyncio.wait([*tasks, *others], timeout=deadline)
+    _, pending = await asyncio.wait([*closes, *others], timeout=deadline)
     if pending:
-        log.warning("cancelling %d session close(s) past the shutdown deadline", len(pending))
-        for task in pending:
+        # close() only awaits its shielded teardown, so cancel the teardowns
+        # themselves — the closes started above included.
+        stuck = {*pending, *teardowns_in_flight()}
+        log.warning("cancelling %d session teardown(s) past the shutdown deadline", len(stuck))
+        for task in stuck:
             task.cancel()
-        # A cancelled close still finalizes in its finally; bound that too, so a
-        # hung store can't hold shutdown until the SIGKILL.
-        await asyncio.wait(pending, timeout=_SHUTDOWN_FINALIZE_S)
-    for session, task in zip(sessions, tasks, strict=True):
+        # A cancelled teardown still finalizes in its finally; bound that too, so
+        # a hung store can't hold shutdown until the SIGKILL.
+        await asyncio.wait(stuck, timeout=_SHUTDOWN_FINALIZE_S)
+    for session, task in zip(sessions, closes, strict=True):
         if task.done() and not task.cancelled() and (exc := task.exception()) is not None:
             log.error("session %s close failed", session.session_id, exc_info=exc)
 
