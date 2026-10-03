@@ -587,6 +587,25 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
             "Marco, Sofia, Lucia, OK. So, I'll go",
             False,
         ),
+        # ...a foreign word translated into an English word the turn already has...
+        (
+            "He came yesterday, and she came gestern too",
+            "He came yesterday, and she came yesterday too.",
+            False,
+        ),
+        ("Yeah. Attends, wait a second", "Yeah. Wait, wait a second", False),
+        # ...a capitalized noun translated word for word is no dropped name...
+        (
+            "Marco, Sofia, Lucia, Pedro, I seen the Hund",
+            "Marco, Sofia, Lucia, Pedro, I saw the dog",
+            False,
+        ),
+        # ...nor is a sentence's first word.
+        (
+            "Marco, Sofia, Lucia, Pedro, Ok. Allora gonna go",
+            "Marco, Sofia, Lucia, Pedro, OK. I'll go",
+            False,
+        ),
         # curly apostrophes from the model don't disguise an echo
         ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
