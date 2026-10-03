@@ -13,8 +13,8 @@ paths:
   `registry.start_lock(id)` until it registers, or two reconnects with one id each start
   their own Session on the same conversation, one invisible to /health, revoke and
   shutdown (XERK-1514).
-- Never await another session's teardown, or anything that takes the start lock, while
-  holding it: a resume waits on that lock.
+- Keep the start lock out of `close()`/teardown/grace paths: the handler closes the socket's
+  previous session while holding it, so a teardown that took it would deadlock.
 - A cold resume of a persisted id also reports `resumed=True`; `resumed` does not tell
   warm from cold.
 - Worktree pitfall: the host's pip-installed `api` package may be another worktree's
