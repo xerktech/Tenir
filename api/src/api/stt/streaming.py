@@ -27,6 +27,8 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator
 
+import numpy as np
+
 from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
@@ -54,6 +56,15 @@ _VAD_PEAK_FRACTION = 0.5
 # offline decode blanked, the class XERK-174 exists to protect — was 3 words or
 # longer. Below the gate the turn stays dropped, exactly as before XERK-174.
 _RECOVERY_MIN_WORDS = 3
+
+# Silence padded onto each side of a turn whose final decode came back empty, for one
+# retry. The deployed Parakeet (TDT) deterministically decodes some windows of clear
+# speech to nothing — ~3.5% of final decodes on an hour of continuous Spanish
+# conversation (XERK-1414) — and the same audio with a little silence around it
+# decodes normally (6/6 sampled 9 s windows with 30-41 reference words came back
+# with text). Retrying first means those turns keep the accurate whole-turn decode
+# instead of falling back to the partial text, or being dropped below the gate.
+_EMPTY_FINAL_RETRY_PAD_MS = 500
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -217,7 +228,12 @@ class StreamingTranscriber:
             self._trailing_silence += len(pcm)
 
     async def _run_engine(
-        self, *, window_bytes: int = 0, stage: str = "final", want_words: bool = True
+        self,
+        *,
+        window_bytes: int = 0,
+        stage: str = "final",
+        want_words: bool = True,
+        pad_ms: int = 0,
     ):
         # A partial may decode only the trailing window_bytes of the segment so its
         # cost doesn't grow with turn length; a final (window_bytes=0) decodes the
@@ -227,11 +243,24 @@ class StreamingTranscriber:
         if window_bytes and len(buf) > window_bytes:
             buf = buf[-window_bytes:]
         samples = pcm16_to_float32(bytes(buf))
+        if pad_ms:
+            pad = np.zeros(_ms_to_bytes(pad_ms) // 2, dtype=np.float32)
+            samples = np.concatenate([pad, samples, pad])
         t0 = time.perf_counter()
         result = await asyncio.to_thread(
             self._engine.transcribe, samples, language=self._language, want_words=want_words
         )
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
+        if pad_ms:
+            # Word times back onto the unpadded turn's timeline (rounded to the ms so
+            # float error can't shave a millisecond off when they're truncated later),
+            # clamped to the turn: a word the model placed in either pad still lies
+            # within the caption it belongs to.
+            off = pad_ms / 1000
+            dur = round(len(buf) / BYTES_PER_SEC, 3)
+            for w in result.words:
+                w.start = min(dur, max(0.0, round(w.start - off, 3)))
+                w.end = min(dur, max(0.0, round(w.end - off, 3)))
         return result
 
     async def _emit_partial(self) -> None:
@@ -266,8 +295,33 @@ class StreamingTranscriber:
         self._turn_partial = caption
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
+    async def _retry_blank_final(self, blank):
+        """Speech, but the whole-turn decode is blank: decode once more with silence
+        padding (see _EMPTY_FINAL_RETRY_PAD_MS). Returns the retry's result when it
+        carries a real turn, else ``blank`` so _finalize falls through to the XERK-174
+        partial fallback exactly as without the retry:
+        - a retry that raises (STT timeout/connect error) must not lose the turn — the
+          exception would skip the per-turn reset and re-enter _finalize every frame;
+        - a retry below _RECOVERY_MIN_WORDS is held to the same filler gate as a
+          recovered partial (XERK-182): padding non-speech can conjure 1-2 words."""
+        try:
+            retry = await self._run_engine(
+                stage="final_retry", want_words=self._final_words, pad_ms=_EMPTY_FINAL_RETRY_PAD_MS
+            )
+        except Exception:
+            log.warning("padded retry of a blank final failed", exc_info=True)
+            metrics.incr("stage.stt.final_retry_errors")
+            return blank
+        if len(retry.text.split()) < _RECOVERY_MIN_WORDS:
+            metrics.incr("stage.stt.final_retry_empty")
+            return blank
+        metrics.incr("stage.stt.final_retry_recovered")
+        return retry
+
     async def _finalize(self) -> None:
         result = await self._run_engine(stage="final", want_words=self._final_words)
+        if not result.text.strip() and self._has_speech:
+            result = await self._retry_blank_final(result)
         start = self._segment_start_ms
         end = start + _bytes_to_ms(len(self._buf))
 
