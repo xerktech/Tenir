@@ -103,9 +103,12 @@ def test_delete_during_session_start_revokes_the_new_session(
     with TestClient(app) as client:
         with client.websocket_connect(f"/ws?token={member_token}") as ws:
             ws.send_text(START)
+            # start() sends session.ready before the post-register re-check runs.
+            assert ws.receive_json()["type"] == "session.ready"
+            # Without the re-check this ping is answered; with it, the close comes first.
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
             with pytest.raises(WebSocketDisconnect) as exc:
-                while True:
-                    ws.receive_json()  # session.ready may arrive before the close
+                ws.receive_json()
             assert exc.value.code == 1008
     assert not [s for s in registry.active() if s.user_id == member_id]
 
@@ -128,3 +131,54 @@ def test_account_check_error_sends_error_frame(monkeypatch: pytest.MonkeyPatch) 
             assert msg["type"] == "error" and msg["code"] == "internal"
             ws.send_text(json.dumps({"type": "ping", "t": 2}))
             assert ws.receive_json() == {"type": "pong", "t": 2}
+
+
+@pytest.mark.real_auth
+def test_resumed_socket_is_closed_when_its_account_is_deleted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A delete's revoke closed the socket the session was STARTED on, so a socket
+    that had resumed it stayed open after the account was gone."""
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    admin = {"Authorization": f"Bearer {admin_token}"}
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws1:
+            ws1.send_text(START)
+            sid = ws1.receive_json()["sessionId"]
+        # ws1 dropped without session.end: the session waits in the grace window.
+        with client.websocket_connect(f"/ws?token={member_token}") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["resumed"] is True
+            assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
+            # The revoke ran inside the DELETE. Had it aimed at the dead ws1 it logs
+            # this — check it first so a regression fails here rather than hanging
+            # on a receive from a socket nobody closes.
+            assert "could not close its socket" not in caplog.text
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws2.receive_json()
+            assert exc.value.code == 1008
+        assert registry.get(sid) is None
+
+
+@pytest.mark.real_auth
+def test_start_on_socket_whose_session_outlived_the_delete_closes_1008() -> None:
+    """If the delete's registry scan missed this socket's session, session.start
+    finalizes it and still closes the socket with 1008, not a bare drop."""
+    member_id, member_token = _token("member", "member")
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            sid = ws.receive_json()["sessionId"]
+            live = registry.get(sid)
+            registry.unregister(live)  # the delete's scan won't find it
+            get_user_store().delete(member_id)
+            ws.send_text(START)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
+            assert live.is_closed

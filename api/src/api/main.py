@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
 
 from api import registry
 from api.auth import (
@@ -292,12 +293,6 @@ async def _account_exists(user_id: str) -> bool:
     return await asyncio.to_thread(get_user_store().get_by_id, user_id) is not None
 
 
-async def _close_removed(ws: WebSocket) -> None:
-    log.warning("ws closed: account no longer exists")
-    metrics.incr("ws.account_removed")
-    await ws.close(code=1008, reason="account removed")
-
-
 def _ws_reject_reason(ws: WebSocket) -> str:
     """Why ``_ws_principal`` returned None, for the rejection log line."""
     auth_header = ws.headers.get("authorization", "")
@@ -335,6 +330,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
     async def send(msg: ServerMessage) -> None:
         await ws.send_text(serialize(msg))
+
+    async def close_removed() -> None:
+        # 1008, not a bare drop: clients treat 1006 as a blip and reconnect.
+        log.warning("ws closed: account no longer exists")
+        metrics.incr("ws.account_removed")
+        await ws.close(code=1008, reason="account removed")
 
     try:
         while True:
@@ -387,8 +388,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         registry.unregister(session)
                         await session.revoke("account deleted")
                         session = None
-                    else:
-                        await _close_removed(ws)
+                    if ws.application_state != WebSocketState.DISCONNECTED:
+                        await close_removed()
                     break
                 # A resume id the server could not have issued is not a resume id.
                 # It reaches the conversation store AND the audio object key
@@ -422,6 +423,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         await session.close()
                     session = resumable
                     await session.rebind(send)
+                    # A revoke must drop THIS socket, not the dead one the session was
+                    # started on, or a resumed socket outlives its account (XERK-1504).
+                    session.on_disconnect(close_removed)
                     await send(
                         SessionReady(
                             type="session.ready", sessionId=session.session_id, resumed=True
@@ -481,9 +485,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     continue
                 # Let an account deletion drop this socket, not just finalize
                 # the session behind it (XERK-236).
-                new_session.on_disconnect(
-                    lambda: ws.close(code=1008, reason="account removed")
-                )
+                new_session.on_disconnect(close_removed)
                 session = new_session
                 registry.register(session)
                 metrics.incr("sessions.started")
