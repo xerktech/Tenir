@@ -1236,16 +1236,20 @@ class Session:
         if self._warmup is not None:
             self._warmup.cancel()
             self._warmup = None
-        # A failing STT seam can raise from flush()/close() too; guard it so
+        # A failing STT seam can raise from flush()/close() too; guard each so
         # teardown still persists the conversation and never leaks an exception
-        # out of close().
+        # out of close(). They are guarded separately: close() is what ends
+        # results(), so a flush that raises (an STT timeout on the tail decode)
+        # must not skip it, or the pump below is awaited forever.
         if self._transcriber is not None:
-            try:
-                await self._transcriber.flush()
-                await self._transcriber.close()
-            except Exception:
-                log.exception("session %s transcriber flush/close failed", self.session_id)
-                metrics.incr("stage.stt.errors")
+            for step in (self._transcriber.flush, self._transcriber.close):
+                try:
+                    await step()
+                except Exception:
+                    log.exception(
+                        "session %s transcriber %s failed", self.session_id, step.__name__
+                    )
+                    metrics.incr("stage.stt.errors")
         if self._pump is not None:
             await self._pump
         if self._translation_worker is not None:
