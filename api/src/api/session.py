@@ -1237,7 +1237,8 @@ class Session:
         caller drops it with :meth:`drop_disconnect` when its socket ends, or a
         session resumed over and over keeps every dead socket alive.
         """
-        self._disconnects.append(fn)
+        if fn not in self._disconnects:  # a socket re-resuming its own session
+            self._disconnects.append(fn)
 
     def drop_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
         """Forget a hook registered with :meth:`on_disconnect` (no-op if absent)."""
@@ -1252,7 +1253,8 @@ class Session:
         (XERK-236).
         """
         await self.close()
-        for disconnect in self._disconnects:
+        # A copy: a handler ending mid-loop drops its hook, which would skip the next.
+        for disconnect in list(self._disconnects):
             try:
                 await disconnect()
             except Exception:

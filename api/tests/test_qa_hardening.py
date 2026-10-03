@@ -478,6 +478,33 @@ def test_revoke_survives_a_socket_that_will_not_close() -> None:
     asyncio.run(run())
 
 
+def test_revoke_reaches_every_hook_even_if_one_drops_itself() -> None:
+    """A handler whose socket ends mid-revoke drops its own hook; iterating the live
+    list would then skip the next socket's close (XERK-1504)."""
+    called: list[int] = []
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, household="hh", user_id="u-1")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+
+        def hook(i: int):
+            async def close() -> None:
+                called.append(i)
+                session.drop_disconnect(close)
+
+            return close
+
+        for i in range(4):
+            session.on_disconnect(hook(i))
+        await session.revoke("account deleted")
+
+    asyncio.run(run())
+    assert called == [0, 1, 2, 3], called
+
+
 def test_the_ws_endpoint_registers_a_disconnect_for_every_session() -> None:
     """`revoke()` can only drop a socket the endpoint told it about — so pin the
     wiring, not just the method (the QA gate's M7/M12 lesson)."""

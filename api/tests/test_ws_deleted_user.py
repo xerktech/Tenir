@@ -212,8 +212,10 @@ def test_repeated_resumes_do_not_accumulate_revoke_hooks() -> None:
         )
         for _ in range(5):
             with client.websocket_connect(f"/ws?token={member_token}") as ws:
-                ws.send_text(resume)
-                assert ws.receive_json()["resumed"] is True
+                # Twice on one socket: re-resuming its own session must not stack hooks.
+                for _ in range(2):
+                    ws.send_text(resume)
+                    assert ws.receive_json()["resumed"] is True
                 assert len(registry.get(sid)._disconnects) == 1
         assert registry.get(sid)._disconnects == []
 
