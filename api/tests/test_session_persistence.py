@@ -436,12 +436,16 @@ def test_resume_during_prior_teardown_keeps_order_when_prior_retain_fails() -> N
             for _ in range(10):
                 await leg2.on_audio(_voice_chunk(freq=400))
             closing2 = asyncio.create_task(leg2.close())
-            for _ in range(20):
-                await asyncio.sleep(0)
             # leg2's own flush isn't held behind leg1's stalled teardown: its tail
-            # final is already stored, so a shutdown deadline can't drop it.
+            # final gets stored while leg1 still flushes, so a shutdown deadline
+            # can't drop it. (leg1's failing put runs in a thread: poll, don't tick.)
             conv = get_conversation_store().get("default", "conv-retry")
+            for _ in range(200):
+                if max(s.end_ms for s in conv.segments) == 3500:
+                    break
+                await asyncio.sleep(0.01)
             assert max(s.end_ms for s in conv.segments) == 3500
+            assert not closing.done()
             release.set()
             await closing
             await closing2
