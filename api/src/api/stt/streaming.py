@@ -9,9 +9,15 @@ defines:
   energy-based VAD sees enough trailing silence (a turn boundary) or the segment
   hits a max length.
 
-All model inference is delegated to a `WhisperEngine` and run off the event loop
-via `asyncio.to_thread`, so a busy model applies natural per-connection
-backpressure without stalling other sessions. The windowing/VAD logic here is
+All model inference is delegated to a `WhisperEngine`, run off the event loop via
+`asyncio.to_thread` by one per-session decode worker. `push()` only buffers audio,
+runs the VAD and queues decode jobs — it never awaits a decode — so the WebSocket
+frame loop keeps reading the socket (and its keepalive pongs) while a slow or hung
+STT upstream is outstanding. Before this, every open session was dropped with 1011
+whenever the upstream stalled past the ping timeout (XERK-1424). A slow model now
+degrades partials (at most one is ever outstanding; cadences that fall due while
+one is pending are coalesced) instead of stalling the session; finals always queue,
+in order, so no turn is lost. The windowing/VAD logic here is
 model-agnostic and unit-tested with a fake engine. Partials re-decode a trailing
 window (or the whole in-flight segment, for LocalAgreement) of the offline engine
 on a cadence; finals decode the whole turn on the same engine (Parakeet in
@@ -30,7 +36,7 @@ from collections.abc import AsyncIterator
 from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
-from api.stt.engine import BYTES_PER_SEC, WhisperEngine, pcm16_to_float32, rms
+from api.stt.engine import BYTES_PER_SEC, EngineResult, WhisperEngine, pcm16_to_float32, rms
 from api.stt.langid import detect_lang
 
 log = logging.getLogger("api.stt.streaming")
@@ -154,6 +160,14 @@ class StreamingTranscriber:
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._closed = False
 
+        # Decode jobs, run strictly in order by one worker task (started on first
+        # use): ("partial", pcm, 0) or ("final", pcm, segment_start_ms). Ordering is
+        # what keeps a turn's partials ahead of its final and lets the worker own the
+        # per-turn state (_turn_partial, _agreement) without locking.
+        self._jobs: asyncio.Queue[tuple[str, bytes, int]] = asyncio.Queue()
+        self._worker: asyncio.Task[None] | None = None
+        self._partial_pending = False
+
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
 
@@ -170,15 +184,65 @@ class StreamingTranscriber:
         self._update_vad(pcm)
 
         if len(self._buf) >= self._max_segment_bytes:
-            await self._finalize()
+            self._close_turn()
         elif (
             self._has_speech
             and self._trailing_silence >= self._silence_bytes
             and len(self._buf) >= self._min_segment_bytes
         ):
-            await self._finalize()
-        elif self._has_speech and self._since_partial >= self._partial_bytes:
-            await self._emit_partial()
+            self._close_turn()
+        elif (
+            self._has_speech
+            and self._since_partial >= self._partial_bytes
+            and not self._partial_pending
+        ):
+            # A partial still pending means the engine is behind: skip this cadence
+            # rather than queue stale decodes. _since_partial is left as is, so the
+            # next chunk after it lands schedules a fresh one.
+            self._since_partial = 0
+            buf = self._buf
+            if self._agreement is None and self._partial_window_bytes:
+                buf = buf[-self._partial_window_bytes :]
+            self._partial_pending = True
+            self._submit("partial", bytes(buf), 0)
+
+    def _submit(self, kind: str, pcm: bytes, start_ms: int) -> None:
+        if self._worker is None:
+            self._worker = asyncio.create_task(self._work())
+        self._jobs.put_nowait((kind, pcm, start_ms))
+
+    def _close_turn(self) -> None:
+        """Hand the in-flight segment to the worker for its final decode and reset the
+        ingestion state so the next turn's audio buffers immediately.
+
+        The VAD level window deliberately survives: it describes the *room*, which
+        doesn't change at a turn boundary, and re-learning it every turn would put the
+        first pause of each one back on the fixed threshold."""
+        start = self._segment_start_ms
+        self._segment_start_ms = start + _bytes_to_ms(len(self._buf))
+        self._submit("final", bytes(self._buf), start)
+        self._buf.clear()
+        self._since_partial = 0
+        self._trailing_silence = 0
+        self._has_speech = False
+
+    async def _work(self) -> None:
+        while True:
+            kind, pcm, start_ms = await self._jobs.get()
+            try:
+                if kind == "partial":
+                    await self._emit_partial(pcm)
+                else:
+                    await self._finalize(pcm, start_ms)
+            except Exception:
+                # A failed decode must not kill the worker: every later turn would
+                # silently stop captioning. Count it and move on to the next job.
+                log.exception("STT %s decode failed", kind)
+                metrics.incr("stage.stt.errors")
+            finally:
+                if kind == "partial":
+                    self._partial_pending = False
+                self._jobs.task_done()
 
     def _speech_threshold(self) -> float:
         """The RMS a frame must reach to count as speech.
@@ -216,17 +280,12 @@ class StreamingTranscriber:
         else:
             self._trailing_silence += len(pcm)
 
-    async def _run_engine(
-        self, *, window_bytes: int = 0, stage: str = "final", want_words: bool = True
-    ):
-        # A partial may decode only the trailing window_bytes of the segment so its
-        # cost doesn't grow with turn length; a final (window_bytes=0) decodes the
-        # whole segment for a stable transcript. The inference time is recorded so the
-        # caption-path latency budget (master plan §6) can actually be measured/tuned.
-        buf = self._buf
-        if window_bytes and len(buf) > window_bytes:
-            buf = buf[-window_bytes:]
-        samples = pcm16_to_float32(bytes(buf))
+    async def _run_engine(self, pcm: bytes, *, stage: str, want_words: bool) -> EngineResult:
+        # A legacy partial carries only the trailing partial window so its cost
+        # doesn't grow with turn length; a final carries the whole segment for a
+        # stable transcript. The inference time is recorded so the caption-path
+        # latency budget (master plan §6) can actually be measured/tuned.
+        samples = pcm16_to_float32(pcm)
         t0 = time.perf_counter()
         result = await asyncio.to_thread(
             self._engine.transcribe, samples, language=self._language, want_words=want_words
@@ -234,15 +293,11 @@ class StreamingTranscriber:
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         return result
 
-    async def _emit_partial(self) -> None:
-        self._since_partial = 0
-
+    async def _emit_partial(self, pcm: bytes) -> None:
         if self._agreement is None:
             # Legacy path: decode the trailing window and emit it verbatim, which
             # rewrites the whole caption line each cadence.
-            result = await self._run_engine(
-                window_bytes=self._partial_window_bytes, stage="partial", want_words=False
-            )
+            result = await self._run_engine(pcm, stage="partial", want_words=False)
             text = result.text.strip()
             if not text:
                 return
@@ -257,7 +312,7 @@ class StreamingTranscriber:
         # here (still bounded by max_segment_ms and, in practice, short because a pause
         # finalizes the turn). The running commit then keeps already-shown words fixed
         # and only the trailing word or two can still change.
-        result = await self._run_engine(window_bytes=0, stage="partial", want_words=False)
+        result = await self._run_engine(pcm, stage="partial", want_words=False)
         lang = _lang(result.language or self._language)
         self._agreement.commit(result.text.split())
         caption = self._agreement.caption_text()
@@ -266,24 +321,21 @@ class StreamingTranscriber:
         self._turn_partial = caption
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
-    async def _finalize(self) -> None:
-        result = await self._run_engine(stage="final", want_words=self._final_words)
-        start = self._segment_start_ms
-        end = start + _bytes_to_ms(len(self._buf))
+    async def _finalize(self, pcm: bytes, start: int) -> None:
+        try:
+            result = await self._run_engine(pcm, stage="final", want_words=self._final_words)
+        except Exception:
+            # A failed whole-turn decode (e.g. the upstream timed out) is treated as
+            # an empty one, so the turn still falls back to the partial the user
+            # already watched instead of vanishing.
+            log.exception("STT final decode failed")
+            metrics.incr("stage.stt.errors")
+            result = EngineResult(text="", words=[], language=None)
+        end = start + _bytes_to_ms(len(pcm))
 
         # The last partial shown for this turn, captured before the per-turn state is
         # reset below — the fallback if the whole-turn decode comes back empty.
         fallback = self._turn_partial
-
-        # Reset for the next segment before emitting so timing stays monotonic. The VAD
-        # level window deliberately survives: it describes the *room*, which doesn't
-        # change at a turn boundary, and re-learning it every turn would put the first
-        # pause of each one back on the fixed threshold.
-        self._segment_start_ms = end
-        self._buf.clear()
-        self._since_partial = 0
-        self._trailing_silence = 0
-        self._has_speech = False
         self._turn_partial = ""
         # The committed prefix belongs to the turn just closed; start the next turn's
         # word-by-word commit from scratch.
@@ -363,10 +415,15 @@ class StreamingTranscriber:
             yield await self._queue.get()
 
     async def flush(self) -> None:
+        """Finalize the in-flight turn and wait for every queued decode to land."""
         if self._buf and self._has_speech:
-            await self._finalize()
+            self._close_turn()
+        if self._worker is not None:
+            await self._jobs.join()
 
     async def close(self) -> None:
         self._closed = True
+        if self._worker is not None:
+            self._worker.cancel()
         # Unblock a pending results() get with a skipped (empty) sentinel.
         await self._queue.put(CaptionPartial(type="caption.partial", text="", lang=None))

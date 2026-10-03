@@ -7,6 +7,7 @@ with no GPU or model download.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import numpy as np
 import pytest
@@ -50,7 +51,20 @@ def _pcm(ms: int, *, amplitude: int) -> bytes:
     return np.full(n, amplitude, dtype=np.int16).tobytes()
 
 
-def _drain(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
+async def _push(t: StreamingTranscriber, pcm: bytes) -> None:
+    """Push and let the decode worker catch up, so a test sees the same results the
+    old inline-decoding push produced for an engine that keeps up."""
+    await t.push(pcm)
+    await t._jobs.join()
+
+
+async def _drain(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
+    await t._jobs.join()
+    return _queued(t)
+
+
+def _queued(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
+    """Take what is already queued (the caller has let the decode worker finish)."""
     out: list[CaptionPartial | CaptionFinal] = []
     while not t._queue.empty():
         out.append(t._queue.get_nowait())
@@ -91,15 +105,15 @@ def test_partials_then_final_on_silence() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):  # 300ms speech -> at least one partial (200ms cadence)
-            await t.push(_pcm(100, amplitude=4000))
-        msgs = _drain(t)
+            await _push(t, _pcm(100, amplitude=4000))
+        msgs = await _drain(t)
         partials = [m for m in msgs if isinstance(m, CaptionPartial)]
         assert partials and partials[0].text == "hello world"
         assert partials[0].lang is not None
 
         for _ in range(3):  # 300ms trailing silence -> finalize
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         f = finals[0]
         assert f.text == "hello world"
@@ -143,10 +157,10 @@ def test_final_words_off_skips_word_timing() -> None:
             final_words=False,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):  # trailing silence -> finalize
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].text == "hello world"
         assert finals[0].words is None
@@ -174,10 +188,10 @@ def test_start_offset_continues_segment_timeline() -> None:
             start_offset_ms=60_000,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         f = finals[0]
         assert f.startMs == 60_000
@@ -203,8 +217,8 @@ def test_partial_with_empty_text_is_suppressed() -> None:
             silence_ms=10000,
             max_segment_ms=10000,
         )
-        await t.push(_pcm(200, amplitude=4000))  # speech triggers a partial
-        assert not _drain(t)  # but the empty hypothesis is suppressed
+        await _push(t, _pcm(200, amplitude=4000))  # speech triggers a partial
+        assert not await _drain(t)  # but the empty hypothesis is suppressed
 
     asyncio.run(run())
 
@@ -228,8 +242,8 @@ def test_legacy_partial_with_empty_text_is_suppressed() -> None:
             max_segment_ms=10000,
             local_agreement=False,
         )
-        await t.push(_pcm(200, amplitude=4000))
-        assert not _drain(t)
+        await _push(t, _pcm(200, amplitude=4000))
+        assert not await _drain(t)
 
     asyncio.run(run())
 
@@ -245,8 +259,8 @@ def test_max_segment_forces_final() -> None:
             max_segment_ms=300,
         )
         for _ in range(3):  # hits the 300ms max on the 3rd chunk
-            await t.push(_pcm(100, amplitude=4000))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=4000))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].endMs == 300
 
@@ -259,10 +273,10 @@ def test_flush_finalizes_remainder() -> None:
         t = StreamingTranscriber(
             eng, language="en", partial_interval_ms=10000, silence_ms=10000, max_segment_ms=10000
         )
-        await t.push(_pcm(200, amplitude=4000))
-        assert not _drain(t)  # nothing emitted yet
+        await _push(t, _pcm(200, amplitude=4000))
+        assert not await _drain(t)  # nothing emitted yet
         await t.flush()
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1 and finals[0].text == "hello world"
 
     asyncio.run(run())
@@ -275,8 +289,8 @@ def test_silence_only_emits_nothing_and_advances_time() -> None:
             eng, language="en", partial_interval_ms=10000, silence_ms=10000, max_segment_ms=300
         )
         for _ in range(3):  # 300ms pure silence -> max-segment finalize, empty result
-            await t.push(_pcm(100, amplitude=0))
-        assert not _drain(t)  # silence produces no caption
+            await _push(t, _pcm(100, amplitude=0))
+        assert not await _drain(t)  # silence produces no caption
         assert t._segment_start_ms == 300  # but the clock still advanced
 
     asyncio.run(run())
@@ -285,8 +299,8 @@ def test_silence_only_emits_nothing_and_advances_time() -> None:
 def test_empty_push_is_ignored() -> None:
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine())
-        await t.push(b"")
-        assert len(t._buf) == 0 and not _drain(t)
+        await _push(t, b"")
+        assert len(t._buf) == 0 and not await _drain(t)
 
     asyncio.run(run())
 
@@ -296,7 +310,7 @@ def test_flush_noop_when_no_speech() -> None:
         eng = FakeEngine()
         t = StreamingTranscriber(eng)
         await t.flush()  # nothing buffered
-        assert eng.calls == 0 and not _drain(t)
+        assert eng.calls == 0 and not await _drain(t)
 
     asyncio.run(run())
 
@@ -307,7 +321,7 @@ def test_results_stream_and_close_sentinel() -> None:
         t = StreamingTranscriber(
             eng, language="en", partial_interval_ms=10000, silence_ms=10000, max_segment_ms=10000
         )
-        await t.push(_pcm(200, amplitude=4000))
+        await _push(t, _pcm(200, amplitude=4000))
         await t.flush()
 
         received: list[CaptionPartial | CaptionFinal] = []
@@ -358,7 +372,7 @@ def test_legacy_partial_decodes_only_trailing_window() -> None:
             local_agreement=False,
         )
         for _ in range(20):  # 2000ms of speech -> partials at 500/1000/1500/2000ms
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         partial_sizes = list(eng.sizes)
         # No partial ever decodes more than the trailing window, even once the
         # buffer (2000ms = 32000 samples) has grown well past it.
@@ -386,7 +400,7 @@ def test_local_agreement_partials_are_anchored_at_segment_start() -> None:
             max_segment_ms=100000,
         )
         for _ in range(20):  # 2000ms of speech -> partials at 500/1000/1500/2000ms
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         # Each partial decodes the whole segment so far: 8000, 16000, 24000, 32000.
         assert eng.sizes == [8000, 16000, 24000, 32000]
 
@@ -405,8 +419,8 @@ def test_partial_window_zero_decodes_whole_segment() -> None:
             max_segment_ms=100000,
         )
         for _ in range(4):
-            await t.push(_pcm(100, amplitude=4000))
-        assert [m for m in _drain(t) if isinstance(m, CaptionPartial)]
+            await _push(t, _pcm(100, amplitude=4000))
+        assert [m for m in await _drain(t) if isinstance(m, CaptionPartial)]
 
     asyncio.run(run())
 
@@ -427,9 +441,9 @@ def test_stt_inference_latency_is_recorded() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):  # speech -> a partial
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):  # trailing silence -> a final
-            await t.push(_pcm(100, amplitude=0))
+            await _push(t, _pcm(100, amplitude=0))
         snap = metrics.snapshot()["latency_ms"]
         assert snap["stage.stt.partial_latency_ms"]["count"] >= 1
         assert snap["stage.stt.final_latency_ms"]["count"] >= 1
@@ -471,8 +485,8 @@ def test_local_agreement_partials_grow_stably() -> None:
         )
         texts: list[str] = []
         for _ in range(4):
-            await t.push(_pcm(100, amplitude=4000))
-            texts.extend(m.text for m in _drain(t) if isinstance(m, CaptionPartial))
+            await _push(t, _pcm(100, amplitude=4000))
+            texts.extend(m.text for m in await _drain(t) if isinstance(m, CaptionPartial))
 
         assert texts == ["one", "one two", "one two three", "one two three four"]
         # Each emitted caption extends the previous one — pure growth, no rewriting.
@@ -500,8 +514,8 @@ def test_local_agreement_does_not_commit_a_revised_tail() -> None:
             max_segment_ms=100000,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
-            _drain(t)
+            await _push(t, _pcm(100, amplitude=4000))
+            await _drain(t)
 
         assert t._agreement is not None
         # "go to the" agreed every time; "bench" only settled once it repeated.
@@ -523,10 +537,10 @@ def test_local_agreement_resets_between_segments() -> None:
             max_segment_ms=100000,
         )
         for _ in range(2):  # speech -> partials build up a committed prefix
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         assert t._agreement is not None and t._agreement.committed == ["hello", "world"]
         for _ in range(3):  # trailing silence -> finalize, which resets the commit
-            await t.push(_pcm(100, amplitude=0))
+            await _push(t, _pcm(100, amplitude=0))
         assert t._agreement.committed == []
         assert t._agreement.tentative == []
 
@@ -548,8 +562,8 @@ def test_local_agreement_off_emits_raw_window() -> None:
         )
         texts: list[str] = []
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
-            texts.extend(m.text for m in _drain(t) if isinstance(m, CaptionPartial))
+            await _push(t, _pcm(100, amplitude=4000))
+            texts.extend(m.text for m in await _drain(t) if isinstance(m, CaptionPartial))
 
         assert t._agreement is None
         # Raw path emits exactly what the engine returned — including the full rewrite.
@@ -590,11 +604,11 @@ def test_partials_skip_word_timestamps_finals_ask_for_them() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):  # speech -> partials
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         assert eng.wants and all(w is False for w in eng.wants)
 
         for _ in range(3):  # trailing silence -> one final
-            await t.push(_pcm(100, amplitude=0))
+            await _push(t, _pcm(100, amplitude=0))
         assert eng.wants[-1] is True
 
     asyncio.run(run())
@@ -613,7 +627,7 @@ def test_legacy_partials_also_skip_word_timestamps() -> None:
             max_segment_ms=100000,
             local_agreement=False,
         )
-        await t.push(_pcm(200, amplitude=4000))
+        await _push(t, _pcm(200, amplitude=4000))
         assert eng.wants == [False]
 
     asyncio.run(run())
@@ -639,9 +653,9 @@ def _noisy_room(adaptive: bool) -> StreamingTranscriber:
             vad_adaptive=adaptive,
         )
         for _ in range(10):
-            await t.push(_pcm(100, amplitude=8000))  # speech over the room
+            await _push(t, _pcm(100, amplitude=8000))  # speech over the room
         for _ in range(10):
-            await t.push(_pcm(100, amplitude=1200))  # the room alone — a real pause
+            await _push(t, _pcm(100, amplitude=1200))  # the room alone — a real pause
         return t
 
     return asyncio.run(run())
@@ -651,7 +665,7 @@ def test_fixed_vad_never_closes_a_turn_in_a_noisy_room() -> None:
     """The regression this fixes: 0.037 >= 0.005, so every frame of the pause reads as
     speech and the turn can only ever end on max_segment_ms."""
     t = _noisy_room(adaptive=False)
-    assert not [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+    assert not [m for m in _queued(t) if isinstance(m, CaptionFinal)]
     assert t._trailing_silence == 0  # not one frame counted as silence
 
 
@@ -660,7 +674,7 @@ def test_adaptive_vad_closes_the_turn_in_the_same_noisy_room() -> None:
     pause is found and the turn finalizes on it — on the FIRST turn, without waiting
     for a max-segment close to teach it the room."""
     t = _noisy_room(adaptive=True)
-    assert len([m for m in _drain(t) if isinstance(m, CaptionFinal)]) == 1
+    assert len([m for m in _queued(t) if isinstance(m, CaptionFinal)]) == 1
 
 
 def test_adaptive_vad_is_a_no_op_in_a_quiet_room() -> None:
@@ -671,10 +685,10 @@ def test_adaptive_vad_is_a_no_op_in_a_quiet_room() -> None:
         t = StreamingTranscriber(FakeEngine(), silence_rms=0.005)
         assert t._speech_threshold() == pytest.approx(0.005)  # no audio seen yet
         for _ in range(5):
-            await t.push(_pcm(100, amplitude=0))
+            await _push(t, _pcm(100, amplitude=0))
         assert t._speech_threshold() == pytest.approx(0.005)
         # And speech over silence still reads as speech.
-        await t.push(_pcm(100, amplitude=4000))
+        await _push(t, _pcm(100, amplitude=4000))
         assert t._has_speech is True
 
     asyncio.run(run())
@@ -695,7 +709,7 @@ def test_threshold_cannot_climb_over_the_speaker() -> None:
         )
         level = rms(pcm16_to_float32(_pcm(100, amplitude=8000)))
         for _ in range(50):  # 5s of flat, continuous speech — no pause anywhere
-            await t.push(_pcm(100, amplitude=8000))
+            await _push(t, _pcm(100, amplitude=8000))
         # floor*ratio would be 3x the speaker; the ceiling pins it to half of them.
         assert t._speech_threshold() == pytest.approx(level * 0.5, rel=1e-3)
         assert t._has_speech is True
@@ -710,7 +724,7 @@ def test_vad_level_window_is_bounded() -> None:
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine(), vad_window_ms=500)
         for _ in range(50):  # 5s of audio through a 500ms window
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         assert t._levels_bytes <= _ms_to_bytes(500) + _ms_to_bytes(100)
         assert len(t._levels) <= 6
 
@@ -722,8 +736,8 @@ def test_vad_window_keeps_one_entry_for_an_oversized_chunk() -> None:
 
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine(), vad_window_ms=100)
-        await t.push(_pcm(500, amplitude=4000))
-        await t.push(_pcm(500, amplitude=4000))
+        await _push(t, _pcm(500, amplitude=4000))
+        await _push(t, _pcm(500, amplitude=4000))
         assert len(t._levels) == 1
 
     asyncio.run(run())
@@ -742,7 +756,7 @@ def test_vad_level_window_survives_a_turn_boundary() -> None:
             silence_rms=0.005,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=8000))
+            await _push(t, _pcm(100, amplitude=8000))
         assert not t._buf  # the turn closed
         assert t._levels  # ...but the room estimate carried over
         assert t._speech_threshold() > 0.005
@@ -753,7 +767,7 @@ def test_vad_level_window_survives_a_turn_boundary() -> None:
 def test_adaptive_vad_can_be_turned_off() -> None:
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine(), silence_rms=0.005, vad_adaptive=False)
-        await t.push(_pcm(100, amplitude=8000))  # would raise an adaptive threshold
+        await _push(t, _pcm(100, amplitude=8000))  # would raise an adaptive threshold
         assert t._speech_threshold() == pytest.approx(0.005)
 
     asyncio.run(run())
@@ -783,7 +797,7 @@ def test_streaming_warmup_is_a_noop() -> None:
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine(), language="en")
         await t.warmup()  # no per-session cold-start cost to pay; must not raise or emit
-        assert _drain(t) == []
+        assert await _drain(t) == []
 
     asyncio.run(run())
 
@@ -839,10 +853,10 @@ def test_final_falls_back_to_text_langid_when_engine_reports_none() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].lang is not None and finals[0].lang.value == "es"
 
@@ -883,10 +897,10 @@ def test_final_recovers_partial_on_single_engine_empty_final() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):  # speech -> partials build the caption
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):  # trailing silence -> finalize; final decode is empty
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].text == spanish
         assert finals[0].words is None
@@ -932,10 +946,10 @@ def test_recovery_suppresses_short_filler_partial() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):  # speech -> the partial shows only the filler word
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):  # trailing silence -> finalize; final decode is empty
-            await t.push(_pcm(100, amplitude=0))
-        msgs = _drain(t)
+            await _push(t, _pcm(100, amplitude=0))
+        msgs = await _drain(t)
         partials = [m for m in msgs if isinstance(m, CaptionPartial)]
         assert partials and all(m.text == filler for m in partials)  # user saw the filler
         # The junk partial does NOT become a final — the turn stays dropped.
@@ -976,10 +990,10 @@ def test_recovery_word_gate_boundary() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=0))
-        return [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        return [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
 
     async def run() -> None:
         assert await run_one("ven aquí") == []  # two words: suppressed
@@ -1003,8 +1017,8 @@ def test_silence_only_turn_is_still_dropped_not_recovered() -> None:
             eng, language="en", partial_interval_ms=10000, silence_ms=10000, max_segment_ms=300
         )
         for _ in range(3):  # 300ms pure silence -> max-segment finalize, empty result
-            await t.push(_pcm(100, amplitude=0))
-        assert not _drain(t)  # nothing surfaced
+            await _push(t, _pcm(100, amplitude=0))
+        assert not await _drain(t)  # nothing surfaced
         assert metrics.snapshot()["counters"].get("stage.stt.final_recovered", 0) == 0
         metrics.reset()
 
@@ -1024,11 +1038,127 @@ def test_engine_reported_language_outranks_text_langid() -> None:
             max_segment_ms=5000,
         )
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=4000))
+            await _push(t, _pcm(100, amplitude=4000))
         for _ in range(3):
-            await t.push(_pcm(100, amplitude=0))
-        finals = [m for m in _drain(t) if isinstance(m, CaptionFinal)]
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert len(finals) == 1
         assert finals[0].lang is not None and finals[0].lang.value == "en"
+
+    asyncio.run(run())
+
+
+# ----- decode off the ingestion path (XERK-1424) ---------------------------
+
+
+class GatedEngine:
+    """Blocks every decode until released — a hung STT upstream. Optionally raises
+    on a chosen stage instead of answering."""
+
+    def __init__(self, *, text: str = "one two three", fail: str | None = None) -> None:
+        self.gate = threading.Event()
+        self.calls: list[bool] = []  # want_words per call: False = partial, True = final
+        self._text = text
+        self._fail = fail
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        self.calls.append(want_words)
+        assert self.gate.wait(10)
+        if self._fail == ("final" if want_words else "partial"):
+            raise TimeoutError("upstream hung")
+        return EngineResult(text=self._text, words=[], language="en")
+
+
+def test_push_never_waits_on_a_hung_decode() -> None:
+    """The bug: push() awaited the decode, so the WS frame loop stopped reading the
+    socket — and its keepalive pongs — for as long as STT hung, and uvicorn closed
+    every open session with 1011. Now push only buffers; a hung engine coalesces
+    partials and queues finals, and everything lands in order once it recovers."""
+
+    async def run() -> None:
+        eng = GatedEngine()
+        t = StreamingTranscriber(
+            eng,
+            language="en",
+            partial_interval_ms=200,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):  # three turns of 1 s speech + 300 ms pause = 3.9 s of audio
+            for _ in range(10):
+                await asyncio.wait_for(t.push(_pcm(100, amplitude=4000)), 1)
+            for _ in range(3):
+                await asyncio.wait_for(t.push(_pcm(100, amplitude=0)), 1)
+        await asyncio.sleep(0.05)
+        # One partial is stuck in the engine; the cadences behind it were coalesced
+        # instead of piling up, and every turn's final is queued, not dropped.
+        assert eng.calls == [False]
+        assert [k for k, _, _ in t._jobs._queue].count("final") == 3
+
+        eng.gate.set()
+        await t.flush()
+        msgs = _queued(t)
+        finals = [m for m in msgs if isinstance(m, CaptionFinal)]
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 1300), (1300, 2600), (2600, 3900)]
+        # Each turn's partials precede its final: the first message is a partial.
+        assert isinstance(msgs[0], CaptionPartial)
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_failed_final_decode_falls_back_to_the_shown_partial() -> None:
+    """A final that times out upstream is treated as an empty decode: the turn the
+    user already watched still lands (XERK-174 recovery) and the worker lives on."""
+
+    async def run() -> None:
+        eng = GatedEngine(fail="final")
+        eng.gate.set()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=200, silence_ms=300, min_segment_ms=100
+        )
+        for _ in range(2):
+            for _ in range(5):
+                await _push(t, _pcm(100, amplitude=4000))
+            for _ in range(3):
+                await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [f.text for f in finals] == ["one two three", "one two three"]
+        assert all(f.words is None for f in finals)
+
+    asyncio.run(run())
+
+
+def test_failed_partial_decode_does_not_stop_later_decodes() -> None:
+    async def run() -> None:
+        eng = GatedEngine(fail="partial")
+        eng.gate.set()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=200, silence_ms=300, min_segment_ms=100
+        )
+        for _ in range(5):
+            await _push(t, _pcm(100, amplitude=4000))
+        for _ in range(3):
+            await _push(t, _pcm(100, amplitude=0))
+        msgs = await _drain(t)
+        assert not [m for m in msgs if isinstance(m, CaptionPartial)]
+        assert [m.text for m in msgs if isinstance(m, CaptionFinal)] == ["one two three"]
+        assert t._partial_pending is False  # a failed partial frees the slot
+
+    asyncio.run(run())
+
+
+def test_close_cancels_the_decode_worker() -> None:
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), partial_interval_ms=100)
+        await _push(t, _pcm(200, amplitude=4000))
+        worker = t._worker
+        assert worker is not None and not worker.done()
+        await t.close()
+        await asyncio.sleep(0)
+        assert worker.cancelled()
 
     asyncio.run(run())
