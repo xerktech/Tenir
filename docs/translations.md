@@ -55,9 +55,10 @@ once the run ends.
    proper-noun list, a bare interjection) *inherits* an open run — mid-run it
    is overwhelmingly a continuation, so it is translated with the rest,
    without a claimed source language; outside a run it decides nothing. A
-   translation that repeats its source's words (an English turn that slipped
-   in as ambiguous, echoed or reworded by the model: "I made sure I can" →
-   "I made sure I could") is suppressed rather than rendered (XERK-1423).
+   translation that repeats its source (an English turn that slipped in as
+   ambiguous) is suppressed rather than rendered — an exact echo, or a close
+   rewording whose only changed source words are English ("I made sure I can"
+   → "I made sure I could", XERK-1423).
 2. **Translation is server-side, off the caption path.** Each non-English final
    is translated through the same LiteLLM gateway the cues use, on its own
    route (`API_TRANSLATION_MODEL` over `API_LITELLM_ENDPOINT`; same weights as

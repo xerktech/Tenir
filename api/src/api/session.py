@@ -64,6 +64,7 @@ from api.persistence import (
 )
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
+from api.stt.langid import is_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -122,27 +123,40 @@ def _enum_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
-# A "translation" whose words match the source this closely is the source reworded,
-# not translated (XERK-1423): an English turn inherited by a run comes back from a
-# completion-prompt model with one word changed ("I made sure I can" -> "I made sure I
-# could"). Measured on real milmmt output: those score >= 0.75, real translations of
-# es/pt/de/it turns <= 0.5 (even with names or English titles: "fuimos a the cheesecake
-# factory ayer" -> "We went to the Cheesecake Factory yesterday" is 0.46).
+# A "translation" whose words match the source this closely MAY be the source reworded
+# rather than translated (XERK-1423): an English turn inherited by a run comes back from
+# a completion-prompt model with a word changed ("I made sure I can" -> "I made sure I
+# could", ratio 0.80). Real translations of name-heavy turns score as high ("Marco,
+# Sofia, Lucia, Pedro, sin Ana" -> "... without Ana", 0.83), so the ratio alone does not
+# decide; see ``_same_text``.
 _ECHO_MIN_WORD_RATIO = 0.75
 
 _WORD_RE = re.compile(r"\w+(?:'\w+)?")
 
 
-def _same_text(a: str, b: str) -> bool:
-    """Whether a translation is just its source echoed back (XERK-160) or barely
-    reworded (XERK-1423): the casefolded word sequences, punctuation ignored, match
-    at least ``_ECHO_MIN_WORD_RATIO``. Either way it tells the listener nothing the
-    caption doesn't."""
-    wa = _WORD_RE.findall(a.casefold())
-    wb = _WORD_RE.findall(b.casefold())
-    if not wa or not wb:
-        return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
-    return SequenceMatcher(None, wa, wb, autojunk=False).ratio() >= _ECHO_MIN_WORD_RATIO
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall(text.casefold().replace("\u2019", "'"))
+
+
+def _same_text(translated: str, source: str) -> bool:
+    """Whether a translation is just its source echoed back (XERK-160) or reworded
+    (XERK-1423). Either way it tells the listener nothing true that the caption
+    doesn't, and a rewording misquotes the speaker.
+
+    Reworded: the casefolded word sequences, punctuation ignored, match at least
+    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed is English
+    ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" -> "and")
+    is a real translation, however few words it touches, and is kept.
+    """
+    src = _words(source)
+    out = _words(translated)
+    if not src or not out:
+        return " ".join(translated.split()).casefold() == " ".join(source.split()).casefold()
+    matcher = SequenceMatcher(None, src, out, autojunk=False)
+    if matcher.ratio() < _ECHO_MIN_WORD_RATIO:
+        return False
+    changed = [w for op, i1, i2, _, _ in matcher.get_opcodes() if op != "equal" for w in src[i1:i2]]
+    return all(is_english_word(w) for w in changed)
 
 
 def is_valid_session_id(value: str) -> bool:
@@ -1241,8 +1255,8 @@ class Session:
                 await self._send(SongDone(type="song.done", songId=song_id))
             except Exception:
                 log.warning(
-                    "session %s could not deliver song.done (client gone)", self.session_id
-                )
+                "session %s could not deliver song.done (client gone)", self.session_id
+            )
                 metrics.incr("music.send_errors")
         metrics.incr("music.done")
 

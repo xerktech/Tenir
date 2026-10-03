@@ -165,6 +165,13 @@ def leans_english(text: str, versus: str) -> bool:
     return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
 
 
+def is_english_word(word: str) -> bool:
+    """Whether a lowercased token is an English word as far as this module knows: the
+    English vocabulary plus "i" and "a", which it leaves out only because they are
+    also words of other contract languages (``_ENGLISH_HOMOGRAPHS``)."""
+    return word in _WORDS["en"] or word in ("i", "a")
+
+
 def detect_lang(text: str) -> str | None:
     """Best-effort language of one finalized turn, as a contract code, or None.
 

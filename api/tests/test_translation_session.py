@@ -527,6 +527,24 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         ),
         ("Mercurio, Venus, Tierra, Marte.", "Mercury, Venus, Earth, Mars.", False),
         ("Hospital central", "Central hospital", False),
+        # XERK-1423 QA: name-heavy turns match their translation as closely as a
+        # rewording does, but the changed word is foreign, so it is a translation.
+        ("Marco, Sofia, Lucia, Pedro, sin Ana", "Marco, Sofia, Lucia, Pedro, without Ana", False),
+        ("the iPhone 15 Pro Max, mañana", "The iPhone 15 Pro Max, tomorrow", False),
+        (
+            "Paris, Lyon, Marseille, Nice, sauf Lille",
+            "Paris, Lyon, Marseille, Nice, except for Lille",
+            False,
+        ),
+        (
+            "Los Angeles, San Francisco y San Diego",
+            "Los Angeles, San Francisco and San Diego",
+            False,
+        ),
+        ("OK, OK, OK, vale", "OK, OK, OK, fine", False),
+        ("das Hotel in Berlin", "the hotel in Berlin", False),
+        # curly apostrophes from the model don't disguise an echo
+        ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
     ],
 )
