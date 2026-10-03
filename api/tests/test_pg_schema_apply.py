@@ -317,6 +317,36 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
     assert max_in_apply == 1, "schema statements must never run concurrently"
 
 
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_every_store_applies_under_the_shared_schema_lock(monkeypatch, store_path) -> None:
+    """Both stores apply DDL on pool open, and their per-store locks don't see each
+    other: on an empty database concurrent first use raced (UndefinedTable households,
+    UniqueViolation on pg_type). Each apply must take the database-wide advisory lock
+    first, then run schema.sql — so the users DDL never precedes households
+    (XERK-1430)."""
+    import importlib
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+
+    store_cls("postgresql://unused")._ensure_pool()
+
+    assert conn.statements[0].startswith("SELECT pg_advisory_xact_lock("), conn.statements[0]
+    households = next(
+        i for i, s in enumerate(conn.statements) if "TABLE IF NOT EXISTS households" in s
+    )
+    users = [
+        i
+        for i, s in enumerate(conn.statements)
+        if s.upper().startswith(("CREATE", "ALTER")) and " users " in f"{s} "
+    ]
+    assert users and households < min(users)
+
+
 class _SqlStateError(Exception):
     """Stands in for a psycopg error carrying a SQLSTATE."""
 

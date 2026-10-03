@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from api.persistence.models import (
     Conversation,
@@ -93,6 +93,43 @@ def _is_connection_lost(conn, exc: BaseException) -> bool:
     return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
 
 
+# Key for the transaction-scoped advisory lock every boot schema apply takes first.
+# SqlConversationStore and SqlUserStore each apply DDL on pool open, and their
+# per-store locks don't see each other (nor other replicas): concurrent first use on
+# an empty database raced CREATE TABLE IF NOT EXISTS (UniqueViolation on
+# pg_type_typname_nsp_index) or ran the users DDL before households existed
+# (XERK-1430). One database-wide lock serializes every apply, in any process.
+_SCHEMA_LOCK_KEY = 0x54454E4952  # "TENIR"
+
+
+def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
+    """Apply schema.sql, then ``extra`` statements, in one transaction holding the
+    database-wide schema lock.
+
+    A statement the database rejects raises ``SchemaApplyError``; failing to get a
+    connection, or losing it mid-apply, propagates as-is (database unreachable)."""
+    path = find_schema_file()
+    if path is None:
+        log.warning("schema.sql not found; skipping it in the boot schema apply")
+    sql = path.read_text(encoding="utf-8") if path is not None else ""
+    # pool.connection() runs the block as one transaction (committed on exit), so the
+    # xact lock is held until every statement below is committed.
+    with pool.connection() as conn:
+        try:
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
+            apply_schema(conn, sql)
+            for statement in extra:
+                conn.execute(statement)
+        except Exception as exc:
+            if _is_connection_lost(conn, exc):
+                raise
+            raise SchemaApplyError(
+                f"boot schema (schema.sql from {path}) failed to apply: {exc}"
+            ) from exc
+    if path is not None:
+        log.info("applied idempotent schema from %s on pool open", path)
+
+
 class SqlConversationStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -145,21 +182,7 @@ class SqlConversationStore:
         return self._pool
 
     def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
-        path = find_schema_file()
-        if path is None:
-            log.warning("schema.sql not found; skipping boot schema apply")
-            return
-        sql = path.read_text(encoding="utf-8")
-        with pool.connection() as conn:
-            # Only errors from the statements themselves are schema errors; failing
-            # to get a connection above propagates as-is (database unreachable).
-            try:
-                apply_schema(conn, sql)
-            except Exception as exc:
-                if _is_connection_lost(conn, exc):
-                    raise
-                raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
-        log.info("applied idempotent schema from %s on pool open", path)
+        apply_boot_schema(pool)
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover

@@ -21,6 +21,7 @@ import threading
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import DuplicateUser, User
+from api.persistence.postgres import apply_boot_schema
 
 log = logging.getLogger("api.auth.sql_users")
 
@@ -75,10 +76,12 @@ class SqlUserStore:
             pool = ConnectionPool(self._dsn, open=True)
             # Cache the pool only once its schema applied, so a failed apply is
             # retried on next use rather than silently skipped forever (XERK-1409).
+            # schema.sql first: the users DDL references households, which on an
+            # empty database only exists once schema.sql ran — and the shared apply
+            # takes the database-wide schema lock, so this can't race the
+            # conversation store's own apply (XERK-1430).
             try:
-                with pool.connection() as conn:
-                    for stmt in _ENSURE_SCHEMA:
-                        conn.execute(stmt)
+                apply_boot_schema(pool, _ENSURE_SCHEMA)
             except BaseException:
                 pool.close()
                 raise

@@ -324,6 +324,50 @@ def test_reconcile_skips_on_username_collision(monkeypatch: pytest.MonkeyPatch) 
     assert store.authenticate("root", "rootpassword") is admin
 
 
+def test_seeding_skips_when_the_admin_username_is_taken(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh seed whose username another row already owns is a config clash, not a
+    transient failure: it logs and returns rather than raising, since get_user_store
+    retries a raising reconcile on every access (XERK-1430)."""
+    from api.auth.users import InMemoryUserStore, reconcile_admin
+
+    store = InMemoryUserStore()
+    store.create("root", "longpassword", household="h1")
+    _set_admin_env(monkeypatch, "root", "rootpassword")
+    reconcile_admin(store)  # must not raise
+    assert store.get_env_admin() is None
+
+
+def test_failed_admin_reconcile_is_retried_on_next_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (XERK-1430): the store was cached before reconcile_admin ran, so a
+    reconcile that failed once (api booted with Postgres down, which then came back
+    empty) was never retried — the env admin was never seeded and login 401'd until
+    restart."""
+    from api.auth import get_user_store, users
+
+    class _DownOnce(users.InMemoryUserStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.down = True
+
+        def get_env_admin(self):
+            if self.down:
+                raise ConnectionError("database unreachable")
+            return super().get_env_admin()
+
+    flaky = _DownOnce()
+    monkeypatch.setattr(users, "_build_user_store", lambda: flaky)
+    _set_admin_env(monkeypatch, "root", "rootpassword")
+    reset_user_store()
+
+    with pytest.raises(ConnectionError):
+        get_user_store()
+    flaky.down = False  # the database came back
+    store = get_user_store()
+    assert store is flaky, "the one store is kept across the retry"
+    assert store.authenticate("root", "rootpassword") is not None
+    reset_user_store()
+
+
 def test_reconcile_noop_when_admin_vars_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.auth.users import InMemoryUserStore, reconcile_admin
 

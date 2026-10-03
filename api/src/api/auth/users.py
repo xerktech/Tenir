@@ -329,6 +329,10 @@ class InMemoryUserStore:
 
 
 _store: UserStore | None = None
+# Whether reconcile_admin has succeeded for ``_store``. Tracked apart from the store
+# so a failed reconcile (database down, or up but still empty) is retried on the
+# next access instead of leaving the env admin unseeded until restart (XERK-1430).
+_admin_reconciled = False
 _store_lock = threading.Lock()
 
 
@@ -376,13 +380,23 @@ def reconcile_admin(store: UserStore) -> None:
                 "without an email link key",
                 email,
             )
-            store.create(
-                settings.auth_admin_username,
-                settings.auth_admin_password,
-                household=settings.auth_admin_household,
-                role="admin",
-                is_env_admin=True,
-            )
+            try:
+                store.create(
+                    settings.auth_admin_username,
+                    settings.auth_admin_password,
+                    household=settings.auth_admin_household,
+                    role="admin",
+                    is_env_admin=True,
+                )
+            except DuplicateUser:
+                # The username itself is taken by another row: a config clash, not
+                # a transient failure, so don't raise — get_user_store retries a
+                # raising reconcile on every access, which would fail every request.
+                log.error(
+                    "could not seed env admin: username %r is already taken by "
+                    "another user; rename one of them and restart",
+                    settings.auth_admin_username,
+                )
         return
     try:
         store.update_credentials(
@@ -576,17 +590,23 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
 
 
 def get_user_store() -> UserStore:
-    """The process-wide user store, with the env admin reconciled on first use."""
-    global _store
+    """The process-wide user store, with the env admin reconciled on first use.
+
+    A reconcile that raises propagates (the caller fails) and is retried on the
+    next access, until it succeeds once."""
+    global _store, _admin_reconciled
     with _store_lock:
         if _store is None:
             _store = _build_user_store()
+        if not _admin_reconciled:
             reconcile_admin(_store)
+            _admin_reconciled = True
         return _store
 
 
 def reset_user_store() -> None:
     """Drop the singleton so tests start from a clean store (re-seeds on next use)."""
-    global _store
+    global _store, _admin_reconciled
     with _store_lock:
         _store = None
+        _admin_reconciled = False

@@ -90,3 +90,44 @@ def test_schema_upgrades_a_pre_ownership_data_dir_and_backfills(conn) -> None:
     owner = conn.execute("SELECT owner FROM conversations WHERE id = 'legacy-1'").fetchone()[0]
     # Stored as the admin's id rendered as text: what the code compares it against.
     assert owner == str(admin)
+
+
+def test_concurrent_first_use_of_both_stores_on_an_empty_database() -> None:
+    """XERK-1430: the conversation and user stores each apply DDL on first use. On an
+    empty database, running both at once raced — the users DDL before households
+    existed (UndefinedTable), or two CREATE TABLE IF NOT EXISTS colliding
+    (UniqueViolation on pg_type_typname_nsp_index). Both must succeed, every time."""
+    import threading
+
+    from api.auth.sql_users import SqlUserStore
+    from api.persistence.postgres import SqlConversationStore
+
+    for _ in range(5):
+        schema = f"t_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {schema}")
+        dsn = psycopg.conninfo.make_conninfo(DSN, options=f"-c search_path={schema},public")
+        stores = [SqlUserStore(dsn), SqlConversationStore(dsn)]
+        errors: list[BaseException] = []
+        start = threading.Barrier(len(stores))
+
+        def first_use(store) -> None:
+            start.wait()
+            try:
+                store._ensure_pool()
+            except BaseException as exc:  # noqa: BLE001 - collected for the assert
+                errors.append(exc)
+
+        threads = [threading.Thread(target=first_use, args=(s,)) for s in stores]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not errors, errors
+        finally:
+            for store in stores:
+                if store._pool is not None:
+                    store._pool.close()
+            with psycopg.connect(DSN, autocommit=True) as admin:
+                admin.execute(f"DROP SCHEMA {schema} CASCADE")
