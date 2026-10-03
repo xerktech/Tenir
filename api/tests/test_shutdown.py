@@ -296,3 +296,31 @@ def test_a_close_hung_after_cancel_does_not_hold_shutdown(monkeypatch: pytest.Mo
             task.cancel()
 
     asyncio.run(run())
+
+
+def test_a_deadline_cancel_at_the_music_scan_join_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QA: the scan join swallowed every CancelledError, so a deadline cancel landing
+    there ran on into music.close() (unbounded) and never reached _persist()."""
+    monkeypatch.setattr(session_mod, "_STT_FLUSH_TIMEOUT_S", 0.01)
+
+    class HungMusic:
+        async def close(self) -> None:
+            await asyncio.Event().wait()
+
+    async def slow_to_stop() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(1)  # still winding down when the deadline lands
+            raise
+
+    async def run() -> None:
+        (s,) = await _live_sessions(1)
+        s._music_scan = asyncio.create_task(slow_to_stop())
+        s._music = HungMusic()
+        await asyncio.wait_for(close_all_sessions(deadline=0.5), timeout=3)
+        _assert_persisted([s])
+
+    asyncio.run(run())

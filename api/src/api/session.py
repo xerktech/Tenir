@@ -1358,7 +1358,10 @@ class Session:
                 try:
                     await self._music_scan
                 except asyncio.CancelledError:
-                    pass
+                    # The scan's own cancel is expected; the shutdown deadline's
+                    # cancel of this teardown must still reach the finally, not
+                    # run on into the unbounded music/cue closes (XERK-1458).
+                    self._reraise_if_cancelling()
                 self._music_scan = None
             if self._music is not None:
                 try:
