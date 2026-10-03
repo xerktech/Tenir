@@ -15,6 +15,7 @@ is exercised by the compose stack.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Iterator
 
@@ -70,17 +71,61 @@ def apply_schema(conn, sql: str) -> None:
         conn.execute(statement)
 
 
+class SchemaApplyError(RuntimeError):
+    """schema.sql was rejected by a reachable database (XERK-1409).
+
+    Distinct from an unreachable database: that heals on its own, but a schema the
+    database refuses — e.g. a migration that only fails on production data — leaves
+    every session.start broken, so boot treats it as fatal rather than rolling out
+    a pod that looks healthy and can't record."""
+
+
+def _is_connection_lost(conn, exc: BaseException) -> bool:
+    """True when a statement failed because the connection itself went away (the
+    server restarting mid-apply) — that heals on its own, so it is not a rejected
+    schema. Deliberately NOT "any psycopg OperationalError": that class also covers
+    real rejections such as 54000 (index row too large) or 53100 (disk full), and
+    treating those as an outage booted a Ready pod on a broken schema again."""
+    if getattr(conn, "broken", False):
+        return True
+    sqlstate = getattr(exc, "sqlstate", None) or ""
+    # Class 08: connection exception; 57P01-57P03: admin/crash shutdown, cannot connect.
+    return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
+
+
 class SqlConversationStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool = None
+        # Serializes pool open + schema apply. Without it, concurrent first callers
+        # each open a pool and run the DDL in parallel, which Postgres deadlocks on.
+        self._pool_lock = threading.Lock()
+
+    def open(self) -> None:  # pragma: no cover - requires psycopg + a live database
+        """Eagerly open the pool and apply the schema at boot.
+
+        A rejected schema raises ``SchemaApplyError`` so startup fails and the pod
+        crashloops instead of reporting Ready. Any other failure (database not
+        reachable yet) is only logged: the lazy path retries on next use and
+        ``/ready`` reports it meanwhile."""
+        try:
+            self._ensure_pool()
+        except (SchemaApplyError, ImportError):
+            # A missing driver is a permanent misconfiguration, not a DB outage.
+            raise
+        except Exception as exc:  # noqa: BLE001 - unreachable DB is non-fatal at boot
+            log.warning("database not reachable at startup; will retry lazily: %s", exc)
 
     def _ensure_pool(self):  # pragma: no cover - requires psycopg + a live database
-        if self._pool is None:
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is not None:
+                return self._pool
             from psycopg_pool import ConnectionPool
 
             log.info("opening Postgres connection pool")
-            self._pool = ConnectionPool(self._dsn, open=True)
+            pool = ConnectionPool(self._dsn, open=True)
             # Self-heal schema drift on boot. Postgres only applies schema.sql on a
             # FRESH data volume (docker-entrypoint-initdb.d), so a database created
             # before an additive change — e.g. the `cues` table (XERK-81) that reads
@@ -88,17 +133,32 @@ class SqlConversationStore:
             # session.start create() that calls get()) then fails "relation does not
             # exist", killing transcription. Re-applying the idempotent schema here
             # converges an old data dir without a manual migration.
-            self._apply_schema()
+            # The pool is cached only once the schema applied: caching it first meant
+            # one failed apply was never retried and every later call ran against the
+            # broken schema with nothing reporting it (XERK-1409).
+            try:
+                self._apply_schema(pool)
+            except BaseException:
+                pool.close()
+                raise
+            self._pool = pool
         return self._pool
 
-    def _apply_schema(self) -> None:  # pragma: no cover - requires a live database
-        assert self._pool is not None
+    def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
         path = find_schema_file()
         if path is None:
             log.warning("schema.sql not found; skipping boot schema apply")
             return
-        with self._pool.connection() as conn:
-            apply_schema(conn, path.read_text(encoding="utf-8"))
+        sql = path.read_text(encoding="utf-8")
+        with pool.connection() as conn:
+            # Only errors from the statements themselves are schema errors; failing
+            # to get a connection above propagates as-is (database unreachable).
+            try:
+                apply_schema(conn, sql)
+            except Exception as exc:
+                if _is_connection_lost(conn, exc):
+                    raise
+                raise SchemaApplyError(f"schema.sql from {path} failed to apply: {exc}") from exc
         log.info("applied idempotent schema from %s on pool open", path)
 
     @staticmethod
