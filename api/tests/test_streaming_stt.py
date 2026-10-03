@@ -1483,3 +1483,29 @@ def test_partial_queued_behind_a_slow_final_is_dropped_when_stale(
         await t.close()
 
     asyncio.run(run())
+
+
+def test_finalizing_clears_when_finalize_raises_after_the_decode() -> None:
+    """_finalize can raise past the engine call (here an out-of-range word confidence
+    fails Word validation). The worker must still count the turn's final as done, or
+    `finalizing` sticks True and the session's translation run never closes."""
+
+    class BadWord(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+            result = super().transcribe(samples, language=language, want_words=want_words)
+            for w in result.words:
+                w.probability = 1.0000001
+            return result
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            BadWord(), language="en", partial_interval_ms=60_000, silence_ms=300,
+            min_segment_ms=100,
+        )
+        await _push(t, _pcm(600, amplitude=3000))
+        await _push(t, _pcm(300, amplitude=0))
+        assert not t.finalizing
+        assert t._worker is not None and not t._worker.done()  # still serving turns
+        await t.close()
+
+    asyncio.run(run())
