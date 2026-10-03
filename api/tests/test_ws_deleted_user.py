@@ -298,3 +298,52 @@ def test_runtime_error_on_open_socket_still_raises(monkeypatch: pytest.MonkeyPat
         with pytest.raises(RuntimeError, match="real bug"):
             with client.websocket_connect(f"/ws?token={member_token}") as ws:
                 ws.send_text(START)
+
+
+def test_audio_after_revoke_is_not_recorded() -> None:
+    """XERK-1525: revoke() finalizes the session before it closes the socket, and the
+    handler keeps reading binary frames until the close lands — they never trigger a
+    send, so nothing ends the loop. PCM arriving in that window reached on_audio and
+    was stored (and transcribed) with the recording of a deleted account."""
+    import asyncio
+
+    from api.contract import ServerMessage
+    from api.persistence import get_audio_store, get_conversation_store
+    from api.persistence.audio import audio_key
+    from api.persistence.wav import wav_to_pcm16
+    from api.session import Session
+    from api.stt.stub import StubTranscriber
+
+    gate = asyncio.Event()
+    pushed: list[bytes] = []
+
+    class SlowFlush(StubTranscriber):
+        async def push(self, pcm: bytes) -> None:
+            pushed.append(pcm)
+            await super().push(pcm)
+
+        async def flush(self) -> None:
+            await gate.wait()
+
+    async def send(_msg: ServerMessage) -> None:
+        return None
+
+    async def run() -> None:
+        session = Session(send)
+        session._transcriber = SlowFlush()
+        session._pump = asyncio.create_task(session._pump_results())
+        get_conversation_store().create(session._household, session.session_id)
+        before, after = b"\x01\x00" * 160, b"\x7f\x00" * 160
+        await session.on_audio(before)
+        revoke = asyncio.create_task(session.revoke("account deleted"))
+        await asyncio.sleep(0.05)  # teardown is parked in the STT flush
+        await session.on_audio(after)  # a frame the handler read after the revoke
+        gate.set()
+        await asyncio.wait_for(revoke, timeout=5)
+        await session.on_audio(after)  # and one after the revoke returned
+        stored = get_audio_store().get(audio_key(session._household, session.session_id))
+        assert stored is not None
+        assert wav_to_pcm16(stored) == before
+        assert pushed == [before]
+
+    asyncio.run(run())
