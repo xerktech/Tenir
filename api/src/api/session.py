@@ -432,8 +432,9 @@ class Session:
             # finalize a recording this process started (XERK-1428).
             await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
-            # Set before the call: a create that raises or is cancelled may still
-            # have written (or go on to write) the live row, which close() finishes.
+            # Set before the call: a create that raises may still have written the
+            # live row, which close() then finishes. (A cancel here can let the
+            # INSERT commit after that finish; the stale sweep repairs it, XERK-1529.)
             self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
