@@ -227,3 +227,19 @@ def test_ready_does_not_leak_backend_error_detail(
     assert r.json()["checks"]["conversations"] == "error"
     assert "4242" not in r.text and "schema.sql" not in r.text
     assert secret in caplog.text
+
+
+def test_startup_logs_an_unreachable_backend(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Boot alone (no request) surfaces a dead backend in the log."""
+    from api import readiness
+
+    class _DeadAudio:
+        def ready(self) -> None:
+            raise RuntimeError("bucket unreachable")
+
+    monkeypatch.setattr(readiness, "get_audio_store", lambda: _DeadAudio())
+    with caplog.at_level("WARNING", logger="api.readiness"), TestClient(app):
+        pass
+    assert "backend audio not ready: RuntimeError: bucket unreachable" in caplog.text
