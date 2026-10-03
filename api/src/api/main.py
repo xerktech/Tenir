@@ -116,11 +116,40 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         rss_task.cancel()
     if status_task is not None:
         status_task.cancel()
-    # Finalize any still-live (incl. detached, grace-pending) sessions on shutdown so
-    # their audio/transcript is persisted and resources are released cleanly.
-    for session in registry.active():
+    await close_all_sessions()
+
+
+# Pod shutdown is SIGKILLed at terminationGracePeriodSeconds (30 s in prod), and
+# uvicorn spends some of that draining connections before the lifespan exits. Stay
+# well under it so every session is finalized rather than killed mid-close.
+_SHUTDOWN_DEADLINE_S = 20.0
+
+
+async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
+    """Finalize every still-live (incl. detached, grace-pending) session on shutdown.
+
+    Closes run concurrently under one deadline (XERK-1458). One at a time, a single
+    session against a hung model (STT flush + translation drain, ~30 s) used up the
+    whole grace period and every later one was killed before persisting its audio.
+    A close still running at the deadline is cancelled; Session.close() retains its
+    audio first and finalizes the conversation even when cancelled.
+    """
+    sessions = registry.active()
+    for session in sessions:
         registry.unregister(session)
-        await session.close()
+    if not sessions:
+        return
+    tasks = [asyncio.create_task(session.close()) for session in sessions]
+    _, pending = await asyncio.wait(tasks, timeout=deadline)
+    if pending:
+        log.warning("cancelling %d session close(s) past the shutdown deadline", len(pending))
+        for task in pending:
+            task.cancel()
+    for session, result in zip(
+        sessions, await asyncio.gather(*tasks, return_exceptions=True), strict=True
+    ):
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            log.error("session %s close failed", session.session_id, exc_info=result)
 
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
