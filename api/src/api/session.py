@@ -270,6 +270,8 @@ class Session:
         # so a reconnect carrying the same id rebinds to it — preserving the
         # transcriber state instead of resetting it.
         self._closed = False
+        # The shielded teardown close() runs (XERK-1460); kept so it isn't GC'd.
+        self._teardown: asyncio.Task[None] | None = None
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -1244,29 +1246,52 @@ class Session:
         if self._warmup is not None:
             self._warmup.cancel()
             self._warmup = None
+        # Teardown runs as its own task, shielded: cancelling the caller (server
+        # shutdown, a cancelled WS handler) must not abandon it halfway and skip
+        # _persist(), leaving the conversation "live" (XERK-1460). The caller
+        # still sees its CancelledError; the teardown finishes on its own.
+        self._teardown = asyncio.create_task(self._close_teardown())
+        await asyncio.shield(self._teardown)
+
+    async def _close_teardown(self) -> None:
         # A failing STT seam can raise from flush()/close() too; guard each so
         # teardown still persists the conversation and never leaks an exception
         # out of close(). They are guarded separately: close() is what ends
         # results(), so a flush that raises (an STT timeout on the tail decode)
         # must not skip it, or the pump below is awaited forever.
+        #
+        # CancelledError is caught too: this task is shielded and never cancelled
+        # by anyone, so one escaping a seam is that seam's own fault (e.g. a
+        # cancelled internal task) and must not skip persistence (XERK-1460).
+        transcriber_closed = True
         if self._transcriber is not None:
             try:
                 await asyncio.wait_for(self._transcriber.flush(), timeout=_STT_FLUSH_TIMEOUT_S)
             except asyncio.TimeoutError:
                 log.warning("session %s STT flush timed out", self.session_id)
                 metrics.incr("stage.stt.flush_timeouts")
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 log.exception("session %s transcriber flush failed", self.session_id)
                 metrics.incr("stage.stt.errors")
             # Close even when flush failed: it ends results(), and the pump join
             # below waits on that — a skipped close hung teardown forever.
             try:
                 await self._transcriber.close()
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 log.exception("session %s transcriber close failed", self.session_id)
                 metrics.incr("stage.stt.errors")
+                transcriber_closed = False
         if self._pump is not None:
-            await self._pump
+            # A failed close() never queued the sentinel that ends results(), so
+            # the pump would drain forever: cancel it instead (XERK-1460). Any
+            # finals not yet drained are dropped from the transcript only; the
+            # audio is retained and persisted below.
+            if not transcriber_closed:
+                self._pump.cancel()
+            try:
+                await self._pump
+            except asyncio.CancelledError:
+                pass
         if self._translation_worker is not None:
             # The pump is done, so every translate job is queued. A run still open
             # at teardown is over by definition (queues the `done` marker); then a

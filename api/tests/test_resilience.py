@@ -159,3 +159,80 @@ def test_ws_audio_error_is_isolated_not_fatal(monkeypatch: pytest.MonkeyPatch) -
         assert pong["type"] == "pong" and pong["t"] == 7
 
     assert metrics.snapshot()["counters"].get("audio.errors", 0) >= 1
+
+
+def _persisting_session(transcriber) -> Session:
+    session = Session(_noop_send(None))
+    session._transcriber = transcriber
+    session._pump = asyncio.create_task(session._pump_results())
+    get_conversation_store().create(session._household, session.session_id)
+    return session
+
+
+def _is_live(session: Session) -> bool:
+    conv = get_conversation_store().get(session._household, session.session_id)
+    assert conv is not None
+    return conv.status == "live"
+
+
+def test_close_does_not_hang_when_transcriber_close_raises() -> None:
+    """close() is what ends results(); if it raises, results() never ends, so the
+    pump must be cancelled rather than awaited forever — and the conversation is
+    still finalized (XERK-1460)."""
+    from api.stt.stub import StubTranscriber
+
+    class CloseRaises(StubTranscriber):
+        async def close(self) -> None:
+            raise RuntimeError("close exploded")
+
+    async def run() -> None:
+        session = _persisting_session(CloseRaises())
+        await asyncio.wait_for(session.close(), timeout=5)
+        assert session._pump.done()
+        assert not _is_live(session)
+
+    asyncio.run(run())
+
+
+def test_close_persists_when_flush_raises_cancelled_error() -> None:
+    """A CancelledError out of the flush seam (a BaseException) must not skip
+    closing the transcriber or persisting the conversation (XERK-1460)."""
+    from api.stt.stub import StubTranscriber
+
+    class FlushCancelled(StubTranscriber):
+        async def flush(self) -> None:
+            raise asyncio.CancelledError
+
+    async def run() -> None:
+        session = _persisting_session(FlushCancelled())
+        await asyncio.wait_for(session.close(), timeout=5)
+        assert session._pump.done()
+        assert not _is_live(session)
+
+    asyncio.run(run())
+
+
+def test_cancelling_close_still_persists() -> None:
+    """Cancelling the task running close() (e.g. server shutdown) must not lose the
+    conversation: teardown is shielded and finishes on its own (XERK-1460)."""
+    from api.stt.stub import StubTranscriber
+
+    gate = asyncio.Event()
+
+    class SlowFlush(StubTranscriber):
+        async def flush(self) -> None:
+            await gate.wait()
+
+    async def run() -> None:
+        session = _persisting_session(SlowFlush())
+        closer = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+        closer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closer
+        gate.set()
+        assert session._teardown is not None
+        await asyncio.wait_for(session._teardown, timeout=5)
+        assert not _is_live(session)
+
+    asyncio.run(run())
