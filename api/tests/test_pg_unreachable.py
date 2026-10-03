@@ -44,6 +44,8 @@ def _install_unreachable_pool(monkeypatch) -> list:
         def __init__(self, dsn: str, open: bool = True, **kw: object) -> None:  # noqa: A002
             assert open is False, "the pool must be opened with a bounded wait"
             assert kw["kwargs"] == {"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
+            # The request path's wait for a connection is bounded too, not 30s.
+            assert kw["timeout"] == OPEN_TIMEOUT_SECONDS
             # Stale connections from before a Postgres restart are checked, not lent.
             assert kw["check"] is _FakePool.check_connection
             self.open_timeout: float | None = None

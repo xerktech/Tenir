@@ -20,10 +20,13 @@ paths:
   meant one failed apply was never retried.
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
-- Both stores open their pool through `PoolOpener` (postgres.py): it waits at most `OPEN_TIMEOUT_SECONDS` (`pool.open(wait=True, timeout=)` plus
-  libpq `connect_timeout`), and callers within that window of a failed open share its error.
+- Both stores open their pool through `PoolOpener` (postgres.py). It bounds every wait at
+  `OPEN_TIMEOUT_SECONDS`: `pool.open(wait=True, timeout=)`, libpq `connect_timeout`, and the
+  pool's per-request connection `timeout`. Callers within that window of a failed open share
+  its error.
   - psycopg's 30s default, paid per call and serially behind `_pool_lock` while the DB was down,
-    blocked boot ~2 min and every `/ready` 30-60s (XERK-1434).
+    blocked boot ~2 min and every `/ready` 30-60s; with the DB dead after open, 50 requests
+    each held a worker thread 30s and stalled every sync endpoint (XERK-1434).
   - Without `connect_timeout`, `pool.close()` after a timed-out open waits on connects to a
     blackholed host that never return.
 - Pools are created with `check=ConnectionPool.check_connection`: without it every connection

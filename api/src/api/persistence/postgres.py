@@ -33,8 +33,8 @@ from api.persistence.models import (
 log = logging.getLogger("api.persistence.postgres")
 
 # How long opening the pool may wait for its first connections, how long a failed
-# open is remembered before the next attempt, and the readiness probe's connection
-# wait. psycopg's 30s default applied to every call while the database was down,
+# open is remembered before the next attempt, and how long any caller waits for a
+# pooled connection. psycopg's 30s default applied to every call while the database was down,
 # each one building a fresh pool behind ``_pool_lock``: boot blocked ~2 minutes and
 # every /ready held a worker thread 30-60s (XERK-1434).
 OPEN_TIMEOUT_SECONDS = 5.0
@@ -122,6 +122,10 @@ class PoolOpener:
             # libpq's connect_timeout too: closing a pool that timed out waits for
             # its in-flight connects, which against a blackholed host never return.
             kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)},
+            # Every request's wait for a connection, too: with the database gone
+            # after the pool opened, psycopg's 30s default held a worker thread per
+            # request, and 50 of them stalled every sync endpoint for 30-60s.
+            timeout=OPEN_TIMEOUT_SECONDS,
             # Pooled connections outlive a Postgres restart; without a check each
             # one fails its next borrower once (AdminShutdown) before it is dropped.
             check=ConnectionPool.check_connection,
@@ -132,7 +136,6 @@ class PoolOpener:
             except Exception as exc:
                 self._failure = (time.monotonic(), exc)
                 raise
-            self._failure = None
             init(pool)
         except BaseException:
             pool.close()
