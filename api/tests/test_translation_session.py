@@ -87,6 +87,7 @@ def test_non_english_final_is_translated_and_persisted(monkeypatch: pytest.Monke
         )
         session._consider_translation(final)
         await _drain_translations(session)
+        await session._flush_writes()  # stored off the worker (XERK-1531)
 
         got = _translations(sent)
         assert len(got) == 1
