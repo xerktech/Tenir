@@ -62,6 +62,7 @@ from api.persistence import (
     stale,
     wav_to_pcm16,
 )
+from api.persistence.postgres import is_database_unavailable
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
 from api.stt.langid import is_english_word
@@ -111,6 +112,14 @@ _teardowns: set[asyncio.Task[None]] = set()
 # while that sitting's audio and tail finals are not yet stored; the new sitting
 # takes its timeline from the closing one instead (XERK-1500).
 _closing: dict[tuple[str | None, str], "Session"] = {}
+
+# Seconds between attempts to finalize a session that ended during a database
+# outage (XERK-1531).
+_FINALIZE_RETRY_S = 10.0
+
+# Those retries, held so they aren't GC'd. Each runs until the database is back;
+# one still pending at exit leaves its row "live" for the next boot's stale sweep.
+_finalize_retries: set[asyncio.Task[None]] = set()
 
 
 def teardowns_in_flight() -> list[asyncio.Task[None]]:
@@ -343,6 +352,9 @@ class Session:
         self._full_audio = bytearray()
         # Audio stored whose conversation row doesn't point at it yet.
         self._audio_key_pending = False
+        # Finalized turns not yet in the stored transcript: a database outage keeps
+        # them here for the next final or the finalize retry (XERK-1531).
+        self._unsaved_segments: list[Segment] = []
         # Resume support: on a socket drop (not an explicit session.end) the
         # connection is *detached* and the session is kept alive for a grace window
         # so a reconnect carrying the same id rebinds to it — preserving the
@@ -655,18 +667,16 @@ class Session:
                 # Offloaded: a real (Postgres) store does a blocking round-trip;
                 # running it on the loop would freeze every live session for its
                 # duration. The caption was already sent (or dropped) above.
-                await asyncio.to_thread(
-                    self._conversations.add_segment,
-                    self._household,
-                    self.session_id,
+                self._unsaved_segments.append(
                     Segment(
                         segment_id=result.segmentId,
                         text=result.text,
                         start_ms=result.startMs,
                         end_ms=result.endMs,
                         lang=result.lang.value if result.lang is not None else None,
-                    ),
+                    )
                 )
+                await self._save_segments()
             if isinstance(result, CaptionPartial):
                 # Speech is still flowing: keep a live translation run's silence
                 # hold from expiring mid-utterance (finals only land at pauses).
@@ -1592,11 +1602,84 @@ class Session:
             # Never reached the store: there is no live row of ours to finalize, and
             # finish() on a resumed recording would rewrite its ended_at.
             return
-        await asyncio.to_thread(
-            self._conversations.finish, self._household, self.session_id, status="ready"
-        )
+        if not await self._finalize():
+            # The database is down: session.end must not raise out of the socket
+            # handler, and the client won't resume an ended session, so nothing
+            # else would ever finish this row (XERK-1531). Retry until it's back.
+            log.warning(
+                "session %s ended during a database outage; finalizing every %ss",
+                self.session_id,
+                _FINALIZE_RETRY_S,
+            )
+            metrics.incr("conversation.finalize_deferred")
+            retry = asyncio.create_task(self._finalize_retry())
+            _finalize_retries.add(retry)
+            retry.add_done_callback(_finalize_retries.discard)
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _save_segments(self) -> bool:
+        """Store the buffered finals in order; returns whether none are left.
+
+        A database outage stops at the first failure and keeps the rest buffered —
+        one pool wait per attempt, not one per turn. It used to raise out of the
+        result pump, killing it, so every later final (the flush tail included)
+        was lost from the transcript (XERK-1531). Other errors still raise.
+        """
+        assert self._conversations is not None
+        while self._unsaved_segments:
+            try:
+                await asyncio.to_thread(
+                    self._conversations.add_segment,
+                    self._household,
+                    self.session_id,
+                    self._unsaved_segments[0],
+                )
+            except Exception as exc:
+                if not is_database_unavailable(exc):
+                    raise
+                log.warning(
+                    "session %s database unavailable; %d turn(s) held for retry",
+                    self.session_id,
+                    len(self._unsaved_segments),
+                )
+                metrics.incr("transcript.segments_deferred")
+                return False
+            # Index 0 is still the one stored: the pump only ever appends.
+            del self._unsaved_segments[0]
+        return True
+
+    async def _finalize(self) -> bool:
+        """Store the buffered transcript, then mark the conversation ready.
+
+        Returns False when a database outage stopped it; any other error raises.
+        """
+        assert self._conversations is not None
+        if not await self._save_segments():
+            return False
+        try:
+            await asyncio.to_thread(
+                self._conversations.finish, self._household, self.session_id, status="ready"
+            )
+        except Exception as exc:
+            if not is_database_unavailable(exc):
+                raise
+            return False
+        return True
+
+    async def _finalize_retry(self) -> None:
+        """Retry _finalize() until the database is back (XERK-1531)."""
+        while True:
+            await asyncio.sleep(_FINALIZE_RETRY_S)
+            # An audio key the outage kept from the row (the WAV itself is stored).
+            await self._retain_audio()
+            try:
+                if await self._finalize():
+                    break
+            except Exception:
+                log.exception("session %s could not be finalized", self.session_id)
+                return
+        log.info("session %s finalized after a database outage", self.session_id)
 
     async def _retain_audio_after_prior(self) -> bool:
         """Retain, but never ahead of the sitting this one resumed mid-teardown:

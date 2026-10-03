@@ -1,6 +1,7 @@
 ---
 paths:
   - api/src/api/main.py
+  - api/src/api/session.py
   - api/src/api/persistence/postgres.py
   - packages/client-core/src/api.ts
   - packages/client-core/src/ws.ts
@@ -25,4 +26,11 @@ paths:
   would otherwise retry at the base delay for the whole outage.
 - client-core turns a 503 into `ServerUnavailableError`, a `NetworkError` subclass on purpose:
   every client already keeps the session and retries on `NetworkError` (web, Android, Even).
+- A session ending mid-outage must not raise out of `Session.close()`, and the client never
+  resumes an ended session: `_persist` hands the finish to a `_finalize_retry` task (XERK-1531).
+  The boot stale sweep only covers a *previous* process's rows, so nothing else would finish it.
+- Finals that fail to store on an outage stay in `_unsaved_segments`, stored in order with the next
+  final or by the finalize retry. Never let an outage raise out of the result pump: that killed
+  captions and lost every later turn. Non-outage store errors still raise.
+- Tests: `api/tests/test_finalize_outage.py`.
 - Tests: `api/tests/test_db_unavailable.py`; `packages/client-core/tests/api.test.ts` (503 case).
