@@ -44,6 +44,17 @@ class FakeEngine:
         )
 
 
+class _Clock:
+    """Fake perf_counter: decodes advance it explicitly, so latency is deterministic
+    however loaded the test host is."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+
 def _pcm(ms: int, *, amplitude: int) -> bytes:
     """ms of 16 kHz s16le mono PCM at a constant amplitude (0 == silence)."""
     n = 16000 * ms // 1000
@@ -55,6 +66,17 @@ def _drain(t: StreamingTranscriber) -> list[CaptionPartial | CaptionFinal]:
     while not t._queue.empty():
         out.append(t._queue.get_nowait())
     return out
+
+
+@pytest.fixture(autouse=True)
+def _frozen_decode_clock(monkeypatch):
+    """Wall time stands still unless a test drives the clock itself. These tests push
+    frames back to back and pin exact partial counts; on a real clock a loaded host
+    could make intake look >1 s behind real time and trip the partial lag skip
+    (_PARTIAL_SKIP_LAG_S), which only the real-time simulation tests below exercise."""
+    import api.stt.streaming as streaming
+
+    monkeypatch.setattr(streaming, "time", _Clock())
 
 
 # ----- helpers --------------------------------------------------------------
@@ -1200,3 +1222,153 @@ def test_silent_turn_is_not_retried() -> None:
         assert eng.final_calls == 0
 
     asyncio.run(run())
+
+class SlowEngine(FakeEngine):
+    """FakeEngine whose decodes take ``partial`` / ``final`` seconds on the fake clock."""
+
+    def __init__(self, clock: _Clock, partial: float, final: float = 0.05) -> None:
+        super().__init__()
+        self.clock, self.partial, self.final = clock, partial, final
+        self.partial_at: list[float] = []
+
+    def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+        if not want_words:
+            self.partial_at.append(self.clock.now)
+        self.clock.now += self.final if want_words else self.partial
+        return super().transcribe(samples, language=language, want_words=want_words)
+
+
+def _realtime(monkeypatch, eng_partial: float, script: list[tuple[int, int]]):
+    """Drive a transcriber the way a live client does: frame i (100 ms) *arrives* at
+    its real-time instant, and the receive loop reads it no earlier than that — or
+    later, if decodes kept it busy (that delay is the intake lag). ``script`` is
+    (frames, amplitude) runs; amplitude None is a gap with no frames sent at all.
+    Returns (engine, max lag seen in s, lag at the end in s)."""
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    eng = SlowEngine(clock, eng_partial)
+    lags: list[float] = []
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=350, silence_ms=500, max_segment_ms=8000
+        )
+        arrive = 0.0
+        for frames, amp in script:
+            if amp is None:
+                arrive += frames * 0.1
+                continue
+            for _ in range(frames):
+                arrive += 0.1
+                clock.now = max(clock.now, arrive)
+                lags.append(clock.now - arrive)
+                await t.push(_pcm(100, amplitude=amp))
+
+    asyncio.run(go())
+    return eng, max(lags), lags[-1]
+
+
+# 60 s of talk: 4 s turns with 0.6 s pauses between them.
+_TALK = [(40, 8000), (6, 0)] * 13
+
+
+def test_slow_partials_cannot_put_intake_unboundedly_behind(monkeypatch) -> None:
+    # 600 ms partial decodes against a 350 ms cadence: without the skip, intake falls
+    # ~0.25 s further behind per partial for as long as speech continues, until the
+    # socket's frame queue fills and the server drops the session with 1011
+    # (XERK-1414). With it, lag stays near _PARTIAL_SKIP_LAG_S.
+    _, max_lag, end_lag = _realtime(monkeypatch, 0.6, _TALK)
+    assert max_lag < 2.0 and end_lag < 2.0
+
+
+def test_partials_keep_running_while_intake_is_slow(monkeypatch) -> None:
+    # The skip must not latch: partials still reach the client in every stretch of the
+    # session (a back-off that carried across turns switched them off for good).
+    eng, _, _ = _realtime(monkeypatch, 0.6, _TALK)
+    per_10s = [sum(1 for t in eng.partial_at if a <= t < a + 10) for a in range(0, 60, 10)]
+    assert all(n >= 3 for n in per_10s), per_10s
+
+
+def test_client_pause_is_not_counted_as_lag(monkeypatch) -> None:
+    # 20 s with no frames (mic paused) then speech: intake was waiting, not behind, so
+    # partials run at the normal cadence right away.
+    eng, max_lag, _ = _realtime(monkeypatch, 0.05, [(10, 8000), (200, None), (30, 8000)])
+    assert max_lag < 0.2
+    assert sum(1 for t in eng.partial_at if t > 21) >= 7
+
+
+def test_fast_partials_keep_the_configured_cadence(monkeypatch) -> None:
+    # Decodes well inside the cadence: never behind, every cadence tick decodes
+    # (4 s turn at 350 ms -> 11 partials).
+    eng, max_lag, _ = _realtime(monkeypatch, 0.05, [(40, 8000), (6, 0)])
+    assert max_lag < 0.2 and len(eng.partial_at) == 11
+
+
+def test_buffered_burst_does_not_bank_lag_credit(monkeypatch) -> None:
+    # A client flushing 10 s of buffered audio at once is *ahead* of real time. The
+    # origin must rebase to it, or that 10 s becomes credit that hides real lag later:
+    # slow partials afterwards would push intake ~10 s behind before any skip.
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    eng = SlowEngine(clock, 0.6)
+    lags: list[float] = []
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=350, silence_ms=500, max_segment_ms=8000
+        )
+        for _ in range(100):  # the burst: all 100 frames are already there
+            await t.push(_pcm(100, amplitude=0))
+        arrive = clock.now
+        for _ in range(300):  # then 30 s of real-time speech
+            arrive += 0.1
+            clock.now = max(clock.now, arrive)
+            lags.append(clock.now - arrive)
+            await t.push(_pcm(100, amplitude=8000))
+
+    asyncio.run(go())
+    assert max(lags) < 2.0
+
+
+def test_a_partial_that_raises_still_counts_toward_lag(monkeypatch) -> None:
+    # A partial decode that times out (15 s, then raises) leaves intake ~15 s behind.
+    # While the backlog drains, partials must be skipped — the push that raised still
+    # has to stamp its end time, or the lag clock rebases as if intake had been idle
+    # and partials fire on seconds-old audio.
+    import api.stt.streaming as streaming
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming, "time", clock)
+    frame_arrival = [0.0]
+    lag_at_partial: list[float] = []
+
+    class TimeoutOnce(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+            if not want_words:
+                lag_at_partial.append(clock.now - frame_arrival[0])
+                if len(lag_at_partial) == 2:
+                    clock.now += 15.0
+                    raise TimeoutError("stt stalled")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def go() -> None:
+        t = StreamingTranscriber(
+            TimeoutOnce(), language="en", partial_interval_ms=350, silence_ms=500,
+            max_segment_ms=8000,
+        )
+        for i in range(400):
+            frame_arrival[0] = (i + 1) * 0.1
+            clock.now = max(clock.now, frame_arrival[0])
+            try:
+                await t.push(_pcm(100, amplitude=8000))
+            except TimeoutError:
+                pass  # main.py logs a failed frame and keeps reading
+
+    asyncio.run(go())
+    after = lag_at_partial[2:]
+    assert after, "partials must resume after the stall"
+    assert max(after) < 1.5, max(after)
