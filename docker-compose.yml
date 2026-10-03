@@ -174,7 +174,7 @@ services:
       timeout: 5s
       retries: 5
       # Boot applies schema.sql eagerly (XERK-1409). An unreachable Postgres now
-      # costs it ~5 s (bounded pool open, XERK-1434), but the apply itself on a
+      # costs it ~5-10 s (bounded pool open, XERK-1434), but the apply itself on a
       # large existing database can run long; without a grace period autoheal
       # restarted the api mid-startup, before it could ever recover.
       start_period: 180s
