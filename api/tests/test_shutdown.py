@@ -233,7 +233,10 @@ def test_cancel_during_the_first_store_write_still_finalizes_once(
     store = get_audio_store()
     real_put = store.put
 
+    puts: list[str] = []
+
     def slow_put(key: str, data: bytes) -> None:
+        puts.append(key)
         time.sleep(0.5)
         real_put(key, data)
 
@@ -245,6 +248,9 @@ def test_cancel_during_the_first_store_write_still_finalizes_once(
         _assert_persisted(sessions)
         for s in sessions:
             assert _stored_pcm(s) == CHUNK
+        # The cancelled write was awaited, not abandoned and redone: a second
+        # write racing the orphaned one is how the audio got stored twice.
+        assert sorted(puts) == sorted(audio_key("hh", s.session_id) for s in sessions)
 
     asyncio.run(run())
 
