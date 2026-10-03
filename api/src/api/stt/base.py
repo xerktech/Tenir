@@ -15,6 +15,14 @@ from api.contract import CaptionFinal, CaptionPartial
 
 
 class Transcriber(Protocol):
+    @property
+    def finalizing(self) -> bool:
+        """True while a finalized turn that had speech is still being decoded, or its
+        caption.final is queued and not yet handled by the consumer. The session counts
+        this as speech activity so a slow final decode doesn't read as silence
+        (XERK-1377)."""
+        ...
+
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
 

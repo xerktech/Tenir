@@ -400,3 +400,103 @@ def test_close_drains_pending_translations(monkeypatch: pytest.MonkeyPatch) -> N
         assert len(_dones(sent)) == 1
 
     asyncio.run(run())
+
+
+def test_slow_final_decode_keeps_the_run_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-1377: a final whose decode outlasts the hold must still land inside the
+    run. The hold only restarted on captions, so a slow whole-turn decode (Parakeet
+    finals at ~6 s against a 3 s hold) read as silence: the run closed first and the
+    inherited (undetected-language) turn arrived to no run and was dropped."""
+    import numpy as np
+
+    import api.session as session_mod
+    from api.stt.engine import EngineResult
+    from api.stt.streaming import StreamingTranscriber
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    monkeypatch.setattr(settings, "translation_hold_ms", 150)
+
+    class SlowSecondFinal:
+        """Turn 1 decodes fast as Spanish; turn 2 is an undecidable proper-noun list
+        whose final decode takes longer than the hold."""
+
+        def __init__(self) -> None:
+            self.finals = 0
+
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+                return EngineResult(text="", words=[], language=None)
+            self.finals += 1
+            if self.finals == 1:
+                return EngineResult(
+                    text="hola, ¿cómo estás? me llamo Juan y vivo en Madrid",
+                    words=[],
+                    language="es",
+                )
+            time.sleep(0.5)  # > the 150 ms hold
+            return EngineResult(text="Mercurio, Venus, Tierra, Marte.", words=[], language=None)
+
+    def transcriber(*_a, **_kw) -> StreamingTranscriber:
+        # Partials off: only finals drive the hold, as when intake lags (XERK-1414).
+        return StreamingTranscriber(
+            SlowSecondFinal(), partial_interval_ms=60_000, final_words=False
+        )
+
+    monkeypatch.setattr(session_mod, "make_transcriber", transcriber)
+
+    def pcm(ms: int, amplitude: int) -> bytes:
+        return np.full(16 * ms, amplitude, dtype=np.int16).tobytes()
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        for _ in range(2):
+            await session.on_audio(pcm(600, 3000))
+            await session.on_audio(pcm(600, 0))
+            await asyncio.sleep(0.05)  # let the pump deliver the final
+        await _drain_translations(session)
+        translated = [t.segmentId for t in _translations(sent)]
+        finals = [m.segmentId for m in sent if isinstance(m, CaptionFinal)]
+        assert len(finals) == 2
+        # Both turns translated inside one run: the hold didn't close it mid-decode.
+        assert translated == finals
+        assert _dones(sent) == []
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    # XERK-1377: a final still marked in flight is only worth waiting for while the
+    # pump can deliver it; once the pump has died the hold closes the run as before.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    monkeypatch.setattr(settings, "translation_hold_ms", 0)
+
+    class StuckFinalizing:
+        finalizing = True
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        assert session._pump is not None
+        session._pump.cancel()
+        await asyncio.gather(session._pump, return_exceptions=True)
+        # A pump that exited (as _pump_results does after logging an STT failure).
+        session._pump = asyncio.create_task(asyncio.sleep(0))
+        await session._pump
+        real = session._transcriber
+        session._transcriber = StuckFinalizing()  # type: ignore[assignment]
+        session._consider_translation(_final("hola", lang="es"))
+        for _ in range(50):
+            if not session._translation_active:
+                break
+            await asyncio.sleep(0.01)
+        assert not session._translation_active
+        session._transcriber = real
+        await _drain_translations(session)
+        assert len(_dones(sent)) == 1
+        await session.close()
+
+    asyncio.run(run())

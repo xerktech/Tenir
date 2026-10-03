@@ -79,6 +79,9 @@ _DETACHED_BUFFER_MAX = 500
 # it only limits how many the model is explicitly reminded of.
 _CUE_AVOID_PROMPT_LIMIT = 40
 
+# How often an expired translation hold re-checks a final decode still in flight.
+_HOLD_RECHECK_S = 0.05
+
 # A new cue whose content-word fingerprint overlaps a surfaced cue's at or above
 # this Jaccard similarity is the same fact reworded, not a new cue. Calibrated
 # on recorded production sessions: near-verbatim rewords measure 0.57-0.87 and
@@ -558,6 +561,19 @@ class Session:
     async def _translation_hold_expire(self) -> None:
         try:
             await asyncio.sleep(max(0, settings.translation_hold_ms) / 1000)
+            # A turn with speech still being decoded is not silence: its final is on
+            # the way and may belong to this run (an inherited turn arriving after
+            # the run closed is dropped). Finals take ~6 s on a loaded STT server
+            # against a 3 s hold (XERK-1377), so wait it out; the final's own touch
+            # then restarts the hold. Bounded by the STT request timeout. A dead pump
+            # never consumes that final, so it can't hold the run either.
+            while (
+                self._transcriber is not None
+                and self._transcriber.finalizing
+                and self._pump is not None
+                and not self._pump.done()
+            ):
+                await asyncio.sleep(_HOLD_RECHECK_S)
         except asyncio.CancelledError:
             return
         self._end_translation_run()

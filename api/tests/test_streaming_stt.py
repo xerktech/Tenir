@@ -1372,3 +1372,78 @@ def test_a_partial_that_raises_still_counts_toward_lag(monkeypatch) -> None:
     after = lag_at_partial[2:]
     assert after, "partials must resume after the stall"
     assert max(after) < 1.5, max(after)
+
+
+def test_finalizing_covers_decode_and_delivery_of_a_speech_turn() -> None:
+    """XERK-1377: `finalizing` is set from the start of a speech turn's final decode
+    until the consumer has handled its caption.final, and never for silence."""
+    seen: list[bool] = []
+
+    class Probe(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            seen.append(t.finalizing)
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    t = StreamingTranscriber(Probe(), partial_interval_ms=60_000, max_segment_ms=1000)
+
+    async def run() -> None:
+        assert not t.finalizing
+        # A silent max-length segment decodes, but there is no speech to wait for.
+        await t.push(_pcm(1000, amplitude=0))
+        assert seen == [False] and not t.finalizing
+        await t.push(_pcm(600, amplitude=3000))
+        await t.push(_pcm(600, amplitude=0))
+        assert seen[-1] is True
+        # Decoded and queued, but not yet handled by the consumer.
+        assert t.finalizing
+        results = t.results()
+        final = await anext(results)
+        assert isinstance(final, CaptionFinal)
+        assert t.finalizing  # the consumer is still handling it
+        await t.close()
+        await anext(results)  # resumes past the final: handled
+        assert not t.finalizing
+
+    asyncio.run(run())
+
+
+def test_finalizing_clears_when_the_final_decode_raises() -> None:
+    # XERK-1377: an STT error on the final must not leave the flag stuck, or the
+    # session's translation run would never close.
+    class Boom(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            raise TimeoutError("stt stalled")
+
+    t = StreamingTranscriber(Boom(), partial_interval_ms=60_000)
+
+    async def run() -> None:
+        await t.push(_pcm(600, amplitude=3000))
+        with pytest.raises(TimeoutError):
+            await t.push(_pcm(600, amplitude=0))
+        assert not t.finalizing
+
+    asyncio.run(run())
+
+
+def test_finalizing_holds_through_the_blank_final_retry() -> None:
+    # The padded retry of a blank final is still the same turn's decode in flight.
+    seen: list[bool] = []
+
+    class BlankThenText(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            seen.append(t.finalizing)
+            if len(seen) == 1:
+                return EngineResult(text="", words=[], language=None)
+            return EngineResult(text="uno dos tres cuatro", words=[], language=None)
+
+    t = StreamingTranscriber(BlankThenText(), partial_interval_ms=60_000)
+
+    async def run() -> None:
+        await t.push(_pcm(600, amplitude=3000))
+        await t.push(_pcm(600, amplitude=0))
+        assert seen == [True, True]
+        assert [f.text for f in _drain(t) if isinstance(f, CaptionFinal)] == [
+            "uno dos tres cuatro"
+        ]
+
+    asyncio.run(run())
