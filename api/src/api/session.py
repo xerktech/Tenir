@@ -90,6 +90,14 @@ _STT_FLUSH_TIMEOUT_S = 15.0
 _teardowns: set[asyncio.Task[None]] = set()
 
 
+# The session still tearing down for each conversation, by (household, session
+# id). The grace close unregisters a session before its teardown runs, so a
+# resume landing mid-teardown cold-starts a new Session on the same conversation
+# while that sitting's audio and tail finals are not yet stored; the new sitting
+# takes its timeline from the closing one instead (XERK-1500).
+_closing: dict[tuple[str | None, str], "Session"] = {}
+
+
 def teardowns_in_flight() -> list[asyncio.Task[None]]:
     """Session teardowns still running, for shutdown to wait on (XERK-1458)."""
     return [t for t in _teardowns if not t.done()]
@@ -288,6 +296,12 @@ class Session:
         self._closed = False
         # The shielded teardown close() runs (XERK-1460).
         self._teardown: asyncio.Task[None] | None = None
+        # This teardown's first audio retain, and that of the earlier sitting of
+        # this conversation still tearing down when this one resumed — which
+        # must land before ours (XERK-1500).
+        self._first_retain: asyncio.Future[bool] | None = None
+        self._prior_retain: asyncio.Future[bool] | None = None
+        self._prior_teardown: asyncio.Task[None] | None = None
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -389,7 +403,18 @@ class Session:
         the last persisted segment's end so the transcript at least stays
         monotonic. Store reads are offloaded: both backends block, and this runs
         on the connect path.
+
+        An earlier sitting still tearing down has stored neither yet — reading
+        the stores then restarted this sitting inside it (XERK-1500). Its
+        in-memory timeline end is exact, so take that without waiting: blocking
+        start() on a teardown (up to its flush + drain caps) let a second
+        reconnect cold-start a duplicate sitting in the meantime.
         """
+        prior = _closing.get((self._household, self.session_id))
+        if prior is not None:
+            self._prior_retain = prior._first_retain
+            self._prior_teardown = prior._teardown
+            return prior._current_audio_ms()
         if self._audio_store is not None:
             existing = await asyncio.to_thread(
                 self._audio_store.get, audio_key(self._household, self.session_id)
@@ -1277,9 +1302,17 @@ class Session:
         # _persist(), leaving the conversation "live" (XERK-1460). The caller
         # still sees its CancelledError; the teardown finishes on its own, and
         # lifespan shutdown waits for it via teardowns_in_flight().
+        # Started here, not in the teardown, so a resume landing before the
+        # teardown's first step still finds it to order its own retain behind.
+        self._first_retain = asyncio.ensure_future(self._retain_audio_after_prior())
         self._teardown = asyncio.create_task(self._close_teardown())
         _teardowns.add(self._teardown)
         self._teardown.add_done_callback(_teardowns.discard)
+        key = (self._household, self.session_id)
+        _closing[key] = self
+        self._teardown.add_done_callback(
+            lambda _t: _closing.pop(key) if _closing.get(key) is self else None
+        )
         await asyncio.shield(self._teardown)
 
     async def _close_teardown(self) -> None:
@@ -1291,7 +1324,8 @@ class Session:
         # a cancel landing here must not abandon the retain half-done — the finally
         # waits for it (and its buffer trim) before storing the remainder, or the
         # remainder would be stored behind a second copy of the same audio.
-        retain = asyncio.ensure_future(self._retain_audio())
+        retain = self._first_retain
+        assert retain is not None
         # Finalize the conversation even if this teardown is cancelled mid-drain —
         # the shutdown deadline in main.py cancels teardowns that overrun it.
         try:
@@ -1400,15 +1434,49 @@ class Session:
         """
         if self._conversations is None:
             return
+        # A resumed sitting whose earlier sitting's first retain failed stores
+        # only after that sitting's own retry, to keep the recording in order.
+        cancelled = False
+        prior, self._prior_teardown = self._prior_teardown, None
+        if prior is not None:
+            try:
+                await asyncio.wait({prior})
+            except asyncio.CancelledError:
+                # The shutdown deadline: it cancels that teardown too and gives
+                # both a bounded finalize window. Spend ours finishing the wait
+                # and storing, or this sitting's audio would never be stored.
+                cancelled = True
+                await asyncio.wait({prior})
         # Picks up any audio that arrived after close() retained the buffer
         # (a no-op when it is empty), then finalizes.
         await self._retain_audio()
         await asyncio.to_thread(
             self._conversations.finish, self._household, self.session_id, status="ready"
         )
+        if cancelled:
+            raise asyncio.CancelledError
 
-    async def _retain_audio(self) -> None:
-        """Best-effort audio retention that never raises.
+    async def _retain_audio_after_prior(self) -> bool:
+        """Retain, but never ahead of the sitting this one resumed mid-teardown:
+        _persist_audio appends to whatever is stored, so storing first would put
+        this sitting's audio before the earlier one's (XERK-1500). Normally only
+        the earlier sitting's first retain is waited on, not its model drains;
+        if that retain failed, its audio is only retried by its final _persist,
+        so ours waits for our own _persist (see there)."""
+        prior_retain = self._prior_retain
+        self._prior_retain = None
+        if prior_retain is not None:
+            await asyncio.wait({prior_retain})
+            if prior_retain.cancelled() or not prior_retain.result():
+                # Leave our audio buffered for _persist, which waits on that
+                # teardown — waiting here would hold our own flush behind its
+                # model drains, and a shutdown deadline would drop our tail.
+                return False
+            self._prior_teardown = None
+        return await self._retain_audio()
+
+    async def _retain_audio(self) -> bool:
+        """Best-effort audio retention that never raises; returns whether it stored.
 
         Guarded as a whole: audio retention is best-effort, but FINALIZING the
         conversation is not. Anything raising in here — an unwritable audio dir,
@@ -1418,12 +1486,14 @@ class Session:
         recording is bad; losing the recording AND the record of it is worse.
         """
         if self._conversations is None:
-            return
+            return True
         try:
             await self._persist_audio()
         except Exception:
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
+            return False
+        return True
 
     async def _persist_audio(self) -> None:
         """Flush the retained full-session audio to the audio store."""
