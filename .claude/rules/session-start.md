@@ -38,4 +38,5 @@ paths:
   `::test_warm_resume_closes_the_socket_it_takes_over`,
   `::test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
   `::test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
+  `::test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued`,
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`.
