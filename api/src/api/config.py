@@ -134,7 +134,8 @@ class Settings(BaseSettings):
     translation_prompt_style: str = "chat-json"  # chat-json | milmmt
     # How long speech may go quiet after the last non-English activity before the
     # run is declared done. Finals only land at pauses, so partial captions also
-    # count as activity — the window only starts once the speaker actually stops.
+    # count as activity — the window only starts once the speaker actually stops —
+    # and so does a final decode still in flight (XERK-1377).
     translation_hold_ms: int = 3000
 
     # ---- Music ID (XERK-184) -----------------------------------------------------

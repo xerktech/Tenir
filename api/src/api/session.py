@@ -87,6 +87,9 @@ _STT_FLUSH_TIMEOUT_S = 15.0
 # it only limits how many the model is explicitly reminded of.
 _CUE_AVOID_PROMPT_LIMIT = 40
 
+# How often an expired translation hold re-checks a final decode still in flight.
+_HOLD_RECHECK_S = 0.05
+
 # A new cue whose content-word fingerprint overlaps a surfaced cue's at or above
 # this Jaccard similarity is the same fact reworded, not a new cue. Calibrated
 # on recorded production sessions: near-verbatim rewords measure 0.57-0.87 and
@@ -566,6 +569,19 @@ class Session:
     async def _translation_hold_expire(self) -> None:
         try:
             await asyncio.sleep(max(0, settings.translation_hold_ms) / 1000)
+            # A turn with speech still being decoded is not silence: its final is on
+            # the way and may belong to this run (an inherited turn arriving after
+            # the run closed is dropped). Finals take ~6 s on a loaded STT server
+            # against a 3 s hold (XERK-1377), so wait it out; the final's own touch
+            # then restarts the hold. Bounded by the STT request timeout. A dead pump
+            # never consumes that final, so it can't hold the run either.
+            while (
+                self._transcriber is not None
+                and self._transcriber.finalizing
+                and self._pump is not None
+                and not self._pump.done()
+            ):
+                await asyncio.sleep(_HOLD_RECHECK_S)
         except asyncio.CancelledError:
             return
         self._end_translation_run()
@@ -1228,9 +1244,11 @@ class Session:
         if self._warmup is not None:
             self._warmup.cancel()
             self._warmup = None
-        # A failing STT seam can raise from flush()/close() too; guard it so
+        # A failing STT seam can raise from flush()/close() too; guard each so
         # teardown still persists the conversation and never leaks an exception
-        # out of close().
+        # out of close(). They are guarded separately: close() is what ends
+        # results(), so a flush that raises (an STT timeout on the tail decode)
+        # must not skip it, or the pump below is awaited forever.
         if self._transcriber is not None:
             try:
                 await asyncio.wait_for(self._transcriber.flush(), timeout=_STT_FLUSH_TIMEOUT_S)

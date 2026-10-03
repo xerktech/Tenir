@@ -161,6 +161,11 @@ class StreamingTranscriber:
         # turn the partial decode transcribed — e.g. a session pinned to one language
         # force-decoding another). Reset at every turn boundary.
         self._turn_partial = ""
+        # Final-in-flight tracking (Transcriber.finalizing): speech turns queued for
+        # or in their final decode, and caption.finals queued that the consumer
+        # hasn't finished handling yet.
+        self._speech_finals_pending = 0
+        self._finals_undelivered = 0
         # Segment times count audio bytes from here on. A resumed conversation
         # (a new Session on an existing conversation id) seeds this with the
         # duration already retained, so its segments continue the conversation's
@@ -187,6 +192,10 @@ class StreamingTranscriber:
         per-session state to prime, so this is a no-op — kept to satisfy the
         `Transcriber` seam, which lets the session warm every backend uniformly."""
         return None
+
+    @property
+    def finalizing(self) -> bool:
+        return self._speech_finals_pending > 0 or self._finals_undelivered > 0
 
     async def push(self, pcm: bytes) -> None:
         if not pcm:
@@ -231,6 +240,8 @@ class StreamingTranscriber:
         first pause of each one back on the fixed threshold."""
         start = self._segment_start_ms
         self._segment_start_ms = start + _bytes_to_ms(len(self._buf))
+        if self._has_speech:
+            self._speech_finals_pending += 1
         self._submit("final", bytes(self._buf), start, self._has_speech)
         self._buf.clear()
         self._since_partial = 0
@@ -244,7 +255,13 @@ class StreamingTranscriber:
                 if kind == "partial":
                     await self._emit_partial(pcm)
                 else:
-                    await self._finalize(pcm, start_ms, has_speech)
+                    try:
+                        await self._finalize(pcm, start_ms, has_speech)
+                    finally:
+                        # After _finalize queued its caption.final (counted as
+                        # undelivered), so `finalizing` never dips in between.
+                        if has_speech:
+                            self._speech_finals_pending -= 1
             except Exception:
                 # A failed decode must not kill the worker: every later turn would
                 # silently stop captioning. Count it and move on to the next job.
@@ -450,6 +467,7 @@ class StreamingTranscriber:
         # text-based identification of the final itself; an ambiguous turn stays
         # None, which decides nothing downstream.
         lang = _lang(result.language or self._language) or _lang(detect_lang(text))
+        self._finals_undelivered += 1
         await self._queue.put(
             CaptionFinal(
                 type="caption.final",
@@ -468,7 +486,12 @@ class StreamingTranscriber:
         # still catching up must not drop them — stopping at the flag alone
         # lost the final turns of a session closed mid-drain.
         while not (self._closed and self._queue.empty()):
-            yield await self._queue.get()
+            result = await self._queue.get()
+            yield result
+            # Resumed only once the consumer has handled the final, so `finalizing`
+            # stays set until the session has seen it (no gap for its hold to expire).
+            if isinstance(result, CaptionFinal):
+                self._finals_undelivered -= 1
 
     async def flush(self) -> None:
         """Finalize the in-flight turn and wait for every queued decode to land.

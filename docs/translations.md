@@ -71,7 +71,10 @@ once the run ends.
 3. **The run ends on evidence the speaker is done.** An English final closes the
    run immediately; otherwise a silence hold (`API_TRANSLATION_HOLD_MS`, default
    3000ms) closes it once speech stops — partial captions count as activity, so
-   the hold can't fire mid-utterance while finals only land at pauses.
+   the hold can't fire mid-utterance while finals only land at pauses. A final
+   decode still in flight for a turn with speech also holds the run open (STT
+   finals can take ~6 s, longer than the hold), so a slow final still lands inside
+   its run instead of arriving to a closed one and being dropped (XERK-1377).
 4. **Delivery + persistence.** Each translation is a `translation` WS message
    keyed by `segmentId` (see `contract/ws-messages.schema.json`) so clients pair
    it with the turn it renders under; the run's end is `translation.done`, which
