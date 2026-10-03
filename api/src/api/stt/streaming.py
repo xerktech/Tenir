@@ -9,9 +9,16 @@ defines:
   energy-based VAD sees enough trailing silence (a turn boundary) or the segment
   hits a max length.
 
-All model inference is delegated to a `WhisperEngine` and run off the event loop
-via `asyncio.to_thread`, so a busy model applies natural per-connection
-backpressure without stalling other sessions. The windowing/VAD logic here is
+All model inference is delegated to a `WhisperEngine`, run off the event loop via
+`asyncio.to_thread` by one per-session decode worker. `push()` only buffers audio,
+runs the VAD and queues decode jobs — it never awaits a decode — so the WebSocket
+frame loop keeps reading the socket (and its keepalive pongs) while a slow or hung
+STT upstream is outstanding. Decoding inline on that loop dropped every open
+session with 1011 whenever the upstream stalled past the ping timeout (XERK-1414,
+XERK-1424). A slow model now degrades partials (at most one is ever outstanding;
+cadences that fall due while one is pending are coalesced, so no partial decodes
+seconds-old audio behind a backlog) instead of stalling the session; finals always
+queue, in order, so no turn is lost. The windowing/VAD logic here is
 model-agnostic and unit-tested with a fake engine. Partials re-decode a trailing
 window (or the whole in-flight segment, for LocalAgreement) of the offline engine
 on a cadence; finals decode the whole turn on the same engine (Parakeet in
@@ -32,7 +39,7 @@ import numpy as np
 from api.contract import CaptionFinal, CaptionPartial, Lang, Word
 from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
-from api.stt.engine import BYTES_PER_SEC, WhisperEngine, pcm16_to_float32, rms
+from api.stt.engine import BYTES_PER_SEC, EngineResult, WhisperEngine, pcm16_to_float32, rms
 from api.stt.langid import detect_lang
 
 log = logging.getLogger("api.stt.streaming")
@@ -66,21 +73,11 @@ _RECOVERY_MIN_WORDS = 3
 # instead of falling back to the partial text, or being dropped below the gate.
 _EMPTY_FINAL_RETRY_PAD_MS = 500
 
-# Partials are skipped while audio intake runs more than this far behind real time.
-# Decodes run inline on the WebSocket intake path (no frame is read while one runs),
-# so whenever they outlast the partial cadence — a loaded STT server, a starved pod —
-# intake falls behind; on continuous speech the lag only grows, the socket's frame
-# queue fills, keepalive pongs go unread and the server drops the session with 1011
-# (XERK-1414: every 10-minute chunk of a continuous conversation dropped in ~1 min).
-# A partial of audio that is already seconds old is not a live caption anyway, so
-# while behind only finals decode, intake catches up, and partials resume. A fixed
-# back-off on decode latency was tried first and either latched partials off for good
-# (carried across turns) or, reset per turn, still dropped the session.
-_PARTIAL_SKIP_LAG_S = 1.0
-
-# A gap this long between frames means intake was waiting on the client — it is
-# caught up by definition (a paused mic, a slow network), so the lag clock rebases.
-_INTAKE_IDLE_S = 0.5
+# A partial whose audio has waited longer than this in the decode queue (behind a
+# slow final) is dropped instead of decoded: a caption of seconds-old audio is not a
+# live caption, and decoding it delays the next turn's final (XERK-1414's 1 s bound,
+# kept now that decodes run off the intake path).
+_PARTIAL_STALE_S = 1.0
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -170,10 +167,10 @@ class StreamingTranscriber:
         # turn the partial decode transcribed — e.g. a session pinned to one language
         # force-decoding another). Reset at every turn boundary.
         self._turn_partial = ""
-        # Final-in-flight tracking (Transcriber.finalizing): a turn with speech is
-        # being decoded, or its caption.final is queued but the consumer hasn't
-        # finished handling it yet.
-        self._decoding_speech = False
+        # Final-in-flight tracking (Transcriber.finalizing): speech turns queued for
+        # or in their final decode, and caption.finals queued that the consumer
+        # hasn't finished handling yet.
+        self._speech_finals_pending = 0
         self._finals_undelivered = 0
         # Segment times count audio bytes from here on. A resumed conversation
         # (a new Session on an existing conversation id) seeds this with the
@@ -185,12 +182,15 @@ class StreamingTranscriber:
 
         self._queue: asyncio.Queue[CaptionPartial | CaptionFinal] = asyncio.Queue()
         self._closed = False
-        # Real-time lag tracking for the partial skip (see _PARTIAL_SKIP_LAG_S): the
-        # wall-clock time audio position 0 corresponds to, the audio pushed so far, and
-        # when the previous push returned.
-        self._rt_origin: float | None = None
-        self._rt_audio_s = 0.0
-        self._rt_last_push_end: float | None = None
+
+        # Decode jobs, run strictly in order by one worker task (started on first use):
+        # ("partial", pcm, queued_at, True) or ("final", pcm, segment_start_ms,
+        # has_speech); queued_at is perf_counter() at submit, for _PARTIAL_STALE_S.
+        # Ordering is what keeps a turn's partials ahead of its final and lets the
+        # worker own the per-turn state (_turn_partial, _agreement) without locking.
+        self._jobs: asyncio.Queue[tuple[str, bytes, float, bool]] = asyncio.Queue()
+        self._worker: asyncio.Task[None] | None = None
+        self._partial_pending = False
 
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
@@ -202,48 +202,85 @@ class StreamingTranscriber:
 
     @property
     def finalizing(self) -> bool:
-        return self._decoding_speech or self._finals_undelivered > 0
-
-    def _intake_lag_s(self, now: float) -> float:
-        """How far behind real time this push's audio arrives (>= 0). Rebased when
-        intake was idle-waiting on the client, or when the client is ahead."""
-        idle = self._rt_last_push_end is None or now - self._rt_last_push_end > _INTAKE_IDLE_S
-        if self._rt_origin is None or idle or now - self._rt_origin < self._rt_audio_s:
-            self._rt_origin = now - self._rt_audio_s
-        return (now - self._rt_origin) - self._rt_audio_s
+        return self._speech_finals_pending > 0 or self._finals_undelivered > 0
 
     async def push(self, pcm: bytes) -> None:
         if not pcm:
             return
-        now = time.perf_counter()
-        behind = self._intake_lag_s(now) > _PARTIAL_SKIP_LAG_S
-        self._rt_audio_s += len(pcm) / BYTES_PER_SEC
-        try:
-            await self._push(pcm, behind)
-        finally:
-            self._rt_last_push_end = time.perf_counter()
-
-    async def _push(self, pcm: bytes, behind: bool) -> None:
         self._buf.extend(pcm)
         self._since_partial += len(pcm)
         self._update_vad(pcm)
 
         if len(self._buf) >= self._max_segment_bytes:
-            await self._finalize()
+            self._close_turn()
         elif (
             self._has_speech
             and self._trailing_silence >= self._silence_bytes
             and len(self._buf) >= self._min_segment_bytes
         ):
-            await self._finalize()
+            self._close_turn()
         elif self._has_speech and self._since_partial >= self._partial_bytes:
-            if behind:
-                # Seconds-stale audio: skip the decode and let intake catch up. The
-                # cadence counter keeps running, so the next push after catching up
-                # emits one immediately.
-                metrics.incr("stage.stt.partial_skipped_lag")
+            if self._partial_pending:
+                # The engine is behind: skip this cadence rather than queue stale
+                # decodes. _since_partial keeps running, so the first chunk after the
+                # pending partial lands schedules a fresh one.
+                metrics.incr("stage.stt.partial_skipped_busy")
                 return
-            await self._emit_partial()
+            self._since_partial = 0
+            buf = self._buf
+            if self._agreement is None and self._partial_window_bytes:
+                buf = buf[-self._partial_window_bytes :]
+            self._partial_pending = True
+            self._submit("partial", bytes(buf), time.perf_counter(), True)
+
+    def _submit(self, kind: str, pcm: bytes, arg: float, has_speech: bool) -> None:
+        if self._worker is None:
+            self._worker = asyncio.create_task(self._work())
+        self._jobs.put_nowait((kind, pcm, arg, has_speech))
+
+    def _close_turn(self) -> None:
+        """Hand the in-flight segment to the worker for its final decode and reset the
+        ingestion state so the next turn's audio buffers immediately.
+
+        The VAD level window deliberately survives: it describes the *room*, which
+        doesn't change at a turn boundary, and re-learning it every turn would put the
+        first pause of each one back on the fixed threshold."""
+        start = self._segment_start_ms
+        self._segment_start_ms = start + _bytes_to_ms(len(self._buf))
+        if self._has_speech:
+            self._speech_finals_pending += 1
+        self._submit("final", bytes(self._buf), start, self._has_speech)
+        self._buf.clear()
+        self._since_partial = 0
+        self._trailing_silence = 0
+        self._has_speech = False
+
+    async def _work(self) -> None:
+        while True:
+            kind, pcm, arg, has_speech = await self._jobs.get()
+            try:
+                if kind == "partial":
+                    if time.perf_counter() - arg > _PARTIAL_STALE_S:
+                        metrics.incr("stage.stt.partial_skipped_stale")
+                    else:
+                        await self._emit_partial(pcm)
+                else:
+                    try:
+                        await self._finalize(pcm, int(arg), has_speech)
+                    finally:
+                        # After _finalize queued its caption.final (counted as
+                        # undelivered), so `finalizing` never dips in between.
+                        if has_speech:
+                            self._speech_finals_pending -= 1
+            except Exception:
+                # A failed decode must not kill the worker: every later turn would
+                # silently stop captioning. Count it and move on to the next job.
+                log.exception("STT %s decode failed", kind)
+                metrics.incr("stage.stt.errors")
+            finally:
+                if kind == "partial":
+                    self._partial_pending = False
+                self._jobs.task_done()
 
     def _speech_threshold(self) -> float:
         """The RMS a frame must reach to count as speech.
@@ -282,21 +319,13 @@ class StreamingTranscriber:
             self._trailing_silence += len(pcm)
 
     async def _run_engine(
-        self,
-        *,
-        window_bytes: int = 0,
-        stage: str = "final",
-        want_words: bool = True,
-        pad_ms: int = 0,
-    ):
-        # A partial may decode only the trailing window_bytes of the segment so its
-        # cost doesn't grow with turn length; a final (window_bytes=0) decodes the
-        # whole segment for a stable transcript. The inference time is recorded so the
-        # caption-path latency budget (master plan §6) can actually be measured/tuned.
-        buf = self._buf
-        if window_bytes and len(buf) > window_bytes:
-            buf = buf[-window_bytes:]
-        samples = pcm16_to_float32(bytes(buf))
+        self, pcm: bytes, *, stage: str, want_words: bool, pad_ms: int = 0
+    ) -> EngineResult:
+        # A legacy partial carries only the trailing partial window so its cost
+        # doesn't grow with turn length; a final carries the whole segment for a
+        # stable transcript. The inference time is recorded so the caption-path
+        # latency budget (master plan §6) can actually be measured/tuned.
+        samples = pcm16_to_float32(pcm)
         if pad_ms:
             pad = np.zeros(_ms_to_bytes(pad_ms) // 2, dtype=np.float32)
             samples = np.concatenate([pad, samples, pad])
@@ -311,21 +340,17 @@ class StreamingTranscriber:
             # clamped to the turn: a word the model placed in either pad still lies
             # within the caption it belongs to.
             off = pad_ms / 1000
-            dur = round(len(buf) / BYTES_PER_SEC, 3)
+            dur = round(len(pcm) / BYTES_PER_SEC, 3)
             for w in result.words:
                 w.start = min(dur, max(0.0, round(w.start - off, 3)))
                 w.end = min(dur, max(0.0, round(w.end - off, 3)))
         return result
 
-    async def _emit_partial(self) -> None:
-        self._since_partial = 0
-
+    async def _emit_partial(self, pcm: bytes) -> None:
         if self._agreement is None:
             # Legacy path: decode the trailing window and emit it verbatim, which
             # rewrites the whole caption line each cadence.
-            result = await self._run_engine(
-                window_bytes=self._partial_window_bytes, stage="partial", want_words=False
-            )
+            result = await self._run_engine(pcm, stage="partial", want_words=False)
             text = result.text.strip()
             if not text:
                 return
@@ -340,7 +365,7 @@ class StreamingTranscriber:
         # here (still bounded by max_segment_ms and, in practice, short because a pause
         # finalizes the turn). The running commit then keeps already-shown words fixed
         # and only the trailing word or two can still change.
-        result = await self._run_engine(window_bytes=0, stage="partial", want_words=False)
+        result = await self._run_engine(pcm, stage="partial", want_words=False)
         lang = _lang(result.language or self._language)
         self._agreement.commit(result.text.split())
         caption = self._agreement.caption_text()
@@ -349,7 +374,7 @@ class StreamingTranscriber:
         self._turn_partial = caption
         await self._queue.put(CaptionPartial(type="caption.partial", text=caption, lang=lang))
 
-    async def _retry_blank_final(self, blank):
+    async def _retry_blank_final(self, pcm: bytes, blank: EngineResult) -> EngineResult:
         """Speech, but the whole-turn decode is blank: decode once more with silence
         padding (see _EMPTY_FINAL_RETRY_PAD_MS). Returns the retry's result when it
         carries a real turn, else ``blank`` so _finalize falls through to the XERK-174
@@ -360,7 +385,10 @@ class StreamingTranscriber:
           recovered partial (XERK-182): padding non-speech can conjure 1-2 words."""
         try:
             retry = await self._run_engine(
-                stage="final_retry", want_words=self._final_words, pad_ms=_EMPTY_FINAL_RETRY_PAD_MS
+                pcm,
+                stage="final_retry",
+                want_words=self._final_words,
+                pad_ms=_EMPTY_FINAL_RETRY_PAD_MS,
             )
         except Exception:
             log.warning("padded retry of a blank final failed", exc_info=True)
@@ -372,30 +400,25 @@ class StreamingTranscriber:
         metrics.incr("stage.stt.final_retry_recovered")
         return retry
 
-    async def _finalize(self) -> None:
-        self._decoding_speech = self._has_speech
+    async def _finalize(self, pcm: bytes, start: int, has_speech: bool) -> None:
         try:
-            result = await self._run_engine(stage="final", want_words=self._final_words)
-            if not result.text.strip() and self._has_speech:
-                result = await self._retry_blank_final(result)
-        finally:
-            self._decoding_speech = False
-        start = self._segment_start_ms
-        end = start + _bytes_to_ms(len(self._buf))
+            result = await self._run_engine(pcm, stage="final", want_words=self._final_words)
+        except Exception:
+            # A failed whole-turn decode (e.g. the upstream timed out) is treated as an
+            # empty one — no padded retry against an upstream that just failed — so
+            # the turn still falls back to the partial the user already watched
+            # instead of vanishing.
+            log.exception("STT final decode failed")
+            metrics.incr("stage.stt.errors")
+            result = EngineResult(text="", words=[], language=None)
+        else:
+            if not result.text.strip() and has_speech:
+                result = await self._retry_blank_final(pcm, result)
+        end = start + _bytes_to_ms(len(pcm))
 
         # The last partial shown for this turn, captured before the per-turn state is
         # reset below — the fallback if the whole-turn decode comes back empty.
         fallback = self._turn_partial
-
-        # Reset for the next segment before emitting so timing stays monotonic. The VAD
-        # level window deliberately survives: it describes the *room*, which doesn't
-        # change at a turn boundary, and re-learning it every turn would put the first
-        # pause of each one back on the fixed threshold.
-        self._segment_start_ms = end
-        self._buf.clear()
-        self._since_partial = 0
-        self._trailing_silence = 0
-        self._has_speech = False
         self._turn_partial = ""
         # The committed prefix belongs to the turn just closed; start the next turn's
         # word-by-word commit from scratch.
@@ -481,10 +504,16 @@ class StreamingTranscriber:
                 self._finals_undelivered -= 1
 
     async def flush(self) -> None:
+        """Finalize the in-flight turn and wait for every queued decode to land.
+        Session.close bounds this wait, so a hung upstream can't hold teardown."""
         if self._buf and self._has_speech:
-            await self._finalize()
+            self._close_turn()
+        if self._worker is not None:
+            await self._jobs.join()
 
     async def close(self) -> None:
         self._closed = True
+        if self._worker is not None:
+            self._worker.cancel()
         # Unblock a pending results() get with a skipped (empty) sentinel.
         await self._queue.put(CaptionPartial(type="caption.partial", text="", lang=None))

@@ -85,7 +85,8 @@ translation accuracy) instead of only unit tests or the stub.
 - **Reach it:** `kubectl port-forward -n ai svc/litellm 4000:4000`, then
   `http://localhost:4000/v1` (OpenAI-compatible). Never commit LiteLLM's public hostname.
   The port-forward hangs silently after ~3–5 min of streaming; long real-time runs need a
-  watchdog that restarts it (a hung STT call then closes the API's WebSockets with 1011, XERK-1424).
+  watchdog that restarts it (a hung STT call stalls captions until it times out; the
+  WebSocket itself stays up, XERK-1424).
 - **Key:** a LiteLLM virtual key; Tenir's own is in the `tenir` pod env:
   `LITELLM_KEY=$(kubectl exec -n ai deploy/tenir -- printenv API_LITELLM_API_KEY)` (don't echo it).
 - **Model ids are LiteLLM aliases** (registered in LiteLLM's Postgres, not in git), matching the

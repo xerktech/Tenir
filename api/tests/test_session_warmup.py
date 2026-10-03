@@ -124,3 +124,39 @@ def test_warmup_error_is_retrieved_not_raised(monkeypatch: pytest.MonkeyPatch) -
         await session.close()
 
     asyncio.run(run())
+
+
+def test_close_is_bounded_when_the_stt_flush_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung STT upstream leaves a decode backlog behind flush(); teardown must not
+    wait it out, and close() must still run so the results pump ends (XERK-1424)."""
+
+    class HangingFlush(RecordingTranscriber):
+        async def flush(self) -> None:
+            await asyncio.Event().wait()
+
+    async def run() -> None:
+        fake = HangingFlush()
+        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None, **kw: fake)
+        monkeypatch.setattr(session_mod, "_STT_FLUSH_TIMEOUT_S", 0.05)
+        session = await _start([], fake)
+        await asyncio.wait_for(session.close(), timeout=2)
+        assert fake.closed
+
+    asyncio.run(run())
+
+
+def test_close_still_closes_the_transcriber_when_flush_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingFlush(RecordingTranscriber):
+        async def flush(self) -> None:
+            raise RuntimeError("stt seam down")
+
+    async def run() -> None:
+        fake = FailingFlush()
+        monkeypatch.setattr(session_mod, "make_transcriber", lambda source_lang=None, **kw: fake)
+        session = await _start([], fake)
+        await asyncio.wait_for(session.close(), timeout=2)
+        assert fake.closed
+
+    asyncio.run(run())

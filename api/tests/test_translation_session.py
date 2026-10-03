@@ -456,6 +456,11 @@ def test_slow_final_decode_keeps_the_run_open(monkeypatch: pytest.MonkeyPatch) -
             await session.on_audio(pcm(600, 3000))
             await session.on_audio(pcm(600, 0))
             await asyncio.sleep(0.05)  # let the pump deliver the final
+        # Finals decode off the audio path (XERK-1424): wait for the slow one to be
+        # decoded and handled. The 150 ms hold expires many times meanwhile.
+        assert session._transcriber is not None
+        while session._transcriber.finalizing:
+            await asyncio.sleep(0.01)
         await _drain_translations(session)
         translated = [t.segmentId for t in _translations(sent)]
         finals = [m.segmentId for m in sent if isinstance(m, CaptionFinal)]
