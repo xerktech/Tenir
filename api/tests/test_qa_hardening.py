@@ -493,5 +493,5 @@ def test_the_ws_endpoint_registers_a_disconnect_for_every_session() -> None:
         sid = ws.receive_json()["sessionId"]
         session = registry.get(sid)
         assert session is not None
-        assert session._disconnect is not None, "the endpoint never registered a closer"
+        assert session._disconnects, "the endpoint never registered a closer"
         assert session.user_id is not None, "the session does not know whose it is"

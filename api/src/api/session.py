@@ -274,8 +274,10 @@ class Session:
         # enough: the WS handler is parked in receive() and keeps feeding audio
         # into a session that is already finalized, so a revoked account went on
         # streaming until it chose to hang up. Set by the WS endpoint that owns
-        # the socket; None for a Session driven directly (tests, tooling).
-        self._disconnect: Callable[[], Awaitable[None]] | None = None
+        # the socket; empty for a Session driven directly (tests, tooling). One per
+        # socket ever bound: a resume can take the session over while the socket it
+        # displaced is still open, and that socket must close too (XERK-1504).
+        self._disconnects: list[Callable[[], Awaitable[None]]] = []
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
@@ -1229,8 +1231,11 @@ class Session:
         metrics.incr("music.done")
 
     def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
-        """Register how to drop this session's transport (see ``revoke``)."""
-        self._disconnect = fn
+        """Register how to drop a transport bound to this session (see ``revoke``).
+
+        Each must be safe to call on a socket that has already gone away.
+        """
+        self._disconnects.append(fn)
 
     async def revoke(self, reason: str) -> None:
         """Finalize the session AND close its socket — the account is gone.
@@ -1240,9 +1245,9 @@ class Session:
         (XERK-236).
         """
         await self.close()
-        if self._disconnect is not None:
+        for disconnect in self._disconnects:
             try:
-                await self._disconnect()
+                await disconnect()
             except Exception:
                 log.warning("session %s could not close its socket", self.session_id)
         log.info("session %s revoked: %s", self.session_id, reason)

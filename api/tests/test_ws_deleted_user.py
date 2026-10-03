@@ -155,10 +155,10 @@ def test_resumed_socket_is_closed_when_its_account_is_deleted(
             )
             assert ws2.receive_json()["resumed"] is True
             assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
-            # The revoke ran inside the DELETE. Had it aimed at the dead ws1 it logs
-            # this — check it first so a regression fails here rather than hanging
-            # on a receive from a socket nobody closes.
-            assert "could not close its socket" not in caplog.text
+            # The revoke ran inside the DELETE and must have closed ws2 (ws1 is gone,
+            # so its hook is a no-op) — checked first so a regression fails here
+            # rather than hanging on a receive from a socket nobody closes.
+            assert caplog.text.count("ws closed: account no longer exists") == 1
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws2.receive_json()
             assert exc.value.code == 1008
@@ -166,19 +166,33 @@ def test_resumed_socket_is_closed_when_its_account_is_deleted(
 
 
 @pytest.mark.real_auth
-def test_start_on_socket_whose_session_outlived_the_delete_closes_1008() -> None:
-    """If the delete's registry scan missed this socket's session, session.start
-    finalizes it and still closes the socket with 1008, not a bare drop."""
+def test_delete_closes_both_sockets_when_a_resume_takes_over_an_open_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A resume can take a session over while the socket it displaced is still open.
+    The delete must close both, not just whichever socket bound it last."""
+    _, admin_token = _token("admin", "admin")
     member_id, member_token = _token("member", "member")
+    admin = {"Authorization": f"Bearer {admin_token}"}
     with TestClient(app) as client:
-        with client.websocket_connect(f"/ws?token={member_token}") as ws:
-            ws.send_text(START)
-            sid = ws.receive_json()["sessionId"]
-            live = registry.get(sid)
-            registry.unregister(live)  # the delete's scan won't find it
-            get_user_store().delete(member_id)
-            ws.send_text(START)
-            with pytest.raises(WebSocketDisconnect) as exc:
-                ws.receive_json()
-            assert exc.value.code == 1008
-            assert live.is_closed
+        with (
+            client.websocket_connect(f"/ws?token={member_token}") as ws1,
+            client.websocket_connect(f"/ws?token={member_token}") as ws2,
+        ):
+            ws1.send_text(START)
+            sid = ws1.receive_json()["sessionId"]
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["resumed"] is True
+            assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
+            # The revoke ran inside the DELETE: both sockets were open, so both must
+            # have been closed — checked here so a regression fails rather than hangs.
+            assert caplog.text.count("ws closed: account no longer exists") == 2
+            assert "could not close its socket" not in caplog.text
+            for ws in (ws1, ws2):
+                with pytest.raises(WebSocketDisconnect) as exc:
+                    ws.receive_json()
+                assert exc.value.code == 1008

@@ -332,6 +332,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.send_text(serialize(msg))
 
     async def close_removed() -> None:
+        # A revoke calls this for every socket that ever bound the session, so skip
+        # one that is already gone rather than count it as a removal.
+        if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
+            return
         # 1008, not a bare drop: clients treat 1006 as a blip and reconnect.
         log.warning("ws closed: account no longer exists")
         metrics.incr("ws.account_removed")
@@ -388,8 +392,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         registry.unregister(session)
                         await session.revoke("account deleted")
                         session = None
-                    if ws.application_state != WebSocketState.DISCONNECTED:
-                        await close_removed()
+                    await close_removed()  # no-op if the revoke already closed it
                     break
                 # A resume id the server could not have issued is not a resume id.
                 # It reaches the conversation store AND the audio object key
@@ -423,8 +426,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         await session.close()
                     session = resumable
                     await session.rebind(send)
-                    # A revoke must drop THIS socket, not the dead one the session was
-                    # started on, or a resumed socket outlives its account (XERK-1504).
+                    # A revoke must drop THIS socket too, not only the one the session
+                    # was started on, or a resumed socket outlives its account (XERK-1504).
                     session.on_disconnect(close_removed)
                     await send(
                         SessionReady(
