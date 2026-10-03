@@ -425,96 +425,115 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     )
                     metrics.incr("sessions.bad_resume_id")
                     msg = msg.model_copy(update={"sessionId": None})
-                # Resume a still-live session if the client presents its id and both
-                # the household AND the owner match: rebind to it, preserving the
-                # transcriber state, instead of starting fresh. Owning the socket is
-                # not enough — a recording belongs to the principal that created it,
-                # so a different member (even in the same household) can never resume
-                # into another user's live session and append to their recording
-                # (XERK-651).
-                resumable = registry.get(msg.sessionId) if msg.sessionId else None
-                if (
-                    resumable is not None
-                    and resumable.household == principal.household
-                    and resumable.user_id == principal.user_id
-                ):
-                    if session is not None and session is not resumable:
+                # Serialize the check-then-start below per resume id: start() awaits
+                # store reads before the session is registered, so two reconnects with
+                # one id would both miss the registry and each start their own Session
+                # on the same conversation. Holding the lock until register() makes the
+                # second one find the first and warm-resume onto it (XERK-1514).
+                async with registry.start_lock(msg.sessionId):
+                    # Resume a still-live session if the client presents its id and both
+                    # the household AND the owner match: rebind to it, preserving the
+                    # transcriber state, instead of starting fresh. Owning the socket is
+                    # not enough — a recording belongs to the principal that created it,
+                    # so a different member (even in the same household) can never resume
+                    # into another user's live session and append to their recording
+                    # (XERK-651).
+                    resumable = registry.get(msg.sessionId) if msg.sessionId else None
+                    if (
+                        resumable is not None
+                        and resumable.household == principal.household
+                        and resumable.user_id == principal.user_id
+                    ):
+                        if session is not None and session is not resumable:
+                            registry.unregister(session)
+                            await session.close()
+                        session = resumable
+                        await session.rebind(send)
+                        # A revoke must drop THIS socket too, not only the one the session
+                        # was started on, or a resumed socket outlives its account (XERK-1504).
+                        session.on_disconnect(close_removed)
+                        if session.is_closed:
+                            # A revoke landed while rebind() was replaying, before the hook
+                            # above existed, so it could not close this socket itself.
+                            session = None
+                            await close_removed()
+                            break
+                        await send(
+                            SessionReady(
+                                type="session.ready", sessionId=session.session_id, resumed=True
+                            )
+                        )
+                        metrics.incr("sessions.resumed")
+                        continue
+                    # A session id that is live under *another* household must never be
+                    # honored: the registry is keyed by id alone, so registering under it
+                    # would evict that household's running session (cross-household data
+                    # loss + isolation hole). Start fresh under a server-generated id.
+                    requested_id = msg.sessionId
+                    if requested_id is not None and registry.get(requested_id) is not None:
+                        requested_id = None
+                    # Cold resume of a *persisted* recording is owner-gated too. create()
+                    # is idempotent by id, so without this a member presenting another
+                    # user's (or a legacy admin's) conversation id would append this
+                    # sitting's audio/segments onto that recording and overwrite its audio
+                    # key on end. Only the owner may reopen their own recording; anything
+                    # else starts fresh under a server id (XERK-651).
+                    if requested_id is not None:
+                        convs = get_conversation_store()
+                        # A store error here must surface like a failed start below,
+                        # not escape the handler and drop the socket with no close frame.
+                        try:
+                            existing = (
+                                await asyncio.to_thread(
+                                    convs.get, principal.household, requested_id
+                                )
+                                if convs is not None
+                                else None
+                            )
+                        except Exception:
+                            log.exception(
+                                "resume owner check failed for household %s",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.start_errors")
+                            await send(_err("internal", "could not start session"))
+                            continue
+                        if existing is not None and existing.owner != principal.user_id:
+                            log.warning(
+                                "rejecting cross-user resume of recording owned by another "
+                                "user in household %s",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.cross_user_resume")
+                            requested_id = None
+                    if session is not None:
                         registry.unregister(session)
                         await session.close()
-                    session = resumable
-                    await session.rebind(send)
-                    # A revoke must drop THIS socket too, not only the one the session
-                    # was started on, or a resumed socket outlives its account (XERK-1504).
-                    session.on_disconnect(close_removed)
-                    if session.is_closed:
-                        # A revoke landed while rebind() was replaying, before the hook
-                        # above existed, so it could not close this socket itself.
-                        session = None
-                        await close_removed()
-                        break
-                    await send(
-                        SessionReady(
-                            type="session.ready", sessionId=session.session_id, resumed=True
+                    # A real backend (model/DB) can raise from Session()/start(); surface
+                    # it as an error frame instead of aborting the socket so a transient
+                    # backend outage doesn't 500 the connection.
+                    try:
+                        new_session = Session(
+                            send,
+                            session_id=requested_id,
+                            household=principal.household,
+                            user_id=principal.user_id,
                         )
-                    )
-                    metrics.incr("sessions.resumed")
-                    continue
-                # A session id that is live under *another* household must never be
-                # honored: the registry is keyed by id alone, so registering under it
-                # would evict that household's running session (cross-household data
-                # loss + isolation hole). Start fresh under a server-generated id.
-                requested_id = msg.sessionId
-                if requested_id is not None and registry.get(requested_id) is not None:
-                    requested_id = None
-                # Cold resume of a *persisted* recording is owner-gated too. create()
-                # is idempotent by id, so without this a member presenting another
-                # user's (or a legacy admin's) conversation id would append this
-                # sitting's audio/segments onto that recording and overwrite its audio
-                # key on end. Only the owner may reopen their own recording; anything
-                # else starts fresh under a server id (XERK-651).
-                if requested_id is not None:
-                    convs = get_conversation_store()
-                    existing = (
-                        await asyncio.to_thread(convs.get, principal.household, requested_id)
-                        if convs is not None
-                        else None
-                    )
-                    if existing is not None and existing.owner != principal.user_id:
-                        log.warning(
-                            "rejecting cross-user resume of recording owned by another "
-                            "user in household %s",
-                            principal.household,
+                        await new_session.start(
+                            mic_source=msg.micSource,
+                            source_lang=msg.sourceLang,
                         )
-                        metrics.incr("sessions.cross_user_resume")
-                        requested_id = None
-                if session is not None:
-                    registry.unregister(session)
-                    await session.close()
-                # A real backend (model/DB) can raise from Session()/start(); surface
-                # it as an error frame instead of aborting the socket so a transient
-                # backend outage doesn't 500 the connection.
-                try:
-                    new_session = Session(
-                        send,
-                        session_id=requested_id,
-                        household=principal.household,
-                        user_id=principal.user_id,
-                    )
-                    await new_session.start(
-                        mic_source=msg.micSource,
-                        source_lang=msg.sourceLang,
-                    )
-                except Exception:
-                    log.exception("session.start failed for household %s", principal.household)
-                    metrics.incr("sessions.start_errors")
-                    await send(_err("internal", "could not start session"))
-                    continue
-                # Let an account deletion drop this socket, not just finalize
-                # the session behind it (XERK-236).
-                new_session.on_disconnect(close_removed)
-                session = new_session
-                registry.register(session)
-                metrics.incr("sessions.started")
+                    except Exception:
+                        log.exception("session.start failed for household %s", principal.household)
+                        metrics.incr("sessions.start_errors")
+                        await send(_err("internal", "could not start session"))
+                        continue
+                    # Let an account deletion drop this socket, not just finalize
+                    # the session behind it (XERK-236).
+                    new_session.on_disconnect(close_removed)
+                    session = new_session
+                    registry.register(session)
+                    metrics.incr("sessions.started")
                 # A delete that ran while start() was awaiting scanned the registry
                 # before this session was in it. Checking only now that it is
                 # registered closes that window: either the delete's scan sees it,
