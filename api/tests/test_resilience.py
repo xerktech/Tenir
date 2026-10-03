@@ -238,4 +238,6 @@ def test_final_with_no_dated_audio_is_not_stale() -> None:
 
     session = Session(_noop_send(None))
     final = CaptionFinal(type="caption.final", segmentId="s", text="t", startMs=0, endMs=500)
-    assert session._final_age_s(final) == 0.0
+    assert session._final_age_s(final) == 0.0  # before any audio
+    session._audio_arrivals.append((400, 0.0))  # one push, dated long ago
+    assert session._final_age_s(final) == 0.0  # final runs past the last sample
