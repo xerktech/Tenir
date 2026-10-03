@@ -419,6 +419,10 @@ def test_database_unreachable_classification() -> None:
     # cached, so every access fails until it heals — retry, and seed once it does.
     assert _database_unreachable(SchemaApplyError("read-only transaction"))
     assert not _database_unreachable(_op("53100"))  # disk full is a real rejection
+    # Deliberately log-once: retrying a read-only DB's or a timed-out seed on every
+    # access would 500 logins that reads could otherwise serve.
+    assert not _database_unreachable(_op("25006"))
+    assert not _database_unreachable(_op("57014"))
     assert not _database_unreachable(RuntimeError("fk"))
 
 
