@@ -22,7 +22,7 @@ docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
 ```bash
 cd api && pip install -e '.[dev]'   # the harness imports the api package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
   --out results.json [--conversations id1,id2,...]
 ```
 
@@ -64,7 +64,7 @@ For single-request latency (the number that matters live), use
 
 ```bash
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash
 python scripts/cue_eval/report.py results.judged.json
 ```
 
@@ -115,7 +115,7 @@ retune in `RESULTS-2026-08.md`:
 
 ```bash
 python scripts/cue_eval/cue_replay_prompt.py segments.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
   --out results.json --variant v5 --thinking on --max-tokens 2048
 ```
 

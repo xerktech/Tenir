@@ -14,17 +14,17 @@ primary quality signal; judged numbers are secondary and comparative.
 
 ## 1. Export the data
 
-Postgres runs in the `Tenir-Postgres` container; the host has no local `psql`.
+Postgres runs in the cluster (`kubectl -n ai`, pod `tenir-postgres-1`); the host has no local `psql`.
 
 ```bash
 # Transcript segments (replay input format)
-docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
+kubectl exec -n ai tenir-postgres-1 -c postgres -- psql -U postgres -d tenir -tAc \
   "select json_agg(row_to_json(t)) from (select segment_id, conversation_id, \
    text, start_ms, end_ms, lang, speaker_id, speaker_label from segments \
    order by conversation_id, start_ms) t" > segments.json
 
 # Cues the session actually surfaced
-docker exec Tenir-Postgres psql -U tenir -d tenir -tAc \
+kubectl exec -n ai tenir-postgres-1 -c postgres -- psql -U postgres -d tenir -tAc \
   "select json_agg(row_to_json(t)) from (select cue_id, conversation_id, \
    title, body, at_ms, source from cues order by conversation_id, at_ms) t" \
   > cues.json
@@ -74,10 +74,10 @@ backstops), then LLM-judges every cue.
 ```bash
 cd api && pip install -e '.[dev]'    # replay imports the installed package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
   --out results.json
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
   --max-tokens 500
 python scripts/cue_eval/report.py results.judged.json
 ```

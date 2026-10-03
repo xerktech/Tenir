@@ -37,10 +37,13 @@ model_list:
   # The thinking toggle rides chat_template_kwargs.enable_thinking (Qwen's chat
   # template), off by default so cues/translations get fast structured JSON; it is
   # allowlisted so drop_params doesn't strip it (see the note on the route below).
+  # api_base is a placeholder: production models run in the cluster behind its own LiteLLM
+  # (models registered in its Postgres), and no standalone GPU host exists for this local
+  # gateway to reach. Point both routes at any reachable OpenAI-compatible server to use them.
   - model_name: qwen3.8-27b-dflash
     litellm_params:
       model: openai/qwen3.8-27b
-      api_base: http://maxai.xerktech.com:9402/v1
+      api_base: http://llm-host:9402/v1
       api_key: sk-none
       # Without this allowlist, drop_params silently strips chat_template_kwargs
       # and the model keeps thinking on, spending the whole token budget on
@@ -57,7 +60,7 @@ model_list:
   - model_name: qwen3.8-27b-dflash-translate
     litellm_params:
       model: openai/qwen3.8-27b
-      api_base: http://maxai.xerktech.com:9402/v1
+      api_base: http://llm-host:9402/v1
       api_key: sk-none
       allowed_openai_params: ["chat_template_kwargs"]
 

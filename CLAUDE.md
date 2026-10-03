@@ -75,33 +75,29 @@ cd api && pip install -e '.[dev]' && pytest
 npm install && npm run typecheck && npm run test && npm run build
 ```
 
-### Testing against the real models (bypass LiteLLM)
+### Testing against the real models (via LiteLLM)
 
-The GPU model servers run on the host **`maxai.xerktech.com`** (its IP drifts —
-currently `10.10.10.26`) and can be hit **directly**, bypassing the LiteLLM
-gateway — useful for exercising real
-model behaviour (e.g. cue/translation accuracy) instead of only unit tests or
-the stub. Both expose an OpenAI-compatible API:
+Every model Tenir uses is deployed in the cluster from the ArgoCD repo (`ai/tenir/*.yaml`)
+and reached only through the in-cluster LiteLLM gateway — there is no standalone GPU host to
+hit directly (the old `maxai` box is gone). Use it to exercise real model behaviour (cue /
+translation accuracy) instead of only unit tests or the stub.
 
-- **`maxai.xerktech.com:9402`** — cue/summary/translation LLM: `qwen3.8-27b`
-  served by SGLang (NVFP4 + DFlash speculative decoding; `GET /v1/models`,
-  `POST /v1/chat/completions`). Point
-  `OpenAICueGenerator(endpoint="http://maxai.xerktech.com:9402/v1", model="qwen3.8-27b", api_key="")`
-  (or `OpenAITranslator(...)`) straight at it to drive the real model. Thinking
-  is toggled via `chat_template_kwargs.enable_thinking` (on by default for cues,
-  off by default for translations — see `api/src/api/config.py`). The model id
-  is `qwen3.8-27b` (a wrong id 404s on /chat/completions, which looks like a
-  missing route). `GET /v1/models` returns 200 here and is a reliable liveness
-  probe (`/health` also returns 200, occasionally slow to first respond). The
-  authoritative production check is still a real completion through the LiteLLM
-  proxy for `qwen3.8-27b-dflash`. (The retired port **8890** fronted SGLang behind
-  a proxy that hung `GET /v1/models` and `/health` at ~21s even when healthy and
-  only passed `POST /v1/chat/completions` — the XERK-680 confusion; 8890 is now
-  dead on every route (XERK-681), so use 9402.)
-- **`10.10.10.22:9401`** — Parakeet STT (`GET /health`). The host IP drifts
-  (currently `maxai.xerktech.com` resolves to `10.10.10.26`); prefer the DNS name
-  and don't trust a hard-coded IP here.
-
-These are the same servers the gateway routes to (the `qwen3.8-27b-dflash` alias);
-talking to them directly skips the gateway alias and auth so you can iterate on
-prompts/params without the full stack.
+- **Reach it:** `kubectl port-forward -n ai svc/litellm 4000:4000`, then
+  `http://localhost:4000/v1` (OpenAI-compatible). Never commit LiteLLM's public hostname.
+  The port-forward hangs silently after ~3–5 min of streaming; long real-time runs need a
+  watchdog that restarts it (a hung STT call then closes the API's WebSockets with 1011, XERK-1424).
+- **Key:** a LiteLLM virtual key; Tenir's own is in the `tenir` pod env:
+  `LITELLM_KEY=$(kubectl exec -n ai deploy/tenir -- printenv API_LITELLM_API_KEY)` (don't echo it).
+- **Model ids are LiteLLM aliases** (registered in LiteLLM's Postgres, not in git), matching the
+  `API_*_MODEL` values in ArgoCD `ai/tenir/deployment.yaml`. `GET /v1/models` lists what is live:
+  - `milmmt-46-4b-translate` — translations (`tenir-translator`, MiLMMT-46-4B on vLLM); needs
+    `API_TRANSLATION_PROMPT_STYLE=milmmt` (completion prompt on `/v1/completions`).
+  - `parakeet` — STT (`tenir-stt`), `/v1/audio/transcriptions`.
+  - `qwen3.8-27b-dflash` — cues/summaries. Its in-cluster stack (`ai/tenir/qwen.yaml`) is disabled
+    and the alias is not served until XERK-1422 lands, so cue evals have no model right now.
+- Drive it in code with e.g.
+  `CompletionTranslator(endpoint="http://localhost:4000/v1", model="milmmt-46-4b-translate",
+  api_key=KEY)` (`api.translate.completion`; `OpenAITranslator` is the chat-json style);
+  the eval harnesses take `--endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY"`.
+- A wrong model id 404s on the completion route, which looks like a missing route — check
+  `/v1/models` first.

@@ -53,7 +53,7 @@ services:
       # default so the base stack stays STT-only. Set API_CUE_BACKEND=stub for
       # model-free demo cues (no extra container), or =openai to route to a real chat
       # model through the SAME LiteLLM gateway. The cue LLM is Qwen3.8-27B on the
-      # external SGLang server (no local container); litellm/config.yaml aliases it
+      # in-cluster stack (ArgoCD repo); litellm/config.yaml aliases it
       # as qwen3.8-27b-dflash.
       API_CUE_BACKEND: ${API_CUE_BACKEND:-off}
       API_LLM_MODEL: ${API_LLM_MODEL:-qwen3.8-27b-dflash}
@@ -173,6 +173,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # Boot blocks on Postgres: with it unreachable, the eager schema apply, the
+      # backend probe and the stale sweep each wait out a 30 s pool timeout
+      # (~2 min, XERK-1409). Without a grace period autoheal restarted the api
+      # mid-startup, before it could ever recover.
+      start_period: 180s
     # The api waits up to ~15 s finalizing a live session on shutdown; docker's
     # default 10 s SIGKILLs it mid-persist, which stranded the conversation and
     # lost its audio.

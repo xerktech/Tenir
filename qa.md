@@ -429,29 +429,23 @@ Already installed on the usual box: Node 22, Python 3.14 (+ `uv`), Bun, Docker
   runs wherever you point `API_STT_ENDPOINT` (`GET /health` →
   `{"status":"ok","model": "nvidia/parakeet-tdt-0.6b-v3"}`; it serves
   `/v1/audio/transcriptions` but NOT `/v1/models`, so probe `/health`). The
-  cue/translation LLM is on the GPU box (`maxai.xerktech.com:9402`) — Qwen3.8-27B
-  served by SGLang, not Ollama; it needs no key and serves `GET /v1/models` (200,
-  the reliable liveness probe) and `GET /health`. (It moved off the retired port
-  8890, which fronted SGLang behind a proxy that hung those routes at ~21s even
-  when healthy — the XERK-680 red herring; 8890 is now dead, XERK-681.)
+  LLMs (translation `milmmt-46-4b-translate`, cue `qwen3.8-27b-dflash`) are deployed in the
+  cluster from the ArgoCD repo and reachable only through the in-cluster LiteLLM gateway — there
+  is no standalone GPU host. Port-forward it and use Tenir's virtual key (see CLAUDE.md, "Testing
+  against the real models"); the cue alias is unserved until XERK-1422.
 
-  Point the QA stack at the real models with (substitute your STT host):
+  Point the QA stack at the real models with (substitute your STT host). From inside a
+  container, `localhost` is the container: use the Docker host's address for the port-forward
+  (`kubectl port-forward --address 0.0.0.0 -n ai svc/litellm 4000:4000`):
 
   ```bash
   API_STT_BACKEND=parakeet API_STT_ENDPOINT=http://<stt-host>:9401/v1 \
   API_STATUS_STT_URL=http://<stt-host>:9401 \
-  API_CUE_BACKEND=openai API_TRANSLATION_BACKEND=openai \
-  API_LITELLM_ENDPOINT=http://maxai.xerktech.com:9402/v1 \
-  API_LLM_MODEL=qwen3.8-27b API_TRANSLATION_MODEL=qwen3.8-27b \
+  API_TRANSLATION_BACKEND=openai API_TRANSLATION_MODEL=milmmt-46-4b-translate \
+  API_TRANSLATION_PROMPT_STYLE=milmmt \
+  API_LITELLM_ENDPOINT=http://<docker-host>:4000/v1 API_LITELLM_API_KEY="$LITELLM_KEY" \
     docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
   ```
-
-  (In production the api routes through the LiteLLM gateway aliases
-  `qwen3.8-27b-dflash` / `qwen3.8-27b-dflash-translate` instead of hitting SGLang
-  directly.) Bypassing the gateway like this makes the `litellm` and `llm`
-  status lights read `HTTP 404` — SGLang serves no `/health/liveliness` or
-  `/health/readiness` either. That is the documented consequence of a direct
-  route, not a fault.
 
 ### Testing a REAL model needs real speech
 

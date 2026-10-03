@@ -34,10 +34,14 @@ _WORDS: dict[str, frozenset[str]] = {
     # ("yeah", "okay") are deliberately absent — a bare "Yeah." mid-Spanish-run
     # must not read as an English turn (it would cut the live translation run
     # short; session a6ef5cad contains exactly that turn).
+    # Contractions and short verbs are the bulk of casual English turns ("I did.",
+    # "I don't remember.") and occur in no other contract language (XERK-1415).
     "en": frozenset(
         "the and is are was were of to in that it you they this with for not have "
         "has had but what there about just so would could should think know "
-        "really because".split()
+        "really because did can like get got be if out up how who some mean "
+        "guess we my your i'm i'd i'll i've don't didn't can't it's that's what's "
+        "there's we're they're you're gonna wanna".split()
     ),
     "es": frozenset(
         "el la los las es son está están y de del que un una uno en por para con "
@@ -67,6 +71,20 @@ _WORDS: dict[str, frozenset[str]] = {
         "fa ha essere stare tutto niente qualcosa io tu lei noi voi loro sì".split()
     ),
 }
+
+# Everyday English words that are ALSO distinctive words of another contract
+# language. Spoken by an English speaker they were evidence for the other
+# language, so plain English turns got translated: across the recorded sessions
+# "Um" and "Do" tagged pt, "I did." / "Ha ha" it, "No." es, "It's a very" fr
+# (XERK-1415). They still count for that language, but only once the turn holds
+# other evidence for it — "No me importa lo que pase" stays Spanish, "No way."
+# and "I don't remember." stop being Spanish and Italian. A short turn of nothing
+# but these is undecidable, and inside a live run it still inherits the run's
+# language, so a Spanish "No." mid-conversation is translated as before.
+_ENGLISH_HOMOGRAPHS = frozenset(
+    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non "
+    "ya yo".split()
+)
 
 # Characters that pin a language on their own (strong evidence — they are typed
 # by the STT model's own orthography, not by chance).
@@ -111,10 +129,16 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
         return None
     scores: dict[str, int] = {}
     for code, vocab in _WORDS.items():
-        scores[code] = sum(1 for w in words if w in vocab)
+        scores[code] = sum(
+            1 for w in words if w in vocab and (code == "en" or w not in _ENGLISH_HOMOGRAPHS)
+        )
     for code, chars in _CHARS.items():
         if any(c in lowered for c in chars):
             scores[code] += 2
+    for code, vocab in _WORDS.items():
+        # English homographs only corroborate a language already evidenced.
+        if code != "en" and scores[code]:
+            scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
     return scores, words
 
 
@@ -160,4 +184,22 @@ def detect_lang(text: str) -> str | None:
         return None
     if best_score < _MIN_HITS and len(words) > _SINGLE_HIT_MAX_WORDS:
         return None
+    if best == "en" and best_score < _MIN_HITS and _foreign_doubt(text, words):
+        # One English word next to a homograph or an accented letter is a
+        # code-switched turn ("Like, no sé.", "Ya, it's ok."), not an English one:
+        # calling it en would close a live run mid-Spanish (XERK-1415 QA).
+        return None
     return best
+
+
+# Homographs that cast doubt on a one-word English call. "i" and "a" are left out:
+# they are in nearly every English turn, and real it/fr text has other evidence.
+_DOUBT_WORDS = _ENGLISH_HOMOGRAPHS - _WORDS["en"] - {"i", "a"}
+
+
+def _foreign_doubt(text: str, words: list[str]) -> bool:
+    """Whether a turn carries any non-English signal that isn't scored: an English
+    homograph that isn't English vocab ("no", "ya") or a non-ASCII letter ("sé")."""
+    if any(w in _DOUBT_WORDS for w in words):
+        return True
+    return any(ch.isalpha() and not ch.isascii() for ch in text)

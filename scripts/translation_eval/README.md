@@ -38,8 +38,8 @@ cd api && pip install -e '.[dev]'   # replay imports the installed package
 
 # production setup (Qwen3.8-27B on SGLang; the shipped payload already sets
 # chat_template_kwargs.enable_thinking=false)
-python replay.py eval_set.json --endpoint http://maxai.xerktech.com:9402/v1 \
-  --model qwen3.8-27b --out results.qwen3.8-27b.json
+python replay.py eval_set.json --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" \
+  --model qwen3.8-27b-dflash --out results.qwen3.8-27b.json
 ```
 
 - `--workers 4` (default) keeps full sweeps under ~10 minutes on the shared
@@ -60,7 +60,7 @@ python replay.py eval_set.json --endpoint http://maxai.xerktech.com:9402/v1 \
 
 ```bash
 python judge.py results.qwen3.8-27b.json \
-  --endpoint http://maxai.xerktech.com:9402/v1 --model qwen3.8-27b
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash
 python report.py results.*.judged.json
 ```
 
