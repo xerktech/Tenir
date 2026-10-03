@@ -55,6 +55,27 @@ def test_close_survives_a_failing_transcriber_flush() -> None:
     asyncio.run(run())
 
 
+def test_close_does_not_hang_when_flush_raises() -> None:
+    """A flush that raises (STT timeout on the tail decode) must still close the
+    transcriber: close() is what ends results(), and teardown awaits the pump that
+    drains it — skipping it hung Session.close() forever."""
+    from api.stt.stub import StubTranscriber
+
+    class FlushTimesOut(StubTranscriber):
+        async def flush(self) -> None:
+            raise TimeoutError("stt stalled")
+
+    async def run() -> None:
+        session = Session(_noop_send(None))
+        session._conversations = None  # isolate: skip persistence in this unit
+        session._transcriber = FlushTimesOut()
+        session._pump = asyncio.create_task(session._pump_results())
+        await asyncio.wait_for(session.close(), timeout=5)
+        assert session._pump.done()
+
+    asyncio.run(run())
+
+
 def test_pump_survives_a_failing_stt_seam() -> None:
     async def run() -> None:
         session = Session(_noop_send(None))
