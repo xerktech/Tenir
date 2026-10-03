@@ -18,7 +18,8 @@ session with 1011 whenever the upstream stalled past the ping timeout (XERK-1414
 XERK-1424). A slow model now degrades partials (at most one is ever outstanding;
 cadences that fall due while one is pending are coalesced, so no partial decodes
 seconds-old audio behind a backlog) instead of stalling the session; finals always
-queue, in order, so no turn is lost. The windowing/VAD logic here is
+queue, in order, and a final that raises is retried through a bounded outage
+(_FINAL_RETRY_BUDGET_S) rather than dropped. The windowing/VAD logic here is
 model-agnostic and unit-tested with a fake engine. Partials re-decode a trailing
 window (or the whole in-flight segment, for LocalAgreement) of the offline engine
 on a cadence; finals decode the whole turn on the same engine (Parakeet in
@@ -78,6 +79,20 @@ _EMPTY_FINAL_RETRY_PAD_MS = 500
 # live caption, and decoding it delays the next turn's final (XERK-1414's 1 s bound,
 # kept now that decodes run off the intake path).
 _PARTIAL_STALE_S = 1.0
+
+# A final decode that raises (STT timeout/connect error) is retried with backoff
+# instead of being treated as empty: during an outage no partial decodes either, so
+# the XERK-174 partial fallback is empty and every turn spoken while STT was down
+# vanished from the stored transcript (XERK-1499). Retrying holds the ordered worker,
+# so later finals queue behind it in order and stale partials are dropped as usual.
+# The budget counts from the first failure of the outage, not per turn, and resets on
+# any successful decode: once an outage outlasts it, each queued turn gets one attempt
+# and takes the old fallback, so a dead upstream can't hold the worker (or the
+# translation hold on `finalizing`) for budget x turns. Session.close still caps the
+# end-of-session flush at 15 s and drops whatever is left (XERK-1424).
+_FINAL_RETRY_BUDGET_S = 60.0
+_FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
+_retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -191,6 +206,9 @@ class StreamingTranscriber:
         self._jobs: asyncio.Queue[tuple[str, bytes, float, bool]] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
         self._partial_pending = False
+        # perf_counter() of the first failed final decode of the current outage, or
+        # None while the upstream answers (see _FINAL_RETRY_BUDGET_S).
+        self._outage_since: float | None = None
 
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
@@ -333,6 +351,7 @@ class StreamingTranscriber:
         result = await asyncio.to_thread(
             self._engine.transcribe, samples, language=self._language, want_words=want_words
         )
+        self._outage_since = None  # the upstream answered: any outage is over
         metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
         if pad_ms:
             # Word times back onto the unpadded turn's timeline (rounded to the ms so
@@ -400,16 +419,35 @@ class StreamingTranscriber:
         metrics.incr("stage.stt.final_retry_recovered")
         return retry
 
+    async def _decode_final(self, pcm: bytes) -> EngineResult:
+        """Whole-turn decode, retried with backoff while the upstream is failing and
+        the outage is within _FINAL_RETRY_BUDGET_S. Raises once the budget is spent."""
+        attempt = 0
+        while True:
+            try:
+                return await self._run_engine(pcm, stage="final", want_words=self._final_words)
+            except Exception:
+                now = time.perf_counter()
+                if self._outage_since is None:
+                    self._outage_since = now
+                metrics.incr("stage.stt.errors")
+                delay = _FINAL_RETRY_BACKOFF_S[min(attempt, len(_FINAL_RETRY_BACKOFF_S) - 1)]
+                if now + delay - self._outage_since > _FINAL_RETRY_BUDGET_S:
+                    raise
+                log.warning("STT final decode failed; retrying in %.1fs", delay, exc_info=True)
+                metrics.incr("stage.stt.final_retries")
+                attempt += 1
+                await _retry_sleep(delay)
+
     async def _finalize(self, pcm: bytes, start: int, has_speech: bool) -> None:
         try:
-            result = await self._run_engine(pcm, stage="final", want_words=self._final_words)
+            result = await self._decode_final(pcm)
         except Exception:
-            # A failed whole-turn decode (e.g. the upstream timed out) is treated as an
-            # empty one — no padded retry against an upstream that just failed — so
-            # the turn still falls back to the partial the user already watched
-            # instead of vanishing.
-            log.exception("STT final decode failed")
-            metrics.incr("stage.stt.errors")
+            # The outage outlasted the retry budget: treat the turn as an empty decode
+            # — no padded retry against an upstream that just failed — so it still
+            # falls back to the partial the user already watched, if there was one.
+            log.exception("STT final decode failed past the retry budget")
+            metrics.incr("stage.stt.final_retry_exhausted")
             result = EngineResult(text="", words=[], language=None)
         else:
             if not result.text.strip() and has_speech:

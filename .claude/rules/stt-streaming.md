@@ -20,6 +20,15 @@ paths:
   - At most one partial is outstanding; a cadence that falls due meanwhile is skipped.
   - A partial that waited more than `_PARTIAL_STALE_S` in the queue is dropped.
   - Finals always queue.
+  - A final that raises is retried in place with backoff, not treated as empty (XERK-1499).
+    During an outage no partial decodes, so the XERK-174 partial fallback is empty too and
+    the turn was lost from the stored transcript.
+  - The retry budget (`_FINAL_RETRY_BUDGET_S`) runs from the outage's first failure, not per
+    turn, and any successful decode resets it. Per-turn budgets would hold the worker and
+    the translation hold for budget x queued turns on a dead upstream.
+  - Tests: `test_streaming_stt.py::test_turns_whose_final_raises_during_an_outage_land_once_it_recovers`,
+    `::test_final_retries_give_up_once_the_outage_outlasts_the_budget`. The autouse fixture
+    swaps `_retry_sleep` for one that advances the fake clock.
 - `finalizing` (XERK-1377 translation hold) counts speech finals that are queued or decoding,
   plus finals that are queued but not yet handled.
   - Decrement only in the worker's `finally`, after `_finalize` has counted its final as

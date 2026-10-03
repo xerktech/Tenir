@@ -90,6 +90,15 @@ def _frozen_decode_clock(monkeypatch):
 
     monkeypatch.setattr(streaming, "time", _Clock())
 
+    # Final-retry backoff (XERK-1499) advances whichever fake clock is installed
+    # instead of sleeping, so a permanently failing engine exhausts
+    # _FINAL_RETRY_BUDGET_S at no wall-time cost.
+    async def fake_sleep(s: float) -> None:
+        streaming.time.now += s
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(streaming, "_retry_sleep", fake_sleep)
+
 
 # ----- helpers --------------------------------------------------------------
 
@@ -1389,10 +1398,12 @@ def test_finalizing_covers_decode_and_delivery_of_a_speech_turn() -> None:
 
 def test_failed_final_is_not_retried_against_the_failing_upstream() -> None:
     """The padded blank-final retry (XERK-1414) is for an engine that answered with
-    nothing, not one that just timed out: a raising final goes straight to the
-    partial fallback instead of spending another engine timeout on the backlog."""
+    nothing, not one that just timed out: a raising final only takes the plain
+    outage retry (XERK-1499), then the partial fallback, never a padded decode."""
+    from api.metrics import metrics
 
     async def run() -> None:
+        metrics.reset()
         eng = GatedEngine(fail="final")
         eng.gate.set()
         t = StreamingTranscriber(
@@ -1403,7 +1414,11 @@ def test_failed_final_is_not_retried_against_the_failing_upstream() -> None:
         for _ in range(3):
             await _push(t, _pcm(100, amplitude=0))
         await _drain(t)
-        assert eng.calls.count(True) == 1  # one final decode, no padded retry
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_exhausted"] == 1
+        assert not any(k.startswith("stage.stt.final_retry_") and k != (
+            "stage.stt.final_retry_exhausted") for k in counters)  # no padded retry
+        metrics.reset()
 
     asyncio.run(run())
 
@@ -1506,6 +1521,97 @@ def test_finalizing_clears_when_finalize_raises_after_the_decode() -> None:
         await _push(t, _pcm(300, amplitude=0))
         assert not t.finalizing
         assert t._worker is not None and not t._worker.done()  # still serving turns
+        await t.close()
+
+    asyncio.run(run())
+
+
+# ----- failed finals retried through an outage (XERK-1499) ------------------
+
+
+class OutageEngine:
+    """Every decode raises while ``down`` (an STT outage), else answers ``text``.
+    Each call advances the fake clock by ``call_s``; ``recover_after`` failed calls
+    bring the upstream back."""
+
+    def __init__(self, clock: _Clock, *, recover_after: int | None, call_s: float = 3.0):
+        self.clock, self.recover_after, self.call_s = clock, recover_after, call_s
+        self.calls: list[bool] = []
+        self.failures = 0
+
+    def transcribe(self, samples, *, language, want_words=True):
+        self.calls.append(want_words)
+        self.clock.now += self.call_s
+        if self.recover_after is None or self.failures < self.recover_after:
+            self.failures += 1
+            raise TimeoutError("stt upstream down")
+        return EngineResult(text=f"turn {len(self.calls)}", words=[], language="en")
+
+
+async def _outage_turns(t: StreamingTranscriber, n: int) -> None:
+    for _ in range(n):
+        for _ in range(5):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+
+
+@pytest.fixture
+def _outage() -> _Clock:
+    """The autouse fake clock, which the backoff waits advance."""
+    import api.stt.streaming as streaming_mod
+
+    return streaming_mod.time
+
+
+def test_turns_whose_final_raises_during_an_outage_land_once_it_recovers(_outage) -> None:
+    """The bug: a raised final decode was treated as empty and fell back to the last
+    partial — but no partial decodes during an outage either, so every turn spoken
+    while STT was down vanished from the transcript. Now the final is retried, in
+    order, and lands when the upstream comes back."""
+
+    async def run() -> None:
+        eng = OutageEngine(_outage, recover_after=6)
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 3)
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 800), (800, 1600), (1600, 2400)]
+        assert all(f.text.startswith("turn ") for f in finals)
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_final_retries_give_up_once_the_outage_outlasts_the_budget(_outage) -> None:
+    """A dead upstream can't hold the worker (and the translation hold) forever: past
+    _FINAL_RETRY_BUDGET_S the turn takes the old partial fallback, and later turns of
+    the same outage get one attempt each instead of a fresh budget."""
+    import api.stt.streaming as streaming_mod
+    from api.metrics import metrics
+
+    async def run() -> None:
+        metrics.reset()
+        eng = OutageEngine(_outage, recover_after=None)
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 3)
+        assert [m for m in await _drain(t) if isinstance(m, CaptionFinal)] == []
+        assert _outage.now >= streaming_mod._FINAL_RETRY_BUDGET_S
+        first_turn_calls = len(eng.calls) - 2
+        assert first_turn_calls > 1  # retried while within budget
+        assert metrics.snapshot()["counters"]["stage.stt.final_retry_exhausted"] == 3
+        assert not t.finalizing
+        metrics.reset()
+
+        # The upstream recovers: the next turn decodes and a later outage gets a
+        # fresh budget.
+        eng.recover_after = 0
+        await _outage_turns(t, 1)
+        assert [f.text for f in await _drain(t) if isinstance(f, CaptionFinal)] != []
+        assert t._outage_since is None
         await t.close()
 
     asyncio.run(run())

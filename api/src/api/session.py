@@ -590,8 +590,9 @@ class Session:
             # the way and may belong to this run (an inherited turn arriving after
             # the run closed is dropped). Finals take ~6 s on a loaded STT server
             # against a 3 s hold (XERK-1377), so wait it out; the final's own touch
-            # then restarts the hold. Bounded by the STT request timeout. A dead pump
-            # never consumes that final, so it can't hold the run either.
+            # then restarts the hold. Bounded by the STT request timeout plus the
+            # failed-final retry budget (XERK-1499). A dead pump never consumes
+            # that final, so it can't hold the run either.
             while (
                 self._transcriber is not None
                 and self._transcriber.finalizing
