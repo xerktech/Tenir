@@ -95,7 +95,8 @@ _PARTIAL_STALE_S = 1.0
 # (Parakeet 500s on 10-20 ms tails), and retrying that would hold every later turn for
 # the whole budget — on a healthy upstream — and lose them all if the session ended
 # meanwhile. So after a turn's first failure one second of silence is decoded as a
-# probe: if that answers, the upstream is up and the turn takes the fallback at once.
+# probe: if that answers, the upstream is up, so the turn is retried once at once (a
+# failure that cleared mid-request lands) and then takes the fallback.
 # No probe while an outage is already known (_outage_since set).
 _FINAL_RETRY_BUDGET_S = 60.0
 _FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
@@ -439,8 +440,16 @@ class StreamingTranscriber:
                 # Probe once, and not mid-outage: a dead upstream would only fail
                 # the probe too, at the cost of another request timeout per turn.
                 if attempt == 0 and self._outage_since is None and await self._upstream_answers():
-                    metrics.incr("stage.stt.final_input_errors")
-                    raise
+                    # The upstream is up: this input fails every time, or the failure
+                    # cleared while the decode was in flight (a brief outage ending
+                    # inside one request timeout). One immediate retry tells them apart.
+                    try:
+                        return await self._run_engine(
+                            pcm, stage="final", want_words=self._final_words
+                        )
+                    except Exception:
+                        metrics.incr("stage.stt.final_input_errors")
+                        raise
                 now = time.perf_counter()
                 if self._outage_since is None:
                     self._outage_since = now

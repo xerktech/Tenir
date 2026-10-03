@@ -1660,13 +1660,40 @@ def test_a_turn_the_upstream_rejects_is_not_retried_as_an_outage(_outage) -> Non
                 await t.push(_pcm(100, amplitude=0))
         finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
         assert [(f.startMs, f.endMs) for f in finals] == [(0, 800), (1600, 2400)]
-        assert eng.finals == 3  # the rejected turn was tried once
+        assert eng.finals == 4  # the rejected turn: once, then once after the probe
         assert _outage.now == 0.0  # no backoff waited
         assert t._outage_since is None
         counters = metrics.snapshot()["counters"]
         assert counters["stage.stt.final_input_errors"] == 1
         assert "stage.stt.final_retries" not in counters
         metrics.reset()
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_a_final_that_fails_as_a_brief_outage_ends_still_lands(_outage) -> None:
+    """QA on XERK-1499: a final sent during a brief outage can fail after the outage
+    has cleared, so the probe answers. That is not a bad input: the one immediate
+    retry lands the turn instead of dropping it, with no backoff waited."""
+
+    class BlipEngine(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            if self.calls == 0:
+                self.calls += 1
+                raise TimeoutError("upstream blip")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def run() -> None:
+        eng = BlipEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 1)
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [f.text for f in finals] == ["hello world"]
+        assert eng.calls == 3  # failed final, probe, retried final
+        assert _outage.now == 0.0
         await t.close()
 
     asyncio.run(run())
