@@ -265,6 +265,14 @@ describe("ApiClient", () => {
     instances[0].close(1013); // try again later — not the 1008 that means re-login
     vi.advanceTimersByTime(1000);
     expect(instances).toHaveLength(2);
+    // The 1013 socket opened but never reached session.ready, so the backoff keeps
+    // growing instead of retrying at the base delay for the whole outage.
+    instances[1].open();
+    instances[1].close(1013);
+    vi.advanceTimersByTime(1000);
+    expect(instances).toHaveLength(2);
+    vi.advanceTimersByTime(1000); // second backoff step: 2s
+    expect(instances).toHaveLength(3);
   });
 
   it("does not reconnect after a 1008 policy close, and surfaces an auth error", () => {

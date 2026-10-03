@@ -113,6 +113,62 @@ def test_ws_handshake_outage_closes_1013(monkeypatch: pytest.MonkeyPatch) -> Non
     assert exc.value.code == 1013
 
 
+def test_ws_outage_after_accept_closes_1013(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Starlette runs app exception handlers for websocket routes too: an outage
+    escaping the open-socket loop (e.g. persisting on session.end) must close 1013,
+    not crash the handler on ``request.method`` and drop the socket as a 1006."""
+    monkeypatch.setattr(main, "parse_client_message", _raise(DatabaseUnavailable("refused")))
+    with TestClient(app) as client, caplog.at_level(logging.WARNING):
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text('{"type": "session.end"}')
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+    assert exc.value.code == 1013
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+
+
+def test_ws_session_start_account_check_outage_logs_one_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(get_user_store(), "get_by_id", _raise(DatabaseUnavailable("refused")))
+    with TestClient(app) as client, caplog.at_level(logging.WARNING):
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text('{"type": "session.start", "micSource": "phone-microphone"}')
+            assert ws.receive_json()["code"] == "internal"
+    failed = [rec for rec in caplog.records if "account check failed" in rec.getMessage()]
+    assert len(failed) == 1
+    assert failed[0].levelno == logging.WARNING
+    assert failed[0].exc_info is None
+
+
+@pytest.mark.real_auth
+def test_renewal_skipped_after_a_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A route that already 503'd must not wait out the pool a second time for renewal."""
+    _, token = _member_token()
+    store = get_user_store()
+    calls = {"n": 0}
+
+    def down(_user_id: str):
+        calls["n"] += 1
+        raise DatabaseUnavailable("refused")
+
+    monkeypatch.setattr(store, "get_by_id", down)
+    monkeypatch.setattr(main, "renew_token_if_due", lambda tok, **_kw: tok)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 503
+    assert calls["n"] == 1
+    reset_user_store()
+
+
+def test_outage_log_keeps_first_line_only() -> None:
+    exc = DatabaseUnavailable("terminating connection\nLINE 1: SELECT secret FROM users")
+    assert main._outage_summary(exc) == "DatabaseUnavailable: terminating connection"
+    assert main._outage_summary(DatabaseUnavailable()) == "DatabaseUnavailable: "
+
+
 def test_ws_handshake_other_error_is_not_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main, "_ws_principal", _raise(ValueError("bug")))
     with TestClient(app) as client, pytest.raises(ValueError, match="bug"):
