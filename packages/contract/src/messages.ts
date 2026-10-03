@@ -237,7 +237,7 @@ export interface Pong {
  */
 export interface ErrorMessage {
   type: "error";
-  code: "bad_request" | "unauthorized" | "session_not_found" | "rate_limited" | "internal";
+  code: "bad_request" | "unauthorized" | "session_not_found" | "rate_limited" | "internal" | "resumed_elsewhere";
   message: string;
   fatal?: boolean;
 }
