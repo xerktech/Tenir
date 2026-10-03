@@ -27,6 +27,12 @@ paths:
   - Do not replace it with "wait while decodes keep succeeding".
   - QA showed a slow or flaky engine then outlasts the pod's 30 s termination grace.
   - A SIGKILL before `_persist` loses the whole recording; the flat cap only drops tail turns.
+- A final whose audio arrived more than `_STALE_FINAL_S` ago (`Session._final_age_s`) is stored
+  only: no caption push, translation or cue (XERK-1447).
+  - Finals queue through an outage and land as one burst on recovery; pushing them flooded the
+    glasses' caption band with turns from tens of seconds earlier.
+  - Age is dated by audio *arrival* time, not the session timeline, so tests that push audio
+    faster than real time never read as stale.
 - Tests: push through the `_push` / `_drain` helpers, which join the job queue. A bare
   `t.push` returns before any decode has run.
 - Repro harness for regressions: real uvicorn (`ws_ping_interval=5`) plus a `websockets`

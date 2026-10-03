@@ -159,3 +159,66 @@ def test_ws_audio_error_is_isolated_not_fatal(monkeypatch: pytest.MonkeyPatch) -
         assert pong["type"] == "pong" and pong["t"] == 7
 
     assert metrics.snapshot()["counters"].get("audio.errors", 0) >= 1
+
+
+def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an STT outage the queued finals land as one burst (XERK-1447). A final
+    whose audio arrived longer ago than _STALE_FINAL_S goes to the stored transcript
+    only — not to the caption band, not to translation — while a fresh one is pushed."""
+    import api.session as session_mod
+    from api.config import settings
+    from api.contract import CaptionFinal, MicSource
+    from api.stt.stub import StubTranscriber
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    class Outage(StubTranscriber):
+        """Holds every final until release(), as a hung upstream holds the queue."""
+
+        async def push(self, pcm: bytes) -> None:
+            self._total_bytes += len(pcm)
+
+        async def release(self, *ends_ms: int) -> None:
+            start = 0
+            for end, lang in zip(ends_ms, ["es", "en"], strict=True):
+                await self._queue.put(
+                    CaptionFinal(
+                        type="caption.final", segmentId=f"seg-{end}", text=f"turn {end}",
+                        lang=lang, startMs=start, endMs=end,
+                    )
+                )
+                start = end
+
+    outage = Outage()
+    monkeypatch.setattr(session_mod, "make_transcriber", lambda *a, **k: outage)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+        await session.on_audio(b"\x00" * 64000)  # 0-2000 ms, spoken before the outage
+        # That audio arrived 40 s ago; the next turn's audio arrives now.
+        session._audio_arrivals = type(session._audio_arrivals)(
+            ((ms, t - 40.0) for ms, t in session._audio_arrivals),
+            maxlen=session._audio_arrivals.maxlen,
+        )
+        await session.on_audio(b"\x00" * 64000)  # 2000-4000 ms
+        await outage.release(2000, 4000)
+        await session.close()
+
+        live = [m.segmentId for m in sent if isinstance(m, CaptionFinal)]
+        assert live == ["seg-4000"]
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None
+        assert [s.segment_id for s in conv.segments] == ["seg-2000", "seg-4000"]
+        # The stale Spanish turn opened no translation run.
+        assert session._translation_active is False
+        assert metrics.snapshot()["counters"]["caption.final_stale"] == 1
+
+    asyncio.run(run())
