@@ -338,6 +338,10 @@ class Session:
         self._first_retain: asyncio.Future[bool] | None = None
         self._prior_retain: asyncio.Future[bool] | None = None
         self._prior_teardown: asyncio.Task[None] | None = None
+        # A start() that raised is torn down by close() without ever going live
+        # (XERK-1511); _row_opened says whether it got as far as the store row.
+        self._start_failed = False
+        self._row_opened = False
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -359,6 +363,32 @@ class Session:
         return self._send
 
     async def start(
+        self,
+        *,
+        mic_source: MicSource,
+        source_lang: Lang | None,
+    ) -> None:
+        # _start() spawns the worker/scan/pump/warmup tasks and creates the live
+        # conversation row before its last await (the session.ready send, which
+        # raises on a socket that just died). The caller only registers the session
+        # once start() returns, so a raise past that point left those tasks running
+        # and the row "live" with nobody to close them (XERK-1511). close() tolerates
+        # any partial state, and a cancel lands here too.
+        try:
+            await self._start(mic_source=mic_source, source_lang=source_lang)
+        except BaseException:
+            self._start_failed = True
+            # No audio of ours to keep in order behind a prior sitting's, so don't
+            # hold this cleanup (and the WS handler) behind its teardown.
+            self._prior_retain = None
+            self._prior_teardown = None
+            try:
+                await self.close()
+            except Exception:
+                log.exception("session %s cleanup after failed start failed", self.session_id)
+            raise
+
+    async def _start(
         self,
         *,
         mic_source: MicSource,
@@ -402,6 +432,10 @@ class Session:
             # finalize a recording this process started (XERK-1428).
             await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
+            # Set before the call: a create that raises may still have written the
+            # live row, which close() then finishes. (A cancel here can let the
+            # INSERT commit after that finish; the next boot's stale sweep repairs it, XERK-1529.)
+            self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
             # path — never run a blocking store call on the event loop.
@@ -1357,7 +1391,12 @@ class Session:
         _teardowns.add(self._teardown)
         self._teardown.add_done_callback(_teardowns.discard)
         key = (self._household, self.session_id)
-        _closing[key] = self
+        # A failed start never buffered audio, so a resume has nothing to order
+        # behind it — and registering would evict the sitting it resumed from if
+        # that one is still tearing down, restarting the next resume's timeline
+        # inside that sitting's (XERK-1500, XERK-1511).
+        if not self._start_failed:
+            _closing[key] = self
         self._teardown.add_done_callback(
             lambda _t: _closing.pop(key) if _closing.get(key) is self else None
         )
@@ -1498,6 +1537,10 @@ class Session:
         # Picks up any audio that arrived after close() retained the buffer
         # (a no-op when it is empty), then finalizes.
         await self._retain_audio()
+        if self._start_failed and not self._row_opened:
+            # Never reached the store: there is no live row of ours to finalize, and
+            # finish() on a resumed recording would rewrite its ended_at.
+            return
         await asyncio.to_thread(
             self._conversations.finish, self._household, self.session_id, status="ready"
         )

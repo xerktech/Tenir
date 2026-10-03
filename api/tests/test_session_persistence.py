@@ -562,3 +562,66 @@ def test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio() -> N
         assert pcm == _voice_chunk(freq=200) * 25 + _voice_chunk(freq=400) * 10
 
     asyncio.run(run())
+
+
+def test_failed_start_does_not_wait_behind_a_prior_whose_retain_failed() -> None:
+    """XERK-1511: a resume behind a sitting whose first retain failed normally waits
+    for that sitting's whole teardown before storing, to keep the audio in order. A
+    resume that failed to start has no audio to order, so its cleanup — and the WS
+    handler awaiting it — must not sit behind that teardown's model drains; and the
+    next resume still lands after the prior sitting, with nothing lost."""
+    from api.session import _closing
+
+    async def run() -> None:
+        async def send(_m) -> None:
+            return None
+
+        async def dying_send(m) -> None:
+            if m.type == "session.ready":
+                raise RuntimeError("socket gone")
+
+        store = get_audio_store()
+        real_put = store.put
+        fails = [1]
+
+        def flaky_put(key: str, wav: bytes) -> None:
+            if fails:
+                fails.pop()
+                raise OSError("disk hiccup")
+            real_put(key, wav)
+
+        store.put = flaky_put
+        try:
+            leg1 = Session(send, session_id="c")
+            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            for _ in range(25):
+                await leg1.on_audio(_voice_chunk(freq=200))
+            release = _hold_flush(leg1)
+            closing = asyncio.create_task(leg1.close())
+            await asyncio.sleep(0)
+            await asyncio.wait_for(asyncio.shield(leg1._first_retain), 2)
+            assert leg1._first_retain.result() is False
+
+            failed = Session(dying_send, session_id="c")
+            with pytest.raises(RuntimeError, match="socket gone"):
+                await asyncio.wait_for(
+                    failed.start(mic_source="g2-microphone", source_lang=None), 1
+                )
+            assert not closing.done()
+            assert _closing.get(("default", "c")) is leg1
+
+            leg3 = Session(send, session_id="c")
+            await leg3.start(mic_source="g2-microphone", source_lang=None)
+            assert leg3._start_offset_ms == 2500
+            for _ in range(10):
+                await leg3.on_audio(_voice_chunk(freq=400))
+            closing3 = asyncio.create_task(leg3.close())
+            release.set()
+            await closing
+            await closing3
+        finally:
+            store.put = real_put
+        pcm = wav_to_pcm16(store.get(audio_key("default", "c")))
+        assert pcm == _voice_chunk(freq=200) * 25 + _voice_chunk(freq=400) * 10
+
+    asyncio.run(run())
