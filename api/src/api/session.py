@@ -64,7 +64,7 @@ from api.persistence import (
 )
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
-from api.stt.langid import is_english_word
+from api.stt.langid import is_english_word, is_shared_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -150,35 +150,64 @@ def _enum_str(value: object | None) -> str | None:
 # Sofia, Lucia, Pedro, sin Ana" -> "... without Ana", 0.83), so the ratio alone does not
 # decide; see ``_same_text``.
 _ECHO_MIN_WORD_RATIO = 0.75
+# English-only words the model left untouched that make a replaced shared word (es "he")
+# English too. One is not enough: code-switched turns carry an English word or two.
+_REWORD_MIN_CONTEXT = 2
 
 _WORD_RE = re.compile(r"\w+(?:'\w+)?")
 
 
 def _words(text: str) -> list[str]:
-    return _WORD_RE.findall(text.casefold().replace("\u2019", "'"))
+    return [w.casefold() for w in _raw_words(text)]
+
+
+def _raw_words(text: str) -> list[str]:
+    return _WORD_RE.findall(text.replace("\u2019", "'"))
+
+
+def _is_name(raw: list[str], i: int) -> bool:
+    """Whether the ``i``-th source word looks like a name: capitalized, not the turn's
+    first word and not the pronoun "I" ("I'm")."""
+    word = raw[i]
+    return i > 0 and word[0].isupper() and word.casefold().split("'")[0] != "i"
 
 
 def _same_text(translated: str, source: str) -> bool:
     """Whether a translation is just its source echoed back (XERK-160) or reworded
-    (XERK-1423). Either way it tells the listener nothing true that the caption
-    doesn't, and a rewording misquotes the speaker.
+    (XERK-1423, XERK-1520). Either way it tells the listener nothing true that the
+    caption doesn't, and a rewording misquotes the speaker.
 
     Reworded: the casefolded word sequences, punctuation ignored, match at least
-    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed can only be
-    English ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" ->
-    "and") or a shared one (German "was" -> "what") is a real translation, however
-    few words it touches, and is kept. English rewordings outside the small English
-    vocabulary ("I seen" -> "I saw") are kept too: losing a real translation is worse.
+    ``_ECHO_MIN_WORD_RATIO`` and every source word the model replaced is English:
+    - a word only English has ("can" -> "could", "seen" -> "saw");
+    - or a word English shares with another contract language (es "he" -> "I"), when
+      the words the model left alone hold ``_REWORD_MIN_CONTEXT`` English-only words
+      ("..., Pedro, he don't care" -> "..., I don't care").
+    A replaced foreign word ("sin" -> "without", "y" -> "and"), or a shared one with no
+    English around it ("..., Pedro, was?" -> "..., what?"), is a real translation, however
+    few words it touches, and is kept. Words the model only deleted don't count: an
+    output made of the source's own words ("uh Marco left" -> "Marco left") adds nothing.
+    Nor do names (capitalized past the first word) replaced alongside other words: the
+    model drops "Pedro" while rewording "Pedro, he" -> "I", and a name is no language.
     """
-    src = _words(source)
+    raw = _raw_words(source)
+    src = [w.casefold() for w in raw]
     out = _words(translated)
     if not src or not out:
         return " ".join(translated.split()).casefold() == " ".join(source.split()).casefold()
     matcher = SequenceMatcher(None, src, out, autojunk=False)
     if matcher.ratio() < _ECHO_MIN_WORD_RATIO:
         return False
-    changed = [w for op, i1, i2, _, _ in matcher.get_opcodes() if op != "equal" for w in src[i1:i2]]
-    return all(is_english_word(w) for w in changed)
+    opcodes = matcher.get_opcodes()
+    spans = [range(i1, i2) for op, i1, i2, _, _ in opcodes if op == "replace"]
+    replaced = [src[i] for span in spans for i in span if not _is_name(raw, i)]
+    replaced = replaced or [src[i] for span in spans for i in span]
+    if all(is_english_word(w) for w in replaced):
+        return True
+    kept = [w for op, i1, i2, _, _ in opcodes if op == "equal" for w in src[i1:i2]]
+    if sum(is_english_word(w) for w in kept) < _REWORD_MIN_CONTEXT:
+        return False
+    return all(is_english_word(w) or is_shared_english_word(w) for w in replaced)
 
 
 def is_valid_session_id(value: str) -> bool:

@@ -17,6 +17,10 @@ dependencies = [
     # dep (not an extra) so the OIDC path — and its CI tests — work in any install;
     # the code is unreachable unless API_OIDC_ENABLED is set. Pinned <3 for the 2.x API.
     "pyjwt[crypto]>=2.9,<3",
+    # Word frequencies per language (XERK-1520): tells an English rewording of an
+    # inherited turn ("I seen" -> "I saw") from a real translation. Only the small lists
+    # are loaded (~40 MB resident).
+    "wordfreq>=3.1,<4",
 ]
 
 [project.optional-dependencies]

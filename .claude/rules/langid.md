@@ -24,7 +24,14 @@ paths:
   English rewordings of inherited turns are dropped after the call instead (`_same_text`).
 - `_same_text` (session.py) can't use word-overlap ratio alone: name-heavy real translations
   ("…, Pedro, sin Ana" → "…, without Ana") score as high as English rewordings. It drops a
-  close match only when every changed source word is `is_english_word`.
+  close match only when every replaced source word is English (rules in its docstring).
+- `is_english_word` = tiny vocab OR ≥10× (Zipf +1.0) as frequent in English as in every other
+  contract language (wordfreq "small" lists). A bare allow-list fails both ways: was/a/i/but
+  dropped real translations, while "seen"/"care" weren't on it (XERK-1520).
+- wordfreq has no ASR spellings of accented words (pt "tô" → "to", fr "thé" → "the"), so
+  `_SHARED_EN` stays an explicit exclusion; don't drop it for the frequency check.
+- A shared word (es "he", de "was") counts as English only with ≥2 English-only words kept
+  around it: "…, Pedro, was?" → "…, what?" is a translation, "…, Pedro, he don't care" isn't.
 - A one-hit `en` call whose hit is a `_SHARED_EN` word returns `None` ("to cansado", "the vert"
   closed live runs, XERK-1516). Gate the decision, not `_scores`: dropping shared words from the
   score lost ~13% of English and let "The Las Vegas trip." win es. Costs ~3.5% of short English.

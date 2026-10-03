@@ -9,7 +9,8 @@ triggered). This module recovers the signal from the transcribed text itself,
 which for a finalized turn is right there and unambiguous far more often than
 not.
 
-Deliberately dependency-free and conservative: each contract language gets a
+Deliberately conservative (word frequencies, via wordfreq, only back the
+rewording check in ``is_english_word``): each contract language gets a
 set of its most distinctive high-frequency words (function words that rarely
 appear in the others) plus characters unique to its orthography. A turn is
 labeled only when exactly one language clearly wins AND the evidence clears a
@@ -24,6 +25,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
+
+from wordfreq import zipf_frequency
 
 # Words that are simultaneously very frequent in their language and rare in the
 # other five. Deliberately NOT exhaustive stopword lists: shared forms (es/pt
@@ -170,13 +173,53 @@ def leans_english(text: str, versus: str) -> bool:
     return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
 
 
+# Word frequencies (wordfreq's "small" lists: every word down to ~1 per million) for words
+# outside the tiny vocabularies above (XERK-1520). Zipf is log10 frequency per billion
+# words, so a margin of 1.0 means ten times as frequent in English as in any other
+# contract language: "seen" +1.6, "care" +1.5, while es "sin" is -1.9 and de "was" +0.3.
+_OTHER_LANGS = ("es", "fr", "de", "pt", "it")
+_EN_ONLY_MARGIN = 1.0
+
+
+def _english_margin(word: str) -> float:
+    """How much more frequent ``word`` is in English than in the most frequent other
+    contract language, in Zipf units (log10)."""
+    return zipf_frequency(word, "en", wordlist="small") - max(
+        zipf_frequency(word, code, wordlist="small") for code in _OTHER_LANGS
+    )
+
+
+# Load the frequency lists now: the first lookup reads them from disk (~0.3 s), which
+# must not stall the event loop mid-session.
+_english_margin("the")
+
+
+def _excluded(word: str) -> bool:
+    """Whether a word is a homograph, a ``_SHARED_EN`` word or another language's vocab:
+    a native word of another contract language however frequent it is in English."""
+    if word in _ENGLISH_HOMOGRAPHS or word in _SHARED_EN:
+        return True
+    return any(word in vocab for code, vocab in _WORDS.items() if code != "en")
+
+
 def is_english_word(word: str) -> bool:
-    """Whether a lowercased token can only be English: English vocabulary that is no
+    """Whether a lowercased token can only be English: English vocabulary, or a word
+    ten times as frequent in English as in every other contract language, that is no
     word of another contract language (not a homograph, not in ``_SHARED_EN``, not in
     another language's vocabulary). "was" is German "what", so it is not one."""
-    if word not in _WORDS["en"] or word in _ENGLISH_HOMOGRAPHS or word in _SHARED_EN:
+    if _excluded(word):
         return False
-    return not any(word in vocab for code, vocab in _WORDS.items() if code != "en")
+    return word in _WORDS["en"] or _english_margin(word) >= _EN_ONLY_MARGIN
+
+
+def is_shared_english_word(word: str) -> bool:
+    """Whether a lowercased token is English but also a native word of another contract
+    language: Spanish "he" (I have), German "was", "so", "in". English inside an English
+    turn, a translation inside a foreign one. Foreign-dominant words ("sin", "a", "die")
+    are not, nor are words only English has (see ``is_english_word``)."""
+    if is_english_word(word):
+        return False
+    return word in _SHARED_EN or _english_margin(word) >= 0
 
 
 def detect_lang(text: str) -> str | None:

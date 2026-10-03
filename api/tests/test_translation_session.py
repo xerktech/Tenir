@@ -548,6 +548,23 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         ("Marco, Sofia, Lucia, i Beatles", "Marco, Sofia, Lucia, the Beatles", False),
         ("Marco, Sofia, Lucia, Pedro, a Madrid", "Marco, Sofia, Lucia, Pedro, to Madrid", False),
         ("Marco, Sofia, Lucia, Pedro, but!", "Marco, Sofia, Lucia, Pedro, goal!", False),
+        # XERK-1520: rewordings that change a word outside the small English vocab —
+        # a word far more frequent in English than elsewhere ("seen")...
+        ("I seen him yesterday", "I saw him yesterday", True),
+        # ...a shared word (es "he") with English kept around it, names dropped with it...
+        ("I told Marco, Pedro, he don't care", "I told Marco, I don't care", True),
+        # ...or only deletions: the output is the source's own words.
+        ("uh Marco left", "Marco left", True),
+        ("Marco, Sofia, Lucia, Pedro, so yeah", "Marco, Sofia, Lucia, yeah", True),
+        # A shared or foreign word with no English left around it is still a translation,
+        # and so is a lone replaced name.
+        ("Marco, Sofia, Lucia, Pedro, he visto", "Marco, Sofia, Lucia, Pedro, I saw", False),
+        ("Marco, Sofia, Lucia, Londres", "Marco, Sofia, Lucia, London", False),
+        (
+            "the cheesecake factory with Marco, vale",
+            "the cheesecake factory with Marco, okay",
+            False,
+        ),
         # curly apostrophes from the model don't disguise an echo
         ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
