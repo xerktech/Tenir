@@ -1233,9 +1233,16 @@ class Session:
     def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
         """Register how to drop a transport bound to this session (see ``revoke``).
 
-        Each must be safe to call on a socket that has already gone away.
+        Each must be safe to call on a socket that has already gone away. The
+        caller drops it with :meth:`drop_disconnect` when its socket ends, or a
+        session resumed over and over keeps every dead socket alive.
         """
         self._disconnects.append(fn)
+
+    def drop_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
+        """Forget a hook registered with :meth:`on_disconnect` (no-op if absent)."""
+        if fn in self._disconnects:
+            self._disconnects.remove(fn)
 
     async def revoke(self, reason: str) -> None:
         """Finalize the session AND close its socket — the account is gone.

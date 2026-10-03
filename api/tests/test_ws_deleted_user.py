@@ -196,3 +196,57 @@ def test_delete_closes_both_sockets_when_a_resume_takes_over_an_open_one(
                 with pytest.raises(WebSocketDisconnect) as exc:
                     ws.receive_json()
                 assert exc.value.code == 1008
+
+
+@pytest.mark.real_auth
+def test_repeated_resumes_do_not_accumulate_revoke_hooks() -> None:
+    """Each socket that binds a session registers a revoke hook; one that has gone
+    away must drop it, or resuming one session over and over grows memory forever."""
+    _, member_token = _token("member", "member")
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            sid = ws.receive_json()["sessionId"]
+        resume = json.dumps(
+            {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+        )
+        for _ in range(5):
+            with client.websocket_connect(f"/ws?token={member_token}") as ws:
+                ws.send_text(resume)
+                assert ws.receive_json()["resumed"] is True
+                assert len(registry.get(sid)._disconnects) == 1
+        assert registry.get(sid)._disconnects == []
+
+
+@pytest.mark.real_auth
+def test_revoke_during_resume_replay_still_closes_the_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revoke landing while rebind() replays runs before the resuming socket has
+    registered its hook, so the resume must notice and close the socket itself."""
+    from api import session as session_mod
+
+    member_id, member_token = _token("member", "member")
+    real_rebind = session_mod.Session.rebind
+
+    async def rebind_then_revoke(self, send):
+        await real_rebind(self, send)
+        get_user_store().delete(member_id)
+        registry.unregister(self)
+        await self.revoke("account deleted")  # what the DELETE does, mid-resume
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            sid = ws.receive_json()["sessionId"]
+        monkeypatch.setattr(session_mod.Session, "rebind", rebind_then_revoke)
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            # Without the check this is session.ready resumed=True on a live socket.
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008

@@ -429,6 +429,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     # A revoke must drop THIS socket too, not only the one the session
                     # was started on, or a resumed socket outlives its account (XERK-1504).
                     session.on_disconnect(close_removed)
+                    if session.is_closed:
+                        # A revoke landed while rebind() was replaying, before the hook
+                        # above existed, so it could not close this socket itself.
+                        session = None
+                        await close_removed()
+                        break
                     await send(
                         SessionReady(
                             type="session.ready", sessionId=session.session_id, resumed=True
@@ -528,6 +534,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # connection, which must not be torn down here.
         if session is not None and not session.is_closed and session.current_send is send:
             session.detach(grace_seconds=settings.session_resume_grace_seconds)
+        if session is not None:
+            # This socket is gone: don't let a session that keeps getting resumed pin
+            # it (and every earlier one) in memory through its revoke hook.
+            session.drop_disconnect(close_removed)
 
 
 def _err(code: str, message: str, *, fatal: bool = False) -> ErrorMessage:
