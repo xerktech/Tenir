@@ -399,6 +399,50 @@ def test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone(
             assert live.current_send is not None and registry.count() == 1
 
 
+def test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1526, QA): displaced while its cold resume of an ended
+    recording awaits the owner-check store read, a socket must not go on to close
+    the live session it was bound to — the one the new socket now owns."""
+    convs = get_conversation_store()
+    real_get = convs.get
+    slow: list[bool] = []
+
+    def get(*args: object, **kwargs: object):
+        if slow:
+            slow.clear()
+            time.sleep(0.5)
+        return real_get(*args, **kwargs)
+
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps(start))
+            ended = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert ws.receive_json()["type"] == "pong"
+        monkeypatch.setattr(convs, "get", get)
+        with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+            a.send_text(json.dumps(start))
+            sid = a.receive_json()["sessionId"]
+            live = registry.get(sid)
+            slow.append(True)  # A's cold resume stalls in its owner-check read
+            a.send_text(json.dumps({**start, "sessionId": ended}))
+            time.sleep(0.15)
+            b.send_text(json.dumps({**start, "sessionId": sid}))
+            assert b.receive_json()["resumed"] is True
+            with pytest.raises(WebSocketDisconnect) as closed:
+                a.receive_json()
+            assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+            time.sleep(0.6)  # past A's stalled read
+            b.send_text(json.dumps({"type": "ping", "t": 2}))
+            assert b.receive_json()["type"] == "pong"
+            assert registry.get(sid) is live and not live.is_closed
+            assert registry.get(ended) is None
+
+
 def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
     start = {"type": "session.start", "micSource": "g2-microphone"}
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
