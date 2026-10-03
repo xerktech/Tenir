@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from api.contract import ServerMessage
 from api.main import app
+from api.config import settings
 from api.metrics import metrics
 from api.persistence import get_audio_store, get_conversation_store
 from api.session import Session
@@ -375,5 +376,52 @@ def test_close_is_bounded_when_transcriber_close_hangs(monkeypatch: pytest.Monke
         await asyncio.wait_for(session.close(), timeout=5)
         assert session._pump.done()
         assert not _is_live(session)
+
+    asyncio.run(run())
+
+
+def test_start_that_raises_late_does_not_leak_the_half_started_session() -> None:
+    """XERK-1511: start() creates the pump/warmup tasks and the live conversation row
+    before its final session.ready send. A send that raises there (the socket just
+    died) used to leave those tasks running and the row 'live' with nobody to close
+    them; start() must tear its partial state down before re-raising."""
+
+    async def run() -> None:
+        async def dying_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                raise RuntimeError("socket gone")
+
+        session = Session(dying_send, household="h1")
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await session.start(mic_source="phone", source_lang=None)
+        assert session.is_closed
+        assert session._pump is not None and session._pump.done()
+        conv = get_conversation_store().get("h1", session.session_id)
+        assert conv is not None and conv.status == "ready"
+
+    asyncio.run(run())
+
+
+def test_start_that_raises_in_create_does_not_leak_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store error in conversations.create() came after the translation worker and
+    music scan were spawned; those must not outlive the failed start."""
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    monkeypatch.setattr(settings, "music_backend", "stub")
+
+    async def run() -> None:
+        session = Session(_noop_send(None), household="h1")
+
+        def boom(*_a, **_k) -> None:
+            raise RuntimeError("store down")
+
+        monkeypatch.setattr(session._conversations, "create", boom)
+        before = asyncio.all_tasks()
+        with pytest.raises(RuntimeError, match="store down"):
+            await session.start(mic_source="phone", source_lang=None)
+        assert session.is_closed
+        leaked = [t for t in asyncio.all_tasks() - before if not t.done()]
+        assert session._translation_worker is None and session._music_scan is None
+        assert leaked == []
 
     asyncio.run(run())

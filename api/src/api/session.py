@@ -364,6 +364,27 @@ class Session:
         mic_source: MicSource,
         source_lang: Lang | None,
     ) -> None:
+        # _start() spawns the worker/scan/pump/warmup tasks and creates the live
+        # conversation row before its last await (the session.ready send, which
+        # raises on a socket that just died). The caller only registers the session
+        # once start() returns, so a raise past that point left those tasks running
+        # and the row "live" with nobody to close them (XERK-1511). close() tolerates
+        # any partial state, and a cancel lands here too.
+        try:
+            await self._start(mic_source=mic_source, source_lang=source_lang)
+        except BaseException:
+            try:
+                await self.close()
+            except Exception:
+                log.exception("session %s cleanup after failed start failed", self.session_id)
+            raise
+
+    async def _start(
+        self,
+        *,
+        mic_source: MicSource,
+        source_lang: Lang | None,
+    ) -> None:
         self.mic_source = mic_source
         self.source_lang = source_lang
         # Build the transcriber now that we know the source language. A resumed
