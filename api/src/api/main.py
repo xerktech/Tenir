@@ -70,8 +70,6 @@ WS_CLOSE_RESUMED_ELSEWHERE = 4001
 # How to displace each live socket, keyed by its handler's ``send`` — the one
 # handle a Session keeps on the socket it is bound to (``current_send``).
 _displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
-# Displaced sockets' close handshakes, held so they aren't garbage-collected mid-close.
-_displacing: set[asyncio.Task[None]] = set()
 
 
 @asynccontextmanager
@@ -444,6 +442,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.close(code=1008, reason="account removed")
 
     displaced = False
+    displaced_close: asyncio.Task[None] | None = None
 
     async def close_displaced() -> None:
         # Another socket warm-resumed this one's session. Mark it displaced so the
@@ -452,7 +451,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # end, feed or take back the session the new socket now owns. Then tell the
         # client, which would otherwise sit OPEN on a session it no longer receives
         # anything from — and that the grace close may finalize (XERK-1526).
-        nonlocal displaced
+        nonlocal displaced, displaced_close
         displaced = True
         if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
             return
@@ -468,9 +467,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # In the background: a close handshake with a frozen peer can block for the
         # ws backend's close timeout (20 s on uvicorn's legacy websockets), and the
         # resume calling us holds the id's start lock and owes its client session.ready.
-        task = asyncio.create_task(close())
-        _displacing.add(task)
-        task.add_done_callback(_displacing.discard)
+        # This socket's handler awaits it on the way out (see finally).
+        displaced_close = asyncio.create_task(close())
 
     _displacers[send] = close_displaced
 
@@ -729,6 +727,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
             # This socket is gone: don't let a session that keeps getting resumed pin
             # it (and every earlier one) in memory through its revoke hook.
             session.drop_disconnect(close_removed)
+        if displaced_close is not None:
+            # A queued frame can wake this handler before the close task runs. Returning
+            # first lets the server drop the transport and the 4001 with it; the client
+            # then sees 1006, reconnects with the same id and displaces the new socket.
+            await displaced_close
 
 
 def _err(code: str, message: str, *, fatal: bool = False) -> ErrorMessage:

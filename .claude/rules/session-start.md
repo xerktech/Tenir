@@ -25,7 +25,9 @@ paths:
   so neither a queued frame nor a start already in flight touches the session the new socket owns.
 - `displaced` is re-checked after every await in the `session.start` branch; a new await there
   needs its own check. The close runs as a background task: a frozen peer's close handshake can
-  block 20 s (uvicorn legacy websockets) while the resume holds the start lock. Clients must not
+  block 20 s (uvicorn legacy websockets) while the resume holds the start lock.
+- The displaced handler awaits that close task at the end of its `finally`. Returning first lets
+  uvicorn drop the transport and the 4001; the client sees 1006 and reconnects into a bounce. Clients must not
   reconnect on 4001, or two sockets with one id take the session from each other forever
   (`packages/client-core/src/ws.ts`, XERK-1526).
 - Once a start knows it runs under a fresh server id, it releases the presented id's start lock
@@ -38,5 +40,6 @@ paths:
 - Tests: `api/tests/test_resume.py::test_racing_cold_resumes_of_one_id_share_a_single_session`,
   `::test_warm_resume_closes_the_socket_it_takes_over`,
   `::test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
+  `::test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`,
   `api/tests/test_resilience.py::test_start_cancelled_during_create_does_not_leave_the_row_live`.
