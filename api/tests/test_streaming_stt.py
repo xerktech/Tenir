@@ -1096,7 +1096,9 @@ def test_push_never_waits_on_a_hung_decode() -> None:
         # One partial is stuck in the engine; the cadences behind it were coalesced
         # instead of piling up, and every turn's final is queued, not dropped.
         assert eng.calls == [False]
-        assert [k for k, _, _ in t._jobs._queue].count("final") == 3
+        queued = [k for k, _, _ in t._jobs._queue]
+        assert queued.count("final") == 3
+        assert queued.count("partial") <= 1  # stale cadences coalesced, not queued
 
         eng.gate.set()
         await t.flush()

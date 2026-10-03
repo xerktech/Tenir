@@ -73,6 +73,14 @@ Sender = Callable[[ServerMessage], Awaitable[None]]
 # without bound — keep the most recent ones.
 _DETACHED_BUFFER_MAX = 500
 
+# Bound on the end-of-session STT flush. The transcriber decodes off the WS path, so
+# a hung STT upstream builds a backlog of turn decodes, each waiting out the engine
+# timeout; an unbounded flush held teardown (persisting the conversation and its
+# audio, server shutdown) for minutes, growing with the outage (XERK-1424). Turns
+# still queued when it lapses are dropped from the live transcript only — their
+# audio is retained and persisted with the rest.
+_STT_FLUSH_TIMEOUT_S = 15.0
+
 # How many already-surfaced cue titles to hand the generator as "don't repeat"
 # context (XERK-102). Bounds the prompt in a long conversation; the full set is
 # still enforced by the post-hoc de-dupe, so nothing repeats beyond this window —
@@ -1225,10 +1233,19 @@ class Session:
         # out of close().
         if self._transcriber is not None:
             try:
-                await self._transcriber.flush()
+                await asyncio.wait_for(self._transcriber.flush(), timeout=_STT_FLUSH_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                log.warning("session %s STT flush timed out", self.session_id)
+                metrics.incr("stage.stt.flush_timeouts")
+            except Exception:
+                log.exception("session %s transcriber flush failed", self.session_id)
+                metrics.incr("stage.stt.errors")
+            # Close even when flush failed: it ends results(), and the pump join
+            # below waits on that — a skipped close hung teardown forever.
+            try:
                 await self._transcriber.close()
             except Exception:
-                log.exception("session %s transcriber flush/close failed", self.session_id)
+                log.exception("session %s transcriber close failed", self.session_id)
                 metrics.incr("stage.stt.errors")
         if self._pump is not None:
             await self._pump
