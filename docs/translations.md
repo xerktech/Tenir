@@ -57,8 +57,9 @@ once the run ends.
    without a claimed source language; outside a run it decides nothing. A
    translation that repeats its source (an English turn that slipped in as
    ambiguous) is suppressed rather than rendered — an exact echo, or a close
-   rewording whose only changed source words are English ("I made sure I can"
-   → "I made sure I could", XERK-1423).
+   rewording whose replaced source words are English ("I made sure I can"
+   → "I made sure I could", XERK-1423; "I seen" → "I saw", XERK-1520). "English"
+   is judged by word frequency across the contract languages (`wordfreq`).
 2. **Translation is server-side, off the caption path.** Each non-English final
    is translated through the same LiteLLM gateway the cues use, on its own
    route (`API_TRANSLATION_MODEL` over `API_LITELLM_ENDPOINT`; same weights as

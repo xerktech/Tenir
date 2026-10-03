@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import pytest
 
-from api.stt.langid import detect_lang, leans_english
+from api.stt.langid import (
+    detect_lang,
+    is_english_word,
+    is_shared_english_word,
+    leans_english,
+)
 
 # The stored transcript of session a6ef5cad, verbatim, with the language a
 # human labels each turn. The turns marked None are genuinely undecidable from
@@ -236,3 +241,30 @@ def test_new_english_vocab_counts() -> None:
     assert detect_lang("Like, whatever.") == "en"
     assert detect_lang("I did.") == "en"
     assert detect_lang("Can't.") == "en"
+
+
+@pytest.mark.parametrize(
+    ("word", "english", "shared"),
+    [
+        # small vocab, and words ten times as frequent in English (XERK-1520)
+        ("can", True, False),
+        ("seen", True, False),
+        ("care", True, False),
+        ("yesterday", True, False),
+        # English, but a native word of another contract language
+        ("he", False, True),  # es "I have"
+        ("was", False, False),  # de "what"
+        ("so", False, False),
+        ("will", False, False),  # de "want"
+        ("also", False, False),  # de "so"
+        # foreign-dominant
+        ("sin", False, False),
+        ("vale", False, False),
+        ("a", False, False),
+        ("mañana", False, False),
+        ("pedro", False, False),
+    ],
+)
+def test_english_word_classes(word: str, english: bool, shared: bool) -> None:
+    assert is_english_word(word) is english
+    assert is_shared_english_word(word) is shared

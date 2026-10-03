@@ -549,6 +549,64 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         ("Marco, Sofia, Lucia, i Beatles", "Marco, Sofia, Lucia, the Beatles", False),
         ("Marco, Sofia, Lucia, Pedro, a Madrid", "Marco, Sofia, Lucia, Pedro, to Madrid", False),
         ("Marco, Sofia, Lucia, Pedro, but!", "Marco, Sofia, Lucia, Pedro, goal!", False),
+        # XERK-1520: rewordings that change a word outside the small English vocab —
+        # a word far more frequent in English than elsewhere ("seen")...
+        ("I seen him yesterday", "I saw him yesterday", True),
+        # ...a shared word (es "he") with English kept around it, names dropped with it...
+        ("I told Marco, Pedro, he don't care", "I told Marco, I don't care", True),
+        # ...or only deletions: the output is the source's own words.
+        ("uh Marco left", "Marco left", True),
+        ("Marco, Sofia, Lucia, Pedro, so yeah", "Marco, Sofia, Lucia, yeah", True),
+        # A shared or foreign word with no English left around it is still a translation,
+        # and so is a lone replaced name.
+        ("Marco, Sofia, Lucia, Pedro, he visto", "Marco, Sofia, Lucia, Pedro, I saw", False),
+        ("Marco, Sofia, Lucia, Londres", "Marco, Sofia, Lucia, London", False),
+        (
+            "the cheesecake factory with Marco, vale",
+            "the cheesecake factory with Marco, okay",
+            False,
+        ),
+        # XERK-1520 QA (real model): a reorder is a deletion plus an insertion, so the
+        # moved foreign word still counts...
+        ("Marco, Sofia, Lucia, Ana incluida", "Marco, Sofia, Lucia, including Ana", False),
+        ("Juan, Marco, Ana incluida", "Juan, Marco, including Ana", False),
+        # ...and code-switched turns whose shared or capitalized word is native are kept.
+        ("Marco will my new car", "Marco wants my new car", False),
+        (
+            "Marco, Sofia, Pedro, Er will my new job",
+            "Marco, Sofia, Pedro, He wants my new job",
+            False,
+        ),
+        (
+            "Marco, Sofia, Lucia, my best friend's Kind",
+            "Marco, Sofia, Lucia, my best friend's child",
+            False,
+        ),
+        ("Marco, Sofia, Lucia, I love you, also", "Marco, Sofia, Lucia, I love you, too", False),
+        (
+            "Marco, Sofia, Lucia, Ok. Allora, gonna go",
+            "Marco, Sofia, Lucia, OK. So, I'll go",
+            False,
+        ),
+        # ...a foreign word translated into an English word the turn already has...
+        (
+            "He came yesterday, and she came gestern too",
+            "He came yesterday, and she came yesterday too.",
+            False,
+        ),
+        ("Yeah. Attends, wait a second", "Yeah. Wait, wait a second", False),
+        # ...a capitalized noun translated word for word is no dropped name...
+        (
+            "Marco, Sofia, Lucia, Pedro, I seen the Hund",
+            "Marco, Sofia, Lucia, Pedro, I saw the dog",
+            False,
+        ),
+        # ...nor is a sentence's first word.
+        (
+            "Marco, Sofia, Lucia, Pedro, Ok. Allora gonna go",
+            "Marco, Sofia, Lucia, Pedro, OK. I'll go",
+            False,
+        ),
         # curly apostrophes from the model don't disguise an echo
         ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
