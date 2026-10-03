@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import time
 import types
 
 import pytest
@@ -117,8 +118,13 @@ def test_ensure_pool_applies_schema_on_open(monkeypatch) -> None:
     conn = _RecordingConn()
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002 - psycopg kwarg
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             self.dsn = dsn
+
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            pass
 
         @contextlib.contextmanager
         def connection(self):
@@ -159,9 +165,14 @@ def _install_fake_pool(monkeypatch, conn) -> list:
     pools: list = []
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002 - psycopg kwarg
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             self.closed = False
             pools.append(self)
+
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            pass
 
         @contextlib.contextmanager
         def connection(self):
@@ -222,20 +233,24 @@ def test_boot_fails_when_the_database_rejects_the_schema(monkeypatch) -> None:
 
 def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch) -> None:
     """An unreachable database stays non-fatal at boot (it heals on its own), but
-    /ready must report it — and each probe retries the pool + schema."""
+    /ready must report it — and a probe after the failure window retries the pool +
+    schema (within it, the last verdict is shared: XERK-1434)."""
     from fastapi.testclient import TestClient
 
     from api.main import app
-    from api.persistence.postgres import SqlConversationStore
+    from api.persistence import postgres
+    from api.persistence.postgres import OPEN_TIMEOUT_SECONDS, SqlConversationStore
 
     attempts = []
 
     class _Down:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             attempts.append(self)
 
-        def connection(self):
-            raise TimeoutError("couldn't get a connection after 30 sec")
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            raise TimeoutError(f"pool initialization incomplete after {timeout} sec")
 
         def close(self) -> None:
             pass
@@ -250,6 +265,12 @@ def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch)
         resp = client.get("/ready")
         assert resp.status_code == 503
         assert resp.json()["checks"]["conversations"] == "error"
+        assert len(attempts) == before, "within the window /ready must not re-wait"
+
+        now = time.monotonic()
+        monkeypatch.setattr(postgres.time, "monotonic", lambda: now + OPEN_TIMEOUT_SECONDS + 1)
+        resp = client.get("/ready")
+        assert resp.status_code == 503
         assert len(attempts) == before + 1, "/ready must retry opening the pool"
 
 
@@ -315,6 +336,54 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
 
     assert len(pools) == 1, "only one pool may be opened"
     assert max_in_apply == 1, "schema statements must never run concurrently"
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path) -> None:
+    """``_pool_lock`` only serializes one process: two api processes booting at once
+    raced the DDL and Postgres failed one, aborting its startup (XERK-1509). Both
+    stores must take the shared advisory lock before any DDL."""
+    import importlib
+
+    from api.persistence.postgres import SCHEMA_LOCK_KEY
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    calls: list[tuple[str, object]] = []
+
+    class _Conn:
+        def execute(self, sql: str, params: object = None) -> None:
+            calls.append((" ".join(sql.split()), params))
+
+    _install_fake_pool(monkeypatch, _Conn())
+    store_cls("postgresql://unused")._ensure_pool()
+
+    assert calls[0] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+    assert len(calls) > 1, "the DDL runs after the lock"
+
+
+def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:
+    """The users DDL references households, which on an empty database only exists
+    once schema.sql ran. The user store applying its own DDL alone failed with
+    UndefinedTable whenever it opened before the conversation store — and the env-admin
+    seed with it, so a DB-down boot never seeded the admin (XERK-1430)."""
+    from api.auth.sql_users import SqlUserStore
+
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+    SqlUserStore("postgresql://unused")._ensure_pool()
+
+    households = next(
+        i for i, s in enumerate(conn.statements) if "TABLE IF NOT EXISTS households" in s
+    )
+    users = [
+        i
+        for i, s in enumerate(conn.statements)
+        if s.upper().startswith(("CREATE", "ALTER")) and " users " in f"{s} "
+    ]
+    assert users and households < min(users)
 
 
 class _SqlStateError(Exception):

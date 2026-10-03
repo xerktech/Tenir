@@ -125,6 +125,35 @@ def test_grace_window_expiry_finalizes_and_unregisters() -> None:
     asyncio.run(run())
 
 
+def test_stale_grace_close_does_not_evict_a_live_session_with_the_same_id() -> None:
+    """Regression (XERK-1507): two Sessions can share an id (racing cold resumes),
+    the later one registered over the earlier. The stale one's grace close must
+    not unregister the live one, or it drops out of /health, resume and shutdown."""
+
+    async def run() -> None:
+        async def send(_msg: ServerMessage) -> None:
+            pass
+
+        stale = Session(send, session_id="dup-1")
+        await stale.start(mic_source="g2-microphone", source_lang=None)
+        registry.register(stale)
+        live = Session(send, session_id="dup-1")
+        await live.start(mic_source="g2-microphone", source_lang=None)
+        registry.register(live)
+
+        stale.detach(grace_seconds=0)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert stale.is_closed
+        assert registry.get("dup-1") is live
+
+        registry.unregister(live)
+        assert registry.get("dup-1") is None
+        await live.close()
+
+    asyncio.run(run())
+
+
 def test_detach_after_close_is_noop() -> None:
     async def run() -> None:
         async def send(_msg: ServerMessage) -> None:
@@ -251,3 +280,131 @@ def test_ws_resume_after_finalize_extends_retained_audio() -> None:
 
         # The retained clip spans both legs, not just the most recent one.
         assert audio_samples(sid) > first
+
+
+def test_racing_cold_resumes_of_one_id_share_a_single_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1514): two reconnects carrying the same finalized id that
+    land inside one cold start's start() window must not each build their own
+    Session — the second has to resume onto the first, or the duplicate writes
+    the same conversation unseen by /health, warm resume, revoke and shutdown."""
+    started: list[Session] = []
+    real_start = Session.start
+
+    async def slow_start(self: Session, **kwargs: object) -> None:
+        started.append(self)
+        await asyncio.sleep(0.3)  # widen the check-then-register window
+        await real_start(self, **kwargs)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert ws.receive_json()["type"] == "pong"
+        assert registry.get(sid) is None
+
+        monkeypatch.setattr(Session, "start", slow_start)
+        start = json.dumps(
+            {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+        )
+        with client.websocket_connect("/ws") as b, client.websocket_connect("/ws") as c:
+            b.send_text(start)
+            c.send_text(start)
+            ready = [b.receive_json(), c.receive_json()]
+            assert [r["sessionId"] for r in ready] == [sid, sid]
+            assert len(started) == 1, "both reconnects cold-started their own Session"
+            # The one Session is the registered one, so both sockets are bound to
+            # something /health, warm resume, revoke and shutdown can all see.
+            assert registry.get(sid) is started[0]
+            assert registry.count() == 1
+
+
+def test_start_lock_serializes_one_id_and_forgets_it_after() -> None:
+    async def run() -> None:
+        order: list[str] = []
+
+        async def hold(tag: str, sid: str | None) -> None:
+            async with registry.start_lock(sid):
+                order.append(f"{tag}+")
+                await asyncio.sleep(0.01)
+                order.append(f"{tag}-")
+
+        await asyncio.gather(hold("a", "x"), hold("b", "x"), hold("n", None))
+        # Same id: strictly one after the other. No id: never blocked.
+        assert order.index("a-") < order.index("b+")
+        assert order[0] == "a+" and order[1] == "n+"
+        assert registry._start_locks == {}
+
+    asyncio.run(run())
+
+
+def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store error in the cold-resume owner check used to escape the handler
+    (ASGI 500, socket dropped without a close frame); it must answer like a failed
+    start and keep the socket usable."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+
+            def boom(*_a: object) -> None:
+                raise RuntimeError("store down")
+
+            monkeypatch.setattr(get_conversation_store(), "get", boom)
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            err = ws.receive_json()
+            assert err["type"] == "error" and err["code"] == "internal"
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert ws.receive_json()["type"] == "pong"
+            # The start lock was released on the way out: a retry still works.
+            monkeypatch.undo()
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws.receive_json()["sessionId"] == sid
+
+
+def test_resume_owner_check_fails_closed_on_a_transient_store_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner check is the cross-user gate (XERK-651): a store error there must
+    refuse the start, not treat the recording as unowned and go ahead — even when
+    the store recovers by the time start() reads it again."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+
+            store = get_conversation_store()
+            real_get = store.get
+            calls = 0
+
+            def flaky_get(*args: object) -> object:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("store blip")
+                return real_get(*args)
+
+            monkeypatch.setattr(store, "get", flaky_get)
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws.receive_json()["type"] == "error"
+            assert calls == 1
+            assert registry.count() == 0

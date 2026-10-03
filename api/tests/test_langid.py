@@ -208,6 +208,29 @@ def test_one_english_word_beside_foreign_signal_is_not_english(text: str) -> Non
     assert detect_lang(text) is None
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A lone English word that is also a native word (ASR drops the accents) is not
+        # an English turn: calling these en closed a live run (XERK-1516).
+        ("to cansado", None),  # pt tô
+        ("se for assim", None),  # pt
+        ("is mir egal", None),  # de ist
+        ("be certo", None),  # it be'
+        ("quel but", None),  # fr
+        ("the vert", None),  # fr thé
+        ("The end.", None),
+        # ...but two English hits, or an English-only one, still make English.
+        ("The car is gone.", "en"),
+        ("Is it?", "en"),
+        ("So what?", "en"),
+        ("Back to the den.", "en"),
+    ],
+)
+def test_one_shared_english_word_is_not_english(text: str, expected: str | None) -> None:
+    assert detect_lang(text) == expected
+
+
 def test_new_english_vocab_counts() -> None:
     # Contractions and short verbs are English evidence on their own.
     assert detect_lang("Like, whatever.") == "en"

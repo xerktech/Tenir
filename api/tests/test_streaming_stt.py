@@ -90,6 +90,15 @@ def _frozen_decode_clock(monkeypatch):
 
     monkeypatch.setattr(streaming, "time", _Clock())
 
+    # Final-retry backoff (XERK-1499) advances whichever fake clock is installed
+    # instead of sleeping, so a permanently failing engine exhausts
+    # _FINAL_RETRY_BUDGET_S at no wall-time cost.
+    async def fake_sleep(s: float) -> None:
+        streaming.time.now += s
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(streaming, "_retry_sleep", fake_sleep)
+
 
 # ----- helpers --------------------------------------------------------------
 
@@ -1389,10 +1398,12 @@ def test_finalizing_covers_decode_and_delivery_of_a_speech_turn() -> None:
 
 def test_failed_final_is_not_retried_against_the_failing_upstream() -> None:
     """The padded blank-final retry (XERK-1414) is for an engine that answered with
-    nothing, not one that just timed out: a raising final goes straight to the
-    partial fallback instead of spending another engine timeout on the backlog."""
+    nothing, not one that just timed out: a raising final only takes the plain
+    outage retry (XERK-1499), then the partial fallback, never a padded decode."""
+    from api.metrics import metrics
 
     async def run() -> None:
+        metrics.reset()
         eng = GatedEngine(fail="final")
         eng.gate.set()
         t = StreamingTranscriber(
@@ -1403,7 +1414,11 @@ def test_failed_final_is_not_retried_against_the_failing_upstream() -> None:
         for _ in range(3):
             await _push(t, _pcm(100, amplitude=0))
         await _drain(t)
-        assert eng.calls.count(True) == 1  # one final decode, no padded retry
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_exhausted"] == 1
+        assert not any(k.startswith("stage.stt.final_retry_") and k != (
+            "stage.stt.final_retry_exhausted") for k in counters)  # no padded retry
+        metrics.reset()
 
     asyncio.run(run())
 
@@ -1506,6 +1521,179 @@ def test_finalizing_clears_when_finalize_raises_after_the_decode() -> None:
         await _push(t, _pcm(300, amplitude=0))
         assert not t.finalizing
         assert t._worker is not None and not t._worker.done()  # still serving turns
+        await t.close()
+
+    asyncio.run(run())
+
+
+# ----- failed finals retried through an outage (XERK-1499) ------------------
+
+
+class OutageEngine:
+    """Every decode raises while ``down`` (an STT outage), else answers ``text``.
+    Each call advances the fake clock by ``call_s``; ``recover_after`` failed calls
+    bring the upstream back."""
+
+    def __init__(self, clock: _Clock, *, recover_after: int | None, call_s: float = 3.0):
+        self.clock, self.recover_after, self.call_s = clock, recover_after, call_s
+        self.calls: list[bool] = []
+        self.failures = 0
+
+    def transcribe(self, samples, *, language, want_words=True):
+        self.calls.append(want_words)
+        self.clock.now += self.call_s
+        if self.recover_after is None or self.failures < self.recover_after:
+            self.failures += 1
+            raise TimeoutError("stt upstream down")
+        return EngineResult(text=f"turn {len(self.calls)}", words=[], language="en")
+
+
+async def _outage_turns(t: StreamingTranscriber, n: int) -> None:
+    for _ in range(n):
+        for _ in range(5):
+            await t.push(_pcm(100, amplitude=4000))
+        for _ in range(3):
+            await t.push(_pcm(100, amplitude=0))
+
+
+@pytest.fixture
+def _outage() -> _Clock:
+    """The autouse fake clock, which the backoff waits advance."""
+    import api.stt.streaming as streaming_mod
+
+    return streaming_mod.time
+
+
+def test_turns_whose_final_raises_during_an_outage_land_once_it_recovers(_outage) -> None:
+    """The bug: a raised final decode was treated as empty and fell back to the last
+    partial — but no partial decodes during an outage either, so every turn spoken
+    while STT was down vanished from the transcript. Now the final is retried, in
+    order, and lands when the upstream comes back."""
+
+    async def run() -> None:
+        eng = OutageEngine(_outage, recover_after=6)
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 3)
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 800), (800, 1600), (1600, 2400)]
+        assert all(f.text.startswith("turn ") for f in finals)
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_final_retries_give_up_once_the_outage_outlasts_the_budget(_outage) -> None:
+    """A dead upstream can't hold the worker (and the translation hold) forever: the
+    budget runs once per outage, from its first failure, not per turn. Turn 1 retries
+    on the backoff schedule until the next wait would pass the budget, later turns only
+    use what is left of it, and past it each turn gets one attempt and the fallback."""
+    from api.metrics import metrics
+
+    async def run() -> None:
+        metrics.reset()
+        eng = OutageEngine(_outage, recover_after=None, call_s=0.0)
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 5)
+        assert [m for m in await _drain(t) if isinstance(m, CaptionFinal)] == []
+        # Waits 0.5+1+2+4+8x6 = 55.5 s on turn 1 (11 attempts); turn 2 waits 0.5+1+2
+        # (4 attempts), turns 3 and 4 0.5 each (2 attempts) and turn 5, past the
+        # budget, gets 1: the clock stops exactly on the budget. One probe, on the
+        # outage's first failure only.
+        assert _outage.now == 60.0
+        assert eng.calls.count(True) == 11 + 4 + 2 + 2 + 1
+        assert eng.calls.count(False) == 1
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_exhausted"] == 5
+        assert "stage.stt.final_input_errors" not in counters
+        assert not t.finalizing
+        metrics.reset()
+
+        # The upstream recovers: the next turn decodes and the outage is over.
+        eng.recover_after = 0
+        await _outage_turns(t, 1)
+        assert len([f for f in await _drain(t) if isinstance(f, CaptionFinal)]) == 1
+        assert t._outage_since is None
+        await t.close()
+
+    asyncio.run(run())
+
+
+class PoisonEngine(FakeEngine):
+    """A healthy upstream that rejects one input every time (Parakeet 500s on 10-20 ms
+    tails): any decode of audio at ``poison`` amplitude raises."""
+
+    POISON = 6000 / 32768
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.finals = 0
+
+    def transcribe(self, samples, *, language, want_words=True):
+        if want_words:
+            self.finals += 1
+        if samples.size and abs(float(np.abs(samples).max()) - self.POISON) < 1e-3:
+            raise RuntimeError("500 Internal Server Error")
+        return super().transcribe(samples, language=language, want_words=want_words)
+
+
+def test_a_turn_the_upstream_rejects_is_not_retried_as_an_outage(_outage) -> None:
+    """QA on XERK-1499: retrying every exception made one bad input look like an
+    outage — on a healthy upstream it held every later turn for the whole budget,
+    and a session ending meanwhile lost them all. The silence probe answers, so the
+    turn takes the fallback at once and later turns decode live."""
+    from api.metrics import metrics
+
+    async def run() -> None:
+        metrics.reset()
+        eng = PoisonEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        for amp in (4000, 6000, 4000):
+            for _ in range(5):
+                await t.push(_pcm(100, amplitude=amp))
+            for _ in range(3):
+                await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 800), (1600, 2400)]
+        assert eng.finals == 4  # the rejected turn: once, then once after the probe
+        assert _outage.now == 0.0  # no backoff waited
+        assert t._outage_since is None
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_input_errors"] == 1
+        assert "stage.stt.final_retries" not in counters
+        metrics.reset()
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_a_final_that_fails_as_a_brief_outage_ends_still_lands(_outage) -> None:
+    """QA on XERK-1499: a final sent during a brief outage can fail after the outage
+    has cleared, so the probe answers. That is not a bad input: the one immediate
+    retry lands the turn instead of dropping it, with no backoff waited."""
+
+    class BlipEngine(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            if self.calls == 0:
+                self.calls += 1
+                raise TimeoutError("upstream blip")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def run() -> None:
+        eng = BlipEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _outage_turns(t, 1)
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [f.text for f in finals] == ["hello world"]
+        assert eng.calls == 3  # failed final, probe, retried final
+        assert _outage.now == 0.0
         await t.close()
 
     asyncio.run(run())

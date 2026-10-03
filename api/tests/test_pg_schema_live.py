@@ -8,6 +8,8 @@ session.start fails (an ~11 h production outage). These tests apply the shipped
 schema with the shipped ``apply_schema`` to a real database:
 
 - a fresh database, twice (the boot apply runs on every pool open);
+- several connections applying it at once to a fresh database, like api processes
+  booting together (XERK-1509);
 - a pre-XERK-651 data dir (no ``owner`` column), which must gain it and backfill
   legacy rows to the env admin.
 
@@ -21,11 +23,12 @@ modified outside it.
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 
 import pytest
 
-from api.persistence.postgres import apply_schema, find_schema_file
+from api.persistence.postgres import apply_schema, find_schema_file, lock_schema
 
 DSN = os.environ.get("TENIR_TEST_PG_DSN", "")
 psycopg = pytest.importorskip("psycopg") if DSN else None
@@ -90,3 +93,78 @@ def test_schema_upgrades_a_pre_ownership_data_dir_and_backfills(conn) -> None:
     owner = conn.execute("SELECT owner FROM conversations WHERE id = 'legacy-1'").fetchone()[0]
     # Stored as the admin's id rendered as text: what the code compares it against.
     assert owner == str(admin)
+
+
+def test_concurrent_boot_applies_do_not_collide(conn) -> None:
+    """Api processes booting together each apply the schema in their own transaction.
+    Unguarded, racing CREATE ... IF NOT EXISTS failed one with 40P01 or a pg_type
+    unique violation, which aborted its startup as a rejected schema (XERK-1509)."""
+    sql = _schema_sql()
+    schema = conn.execute("SELECT current_schema()").fetchone()[0]
+    n = 4
+    start = threading.Barrier(n)
+    errors: list[BaseException] = []
+
+    def boot() -> None:
+        try:
+            # Not autocommit, like a pooled connection: the xact lock lasts to commit.
+            with psycopg.connect(DSN) as c:
+                c.execute(f"SET search_path TO {schema}, public")
+                c.commit()
+                start.wait()
+                lock_schema(c)
+                apply_schema(c, sql)
+        except BaseException as exc:  # noqa: BLE001 - reported by the assert below
+            errors.append(exc)
+
+    # Daemon + bounded join: a regression that deadlocks fails here instead of hanging CI.
+    threads = [threading.Thread(target=boot, daemon=True) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads), "a schema apply never finished"
+    assert errors == []
+    assert _columns(conn, "conversations")["owner"] == "text"
+
+
+def test_concurrent_first_use_of_both_stores_on_an_empty_database() -> None:
+    """XERK-1430: the conversation and user stores each apply DDL on first use. On an
+    empty database, running both at once raced — the users DDL before households
+    existed (UndefinedTable), or two CREATE TABLE IF NOT EXISTS colliding
+    (UniqueViolation on pg_type_typname_nsp_index). Both must succeed, every time."""
+    import threading
+
+    from api.auth.sql_users import SqlUserStore
+    from api.persistence.postgres import SqlConversationStore
+
+    for _ in range(5):
+        schema = f"t_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {schema}")
+        dsn = psycopg.conninfo.make_conninfo(DSN, options=f"-c search_path={schema},public")
+        stores = [SqlUserStore(dsn), SqlConversationStore(dsn)]
+        errors: list[BaseException] = []
+        start = threading.Barrier(len(stores))
+
+        def first_use(store) -> None:
+            start.wait()
+            try:
+                store._ensure_pool()
+            except BaseException as exc:  # noqa: BLE001 - collected for the assert
+                errors.append(exc)
+
+        threads = [threading.Thread(target=first_use, args=(s,)) for s in stores]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not errors, errors
+        finally:
+            for store in stores:
+                if store._pool is not None:
+                    store._pool.close()
+            with psycopg.connect(DSN, autocommit=True) as admin:
+                admin.execute(f"DROP SCHEMA {schema} CASCADE")

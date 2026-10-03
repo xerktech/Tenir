@@ -91,6 +91,7 @@ def test_session_id_collision_across_households_does_not_evict(
 # --- resilient session start -------------------------------------------------
 
 
+@pytest.mark.real_auth
 def test_session_start_failure_sends_error_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """A backend that raises on start (model/DB/GPU init) returns an error frame and
     keeps the socket open, instead of aborting the connection unhandled."""
@@ -100,7 +101,9 @@ def test_session_start_failure_sends_error_frame(monkeypatch: pytest.MonkeyPatch
         raise RuntimeError("model backend unavailable")
 
     monkeypatch.setattr(session_mod, "make_transcriber", boom)
-    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+    # _reset wiped conftest's seeded admin; session.start re-checks the account
+    # exists (XERK-1504), so present a real one.
+    with TestClient(app) as client, client.websocket_connect(f"/ws?token={_token('acme')}") as ws:
         ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
         msg = ws.receive_json()
         assert msg["type"] == "error" and msg["code"] == "internal"
@@ -217,7 +220,7 @@ def test_ready_does_not_leak_backend_error_detail(
     secret = "deadlock detected: Process 4242 waits for ShareLock; /app/api/schema.sql"
 
     class _DeadConversations:
-        def households(self) -> None:
+        def ready(self) -> None:
             raise RuntimeError(secret)
 
     monkeypatch.setattr(readiness, "get_conversation_store", lambda: _DeadConversations())
@@ -243,3 +246,20 @@ def test_startup_logs_an_unreachable_backend(
     with caplog.at_level("WARNING", logger="api.readiness"), TestClient(app):
         pass
     assert "backend audio not ready: RuntimeError: bucket unreachable" in caplog.text
+
+
+def test_uvicorn_bounds_its_graceful_shutdown_under_the_kill() -> None:
+    """XERK-1496: without --timeout-graceful-shutdown uvicorn waits with no limit for
+    in-flight handlers on SIGTERM, so a session.end or revoke against a hung model ran
+    past the 30 s SIGKILL. The lifespan's session close needs 25 s of the 30 after it.
+    """
+    from pathlib import Path
+
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+    cmd = next(
+        line for line in dockerfile.read_text().splitlines() if line.startswith("CMD ")
+    )
+    argv = json.loads(cmd.removeprefix("CMD "))
+    assert argv[0] == "uvicorn"
+    timeout = float(argv[argv.index("--timeout-graceful-shutdown") + 1])
+    assert 0 < timeout + 20 + 5 < 30
