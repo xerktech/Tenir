@@ -9,6 +9,7 @@ not yet started, or after ``session.end`` — was never closed, so it could
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -252,3 +253,48 @@ def test_revoke_during_resume_replay_still_closes_the_socket(
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws.receive_json()
             assert exc.value.code == 1008
+
+
+@pytest.mark.real_auth
+def test_message_after_revoke_close_is_a_quiet_disconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """XERK-1517: a frame the handler reads after a revoke has closed the socket
+    must end the handler like a disconnect. Replying to it raises starlette's
+    send-after-close RuntimeError, which escaped as "Exception in ASGI application"."""
+    caplog.set_level(logging.INFO, logger="api")
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    admin = {"Authorization": f"Bearer {admin_token}"}
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
+            # Still queued for the handler after the server's close: its pong can't be sent.
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
+        # Leaving the block re-raises anything that escaped the handler.
+    assert "client disconnected" in caplog.text
+
+
+@pytest.mark.real_auth
+def test_runtime_error_on_open_socket_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a RuntimeError on a closed socket is a disconnect; any other is a bug and
+    must not be swallowed."""
+    from api import main
+
+    def boom(text: str):
+        raise RuntimeError("real bug")
+
+    monkeypatch.setattr(main, "parse_client_message", boom)
+    _, member_token = _token("member", "member")
+    with TestClient(app) as client:
+        # No receive: if the error were swallowed, a receive would wait forever on a
+        # socket nobody closes. Leaving the block re-raises what the handler raised.
+        with pytest.raises(RuntimeError, match="real bug"):
+            with client.websocket_connect(f"/ws?token={member_token}") as ws:
+                ws.send_text(START)
