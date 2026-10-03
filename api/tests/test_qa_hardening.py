@@ -295,6 +295,108 @@ def test_lifespan_sweeps_stale_rows_and_installs_redaction() -> None:
         )
 
 
+# --- a boot sweep that fails must be retried, never dropped (XERK-1428) ------
+
+
+def _flaky_finish_stale(monkeypatch: pytest.MonkeyPatch, store, failures: int) -> list[int]:
+    """Make ``store.finish_stale`` raise like an unreachable database ``failures``
+    times, then succeed. Returns the call counter."""
+    real = store.finish_stale
+    calls = [0]
+
+    def finish_stale() -> int:
+        calls[0] += 1
+        if calls[0] <= failures:
+            raise ConnectionError("database unreachable")
+        return real()
+
+    monkeypatch.setattr(store, "finish_stale", finish_stale)
+    return calls
+
+
+def test_failed_boot_sweep_is_retried_once_the_database_is_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postgres down at boot used to mean the orphan stayed `live` until the next
+    restart with the database up: the sweep ran exactly once and was never retried."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from api.persistence import stale
+
+    monkeypatch.setattr(stale, "_pending", None)
+    monkeypatch.setattr(stale, "RETRY_INTERVAL_SECONDS", 0.02)
+    store = get_conversation_store()
+    store.create("hh", "orphan")
+    calls = _flaky_finish_stale(monkeypatch, store, failures=3)
+
+    with TestClient(app):
+        deadline = time.monotonic() + 5
+        while store.get("hh", "orphan").status == "live" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert store.get("hh", "orphan").status == "ready"
+        assert not stale.is_pending(store)
+        swept_after = calls[0]
+        time.sleep(0.1)
+        assert calls[0] == swept_after  # the loop stops once it has succeeded
+
+
+def test_session_start_sweeps_first_so_its_own_row_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending sweep runs before the new session's row exists, so a retry can
+    never finalize a recording this process started."""
+    from api.persistence import stale
+
+    monkeypatch.setattr(stale, "_pending", None)
+    store = get_conversation_store()
+    store.create("hh", "orphan")
+    stale.arm(store)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, household="hh", user_id="u-1")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+        assert store.get("hh", "orphan").status == "ready"
+        assert store.get("hh", session.session_id).status == "live"
+        assert not stale.is_pending(store)
+        # A late retry is a no-op: the sweep is owed at most once.
+        stale.sweep_if_pending(store)
+        assert store.get("hh", session.session_id).status == "live"
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_session_start_fails_rather_than_create_a_row_before_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.persistence import stale
+
+    monkeypatch.setattr(stale, "_pending", None)
+    store = get_conversation_store()
+    store.create("hh", "orphan")
+    stale.arm(store)
+    _flaky_finish_stale(monkeypatch, store, failures=1)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, household="hh", user_id="u-1")
+        with pytest.raises(ConnectionError):
+            await session.start(mic_source="phone-microphone", source_lang=None)
+        assert store.get("hh", session.session_id) is None
+        assert stale.is_pending(store)
+        await session.close()
+
+    asyncio.run(run())
+
+
 # --- deleting an account must end its live capture, not just its next request --
 
 

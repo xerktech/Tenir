@@ -57,6 +57,7 @@ from api.persistence import (
     get_audio_store,
     get_conversation_store,
     pcm16_to_wav,
+    stale,
     wav_to_pcm16,
 )
 from api.stt import Transcriber, make_transcriber
@@ -341,6 +342,11 @@ class Session:
         if self._music is not None:
             self._music_window_bytes = window_bytes(settings.music_window_seconds)
             self._music_scan = asyncio.create_task(self._music_scan_loop())
+        if stale.is_pending(self._conversations):
+            # The boot sweep of a previous process's live rows hasn't succeeded
+            # yet: run it before this session's row exists, so it can never
+            # finalize a recording this process started (XERK-1428).
+            await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
