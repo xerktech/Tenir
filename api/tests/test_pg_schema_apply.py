@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import time
 import types
 
 import pytest
@@ -117,8 +118,11 @@ def test_ensure_pool_applies_schema_on_open(monkeypatch) -> None:
     conn = _RecordingConn()
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002 - psycopg kwarg
+        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
             self.dsn = dsn
+
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            pass
 
         @contextlib.contextmanager
         def connection(self):
@@ -159,9 +163,12 @@ def _install_fake_pool(monkeypatch, conn) -> list:
     pools: list = []
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002 - psycopg kwarg
+        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
             self.closed = False
             pools.append(self)
+
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            pass
 
         @contextlib.contextmanager
         def connection(self):
@@ -222,20 +229,22 @@ def test_boot_fails_when_the_database_rejects_the_schema(monkeypatch) -> None:
 
 def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch) -> None:
     """An unreachable database stays non-fatal at boot (it heals on its own), but
-    /ready must report it — and each probe retries the pool + schema."""
+    /ready must report it — and a probe after the failure window retries the pool +
+    schema (within it, the last verdict is shared: XERK-1434)."""
     from fastapi.testclient import TestClient
 
     from api.main import app
-    from api.persistence.postgres import SqlConversationStore
+    from api.persistence import postgres
+    from api.persistence.postgres import OPEN_TIMEOUT_SECONDS, SqlConversationStore
 
     attempts = []
 
     class _Down:
-        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002
+        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
             attempts.append(self)
 
-        def connection(self):
-            raise TimeoutError("couldn't get a connection after 30 sec")
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            raise TimeoutError(f"pool initialization incomplete after {timeout} sec")
 
         def close(self) -> None:
             pass
@@ -250,6 +259,12 @@ def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch)
         resp = client.get("/ready")
         assert resp.status_code == 503
         assert resp.json()["checks"]["conversations"] == "error"
+        assert len(attempts) == before, "within the window /ready must not re-wait"
+
+        now = time.monotonic()
+        monkeypatch.setattr(postgres.time, "monotonic", lambda: now + OPEN_TIMEOUT_SECONDS + 1)
+        resp = client.get("/ready")
+        assert resp.status_code == 503
         assert len(attempts) == before + 1, "/ready must retry opening the pool"
 
 

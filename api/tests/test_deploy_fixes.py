@@ -217,7 +217,7 @@ def test_ready_does_not_leak_backend_error_detail(
     secret = "deadlock detected: Process 4242 waits for ShareLock; /app/api/schema.sql"
 
     class _DeadConversations:
-        def households(self) -> None:
+        def ready(self) -> None:
             raise RuntimeError(secret)
 
     monkeypatch.setattr(readiness, "get_conversation_store", lambda: _DeadConversations())

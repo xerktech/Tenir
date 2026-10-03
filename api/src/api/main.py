@@ -232,6 +232,9 @@ async def health() -> dict[str, object]:
     }
 
 
+_ready_probe: asyncio.Future[dict[str, str]] | None = None
+
+
 @app.get("/ready")
 async def ready() -> Response:
     """Backend reachability for an orchestrator's readiness probe.
@@ -241,7 +244,19 @@ async def ready() -> Response:
     memory/stub backends are trivially ready. Returns 200 when all are reachable,
     503 otherwise, so a load balancer doesn't route to an api whose stores are down.
     """
-    checks = await asyncio.to_thread(probe_backends)
+    global _ready_probe
+    # Concurrent callers share one in-flight probe, so a burst of this public
+    # endpoint holds one worker thread, not one each (XERK-1434). Shielded: a
+    # client disconnecting mustn't cancel the probe the others are awaiting.
+    if (
+        _ready_probe is None
+        or _ready_probe.done()
+        # A probe left pending by a since-closed loop (test clients, a dev reload)
+        # can't be awaited from this one.
+        or _ready_probe.get_loop() is not asyncio.get_running_loop()
+    ):
+        _ready_probe = asyncio.ensure_future(asyncio.to_thread(probe_backends))
+    checks = await asyncio.shield(_ready_probe)
     ok = all(status == "ok" for status in checks.values())
     return JSONResponse({"ready": ok, "checks": checks}, status_code=200 if ok else 503)
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -30,6 +31,13 @@ from api.persistence.models import (
 )
 
 log = logging.getLogger("api.persistence.postgres")
+
+# How long opening the pool may wait for its first connections, how long a failed
+# open is remembered before the next attempt, and the readiness probe's connection
+# wait. psycopg's 30s default applied to every call while the database was down,
+# each one building a fresh pool behind ``_pool_lock``: boot blocked ~2 minutes and
+# every /ready held a worker thread 30-60s (XERK-1434).
+OPEN_TIMEOUT_SECONDS = 5.0
 
 
 def find_schema_file() -> Path | None:
@@ -80,6 +88,11 @@ class SchemaApplyError(RuntimeError):
     a pod that looks healthy and can't record."""
 
 
+class DatabaseUnavailable(RuntimeError):
+    """The pool could not be opened: the last attempt, under OPEN_TIMEOUT_SECONDS
+    ago, found the database unreachable (XERK-1434)."""
+
+
 def _is_connection_lost(conn, exc: BaseException) -> bool:
     """True when a statement failed because the connection itself went away (the
     server restarting mid-apply) — that heals on its own, so it is not a rejected
@@ -100,6 +113,9 @@ class SqlConversationStore:
         # Serializes pool open + schema apply. Without it, concurrent first callers
         # each open a pool and run the DDL in parallel, which Postgres deadlocks on.
         self._pool_lock = threading.Lock()
+        # (monotonic time, error) of the last failed open while the database was
+        # unreachable; callers within OPEN_TIMEOUT_SECONDS of it fail fast with it.
+        self._open_failure: tuple[float, Exception] | None = None
 
     def open(self) -> None:  # pragma: no cover - requires psycopg + a live database
         """Eagerly open the pool and apply the schema at boot.
@@ -122,10 +138,20 @@ class SqlConversationStore:
         with self._pool_lock:
             if self._pool is not None:
                 return self._pool
+            failure = self._open_failure
+            if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
+                # Share the last attempt's verdict instead of queueing another full
+                # wait behind the lock (every caller waiting here would otherwise
+                # pay OPEN_TIMEOUT_SECONDS in turn).
+                raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
             from psycopg_pool import ConnectionPool
 
             log.info("opening Postgres connection pool")
-            pool = ConnectionPool(self._dsn, open=True)
+            # libpq's connect_timeout too: closing a pool that timed out waits for
+            # its in-flight connects, which against a blackholed host never return.
+            pool = ConnectionPool(
+                self._dsn, open=False, kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
+            )
             # Self-heal schema drift on boot. Postgres only applies schema.sql on a
             # FRESH data volume (docker-entrypoint-initdb.d), so a database created
             # before an additive change — e.g. the `cues` table (XERK-81) that reads
@@ -137,10 +163,18 @@ class SqlConversationStore:
             # one failed apply was never retried and every later call ran against the
             # broken schema with nothing reporting it (XERK-1409).
             try:
+                pool.open(wait=True, timeout=OPEN_TIMEOUT_SECONDS)
                 self._apply_schema(pool)
-            except BaseException:
+            except SchemaApplyError:
+                # A rejected schema is not an outage: retry it on the very next call.
                 pool.close()
                 raise
+            except BaseException as exc:
+                pool.close()
+                if isinstance(exc, Exception):
+                    self._open_failure = (time.monotonic(), exc)
+                raise
+            self._open_failure = None
             self._pool = pool
         return self._pool
 
@@ -463,6 +497,13 @@ class SqlConversationStore:
                 (household, conversation_id),
             )
             return cur.rowcount > 0
+
+    def ready(self) -> None:
+        """Readiness probe: one round trip, never waiting longer than
+        OPEN_TIMEOUT_SECONDS for a connection (the request path keeps the pool's own
+        timeout). Raises when the database is unreachable."""
+        with self._ensure_pool().connection(timeout=OPEN_TIMEOUT_SECONDS) as conn:
+            conn.execute("SELECT 1")
 
     def households(self) -> list[str]:  # pragma: no cover - requires a live database
         with self._ensure_pool().connection() as conn:

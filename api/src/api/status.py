@@ -119,7 +119,7 @@ async def _gather() -> list[_RawResult]:
     # --- infra stores (no "loading" phase: ready or down) ---
     if s.persistence_backend == "postgres":
         conv = get_conversation_store()
-        raw, detail = await _infra_probe(conv.households if conv else None)
+        raw, detail = await _infra_probe(conv.ready if conv else None)
         results.append(("postgres", "Database (Postgres)", "infra", raw, detail))
     if s.audio_backend == "disk":
         audio = get_audio_store()

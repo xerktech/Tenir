@@ -173,10 +173,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # Boot blocks on Postgres: with it unreachable, the eager schema apply, the
-      # backend probe and the stale sweep each wait out a 30 s pool timeout
-      # (~2 min, XERK-1409). Without a grace period autoheal restarted the api
-      # mid-startup, before it could ever recover.
+      # Boot applies schema.sql eagerly (XERK-1409). An unreachable Postgres now
+      # costs it ~5-10 s (bounded pool open, XERK-1434), but the apply itself on a
+      # large existing database can run long; without a grace period autoheal
+      # restarted the api mid-startup, before it could ever recover.
       start_period: 180s
     # The api waits up to ~15 s finalizing a live session on shutdown; docker's
     # default 10 s SIGKILLs it mid-persist, which stranded the conversation and
