@@ -278,10 +278,12 @@ class SqlUserStore:
                     f" RETURNING {_USER_COLUMNS}",
                     tuple(params),
                 ).fetchone()
+                if row is None:
+                    # Raised inside the block so the transaction rolls back and a
+                    # missing user leaves no households row behind.
+                    raise KeyError(user_id)
         except UniqueViolation as exc:
             raise DuplicateUser(username or "") from exc
-        if row is None:
-            raise KeyError(user_id)
         return self._row_to_user(row)
 
     def update_oidc(  # pragma: no cover - requires a live database

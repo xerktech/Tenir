@@ -84,3 +84,10 @@ def test_a_rejected_create_leaves_no_household_behind(db) -> None:
     with pytest.raises(DuplicateUser):
         store.create("dup", "pw-123456", household="orphan")
     assert "orphan" not in _households(admin)
+
+
+def test_moving_a_missing_user_leaves_no_household_behind(db) -> None:
+    store, admin = db
+    with pytest.raises(KeyError):
+        store.update_credentials(str(uuid.uuid4()), household="ghost")
+    assert "ghost" not in _households(admin)
