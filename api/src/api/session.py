@@ -298,8 +298,9 @@ class Session:
         # This teardown's first audio retain, and that of the earlier sitting of
         # this conversation still tearing down when this one resumed — which
         # must land before ours (XERK-1500).
-        self._first_retain: asyncio.Future[None] | None = None
-        self._prior_retain: asyncio.Future[None] | None = None
+        self._first_retain: asyncio.Future[bool] | None = None
+        self._prior_retain: asyncio.Future[bool] | None = None
+        self._prior_teardown: asyncio.Task[None] | None = None
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -406,6 +407,7 @@ class Session:
         prior = _closing.get((self._household, self.session_id))
         if prior is not None:
             self._prior_retain = prior._first_retain
+            self._prior_teardown = prior._teardown
             return prior._current_audio_ms()
         if self._audio_store is not None:
             existing = await asyncio.to_thread(
@@ -1433,18 +1435,24 @@ class Session:
             self._conversations.finish, self._household, self.session_id, status="ready"
         )
 
-    async def _retain_audio_after_prior(self) -> None:
+    async def _retain_audio_after_prior(self) -> bool:
         """Retain, but never ahead of the sitting this one resumed mid-teardown:
         _persist_audio appends to whatever is stored, so storing first would put
-        this sitting's audio before the earlier one's (XERK-1500). Only the
-        earlier sitting's first retain is waited on, not its model drains."""
-        if self._prior_retain is not None:
-            await asyncio.wait({self._prior_retain})
-            self._prior_retain = None
-        await self._retain_audio()
+        this sitting's audio before the earlier one's (XERK-1500). Normally only
+        the earlier sitting's first retain is waited on, not its model drains;
+        if that retain failed, its audio is only retried by its final _persist,
+        so wait for its whole teardown instead."""
+        prior_retain, prior_teardown = self._prior_retain, self._prior_teardown
+        self._prior_retain = self._prior_teardown = None
+        if prior_retain is not None:
+            await asyncio.wait({prior_retain})
+            retained = not prior_retain.cancelled() and prior_retain.result()
+            if not retained and prior_teardown is not None:
+                await asyncio.wait({prior_teardown})
+        return await self._retain_audio()
 
-    async def _retain_audio(self) -> None:
-        """Best-effort audio retention that never raises.
+    async def _retain_audio(self) -> bool:
+        """Best-effort audio retention that never raises; returns whether it stored.
 
         Guarded as a whole: audio retention is best-effort, but FINALIZING the
         conversation is not. Anything raising in here — an unwritable audio dir,
@@ -1454,12 +1462,14 @@ class Session:
         recording is bad; losing the recording AND the record of it is worse.
         """
         if self._conversations is None:
-            return
+            return True
         try:
             await self._persist_audio()
         except Exception:
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
+            return False
+        return True
 
     async def _persist_audio(self) -> None:
         """Flush the retained full-session audio to the audio store."""

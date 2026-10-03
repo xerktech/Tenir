@@ -400,3 +400,91 @@ def test_closing_registry_is_per_household_and_cleared() -> None:
         assert ("hh-a", "conv-shared-id") not in session_mod._closing
 
     asyncio.run(run())
+
+
+def test_resume_during_prior_teardown_keeps_order_when_prior_retain_fails() -> None:
+    """If the closing sitting's first retain fails, its audio is only retried by
+    its final _persist; the resumed sitting must not store ahead of that retry,
+    or the recording plays the sittings in the wrong order (XERK-1500)."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_audio_store()
+        real_put = store.put
+        fails = [1]
+
+        def flaky_put(key, wav) -> None:
+            if fails:
+                fails.pop()
+                raise OSError("disk hiccup")
+            real_put(key, wav)
+
+        store.put = flaky_put
+        try:
+            leg1 = Session(send, session_id="conv-retry")
+            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            for _ in range(25):
+                await leg1.on_audio(_voice_chunk(freq=200))
+            release = _hold_flush(leg1)
+            closing = asyncio.create_task(leg1.close())
+            await asyncio.sleep(0)
+
+            leg2 = Session(send, session_id="conv-retry")
+            await leg2.start(mic_source="g2-microphone", source_lang=None)
+            for _ in range(10):
+                await leg2.on_audio(_voice_chunk(freq=400))
+            closing2 = asyncio.create_task(leg2.close())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            release.set()
+            await closing
+            await closing2
+        finally:
+            store.put = real_put
+
+        pcm = wav_to_pcm16(store.get(audio_key("default", "conv-retry")))
+        assert pcm == _voice_chunk(freq=200) * 25 + _voice_chunk(freq=400) * 10
+
+    asyncio.run(run())
+
+
+def test_earlier_teardown_finishing_keeps_a_later_closing_sitting() -> None:
+    """A chain of sittings: when the first one's teardown ends it must forget only
+    itself, not the second sitting that is now closing — a third resume during
+    that teardown still continues from the second sitting's end (XERK-1500)."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-chain")
+        leg1._audio_store = None  # the stores lag the closing sitting's end
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(10):
+            await leg1.on_audio(_voice_chunk())
+        release1 = _hold_flush(leg1)
+        closing1 = asyncio.create_task(leg1.close())
+        await asyncio.sleep(0)
+
+        leg2 = Session(send, session_id="conv-chain")
+        leg2._audio_store = None  # the stores lag the closing sitting's end
+        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        assert leg2._start_offset_ms == 1000
+        for _ in range(10):
+            await leg2.on_audio(_voice_chunk())
+        release2 = _hold_flush(leg2)
+        closing2 = asyncio.create_task(leg2.close())
+        await asyncio.sleep(0)
+
+        release1.set()
+        await closing1  # leg1's teardown ends while leg2's is still flushing
+
+        leg3 = Session(send, session_id="conv-chain")
+        leg3._audio_store = None  # the stores lag the closing sitting's end
+        assert await leg3._resume_offset_ms() == 2000
+        release2.set()
+        await closing2
+
+    asyncio.run(run())
