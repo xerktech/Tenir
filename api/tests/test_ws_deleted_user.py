@@ -173,6 +173,7 @@ def test_delete_closes_the_socket_a_resume_took_over_from_an_open_one(
     """A resume can take a session over while the socket it displaced is still open.
     The takeover closes the displaced one (XERK-1526), and the delete must then close
     the socket that took it over — not only the one the session was started on."""
+    caplog.set_level(logging.INFO, logger="api")
     _, admin_token = _token("admin", "admin")
     member_id, member_token = _token("member", "member")
     admin = {"Authorization": f"Bearer {admin_token}"}
@@ -189,6 +190,8 @@ def test_delete_closes_the_socket_a_resume_took_over_from_an_open_one(
                 )
             )
             assert ws2.receive_json()["resumed"] is True
+            # Synchronous first, so a takeover that never closes ws1 fails, not hangs.
+            assert caplog.text.count("ws closed: session resumed on another socket") == 1
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws1.receive_json()
             assert exc.value.code == WS_CLOSE_RESUMED_ELSEWHERE
