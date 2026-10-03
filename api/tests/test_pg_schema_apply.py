@@ -9,10 +9,11 @@ thus every ``session.start`` — raised ``relation "cues" does not exist``, whic
 surfaced to clients as ``could not start session`` and killed transcription
 entirely.
 
-The fix applies the idempotent schema on connection-pool open. psycopg isn't
-installed in CI (the SQL backend is an extra) and the pooled paths need a live
-database, so these tests exercise the real splitting/apply logic and the pool
-wiring against a recording fake — no driver, no database.
+The fix applies the idempotent schema on connection-pool open. The pooled paths
+need a live database, so these tests exercise the real splitting/apply logic and
+the pool wiring against fake pools — no database. CI installs the
+``[persistence]`` extra (psycopg), which the error-classification tests that
+raise real psycopg errors need; they skip without it.
 """
 
 from __future__ import annotations
