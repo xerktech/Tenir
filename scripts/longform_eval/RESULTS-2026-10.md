@@ -7,7 +7,9 @@ current models be made good enough?
 **Answer: STT is the bottleneck, not translation.** Given the reference Spanish, MiLMMT
 scores COMET 83.7 / chrF++ 68.3 on the same turns; end to end it scores 71.9 / 50.9. The
 fixes below recover about a point of chrF++ and 0.6 COMET; segmentation tuning moves
-nothing beyond noise. Closing the rest needs a better STT model — candidates below.
+nothing beyond noise. A better STT model closes much of the rest: **Whisper large-v3-turbo**
+cuts WER 29.2 → 18.3 and adds ~6 chrF++ on the same turns at a similar size and speed to
+Parakeet (comparison below).
 
 ## Setup
 
@@ -60,19 +62,43 @@ nothing beyond noise. Closing the rest needs a better STT model — candidates b
 - **Live sessions dropped**: every 10-minute session closed with `1011 keepalive ping
   timeout` when decodes outlasted the partial cadence (inline on the WS intake path).
 
-## STT candidates to test next (last resort, per the ticket)
+## STT model comparison (same turns, same 3090)
 
-Run each through `offline_stt.py` against an OpenAI-compatible `/v1/audio/transcriptions`
-server on the same chunks, then `replay_trigger.py` + `score.py`; compare to the
-baseline row above. In order of expected payoff for Spanish conversational speech:
+Candidates decoded the **same 867 turn spans** of the live run (`turn_stt.py`: segmentation
+held fixed, one request at a time), on the production STT card (an RTX 3090 shared with the
+translator) with `tenir-stt` scaled down; translations replayed through the deployed MiLMMT
+(`replay_trigger.py`). The fixed-turn harness has no partial-text fallback for blank
+decodes, so Parakeet scores worse here than live (29.2 vs 26.3 WER) — compare rows within
+this table.
 
-1. **Whisper large-v3 / large-v3-turbo** — strong multilingual Spanish, honours a pinned
-   language (would stop the English drift); offline decode, so latency per turn is the
-   cost to measure.
-2. **NVIDIA Canary-1B-v2** — same NeMo serving stack as Parakeet, explicit source-language
-   prompt, multilingual ES/EN.
-3. **Mistral Voxtral Mini** — speech-LLM with strong multilingual ASR; check latency and
-   VRAM against the shared GPU budget.
+| model | params | VRAM on card | turn latency p50 / p90 / max | WER | WERf | chrF++ | BLEU | untranslated |
+|---|---|---|---|---|---|---|---|---|
+| Parakeet-TDT-0.6B-v3 (prod, auto-lang) | 0.6B | ~3.2 GiB | 103 / 113 / 139 ms | 29.16 | 26.41 | 49.46 | 28.44 | 74 |
+| Canary-1B-v2 (`es` pinned) | 1B | ~6.8 GiB | 108 / 179 / 26,753 ms | 21.07 | 18.08 | 54.22 | 32.72 | 10 |
+| **Whisper large-v3-turbo** (`es` pinned, vLLM) | 0.8B | ~1.9 GiB + KV | **96 / 117 / 218 ms** | 18.25 | 15.43 | 55.88 | 35.29 | 17 |
+| Whisper large-v3 (`es` pinned, vLLM) | 1.55B | ~3.4 GiB + KV | 163 / 250 / 325 ms | 17.92 | 14.95 | 56.57 | 36.01 | 4 |
+| Voxtral Mini 3B | 3B | ~9.4 GiB weights | — | did not fit beside the translator on the shared card; ruled out on size | | | | |
 
-The decision metric is the end-to-end COMET/chrF++ row, not WER alone: the translator
-ceiling shows ~11 COMET points available from better Spanish text.
+- **Pick: Whisper large-v3-turbo.** It cuts WER by ~11 points (29.2 → 18.3, −37%
+  relative) and adds ~6 chrF++ end to end over Parakeet at a similar cost: 0.8B vs 0.6B
+  params; p50 96 vs 103 ms but p90 117 vs 113 ms and max 218 vs 139 ms; weights +
+  activations ~1.9 GiB vs Parakeet's ~3.2 GiB process, but vLLM's KV pre-allocation makes
+  its real footprint a serving choice — size it when deploying (XERK-1476). Whisper
+  large-v3 buys only another 0.3 WER / 0.7 chrF++ for ~1.7x the p50 latency and ~1.8x the
+  weights. Canary is worse than both Whisper models, uses more memory (6.8 GiB card delta;
+  not directly comparable to the vLLM rows' weights + activations), and had a 26.8 s
+  outlier.
+- Pinning `es` is part of the win (it stops the English drift Parakeet showed); the
+  candidates were run pinned, as a session's `source_lang` would. An auto-language
+  Whisper run was not measured.
+- `untranslated` includes translator calls that failed (timeouts on the shared translator):
+  turbo 9 of its 17, Canary 4 of 10, large-v3 0 of 4, Parakeet 0 of 74 — so the Whisper
+  turbo vs large-v3 gap in that column is mostly translator noise, not the STT model.
+- VRAM: vLLM pre-allocates KV cache from `--gpu-memory-utilization`; the figures are its
+  reported weights + non-torch + activation, read from server logs (not re-verifiable —
+  the eval pod is gone). NeMo figures are the card's used-memory delta. Latency is client wall time from a Turma host
+  to the pod, one request in flight, on a card shared with other workloads.
+- Not measured: COMET for these rows (chrF++/BLEU only), partials (Whisper has no cheap
+  streaming mode — partials would re-decode the turn like Parakeet's do today), and a
+  live WebSocket run on the new model. Switching models is follow-up work (serving +
+  `api.stt` engine wiring): XERK-1476.

@@ -159,3 +159,30 @@ def test_translate_job_records_failures_and_drops_echoes():
     f = final(0, 1000, "hola")
     translate_job(Tr("hello"), (f, "es", "es"))
     assert f["translation"] == "hello"
+
+
+def test_blank_turns_are_neither_translated_nor_failures():
+    pytest.importorskip("api.stt.langid")
+    from gold_translate import expects_call
+    from replay_trigger import decide
+
+    class Completion:
+        def _build_payload(self, text, source_lang=None, run_lang=None):
+            return {"prompt": text}
+
+    assert not expects_call(Completion(), "  ", "es", "es")
+    es = "el perro está en la casa"
+    got = decide([final(0, 1000, es), final(1100, 1500, ""), final(1600, 2000, es)], 3000)
+    assert got[1] is None and got[2] is not None  # the blank neither translates nor closes
+
+
+def test_blank_turn_does_not_extend_the_hold():
+    # The session never sees a blank final, so it can't keep a run's hold alive: a run
+    # whose last real turn ended > hold_ms before the next one has expired.
+    pytest.importorskip("api.stt.langid")
+    from replay_trigger import decide
+
+    es = "el perro está en la casa"
+    got = decide([final(0, 1000, es), final(3000, 3500, ""), final(4500, 5000, "Mercurio")],
+                 hold_ms=3000)
+    assert got[2] is None  # 3.5 s since the last real final: the inherited turn is dropped
