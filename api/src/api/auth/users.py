@@ -593,18 +593,32 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
 
 
 def _database_unreachable(exc: BaseException) -> bool:
-    """Whether ``exc`` means the database could not be reached (or the connection
-    dropped) — a failure that heals on its own — rather than one that recurs on every
-    attempt, like a constraint the env admin's config violates. Mirrors
-    ``persistence.postgres._is_connection_lost``: no SQLSTATE (connect failure, pool
-    timeout), class 08, or 57P01-57P03."""
+    """Whether ``exc`` means the seed should be retried on the next access, rather than
+    a failure that recurs on every attempt, like a constraint the env admin's config
+    violates.
+
+    - The database could not be reached or the connection dropped — mirrors
+      ``persistence.postgres._is_connection_lost``: no SQLSTATE (connect failure, pool
+      timeout), class 08, or 57P01-57P03.
+    - A serialization failure or deadlock (40001, 40P01): transient by definition.
+    - The user store's boot schema apply failed (``SchemaApplyError``), e.g. the
+      database came back read-only: its pool isn't cached, so every user-store access
+      fails until it heals anyway — retrying costs nothing and seeds once it does."""
+    from api.persistence.postgres import SchemaApplyError
+
+    if isinstance(exc, SchemaApplyError):
+        return True
     try:
         from psycopg import OperationalError
     except ImportError:  # in-memory deployment without the persistence extra
         OperationalError = ()  # type: ignore[assignment]  # noqa: N806
     if OperationalError and isinstance(exc, OperationalError):
         sqlstate = getattr(exc, "sqlstate", None) or ""
-        return not sqlstate or sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
+        return (
+            not sqlstate
+            or sqlstate.startswith("08")
+            or sqlstate in ("57P01", "57P02", "57P03", "40001", "40P01")
+        )
     return isinstance(exc, (ConnectionError, TimeoutError))
 
 

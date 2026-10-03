@@ -26,8 +26,8 @@ paths:
   - Per-store locks don't see each other or other replicas; on an empty DB the user and
     conversation stores raced (UndefinedTable households / UniqueViolation pg_type, XERK-1430).
   - The users DDL references households, so the user store must run schema.sql first.
-- `get_user_store` retries `reconcile_admin` only while the DB is unreachable
-  (`_database_unreachable`); any other failure is logged once and not retried.
+- `get_user_store` retries `reconcile_admin` only while the DB is unreachable, its schema apply
+  failed, or 40001/40P01 (`_database_unreachable`); any other failure is logged once, not retried.
   - Caching after a failed reconcile (DB down at boot, back empty) never seeded the env admin.
   - Retrying a permanent failure (e.g. FK on a non-default admin household) 500s every login
     and authenticated request, since they all go through `get_user_store`.

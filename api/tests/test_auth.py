@@ -400,6 +400,7 @@ def test_database_unreachable_classification() -> None:
     """Only an unreachable/lost database is retried (XERK-1430)."""
     psycopg = pytest.importorskip("psycopg")
     from api.auth.users import _database_unreachable
+    from api.persistence.postgres import SchemaApplyError
 
     from psycopg.errors import lookup
     from psycopg_pool import PoolTimeout
@@ -412,6 +413,11 @@ def test_database_unreachable_classification() -> None:
     assert _database_unreachable(_op("08006"))
     assert _database_unreachable(_op("57P01"))
     assert _database_unreachable(ConnectionError())
+    assert _database_unreachable(_op("40001"))  # serialization failure
+    assert _database_unreachable(_op("40P01"))  # deadlock
+    # The user store's schema apply failed (e.g. DB back read-only): its pool isn't
+    # cached, so every access fails until it heals — retry, and seed once it does.
+    assert _database_unreachable(SchemaApplyError("read-only transaction"))
     assert not _database_unreachable(_op("53100"))  # disk full is a real rejection
     assert not _database_unreachable(RuntimeError("fk"))
 
