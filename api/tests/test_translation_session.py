@@ -92,7 +92,7 @@ def test_non_english_final_is_translated_and_persisted(monkeypatch: pytest.Monke
         assert len(got) == 1
         assert got[0].segmentId == "seg-es"
         assert got[0].sourceLang is not None and got[0].sourceLang.value == "es"
-        assert "hola" in got[0].text
+        assert "aloh" in got[0].text
 
         conv = get_conversation_store().get("default", session.session_id)
         assert conv is not None
@@ -247,6 +247,7 @@ def test_echoed_translation_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> No
             return f"  {text.upper()}  "  # cosmetic differences only
 
     async def run() -> None:
+        metrics.reset()
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         session._translator = EchoTranslator()
@@ -503,5 +504,52 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         await _drain_translations(session)
         assert len(_dones(sent)) == 1
         await session.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("source", "translated", "dropped"),
+    [
+        # XERK-1423: English turns inherited by a run come back reworded by the real
+        # completion-prompt model — a rewording misquotes the speaker, so it is dropped.
+        ("I made sure I can", "I made sure I could", True),
+        ("I did the thing", "I did that thing", True),
+        ("Okay so then he left", "Okay, so then he left.", True),
+        # Real translations (milmmt output) share few words with their source, even
+        # with names or English titles in the turn, and are delivered.
+        ("se for preciso a gente volta", "If necessary, we'll come back.", False),
+        ("Has visto a Marco ayer.", "You saw Marco yesterday.", False),
+        (
+            "fuimos a the cheesecake factory ayer",
+            "We went to the Cheesecake Factory yesterday",
+            False,
+        ),
+        ("Mercurio, Venus, Tierra, Marte.", "Mercury, Venus, Earth, Mars.", False),
+        ("Hospital central", "Central hospital", False),
+        ("Perfecto", "Perfect", False),
+    ],
+)
+def test_reworded_translation_is_suppressed(
+    monkeypatch: pytest.MonkeyPatch, source: str, translated: str, dropped: bool
+) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    class Fixed:
+        def translate(
+            self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
+        ) -> str | None:
+            return "Hello" if text == "hola" else translated
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._translator = Fixed()
+        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final(source, segment_id="b", lang=None))
+        await _drain_translations(session)
+        await session.close()
+        texts = [t.text for t in _translations(sent)]
+        assert texts == (["Hello"] if dropped else ["Hello", translated])
 
     asyncio.run(run())

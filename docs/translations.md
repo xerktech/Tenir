@@ -55,8 +55,9 @@ once the run ends.
    proper-noun list, a bare interjection) *inherits* an open run — mid-run it
    is overwhelmingly a continuation, so it is translated with the rest,
    without a claimed source language; outside a run it decides nothing. A
-   translation that comes back identical to its source (an English turn that
-   slipped in as ambiguous) is suppressed rather than rendered as an echo.
+   translation that repeats its source's words (an English turn that slipped
+   in as ambiguous, echoed or reworded by the model: "I made sure I can" →
+   "I made sure I could") is suppressed rather than rendered (XERK-1423).
 2. **Translation is server-side, off the caption path.** Each non-English final
    is translated through the same LiteLLM gateway the cues use, on its own
    route (`API_TRANSLATION_MODEL` over `API_LITELLM_ENDPOINT`; same weights as
@@ -88,7 +89,7 @@ once the run ends.
 | Value    | Behaviour                                                             |
 |----------|-----------------------------------------------------------------------|
 | `off`    | No translations (default). The stripped core stays STT-only.          |
-| `stub`   | Model-free, deterministic (`[es→en] …`) for CI/dev — no GPU.          |
+| `stub`   | Model-free, deterministic (`[es→en] aloh`: words reversed) for CI/dev. |
 | `openai` | Real chat model via the LiteLLM gateway: `API_TRANSLATION_MODEL`, default `qwen3.8-27b-dflash-translate` — the cue model's weights on a dedicated route (XERK-180). |
 
 ### Prompt style (`API_TRANSLATION_PROMPT_STYLE`, `openai` backend)

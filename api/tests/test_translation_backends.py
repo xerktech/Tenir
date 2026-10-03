@@ -86,11 +86,11 @@ def test_factory_wires_the_translation_thinking_flag(
 
 
 def test_stub_wraps_text_with_lang() -> None:
-    assert StubTranslator().translate("hola", source_lang="es") == "[es→en] hola"
+    assert StubTranslator().translate("hola", source_lang="es") == "[es→en] aloh"
 
 
 def test_stub_without_lang() -> None:
-    assert StubTranslator().translate("bonjour") == "[auto→en] bonjour"
+    assert StubTranslator().translate("bonjour") == "[auto→en] ruojnob"
 
 
 def test_stub_empty_returns_none() -> None:

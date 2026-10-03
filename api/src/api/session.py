@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 
 from api.config import settings
 from api.contract import (
@@ -120,11 +122,27 @@ def _enum_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
+# A "translation" whose words match the source this closely is the source reworded,
+# not translated (XERK-1423): an English turn inherited by a run comes back from a
+# completion-prompt model with one word changed ("I made sure I can" -> "I made sure I
+# could"). Measured on real milmmt output: those score >= 0.75, real translations of
+# es/pt/de/it turns <= 0.5 (even with names or English titles: "fuimos a the cheesecake
+# factory ayer" -> "We went to the Cheesecake Factory yesterday" is 0.46).
+_ECHO_MIN_WORD_RATIO = 0.75
+
+_WORD_RE = re.compile(r"\w+(?:'\w+)?")
+
+
 def _same_text(a: str, b: str) -> bool:
-    """Whether a translation is just its source echoed back (XERK-160): compared
-    case-insensitively with whitespace collapsed, so cosmetic differences don't
-    disguise an echo."""
-    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+    """Whether a translation is just its source echoed back (XERK-160) or barely
+    reworded (XERK-1423): the casefolded word sequences, punctuation ignored, match
+    at least ``_ECHO_MIN_WORD_RATIO``. Either way it tells the listener nothing the
+    caption doesn't."""
+    wa = _WORD_RE.findall(a.casefold())
+    wb = _WORD_RE.findall(b.casefold())
+    if not wa or not wb:
+        return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+    return SequenceMatcher(None, wa, wb, autojunk=False).ratio() >= _ECHO_MIN_WORD_RATIO
 
 
 def is_valid_session_id(value: str) -> bool:
@@ -670,10 +688,10 @@ class Session:
         if not translated:
             return
         if _same_text(translated, final.text):
-            # The "translation" is the original — an English turn that reached
-            # the queue as an ambiguous run-continuation (the prompt returns
-            # already-English text unchanged). An echo adds nothing to the
-            # listener, so it is dropped rather than rendered twice.
+            # The "translation" is the original, or the original with a word
+            # changed — an English turn that reached the queue as an ambiguous
+            # run-continuation. It adds nothing to the listener and a rewording
+            # misquotes the speaker, so it is dropped rather than rendered.
             metrics.incr("translation.echo_drops")
             return
         try:

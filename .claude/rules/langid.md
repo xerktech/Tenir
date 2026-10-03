@@ -18,5 +18,9 @@ paths:
 - A one-hit `en` call beside a homograph or an accented letter returns `None` (`_foreign_doubt`):
   code-switched turns like "Like, no sé." otherwise close a live Spanish run.
   `i`/`a` don't count as doubt, or "I did." stops being English.
+- Don't make `leans_english` skip on one English hit + no foreign hit (tried, XERK-1423 QA):
+  the non-English vocabs are tiny, so real turns score 0 and get dropped silently — pt `to`/`for`
+  ("se for preciso…"), de `is`, it `be`, and "the" in titles ("me encanta the weeknd").
+  English rewordings of inherited turns are dropped after the call instead (`_same_text`).
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
   `detect_lang`, hand-read every changed label), not intuition. Keep transcript text out of tests.
