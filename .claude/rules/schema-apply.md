@@ -20,6 +20,15 @@ paths:
   meant one failed apply was never retried.
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
+- Opening a pool waits at most `OPEN_TIMEOUT_SECONDS` (`pool.open(wait=True, timeout=)` plus
+  libpq `connect_timeout`), and callers within that window of a failed open share its error.
+  - psycopg's 30s default, paid per call and serially behind `_pool_lock` while the DB was down,
+    blocked boot ~2 min and every `/ready` 30-60s (XERK-1434).
+  - Without `connect_timeout`, `pool.close()` after a timed-out open waits on connects to a
+    blackholed host that never return.
+- Probes (`/ready`, `/status`) call the store's bounded `ready()`, never a request-path query;
+  `/ready` is single-flight so a burst of the public endpoint holds one worker thread.
+  - Tests: `test_pg_unreachable.py`.
 - Unit tests use fake *pools*, but CI installs `[persistence]` (psycopg): keep it.
   `test_database_rejections_are_schema_errors` raises real psycopg errors and skips without it,
   so dropping the extra silently disarms the OperationalError-misclassification guard.

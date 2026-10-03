@@ -69,6 +69,7 @@ class ConversationStore(Protocol):
     ) -> list[Conversation]: ...
     def delete(self, household: str, conversation_id: str) -> bool: ...
     def households(self) -> list[str]: ...
+    def ready(self) -> None: ...
     def finish_stale(self) -> int: ...
 
 
@@ -248,8 +249,11 @@ class InMemoryConversationStore:
         with self._lock:
             return self._conversations(household).pop(conversation_id, None) is not None
 
+    def ready(self) -> None:
+        """Readiness probe: an in-memory store is always reachable."""
+
     def households(self) -> list[str]:
-        """Every household with at least one conversation (readiness probe)."""
+        """Every household with at least one conversation."""
         with self._lock:
             return list(self._by_household.keys())
 
