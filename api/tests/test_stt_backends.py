@@ -247,6 +247,52 @@ def test_parakeet_returns_a_response_inside_the_deadline() -> None:
         server.server_close()
 
 
+def test_parakeet_deadline_covers_a_hung_dns_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # getaddrinfo runs in the loop's executor thread; asyncio.run would join that
+    # thread on exit, so a stuck resolver held the decode past the deadline.
+    import socket
+
+    real = socket.getaddrinfo
+
+    def _hung(host, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if host in ("stt.invalid", b"stt.invalid"):  # anyio passes it IDNA-encoded
+            time.sleep(3.0)
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _hung)
+    engine = ParakeetEngine(endpoint="http://stt.invalid:8000/v1", model="parakeet", timeout=0.5)
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+    assert time.monotonic() - t0 < 1.5
+
+
+def test_parakeet_raises_on_an_error_status() -> None:
+    # A 5xx must fail the decode, not parse the error body as an empty transcript.
+    import httpx
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(503)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        engine = ParakeetEngine(endpoint=f"http://127.0.0.1:{server.server_port}/v1", model="m")
+        with pytest.raises(httpx.HTTPStatusError):
+            engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 # ----- direct STT route (XERK-115) ------------------------------------------
 
 

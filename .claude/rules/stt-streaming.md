@@ -38,3 +38,6 @@ paths:
   is per phase and per read, so a trickling upstream holds the single decode worker forever.
   `ParakeetEngine._post` wraps the request in `asyncio.wait_for` (XERK-1448).
   - Tests: `test_stt_backends.py::test_parakeet_timeout_is_a_whole_request_deadline`.
+- Don't run that engine via `asyncio.run`: it joins the default executor on exit, so a hung
+  `getaddrinfo` thread outlasts the deadline. `loop.close()` shuts it down without waiting.
+  - Tests: `test_stt_backends.py::test_parakeet_deadline_covers_a_hung_dns_lookup`.

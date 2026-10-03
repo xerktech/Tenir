@@ -48,7 +48,7 @@ class ParakeetEngine:
         caption backlog — indefinitely (XERK-1448). ``wait_for`` caps connect +
         upload + headers + body together; on expiry it raises ``TimeoutError``
         like any other failed decode. ``transcribe`` runs in a worker thread
-        (``asyncio.to_thread``) with no loop of its own, so ``asyncio.run`` is safe.
+        (``asyncio.to_thread``) with no loop of its own, so it can run a private loop.
         """
         import httpx
 
@@ -80,7 +80,15 @@ class ParakeetEngine:
         # The LiteLLM gateway requires a bearer token; a direct model server ignores
         # it (no key configured → no header sent).
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        body = asyncio.run(self._post(data=data, files=files, headers=headers))
+        # Not asyncio.run: on exit it joins the default executor, so a hung DNS lookup
+        # (getaddrinfo runs in that executor) would outlast the deadline. close() shuts
+        # the executor down without waiting; the stuck thread ends with the resolver.
+        loop = asyncio.new_event_loop()
+        try:
+            body = loop.run_until_complete(self._post(data=data, files=files, headers=headers))
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
         # Word timestamps are returned only when the server supports them; absent,
         # the streaming layer falls back to segment-boundary timing.
         words = [
