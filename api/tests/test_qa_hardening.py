@@ -343,6 +343,27 @@ def test_failed_boot_sweep_is_retried_once_the_database_is_back(
         assert calls[0] == swept_after  # the loop stops once it has succeeded
 
 
+def test_shutdown_stops_a_still_failing_sweep_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from api.persistence import stale
+
+    monkeypatch.setattr(stale, "_pending", None)
+    monkeypatch.setattr(stale, "RETRY_INTERVAL_SECONDS", 0.02)
+    store = get_conversation_store()
+    calls = _flaky_finish_stale(monkeypatch, store, failures=10**6)
+
+    with TestClient(app):
+        time.sleep(0.1)
+        assert calls[0] > 1  # retrying
+    stopped_at = calls[0]
+    time.sleep(0.1)
+    assert calls[0] == stopped_at  # the retry loop died with the app
+
+
 def test_session_start_sweeps_first_so_its_own_row_survives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
