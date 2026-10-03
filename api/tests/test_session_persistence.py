@@ -301,18 +301,19 @@ def _hold_flush(session: Session) -> asyncio.Event:
     return release
 
 
-def test_resume_during_prior_teardown_waits_for_its_timeline() -> None:
+def test_resume_during_prior_teardown_continues_its_timeline() -> None:
     """Regression (XERK-1500): a resume arriving after the grace window but while
-    the old sitting is still closing used to read the offset before that sitting's
-    flushed tail (and audio) was persisted, so the new sitting's segments
-    overlapped the old ones. Its start must wait for the old teardown."""
+    the old sitting is still closing read the offset before that sitting's flushed
+    tail (and audio) was stored, so the new sitting's segments overlapped the old
+    ones. It must continue from the closing sitting's end, without waiting on its
+    teardown (a stalled flush must not hold the new sitting's session.ready)."""
 
     async def run() -> None:
         async def send(_msg) -> None:
             pass
 
         leg1 = Session(send, session_id="conv-closing")
-        leg1._audio_store = None  # offset comes from the segments alone
+        leg1._audio_store = None  # offset would come from the segments alone
         await leg1.start(mic_source="g2-microphone", source_lang=None)
         for _ in range(25):  # ~2.5s -> stub final at [0,2000], tail [2000,2500] on flush
             await leg1.on_audio(_voice_chunk())
@@ -324,35 +325,66 @@ def test_resume_during_prior_teardown_waits_for_its_timeline() -> None:
 
         leg2 = Session(send, session_id="conv-closing")
         leg2._audio_store = None
-        starting = asyncio.create_task(
-            leg2.start(mic_source="g2-microphone", source_lang=None)
-        )
-        for _ in range(20):
-            await asyncio.sleep(0)
-        assert not starting.done(), "resume must wait for the closing sitting"
+        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        assert not closing.done(), "the old sitting must still be flushing"
+        assert leg2._start_offset_ms == 2500
 
         release.set()
         await closing
-        await starting
         first_end = max(
             s.end_ms for s in get_conversation_store().get("default", "conv-closing").segments
         )
         assert first_end == 2500
-        assert leg2._start_offset_ms == first_end
         await leg2.close()
 
     asyncio.run(run())
 
 
-def test_cancelled_resume_does_not_cancel_the_prior_teardown() -> None:
-    """The resume's wait on the old teardown is not ownership of it: cancelling
-    the waiting start (its socket dropped) must still let the old sitting persist."""
+def test_resume_during_prior_teardown_keeps_audio_in_order() -> None:
+    """The resumed sitting's audio is appended after the closing sitting's, even
+    if it closes before that sitting's retain has run, and its segments line up
+    with where its audio lands in the stored recording (XERK-1500)."""
 
     async def run() -> None:
         async def send(_msg) -> None:
             pass
 
-        leg1 = Session(send, session_id="conv-cancel")
+        key = audio_key("default", "conv-order")
+        leg1 = Session(send, session_id="conv-order")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(25):
+            await leg1.on_audio(_voice_chunk(freq=200))
+        _hold_flush(leg1)
+        closing = asyncio.create_task(leg1.close())  # never released: flush times out
+        await asyncio.sleep(0)  # close() has run up to its shielded teardown
+        leg2 = Session(send, session_id="conv-order")
+        # Resume before leg1's teardown (or its retain) has taken a single step.
+        assert not leg1._first_retain.done()
+        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        assert leg2._start_offset_ms == 2500
+        for _ in range(10):
+            await leg2.on_audio(_voice_chunk(freq=400))
+        await leg2.close()
+
+        pcm = wav_to_pcm16(get_audio_store().get(key))
+        assert len(pcm) == 35 * 3200
+        assert pcm[: 25 * 3200] == _voice_chunk(freq=200) * 25
+        assert pcm[25 * 3200 :] == _voice_chunk(freq=400) * 10
+        closing.cancel()
+
+    asyncio.run(run())
+
+
+def test_closing_registry_is_per_household_and_cleared() -> None:
+    """A closing sitting only feeds the offset of a resume of the same household's
+    conversation, and is forgotten once its teardown completes."""
+    from api import session as session_mod
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-shared-id", household="hh-a")
         await leg1.start(mic_source="g2-microphone", source_lang=None)
         for _ in range(25):
             await leg1.on_audio(_voice_chunk())
@@ -360,20 +392,11 @@ def test_cancelled_resume_does_not_cancel_the_prior_teardown() -> None:
         closing = asyncio.create_task(leg1.close())
         await asyncio.sleep(0)
 
-        leg2 = Session(send, session_id="conv-cancel")
-        starting = asyncio.create_task(
-            leg2.start(mic_source="g2-microphone", source_lang=None)
-        )
-        for _ in range(5):
-            await asyncio.sleep(0)
-        starting.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await starting
+        other = Session(send, session_id="conv-shared-id", household="hh-b")
+        assert await other._resume_offset_ms() == 0
 
         release.set()
         await closing
-        conv = get_conversation_store().get("default", "conv-cancel")
-        assert conv.status == "ready"
-        assert max(s.end_ms for s in conv.segments) == 2500
+        assert ("hh-a", "conv-shared-id") not in session_mod._closing
 
     asyncio.run(run())
