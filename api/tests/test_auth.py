@@ -1569,3 +1569,16 @@ def test_deleting_a_user_revokes_their_sessions_concurrently(
     finally:
         for s in sessions:
             registry.unregister(s)  # type: ignore[arg-type]
+
+
+def test_sql_user_store_is_uuid_accepts_only_canonical_ids() -> None:
+    """A malformed id must be screened before it reaches the UUID column (XERK-1532);
+    the live behaviour is in test_pg_users_live.py."""
+    import uuid
+
+    from api.auth.sql_users import _is_uuid
+
+    u = uuid.uuid4()
+    assert _is_uuid(str(u))
+    for bad in ("x", "", "1", f"urn:uuid:{u}", f"{{{u}}}", str(u).upper(), u.hex, f" {u}", None):
+        assert not _is_uuid(bad)

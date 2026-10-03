@@ -427,6 +427,76 @@ def test_start_that_raises_in_create_does_not_leak_tasks(monkeypatch: pytest.Mon
     asyncio.run(run())
 
 
+def test_start_cancelled_during_create_does_not_leave_the_row_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1529: a cancel landing while conversations.create() runs in its thread
+    can't stop that thread. The failed-start cleanup ran finish() first, matched no
+    row, and the INSERT then committed 'live' after teardown had already finished."""
+    import threading
+
+    async def run() -> None:
+        session = Session(_noop_send(None), household="h1")
+        store = session._conversations
+        real_create = store.create
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_create(*a, **k):
+            entered.set()
+            release.wait(5)
+            return real_create(*a, **k)
+
+        monkeypatch.setattr(store, "create", slow_create)
+        start = asyncio.create_task(session.start(mic_source="phone", source_lang=None))
+        await asyncio.to_thread(entered.wait, 5)
+        start.cancel()
+        await asyncio.sleep(0.05)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        assert session.is_closed
+        await asyncio.sleep(0.2)  # let a still-running INSERT land
+        conv = store.get("h1", session.session_id)
+        assert conv is not None and conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
+def test_deadline_cancel_of_a_teardown_waiting_on_create_still_finishes_the_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1529 QA: the shutdown deadline cancelling a failed start's teardown while
+    it waits on the create thread skipped finish(), leaving the row 'live'."""
+    import threading
+
+    async def run() -> None:
+        session = Session(_noop_send(None), household="h1")
+        store = session._conversations
+        real_create = store.create
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_create(*a, **k):
+            entered.set()
+            release.wait(5)
+            return real_create(*a, **k)
+
+        monkeypatch.setattr(store, "create", slow_create)
+        start = asyncio.create_task(session.start(mic_source="phone", source_lang=None))
+        await asyncio.to_thread(entered.wait, 5)
+        start.cancel()
+        while session._teardown is None:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)  # teardown is now parked on the create
+        session._teardown.cancel()
+        release.set()
+        await asyncio.wait({session._teardown, start})
+        assert session._teardown.cancelled()
+        conv = store.get("h1", session.session_id)
+        assert conv is not None and conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
 def test_failed_resume_does_not_evict_the_sitting_still_tearing_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -410,6 +410,9 @@ class Session:
         # (XERK-1511); _row_opened says whether it got as far as the store row.
         self._start_failed = False
         self._row_opened = False
+        # The conversations.create() thread: a cancel can't stop it, so _persist
+        # waits for it before finish() (XERK-1529).
+        self._create: asyncio.Future[object] | None = None
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -501,23 +504,28 @@ class Session:
             await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
             # Set before the call: a create that raises may still have written the
-            # live row, which close() then finishes. (A cancel here can let the
-            # INSERT commit after that finish; the next boot's stale sweep repairs it, XERK-1529.)
+            # live row, which close() then finishes.
             self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
-            # path — never run a blocking store call on the event loop.
-            await asyncio.to_thread(
-                self._conversations.create,
-                self._household,
-                self.session_id,
-                # Per-user ownership (XERK-651): stamp the recording with the principal
-                # that opened the socket. Idempotent create keeps a resumed row's
-                # original owner, so a resume never re-owns another user's recording.
-                owner=self.user_id,
-                mic_source=_enum_str(mic_source),
-                source_lang=_enum_str(source_lang),
+            # path — never run a blocking store call on the event loop. Kept as a
+            # shielded future: a cancel here leaves the thread running, and its
+            # INSERT committing 'live' after close() finished the row left it live
+            # until the next boot's stale sweep (XERK-1529); _persist waits on it.
+            self._create = asyncio.ensure_future(
+                asyncio.to_thread(
+                    self._conversations.create,
+                    self._household,
+                    self.session_id,
+                    # Per-user ownership (XERK-651): stamp the recording with the principal
+                    # that opened the socket. Idempotent create keeps a resumed row's
+                    # original owner, so a resume never re-owns another user's recording.
+                    owner=self.user_id,
+                    mic_source=_enum_str(mic_source),
+                    source_lang=_enum_str(source_lang),
+                )
             )
+            await asyncio.shield(self._create)
         self._pump = asyncio.create_task(self._pump_results())
         # Warm the transcriber's per-session startup cost now, off the caption path,
         # so the first spoken words don't wait behind it (XERK-128). Best-effort and
@@ -1631,6 +1639,14 @@ class Session:
             # Never reached the store: there is no live row of ours to finalize, and
             # finish() on a resumed recording would rewrite its ended_at.
             return
+        if self._create is not None:
+            # Its outcome (incl. a raise) was start()'s to report; only order after it.
+            # A shutdown-deadline cancel finishes the wait like the prior one above.
+            try:
+                await asyncio.wait({self._create})
+            except asyncio.CancelledError:
+                cancelled = True
+                await asyncio.wait({self._create})
         if not await self._finalize():
             # The database is down: session.end must not raise out of the socket
             # handler, and the client won't resume an ended session, so nothing
