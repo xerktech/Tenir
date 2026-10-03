@@ -360,6 +360,45 @@ def test_warm_resume_closes_the_socket_it_takes_over(monkeypatch: pytest.MonkeyP
             assert registry.get(sid) is live
 
 
+@pytest.mark.parametrize("restart_with_id", [False, True], ids=["fresh", "same-id"])
+def test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone(
+    monkeypatch: pytest.MonkeyPatch, restart_with_id: bool
+) -> None:
+    """Regression (XERK-1526, QA): a socket displaced while its own session.start is
+    awaiting (here the account check) must not finish that start. A fresh start
+    would close the session the new socket now owns; a same-id one would displace
+    the new socket in turn and rebind the session to the closed old one."""
+    real_check = main._account_exists
+    slow: list[bool] = []
+
+    async def account_exists(user_id: str) -> bool:
+        if slow:
+            slow.clear()
+            await asyncio.sleep(0.5)
+        return await real_check(user_id)
+
+    monkeypatch.setattr(main, "_account_exists", account_exists)
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+            a.send_text(json.dumps(start))
+            sid = a.receive_json()["sessionId"]
+            live = registry.get(sid)
+            slow.append(True)  # A's next start stalls in its account check
+            a.send_text(json.dumps({**start, "sessionId": sid} if restart_with_id else start))
+            time.sleep(0.15)
+            b.send_text(json.dumps({**start, "sessionId": sid}))
+            assert b.receive_json()["resumed"] is True
+            with pytest.raises(WebSocketDisconnect) as closed:
+                a.receive_json()
+            assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+            time.sleep(0.6)  # past A's stalled check
+            b.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert b.receive_json()["type"] == "pong"
+            assert registry.get(sid) is live and not live.is_closed
+            assert live.current_send is not None and registry.count() == 1
+
+
 def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
     start = {"type": "session.start", "micSource": "g2-microphone"}
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:

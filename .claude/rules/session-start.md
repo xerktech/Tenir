@@ -18,8 +18,11 @@ paths:
 - Keep the start lock out of `close()`/teardown/grace paths: the handler closes the socket's
   previous session while holding it, so a teardown that took it would deadlock.
 - A warm resume onto a session still bound to an OPEN socket closes that socket with
-  `WS_CLOSE_RESUMED_ELSEWHERE` (4001) before `rebind()`. Its handler stops reading frames first,
-  so a queued `session.end` can't end the session the new socket owns. Clients must not
+  `WS_CLOSE_RESUMED_ELSEWHERE` (4001) before `rebind()`. Its handler is marked `displaced` first,
+  so neither a queued frame nor a start already in flight touches the session the new socket owns.
+- `displaced` is re-checked after every await in the `session.start` branch; a new await there
+  needs its own check. The close runs as a background task: a frozen peer's close handshake can
+  block 20 s (uvicorn legacy websockets) while the resume holds the start lock. Clients must not
   reconnect on 4001, or two sockets with one id take the session from each other forever
   (`packages/client-core/src/ws.ts`, XERK-1526).
 - Once a start knows it runs under a fresh server id, it releases the presented id's start lock
@@ -31,4 +34,5 @@ paths:
   with `PYTHONPATH=src` from `api/`, or you test someone else's code.
 - Tests: `api/tests/test_resume.py::test_racing_cold_resumes_of_one_id_share_a_single_session`,
   `::test_warm_resume_closes_the_socket_it_takes_over`,
+  `::test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`.

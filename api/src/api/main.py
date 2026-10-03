@@ -70,6 +70,8 @@ WS_CLOSE_RESUMED_ELSEWHERE = 4001
 # How to displace each live socket, keyed by its handler's ``send`` — the one
 # handle a Session keeps on the socket it is bound to (``current_send``).
 _displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
+# Displaced sockets' close handshakes, held so they aren't garbage-collected mid-close.
+_displacing: set[asyncio.Task[None]] = set()
 
 
 @asynccontextmanager
@@ -444,18 +446,31 @@ async def ws_endpoint(ws: WebSocket) -> None:
     displaced = False
 
     async def close_displaced() -> None:
-        # Another socket warm-resumed this one's session. Stop handling frames
-        # BEFORE the first await, so a session.end or audio frame already queued
-        # here can't end or feed the session the new socket now owns; then tell
-        # the client, which would otherwise sit OPEN on a session it no longer
-        # receives anything from — and that the grace close may finalize (XERK-1526).
+        # Another socket warm-resumed this one's session. Mark it displaced so the
+        # handler stops — checked at the top of the loop AND after every await in
+        # session.start, so neither a queued frame nor a start already in flight can
+        # end, feed or take back the session the new socket now owns. Then tell the
+        # client, which would otherwise sit OPEN on a session it no longer receives
+        # anything from — and that the grace close may finalize (XERK-1526).
         nonlocal displaced
         displaced = True
         if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
             return
         log.info("ws closed: session resumed on another socket")
         metrics.incr("ws.displaced")
-        await ws.close(code=WS_CLOSE_RESUMED_ELSEWHERE, reason="session resumed elsewhere")
+
+        async def close() -> None:
+            try:
+                await ws.close(code=WS_CLOSE_RESUMED_ELSEWHERE, reason="session resumed elsewhere")
+            except Exception as exc:  # already gone: nothing left to tell
+                log.info("displaced ws gone before its close: %r", exc)
+
+        # In the background: a close handshake with a frozen peer can block for the
+        # ws backend's close timeout (20 s on uvicorn's legacy websockets), and the
+        # resume calling us holds the id's start lock and owes its client session.ready.
+        task = asyncio.create_task(close())
+        _displacing.add(task)
+        task.add_done_callback(_displacing.discard)
 
     _displacers[send] = close_displaced
 
@@ -512,6 +527,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         )
                     await send(_err("internal", "could not start session"))
                     continue
+                if displaced:  # taken over while the check awaited: not ours to touch
+                    break
                 if not alive:
                     if session is not None:
                         # The delete's revoke normally got here first; if not, finalize
@@ -542,6 +559,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # second one find the first and warm-resume onto it (XERK-1514).
                 async with AsyncExitStack() as start_guard:
                     await start_guard.enter_async_context(registry.start_lock(msg.sessionId))
+                    if displaced:  # taken over while waiting for the lock
+                        break
                     # Resume a still-live session if the client presents its id and both
                     # the household AND the owner match: rebind to it, preserving the
                     # transcriber state, instead of starting fresh. Owning the socket is
@@ -618,6 +637,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                             metrics.incr("sessions.start_errors")
                             await send(_err("internal", "could not start session"))
                             continue
+                        if displaced:  # taken over while the store read awaited
+                            break
                         if existing is not None and existing.owner != principal.user_id:
                             log.warning(
                                 "rejecting cross-user resume of recording owned by another "
