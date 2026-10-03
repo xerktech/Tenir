@@ -434,7 +434,7 @@ class Session:
         if self._conversations is not None:
             # Set before the call: a create that raises may still have written the
             # live row, which close() then finishes. (A cancel here can let the
-            # INSERT commit after that finish; the stale sweep repairs it, XERK-1529.)
+            # INSERT commit after that finish; the next boot's stale sweep repairs it, XERK-1529.)
             self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
