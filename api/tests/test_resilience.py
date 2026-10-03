@@ -166,7 +166,7 @@ def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
 ) -> None:
     """After an STT outage the queued finals land as one burst (XERK-1447). A final
     whose audio arrived longer ago than _STALE_FINAL_S goes to the stored transcript
-    only — not to the caption band, not to translation — while a fresh one is pushed."""
+    only — not to the caption band, translation or cues — while a fresh one is pushed."""
     import api.session as session_mod
     from api.config import settings
     from api.contract import CaptionFinal, MicSource
@@ -182,11 +182,15 @@ def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
 
         async def release(self, *ends_ms: int) -> None:
             start = 0
-            for end, lang in zip(ends_ms, ["es", "en"], strict=True):
+            for end in ends_ms:
                 await self._queue.put(
                     CaptionFinal(
-                        type="caption.final", segmentId=f"seg-{end}", text=f"turn {end}",
-                        lang=lang, startMs=start, endMs=end,
+                        type="caption.final",
+                        segmentId=f"seg-{end}",
+                        text=f"turn {end}",
+                        lang="en",
+                        startMs=start,
+                        endMs=end,
                     )
                 )
                 start = end
@@ -209,6 +213,9 @@ def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
             maxlen=session._audio_arrivals.maxlen,
         )
         await session.on_audio(b"\x00" * 64000)  # 2000-4000 ms
+        considered: list[str] = []
+        session._consider_translation = lambda f: considered.append(f"tr:{f.segmentId}")  # type: ignore[method-assign]
+        session._consider_cue = lambda f: considered.append(f"cue:{f.segmentId}")  # type: ignore[method-assign]
         await outage.release(2000, 4000)
         await session.close()
 
@@ -217,8 +224,18 @@ def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
         conv = get_conversation_store().get("default", session.session_id)
         assert conv is not None
         assert [s.segment_id for s in conv.segments] == ["seg-2000", "seg-4000"]
-        # The stale Spanish turn opened no translation run.
-        assert session._translation_active is False
+        # Only the fresh turn reached translation and cue consideration.
+        assert considered == ["tr:seg-4000", "cue:seg-4000"]
         assert metrics.snapshot()["counters"]["caption.final_stale"] == 1
 
     asyncio.run(run())
+
+
+def test_final_with_no_dated_audio_is_not_stale() -> None:
+    """A final past the last audio sample (or before any audio) can't be dated; it is
+    treated as fresh rather than silently withheld from the caption band."""
+    from api.contract import CaptionFinal
+
+    session = Session(_noop_send(None))
+    final = CaptionFinal(type="caption.final", segmentId="s", text="t", startMs=0, endMs=500)
+    assert session._final_age_s(final) == 0.0
