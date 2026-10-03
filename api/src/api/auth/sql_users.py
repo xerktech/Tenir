@@ -52,6 +52,12 @@ _ENSURE_SCHEMA = (
     "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL",
 )
 
+# users.household REFERENCES households(id) and schema.sql seeds only 'default', so a
+# write placing a user in any other household creates that row first, in the same
+# transaction (XERK-1508). Without it a non-default API_AUTH_ADMIN_HOUSEHOLD, or any
+# member/OIDC user created or moved into a new household, failed users_household_fkey.
+_ENSURE_HOUSEHOLD = "INSERT INTO households (id) VALUES (%s) ON CONFLICT (id) DO NOTHING"
+
 # Every read selects the same column set so a row maps cleanly to ``User``.
 _USER_COLUMNS = "id, household, username, role, password_hash, oidc_sub, email"
 
@@ -109,6 +115,7 @@ class SqlUserStore:
 
         try:
             with self._ensure_pool().connection() as conn:
+                conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 # Cursor-scoped row factory: psycopg's pool doesn't reset
                 # row_factory, so mutating the pooled connection would poison the
                 # next borrower with dict rows.
@@ -138,6 +145,7 @@ class SqlUserStore:
 
         try:
             with self._ensure_pool().connection() as conn:
+                conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 row = conn.cursor(row_factory=dict_row).execute(
                     f"""
                     INSERT INTO users (household, username, role, password_hash, oidc_sub, email)
@@ -263,6 +271,8 @@ class SqlUserStore:
         params.append(user_id)
         try:
             with self._ensure_pool().connection() as conn:
+                if household is not None:
+                    conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 row = conn.cursor(row_factory=dict_row).execute(
                     f"UPDATE users SET {', '.join(sets)} WHERE id = %s"
                     f" RETURNING {_USER_COLUMNS}",

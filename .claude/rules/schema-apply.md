@@ -5,6 +5,7 @@ paths:
   - "api/src/api/main.py"
   - "api/tests/test_pg_schema_apply.py"
   - "api/tests/test_pg_list_live.py"
+  - "api/tests/test_pg_users_live.py"
 ---
 
 # Boot schema apply (Postgres stores)
@@ -43,6 +44,10 @@ paths:
 - Real-Postgres coverage of schema.sql itself is `test_pg_schema_live.py` (`TENIR_TEST_PG_DSN`).
   - No Docker on the dev hosts: `pip install pgserver` and use `pgserver.get_server(dir).get_uri()`
     as the DSN. Its socket dies with the session that started it — restart it, don't reuse a DSN.
+- schema.sql seeds only household 'default'; any SqlUserStore write placing a user in a
+  household upserts the `households` row in the same transaction first (users.household FK).
+  The in-memory store has no FK, so only a real-Postgres test catches a missed upsert (XERK-1508).
+  - Tests: `test_pg_users_live.py`.
 - One request-path read = one pool borrow. list()/search() read a whole page's children with
   `= ANY(%s)` via `_assemble`; never call get() per row (1+N queued borrows on a 4-conn pool,
   XERK-1518). Child ORDER BY carries the id as tie-breaker so get/list/search agree.
