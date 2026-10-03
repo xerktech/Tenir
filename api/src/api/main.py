@@ -80,11 +80,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(conversations.open)
     # Surface backend reachability at boot so a misconfigured/unreachable Postgres
     # or audio dir is visible immediately, not mid-session (it stays non-fatal:
-    # connections are lazy and may still be warming up).
-    checks = await asyncio.to_thread(probe_backends)
-    for name, status in checks.items():
-        if status != "ok":
-            log.warning("backend %s not ready at startup: %s", name, status)
+    # connections are lazy and may still be warming up). The probe logs each
+    # failure with its full detail itself.
+    await asyncio.to_thread(probe_backends)
     # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
     # reboot or a stop that overruns the grace period leaves rows stuck "live",
     # and nothing ever came back for them — they showed as permanently recording
