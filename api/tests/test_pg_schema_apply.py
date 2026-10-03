@@ -118,7 +118,9 @@ def test_ensure_pool_applies_schema_on_open(monkeypatch) -> None:
     conn = _RecordingConn()
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             self.dsn = dsn
 
         def open(self, wait: bool = False, timeout: float = 30.0) -> None:
@@ -163,7 +165,9 @@ def _install_fake_pool(monkeypatch, conn) -> list:
     pools: list = []
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             self.closed = False
             pools.append(self)
 
@@ -240,7 +244,9 @@ def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch)
     attempts = []
 
     class _Down:
-        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **_: object) -> None:  # noqa: A002
             attempts.append(self)
 
         def open(self, wait: bool = False, timeout: float = 30.0) -> None:

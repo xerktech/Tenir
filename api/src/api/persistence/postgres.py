@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Callable, Iterator
 
 from api.persistence.models import (
     Conversation,
@@ -93,6 +93,53 @@ class DatabaseUnavailable(RuntimeError):
     ago, found the database unreachable (XERK-1434)."""
 
 
+class PoolOpener:
+    """Opens a store's connection pool with bounded waits (XERK-1434).
+
+    A pool that can't open within OPEN_TIMEOUT_SECONDS is closed and its error is
+    shared with every caller for that long, instead of each one queueing another
+    full wait behind the store's lock. The caller holds its own lock and caches
+    the returned pool."""
+
+    def __init__(self, dsn: str, name: str) -> None:
+        self._dsn = dsn
+        self._name = name
+        self._failure: tuple[float, Exception] | None = None
+
+    def open(self, init: Callable[[Any], None]):
+        """A ready pool with ``init(pool)`` applied; closed again if either fails.
+        Only a failure to open is remembered: an ``init`` error (a rejected schema)
+        is retried on the very next call."""
+        failure = self._failure
+        if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
+            raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
+        from psycopg_pool import ConnectionPool
+
+        log.info("opening Postgres connection pool (%s)", self._name)
+        pool = ConnectionPool(
+            self._dsn,
+            open=False,
+            # libpq's connect_timeout too: closing a pool that timed out waits for
+            # its in-flight connects, which against a blackholed host never return.
+            kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)},
+            # Pooled connections outlive a Postgres restart; without a check each
+            # one fails its next borrower once (AdminShutdown) before it is dropped.
+            check=ConnectionPool.check_connection,
+        )
+        try:
+            try:
+                pool.open(wait=True, timeout=OPEN_TIMEOUT_SECONDS)
+            except Exception as exc:
+                self._failure = (time.monotonic(), exc)
+                raise
+            self._failure = None
+            init(pool)
+        except BaseException:
+            pool.close()
+            raise
+        return pool
+
+
 def _is_connection_lost(conn, exc: BaseException) -> bool:
     """True when a statement failed because the connection itself went away (the
     server restarting mid-apply) — that heals on its own, so it is not a rejected
@@ -113,9 +160,7 @@ class SqlConversationStore:
         # Serializes pool open + schema apply. Without it, concurrent first callers
         # each open a pool and run the DDL in parallel, which Postgres deadlocks on.
         self._pool_lock = threading.Lock()
-        # (monotonic time, error) of the last failed open while the database was
-        # unreachable; callers within OPEN_TIMEOUT_SECONDS of it fail fast with it.
-        self._open_failure: tuple[float, Exception] | None = None
+        self._opener = PoolOpener(dsn, "conversations")
 
     def open(self) -> None:  # pragma: no cover - requires psycopg + a live database
         """Eagerly open the pool and apply the schema at boot.
@@ -138,20 +183,6 @@ class SqlConversationStore:
         with self._pool_lock:
             if self._pool is not None:
                 return self._pool
-            failure = self._open_failure
-            if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
-                # Share the last attempt's verdict instead of queueing another full
-                # wait behind the lock (every caller waiting here would otherwise
-                # pay OPEN_TIMEOUT_SECONDS in turn).
-                raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
-            from psycopg_pool import ConnectionPool
-
-            log.info("opening Postgres connection pool")
-            # libpq's connect_timeout too: closing a pool that timed out waits for
-            # its in-flight connects, which against a blackholed host never return.
-            pool = ConnectionPool(
-                self._dsn, open=False, kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
-            )
             # Self-heal schema drift on boot. Postgres only applies schema.sql on a
             # FRESH data volume (docker-entrypoint-initdb.d), so a database created
             # before an additive change — e.g. the `cues` table (XERK-81) that reads
@@ -162,20 +193,7 @@ class SqlConversationStore:
             # The pool is cached only once the schema applied: caching it first meant
             # one failed apply was never retried and every later call ran against the
             # broken schema with nothing reporting it (XERK-1409).
-            try:
-                pool.open(wait=True, timeout=OPEN_TIMEOUT_SECONDS)
-                self._apply_schema(pool)
-            except SchemaApplyError:
-                # A rejected schema is not an outage: retry it on the very next call.
-                pool.close()
-                raise
-            except BaseException as exc:
-                pool.close()
-                if isinstance(exc, Exception):
-                    self._open_failure = (time.monotonic(), exc)
-                raise
-            self._open_failure = None
-            self._pool = pool
+            self._pool = self._opener.open(self._apply_schema)
         return self._pool
 
     def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
