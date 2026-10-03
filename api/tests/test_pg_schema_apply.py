@@ -249,7 +249,7 @@ def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch)
         before = len(attempts)
         resp = client.get("/ready")
         assert resp.status_code == 503
-        assert resp.json()["checks"]["conversations"].startswith("error:")
+        assert resp.json()["checks"]["conversations"] == "error"
         assert len(attempts) == before + 1, "/ready must retry opening the pool"
 
 

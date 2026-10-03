@@ -205,3 +205,41 @@ def test_ready_returns_503_when_a_backend_is_unreachable(monkeypatch: pytest.Mon
         body = r.json()
         assert body["ready"] is False
         assert body["checks"]["audio"].startswith("error")
+
+
+def test_ready_does_not_leak_backend_error_detail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """XERK-1427: /ready is public, so a backend failure's raw text (PIDs, lock
+    detail, the schema.sql path) must stay in the server log, not the body."""
+    from api import readiness
+
+    secret = "deadlock detected: Process 4242 waits for ShareLock; /app/api/schema.sql"
+
+    class _DeadConversations:
+        def households(self) -> None:
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(readiness, "get_conversation_store", lambda: _DeadConversations())
+    with caplog.at_level("WARNING", logger="api.readiness"), TestClient(app) as client:
+        r = client.get("/ready")
+    assert r.status_code == 503
+    assert r.json()["checks"]["conversations"] == "error"
+    assert "4242" not in r.text and "schema.sql" not in r.text
+    assert secret in caplog.text
+
+
+def test_startup_logs_an_unreachable_backend(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Boot alone (no request) surfaces a dead backend in the log."""
+    from api import readiness
+
+    class _DeadAudio:
+        def ready(self) -> None:
+            raise RuntimeError("bucket unreachable")
+
+    monkeypatch.setattr(readiness, "get_audio_store", lambda: _DeadAudio())
+    with caplog.at_level("WARNING", logger="api.readiness"), TestClient(app):
+        pass
+    assert "backend audio not ready: RuntimeError: bucket unreachable" in caplog.text
