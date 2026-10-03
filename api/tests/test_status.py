@@ -448,20 +448,26 @@ def test_http_probe_maps_status_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_httpx(monkeypatch, resp=_FakeResp(500))
     raw, detail = asyncio.run(st._http_probe("http://x/health"))
     assert raw == st.NOT_READY and "500" in detail
-    _patch_httpx(monkeypatch, exc=OSError("connection refused"))
+    _patch_httpx(monkeypatch, exc=OSError("connection refused to internal-host:8000"))
     raw, detail = asyncio.run(st._http_probe("http://x/health"))
-    assert raw == st.UNREACHABLE and "refused" in detail
+    assert raw == st.UNREACHABLE and detail == "unreachable (OSError)"
 
 
-def test_infra_probe() -> None:
+def test_infra_probe(caplog: pytest.LogCaptureFixture) -> None:
     assert asyncio.run(st._infra_probe(None))[0] == st.UNREACHABLE
     assert asyncio.run(st._infra_probe(lambda: None))[0] == st.READY
 
-    def _boom() -> None:
-        raise RuntimeError("store down")
+    # XERK-1427: /status is public, so the raw error (paths, SQL text) is logged,
+    # never returned — the body carries only the exception class.
+    secret = 'relation "conversations" does not exist; /app/data/audio'
 
-    raw, detail = asyncio.run(st._infra_probe(_boom))
-    assert raw == st.UNREACHABLE and "store down" in detail
+    def _boom() -> None:
+        raise RuntimeError(secret)
+
+    with caplog.at_level("WARNING", logger="api.status"):
+        raw, detail = asyncio.run(st._infra_probe(_boom))
+    assert raw == st.UNREACHABLE and detail == "unreachable (RuntimeError)"
+    assert secret in caplog.text
 
 
 def test_probe_loop_runs_then_survives_errors(monkeypatch: pytest.MonkeyPatch) -> None:
