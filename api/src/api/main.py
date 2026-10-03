@@ -274,7 +274,9 @@ def _ws_reject_reason(ws: WebSocket) -> str:
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
-    principal = _ws_principal(ws)
+    # Off the event loop: resolving a token reads the user store, and a blocking
+    # read here (database down) froze every request on the server until it gave up.
+    principal = await asyncio.to_thread(_ws_principal, ws)
     if principal is None:
         # Reject AFTER accepting, and log it. Closing before accept surfaces to
         # browser/RN clients as an opaque failed handshake (HTTP 403 → close code
@@ -284,7 +286,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # handler treats as fatal-please-re-login. And nothing was logged, so the
         # loop was invisible server-side. Accepting first costs one round-trip
         # and delivers a close frame the client actually receives.
-        log.warning("ws rejected: %s", _ws_reject_reason(ws))
+        log.warning("ws rejected: %s", await asyncio.to_thread(_ws_reject_reason, ws))
         metrics.incr("ws.unauthorized")
         await ws.accept()
         # 1008 = policy violation; the client must present a valid token first.
