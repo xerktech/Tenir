@@ -480,11 +480,24 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     # else starts fresh under a server id (XERK-651).
                     if requested_id is not None:
                         convs = get_conversation_store()
-                        existing = (
-                            await asyncio.to_thread(convs.get, principal.household, requested_id)
-                            if convs is not None
-                            else None
-                        )
+                        # A store error here must surface like a failed start below,
+                        # not escape the handler and drop the socket with no close frame.
+                        try:
+                            existing = (
+                                await asyncio.to_thread(
+                                    convs.get, principal.household, requested_id
+                                )
+                                if convs is not None
+                                else None
+                            )
+                        except Exception:
+                            log.exception(
+                                "resume owner check failed for household %s",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.start_errors")
+                            await send(_err("internal", "could not start session"))
+                            continue
                         if existing is not None and existing.owner != principal.user_id:
                             log.warning(
                                 "rejecting cross-user resume of recording owned by another "

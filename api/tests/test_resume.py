@@ -339,3 +339,38 @@ def test_start_lock_serializes_one_id_and_forgets_it_after() -> None:
         assert registry._start_locks == {}
 
     asyncio.run(run())
+
+
+def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store error in the cold-resume owner check used to escape the handler
+    (ASGI 500, socket dropped without a close frame); it must answer like a failed
+    start and keep the socket usable."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+
+            def boom(*_a: object) -> None:
+                raise RuntimeError("store down")
+
+            monkeypatch.setattr(get_conversation_store(), "get", boom)
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            err = ws.receive_json()
+            assert err["type"] == "error" and err["code"] == "internal"
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert ws.receive_json()["type"] == "pong"
+            # The start lock was released on the way out: a retry still works.
+            monkeypatch.undo()
+            ws.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws.receive_json()["sessionId"] == sid
