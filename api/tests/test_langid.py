@@ -202,7 +202,7 @@ def test_english_homographs_still_corroborate(text: str, expected: str) -> None:
         # en, which would close the run and leave the Spanish untranslated.
         "Like, no sé.",
         "Ya, it's ok.",
-        "No quiero, I'm tired.",
+        "No sé, I'm tired.",
         # an accented letter is the only foreign signal
         "It's qué?",
         # "will" is a German verb, so it is not English vocab.
@@ -268,3 +268,48 @@ def test_new_english_vocab_counts() -> None:
 def test_english_word_classes(word: str, english: bool, shared: bool) -> None:
     assert is_english_word(word) is english
     assert is_shared_english_word(word) is shared
+
+
+# ---- Spanish vs French / Portuguese (XERK-1419) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # "le"/"a" are everyday Spanish too; scored for French alone they made it fr.
+        ("Yo le pasé la foto a Michael.", "es"),
+        ("Ella le contó la verdad a su padre.", "es"),
+        # French never writes á/í/ó/ú/ñ.
+        ("Va a casa de la música.", "es"),
+        # Spanish-only words break es/fr and es/pt ties that used to return None.
+        ("Pues vamos a empezar, hay veces que la gente no entiende.", "es"),
+        ("Hola, como estás?", "es"),
+        # Loanwords English speakers use only corroborate other Spanish evidence.
+        ("Hay mucha gente aquí.", None),
+        ("I need a bale of hay for a horse.", "en"),
+        ("That's a bueno idea.", None),
+        ("A big gracias to everyone.", None),
+        ("No quiero, I'm tired.", "es"),
+        # ...without taking real French or Portuguese turns.
+        ("Il a passé la photo à Michel.", "fr"),
+        ("Il y a un problème.", "fr"),
+        ("Je le connais bien.", "fr"),
+        ("A comida está muito boa.", None),
+        ("Está bien.", "es"),
+        ("Olá, como estás?", None),
+        # A shared-word tie stays undecided rather than guessing.
+        ("On a fini le travail.", None),
+        # No vocabulary at all: nothing to go on.
+        ("Ah, ingeniería química.", None),
+    ],
+)
+def test_spanish_is_not_french_or_portuguese(text: str, expected: str | None) -> None:
+    assert detect_lang(text) == expected
+
+
+def test_letters_french_never_writes_rule_it_out() -> None:
+    assert detect_lang("la canción de la música") == "es"
+    # ...unless they are only in a name.
+    assert detect_lang("Elle a vu la mère de María.") == "fr"
+    assert detect_lang("Il est allé à Cancún.") == "fr"
+    assert detect_lang("Il a dit que c'est fini.") == "fr"
