@@ -21,7 +21,7 @@ import threading
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import DuplicateUser, User
-from api.persistence.postgres import PoolOpener
+from api.persistence.postgres import PoolOpener, lock_schema
 
 log = logging.getLogger("api.auth.sql_users")
 
@@ -79,6 +79,8 @@ class SqlUserStore:
     @staticmethod
     def _ensure_schema(pool) -> None:  # pragma: no cover - requires a live database
         with pool.connection() as conn:
+            # Same cross-process guard as the conversation store's apply (XERK-1509).
+            lock_schema(conn)
             for stmt in _ENSURE_SCHEMA:
                 conn.execute(stmt)
 

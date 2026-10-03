@@ -338,6 +338,32 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
     assert max_in_apply == 1, "schema statements must never run concurrently"
 
 
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path) -> None:
+    """``_pool_lock`` only serializes one process: two api processes booting at once
+    raced the DDL and Postgres failed one, aborting its startup (XERK-1509). Both
+    stores must take the shared advisory lock before any DDL."""
+    import importlib
+
+    from api.persistence.postgres import SCHEMA_LOCK_KEY
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    calls: list[tuple[str, object]] = []
+
+    class _Conn:
+        def execute(self, sql: str, params: object = None) -> None:
+            calls.append((" ".join(sql.split()), params))
+
+    _install_fake_pool(monkeypatch, _Conn())
+    store_cls("postgresql://unused")._ensure_pool()
+
+    assert calls[0] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+    assert len(calls) > 1, "the DDL runs after the lock"
+
+
 class _SqlStateError(Exception):
     """Stands in for a psycopg error carrying a SQLSTATE."""
 

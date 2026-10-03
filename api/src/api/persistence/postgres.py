@@ -79,6 +79,20 @@ def apply_schema(conn, sql: str) -> None:
         conn.execute(statement)
 
 
+# pg_advisory_xact_lock key every boot-time DDL apply takes first ("Tenir" in ASCII).
+# The stores' ``_pool_lock`` only serializes within one process: two api processes
+# booting at once (a rolling update, >1 replica) raced the same CREATE ... IF NOT
+# EXISTS and Postgres failed one with 40P01 or a pg_type unique violation, which
+# reads as a rejected schema and aborts startup (XERK-1509).
+SCHEMA_LOCK_KEY = 0x54656E6972
+
+
+def lock_schema(conn) -> None:
+    """Block until no other connection is applying DDL, holding the lock until this
+    transaction ends. ``conn`` must not be autocommit, or it is released at once."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+
+
 class SchemaApplyError(RuntimeError):
     """schema.sql was rejected by a reachable database (XERK-1409).
 
@@ -209,6 +223,7 @@ class SqlConversationStore:
             # Only errors from the statements themselves are schema errors; failing
             # to get a connection above propagates as-is (database unreachable).
             try:
+                lock_schema(conn)
                 apply_schema(conn, sql)
             except Exception as exc:
                 if _is_connection_lost(conn, exc):
