@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 
 from api.config import settings
 from api.contract import (
@@ -62,6 +64,7 @@ from api.persistence import (
 )
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
+from api.stt.langid import is_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -128,11 +131,42 @@ def _enum_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
-def _same_text(a: str, b: str) -> bool:
-    """Whether a translation is just its source echoed back (XERK-160): compared
-    case-insensitively with whitespace collapsed, so cosmetic differences don't
-    disguise an echo."""
-    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+# A "translation" whose words match the source this closely MAY be the source reworded
+# rather than translated (XERK-1423): an English turn inherited by a run comes back from
+# a completion-prompt model with a word changed ("I made sure I can" -> "I made sure I
+# could", ratio 0.80). Real translations of name-heavy turns score as high ("Marco,
+# Sofia, Lucia, Pedro, sin Ana" -> "... without Ana", 0.83), so the ratio alone does not
+# decide; see ``_same_text``.
+_ECHO_MIN_WORD_RATIO = 0.75
+
+_WORD_RE = re.compile(r"\w+(?:'\w+)?")
+
+
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall(text.casefold().replace("\u2019", "'"))
+
+
+def _same_text(translated: str, source: str) -> bool:
+    """Whether a translation is just its source echoed back (XERK-160) or reworded
+    (XERK-1423). Either way it tells the listener nothing true that the caption
+    doesn't, and a rewording misquotes the speaker.
+
+    Reworded: the casefolded word sequences, punctuation ignored, match at least
+    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed can only be
+    English ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" ->
+    "and") or a shared one (German "was" -> "what") is a real translation, however
+    few words it touches, and is kept. English rewordings outside the small English
+    vocabulary ("I seen" -> "I saw") are kept too: losing a real translation is worse.
+    """
+    src = _words(source)
+    out = _words(translated)
+    if not src or not out:
+        return " ".join(translated.split()).casefold() == " ".join(source.split()).casefold()
+    matcher = SequenceMatcher(None, src, out, autojunk=False)
+    if matcher.ratio() < _ECHO_MIN_WORD_RATIO:
+        return False
+    changed = [w for op, i1, i2, _, _ in matcher.get_opcodes() if op != "equal" for w in src[i1:i2]]
+    return all(is_english_word(w) for w in changed)
 
 
 def is_valid_session_id(value: str) -> bool:
@@ -695,10 +729,10 @@ class Session:
         if not translated:
             return
         if _same_text(translated, final.text):
-            # The "translation" is the original — an English turn that reached
-            # the queue as an ambiguous run-continuation (the prompt returns
-            # already-English text unchanged). An echo adds nothing to the
-            # listener, so it is dropped rather than rendered twice.
+            # The "translation" is the original, or the original with a word
+            # changed — an English turn that reached the queue as an ambiguous
+            # run-continuation. It adds nothing to the listener and a rewording
+            # misquotes the speaker, so it is dropped rather than rendered.
             metrics.incr("translation.echo_drops")
             return
         try:

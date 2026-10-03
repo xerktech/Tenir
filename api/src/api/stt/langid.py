@@ -165,6 +165,21 @@ def leans_english(text: str, versus: str) -> bool:
     return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
 
 
+# English vocab that is also an everyday word of another contract language, ASR-spelled
+# (no accents): de "was"/"is"(ist)/"so"/"in", es "has", pt "to"(tô)/"for", it "be"/"so"/"in",
+# fr "but"/"the"(thé). Found by QA of XERK-1423 with the real translation model.
+_SHARED_EN = frozenset("was is so in has to for be but the".split())
+
+
+def is_english_word(word: str) -> bool:
+    """Whether a lowercased token can only be English: English vocabulary that is no
+    word of another contract language (not a homograph, not in ``_SHARED_EN``, not in
+    another language's vocabulary). "was" is German "what", so it is not one."""
+    if word not in _WORDS["en"] or word in _ENGLISH_HOMOGRAPHS or word in _SHARED_EN:
+        return False
+    return not any(word in vocab for code, vocab in _WORDS.items() if code != "en")
+
+
 def detect_lang(text: str) -> str | None:
     """Best-effort language of one finalized turn, as a contract code, or None.
 
