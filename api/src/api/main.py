@@ -200,9 +200,15 @@ async def _database_unavailable(conn: Request | WebSocket, exc: Exception) -> Re
         log.warning("database unavailable: ws -> 1013 (%s)", _outage_summary(exc))
         if WebSocketState.DISCONNECTED in (conn.client_state, conn.application_state):
             return None
-        if conn.application_state == WebSocketState.CONNECTING:
-            await conn.accept()
-        await conn.close(code=1013, reason="database unavailable")
+        try:
+            if conn.application_state == WebSocketState.CONNECTING:
+                await conn.accept()
+            await conn.close(code=1013, reason="database unavailable")
+        except Exception as close_exc:
+            # Best-effort: the client may have left while we waited on the database.
+            # The state can't show it (starlette only learns of a disconnect on a
+            # receive), and the server raises a different class per ws implementation.
+            log.info("ws gone before its 1013 close: %r", close_exc)
         return None
     log.warning(
         "database unavailable: %s %s -> 503 (%s)",

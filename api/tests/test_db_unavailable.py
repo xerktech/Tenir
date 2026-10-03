@@ -17,7 +17,7 @@ import types
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from api import history, main
 from api.auth import Principal, get_user_store, issue_token, reset_user_store
@@ -127,6 +127,25 @@ def test_ws_outage_after_accept_closes_1013(
                 ws.receive_text()
     assert exc.value.code == 1013
     assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize("state", [WebSocketState.CONNECTING, WebSocketState.CONNECTED])
+@pytest.mark.parametrize("gone", [WebSocketDisconnect(1006), RuntimeError("closed")])
+def test_ws_outage_close_to_a_departed_client_is_quiet(state, gone: Exception) -> None:
+    """The client may leave while the server waits out the pool; the socket state
+    still says connected (starlette only learns of it on a receive), so the 1013
+    close itself raises. That must not escape as an ASGI crash."""
+
+    async def receive() -> dict:
+        return {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(_msg: dict) -> None:
+        raise gone
+
+    ws = WebSocket({"type": "websocket", "path": "/ws", "headers": []}, receive, send)
+    ws.application_state = state
+    ws.client_state = WebSocketState.CONNECTED
+    asyncio.run(main._database_unavailable(ws, DatabaseUnavailable("refused")))
 
 
 def test_ws_session_start_account_check_outage_logs_one_line(
