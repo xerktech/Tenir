@@ -1,6 +1,7 @@
 ---
 paths:
   - api/src/api/main.py
+  - api/src/api/session.py
   - api/src/api/persistence/postgres.py
   - packages/client-core/src/api.ts
   - packages/client-core/src/ws.ts
@@ -25,4 +26,17 @@ paths:
   would otherwise retry at the base delay for the whole outage.
 - client-core turns a 503 into `ServerUnavailableError`, a `NetworkError` subclass on purpose:
   every client already keeps the session and retries on `NetworkError` (web, Android, Even).
+- A session ending mid-outage must not raise out of `Session.close()`, and the client never
+  resumes an ended session: `_persist` defers the finish to `_finalize_deferred` (XERK-1531).
+  The boot stale sweep only covers a *previous* process's rows, so nothing else would finish it.
+- Every transcript write (segment, translation, cue, song) goes through `Session._store`: one
+  ordered queue per session, flushed off the pump. Inline, each write waited out the 5 s pool
+  timeout during an outage, so captions went stale; an outage raised there killed the pump or
+  translation worker and lost every later turn.
+- The queue is ordered on purpose: a translation's UPDATE must land after its segment's INSERT.
+- `_finalize` refuses while an *outage* left the audio key unwritten (else ready but unplayable).
+  Any other failure must finalize (XERK-236): one stuck session stalls the serial retry.
+- Deferred finalizes retry serially in one task: an outage ties up one executor thread, not one
+  per ended session. Held writes are lost if the process exits before the database is back.
+- Tests: `api/tests/test_finalize_outage.py`.
 - Tests: `api/tests/test_db_unavailable.py`; `packages/client-core/tests/api.test.ts` (503 case).

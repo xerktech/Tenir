@@ -120,6 +120,7 @@ def test_song_emitted_and_persisted() -> None:
         assert [(ln.atMs, ln.text) for ln in song.lines] == [(0, "one"), (5000, "two")]
         assert session._music_active is True
 
+        await session._flush_writes()  # stored off the scan (XERK-1531)
         conv = get_conversation_store().get("default", session.session_id)
         assert conv is not None
         assert [(s.artist, s.title, s.duration_ms) for s in conv.songs] == [
