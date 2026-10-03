@@ -425,3 +425,125 @@ def test_start_that_raises_in_create_does_not_leak_tasks(monkeypatch: pytest.Mon
         assert leaked == []
 
     asyncio.run(run())
+
+
+def test_failed_resume_does_not_evict_the_sitting_still_tearing_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1511 QA: sitting B resumed behind A (still draining a slow flush) and
+    failed at session.ready. B's own cleanup took A's place in the closing registry
+    and popped it, so the next resume C found no prior, read the stores before A's
+    tail final was written and restarted its timeline at 0 (audio backend off)."""
+    from api.session import _closing
+    from api.stt.stub import StubTranscriber
+
+    monkeypatch.setattr("api.session.get_audio_store", lambda: None)
+
+    async def dying_send(msg: ServerMessage) -> None:
+        if msg.type == "session.ready":
+            raise RuntimeError("socket gone")
+
+    async def run() -> None:
+        a = Session(_noop_send(None), household="h", session_id="conv1")
+        await a.start(mic_source="phone", source_lang=None)
+        await a.on_audio(b"\x00\x00" * 24000)  # 1.5 s, finalized only by the flush
+        a_end = a._current_audio_ms()
+        orig = StubTranscriber.flush
+
+        async def slow_flush(self) -> None:
+            await asyncio.sleep(0.5)
+            await orig(self)
+
+        monkeypatch.setattr(StubTranscriber, "flush", slow_flush)
+        a_close = asyncio.create_task(a.close())
+        await asyncio.sleep(0.05)
+        monkeypatch.setattr(StubTranscriber, "flush", orig)
+
+        b = Session(dying_send, household="h", session_id="conv1")
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await b.start(mic_source="phone", source_lang=None)
+        assert not a._teardown.done()
+        assert _closing.get(("h", "conv1")) is a
+
+        c = Session(_noop_send(None), household="h", session_id="conv1")
+        await c.start(mic_source="phone", source_lang=None)
+        assert c._start_offset_ms == a_end
+        await a_close
+        await c.close()
+
+    asyncio.run(run())
+
+
+def test_start_that_fails_before_the_row_leaves_a_finished_recording_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed cold resume that never reached conversations.create must not run
+    finish() on the existing recording: that rewrote its ended_at."""
+
+    async def run() -> None:
+        first = Session(_noop_send(None), household="h", session_id="conv1")
+        await first.start(mic_source="phone", source_lang=None)
+        await first.close()
+        ended = get_conversation_store().get("h", "conv1").ended_at
+        assert ended is not None
+
+        def boom(**_k):
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr("api.session.make_transcriber", boom)
+        again = Session(_noop_send(None), household="h", session_id="conv1")
+        with pytest.raises(RuntimeError, match="no model"):
+            await again.start(mic_source="phone", source_lang=None)
+        assert again.is_closed
+        conv = get_conversation_store().get("h", "conv1")
+        assert conv.ended_at == ended and conv.status == "ready"
+
+    asyncio.run(run())
+
+
+def test_cancelled_start_still_tears_down() -> None:
+    """A cancel (the WS handler cancelled mid-start) is cleaned up like an error."""
+
+    async def run() -> None:
+        reached = asyncio.Event()
+
+        async def hanging_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                reached.set()
+                await asyncio.Event().wait()
+
+        session = Session(hanging_send, household="h1")
+        before = asyncio.all_tasks()
+        task = asyncio.create_task(session.start(mic_source="phone", source_lang=None))
+        await reached.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert session.is_closed
+        assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+        assert get_conversation_store().get("h1", session.session_id).status == "ready"
+
+    asyncio.run(run())
+
+
+def test_failed_start_whose_cleanup_raises_reraises_the_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close() that raises during that cleanup is logged; the caller still sees
+    the start failure, not the cleanup's."""
+
+    async def run() -> None:
+        async def dying_send(msg: ServerMessage) -> None:
+            if msg.type == "session.ready":
+                raise RuntimeError("socket gone")
+
+        session = Session(dying_send, household="h1")
+
+        async def bad_close() -> None:
+            raise ValueError("cleanup broke")
+
+        monkeypatch.setattr(session, "close", bad_close)
+        with pytest.raises(RuntimeError, match="socket gone"):
+            await session.start(mic_source="phone", source_lang=None)
+
+    asyncio.run(run())
