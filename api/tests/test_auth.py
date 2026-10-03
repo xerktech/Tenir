@@ -1400,12 +1400,15 @@ def test_sql_user_store_authenticate_round_trips_password(fake_psycopg) -> None:
 def test_sql_user_store_create_and_update_scope_dict_row_to_cursor(
     fake_psycopg,
 ) -> None:
-    conn = _FakeConn([_ADMIN_ROW])
+    # The households upsert runs first (XERK-1508), then the user INSERT.
+    conn = _FakeConn([None, _ADMIN_ROW])
     created = _store_with(conn).create(
         "ada", _ADMIN_PASSWORD, household="default", role="admin"
     )
     assert created.username == "ada"
-    assert conn.calls[0][2] is fake_psycopg.dict_row
+    assert "INSERT INTO households" in conn.calls[0][0]
+    assert conn.calls[0][1] == ("default",)
+    assert conn.calls[1][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
 
     conn2 = _FakeConn([_ADMIN_ROW])
@@ -1449,7 +1452,8 @@ _OIDC_ROW = {
 
 
 def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -> None:
-    conn = _FakeConn([_OIDC_ROW])
+    # The households upsert runs first (XERK-1508), then the user INSERT.
+    conn = _FakeConn([None, _OIDC_ROW])
     user = _store_with(conn).create_oidc(
         oidc_sub="authentik-sub-1",
         email="maya@household.test",
@@ -1459,7 +1463,8 @@ def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -
     )
     assert user.oidc_sub == "authentik-sub-1" and user.email == "maya@household.test"
     assert user.password_hash is None  # OIDC-only row read back cleanly
-    assert conn.calls[0][2] is fake_psycopg.dict_row
+    assert "INSERT INTO households" in conn.calls[0][0]
+    assert conn.calls[1][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
 
 

@@ -122,6 +122,66 @@ def test_legacy_case_variant_duplicates_do_not_abort_boot(make_store, caplog) ->
         store.create("ALICE", "mallory-pw", household="default")
 
 
+# --- Users in a non-default household (XERK-1508) -----------------------------
+#
+# users.household REFERENCES households(id) and schema.sql seeds only 'default', so
+# creating the env admin with API_AUTH_ADMIN_HOUSEHOLD=home (or any member/OIDC user
+# created or moved into a new household) failed users_household_fkey.
+
+
+@pytest.fixture
+def db(make_store):
+    make, admin = make_store
+    return make(), admin
+
+
+def _households(admin) -> set[str]:
+    return {r[0] for r in admin.execute("SELECT id FROM households").fetchall()}
+
+
+def test_env_admin_seeds_into_a_non_default_household(db) -> None:
+    store, admin = db
+    user = store.create("admin", "pw-123456", household="home", role="admin", is_env_admin=True)
+    assert user.household == "home"
+    assert store.get_env_admin().user_id == user.user_id
+    assert store.authenticate("admin", "pw-123456") is not None
+    assert "home" in _households(admin)
+    # A second user in the same household reuses the row rather than conflicting.
+    assert store.create("kid", "pw-123456", household="home").household == "home"
+
+
+def test_oidc_user_is_created_into_a_new_household(db) -> None:
+    store, admin = db
+    user = store.create_oidc(
+        oidc_sub="sub-1", email="a@example.com", username="a", household="away", role="member"
+    )
+    assert user.household == "away"
+    assert "away" in _households(admin)
+
+
+def test_user_moves_into_a_new_household(db) -> None:
+    store, admin = db
+    user = store.create("m", "pw-123456", household="default")
+    moved = store.update_credentials(user.user_id, household="elsewhere")
+    assert moved.household == "elsewhere"
+    assert "elsewhere" in _households(admin)
+
+
+def test_a_rejected_create_leaves_no_household_behind(db) -> None:
+    store, admin = db
+    store.create("dup", "pw-123456", household="default")
+    with pytest.raises(DuplicateUser):
+        store.create("dup", "pw-123456", household="orphan")
+    assert "orphan" not in _households(admin)
+
+
+def test_moving_a_missing_user_leaves_no_household_behind(db) -> None:
+    store, admin = db
+    with pytest.raises(KeyError):
+        store.update_credentials(str(uuid.uuid4()), household="ghost")
+    assert "ghost" not in _households(admin)
+
+
 BAD_IDS = ["x", "not-a-uuid", "1", "' OR 1=1 --", f"urn:uuid:{uuid.uuid4()}"]
 
 
