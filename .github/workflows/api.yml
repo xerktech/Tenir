@@ -107,6 +107,11 @@ jobs:
     name: Image build + scan (api)
     # Self-hosted: builds a container image and Trivy-scans it -- the warm layer cache
     # and the disk headroom are the point.
+    # Same-repo PRs only: the k8x runners use privileged docker-in-docker, and the
+    # Dockerfile's RUN steps are arbitrary code from the PR. A fork PR skips this job
+    # (XERK-1411). Not the primary control -- a fork can edit this line -- that is the
+    # repo's "require approval for all external contributors" setting.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
     steps:

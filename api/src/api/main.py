@@ -46,6 +46,7 @@ from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
 from api.persistence import get_conversation_store
+from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
 from api.session import Session, is_valid_session_id
@@ -69,19 +70,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # be logged (XERK-236): the WS handshake and the audio download both carry
     # the token in the URL, and uvicorn logs the full request line.
     install_log_redaction()
+    # Apply schema.sql eagerly and refuse to boot if the database rejects it
+    # (XERK-1409). Lazily on first use, a migration that fails only on production
+    # data rolled out a pod that reported healthy while every session.start failed
+    # (the XERK-1406 outage). Raising here makes the pod crashloop visibly instead.
+    # An unreachable database stays non-fatal (open() only logs it).
+    conversations = get_conversation_store()
+    if isinstance(conversations, SqlConversationStore):
+        await asyncio.to_thread(conversations.open)
     # Surface backend reachability at boot so a misconfigured/unreachable Postgres
     # or audio dir is visible immediately, not mid-session (it stays non-fatal:
-    # connections are lazy and may still be warming up).
-    checks = await asyncio.to_thread(probe_backends)
-    for name, status in checks.items():
-        if status != "ok":
-            log.warning("backend %s not ready at startup: %s", name, status)
+    # connections are lazy and may still be warming up). The probe logs each
+    # failure with its full detail itself.
+    await asyncio.to_thread(probe_backends)
     # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
     # reboot or a stop that overruns the grace period leaves rows stuck "live",
     # and nothing ever came back for them — they showed as permanently recording
     # in every client's history (XERK-236). Sweep them once here, before any new
     # session can register, so a restart heals the previous process's mess.
-    conversations = get_conversation_store()
     if conversations is not None:
         try:
             swept = await asyncio.to_thread(conversations.finish_stale)

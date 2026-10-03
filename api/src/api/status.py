@@ -63,9 +63,12 @@ def _now() -> float:
     return time.time()
 
 
-def _short(exc: object) -> str:
-    text = str(exc) or exc.__class__.__name__
-    return text if len(text) <= 200 else text[:197] + "..."
+def _public_detail(target: str, exc: BaseException) -> str:
+    """``/status`` is public, and a raw probe error carries internal hostnames,
+    absolute paths and SQL text — so the full message is logged server-side and
+    the body gets only the exception class (XERK-1427)."""
+    log.warning("status probe of %s failed: %s: %s", target, type(exc).__name__, exc)
+    return f"unreachable ({type(exc).__name__})"
 
 
 def _iso(ts: float) -> str:
@@ -82,7 +85,7 @@ async def _http_probe(url: str) -> tuple[str, str]:
         async with httpx.AsyncClient(timeout=settings.status_probe_timeout_seconds) as client:
             resp = await client.get(url)
     except Exception as exc:  # noqa: BLE001 - any transport failure means unreachable
-        return UNREACHABLE, _short(exc)
+        return UNREACHABLE, _public_detail(url, exc)
     if resp.status_code == 200:
         return READY, "ready"
     if resp.status_code == 503:
@@ -97,7 +100,7 @@ async def _infra_probe(fn: Callable[[], object] | None) -> tuple[str, str]:
     try:
         await asyncio.to_thread(fn)
     except Exception as exc:  # noqa: BLE001
-        return UNREACHABLE, _short(exc)
+        return UNREACHABLE, _public_detail(getattr(fn, "__qualname__", "store"), exc)
     return READY, "reachable"
 
 

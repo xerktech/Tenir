@@ -17,6 +17,7 @@ stack.
 from __future__ import annotations
 
 import logging
+import threading
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import DuplicateUser, User
@@ -58,16 +59,30 @@ class SqlUserStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool = None
+        # Serializes pool open + schema apply so concurrent first callers don't
+        # each open a pool and race the DDL (XERK-1409).
+        self._pool_lock = threading.Lock()
 
     def _ensure_pool(self):  # pragma: no cover - requires psycopg + a live database
-        if self._pool is None:
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is not None:
+                return self._pool
             from psycopg_pool import ConnectionPool
 
             log.info("opening Postgres connection pool (users)")
-            self._pool = ConnectionPool(self._dsn, open=True)
-            with self._pool.connection() as conn:
-                for stmt in _ENSURE_SCHEMA:
-                    conn.execute(stmt)
+            pool = ConnectionPool(self._dsn, open=True)
+            # Cache the pool only once its schema applied, so a failed apply is
+            # retried on next use rather than silently skipped forever (XERK-1409).
+            try:
+                with pool.connection() as conn:
+                    for stmt in _ENSURE_SCHEMA:
+                        conn.execute(stmt)
+            except BaseException:
+                pool.close()
+                raise
+            self._pool = pool
         return self._pool
 
     @staticmethod

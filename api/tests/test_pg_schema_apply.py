@@ -9,10 +9,11 @@ thus every ``session.start`` — raised ``relation "cues" does not exist``, whic
 surfaced to clients as ``could not start session`` and killed transcription
 entirely.
 
-The fix applies the idempotent schema on connection-pool open. psycopg isn't
-installed in CI (the SQL backend is an extra) and the pooled paths need a live
-database, so these tests exercise the real splitting/apply logic and the pool
-wiring against a recording fake — no driver, no database.
+The fix applies the idempotent schema on connection-pool open. The pooled paths
+need a live database, so these tests exercise the real splitting/apply logic and
+the pool wiring against fake pools — no database. CI installs the
+``[persistence]`` extra (psycopg), which the error-classification tests that
+raise real psycopg errors need; they skip without it.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from __future__ import annotations
 import contextlib
 import sys
 import types
+
+import pytest
 
 from api.persistence.postgres import (
     apply_schema,
@@ -136,3 +139,241 @@ def test_ensure_pool_applies_schema_on_open(monkeypatch) -> None:
     before = len(conn.statements)
     store._ensure_pool()
     assert len(conn.statements) == before
+
+
+class _FailingConn:
+    """A connection whose every statement fails, like an ALTER that production
+    data rejects (XERK-1409)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.calls += 1
+        raise RuntimeError("cannot add foreign key")
+
+
+def _install_fake_pool(monkeypatch, conn) -> list:
+    """Swap in a psycopg_pool whose connections yield ``conn``; returns the pools
+    created, so a test can see which were closed."""
+    pools: list = []
+
+    class _FakePool:
+        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002 - psycopg kwarg
+            self.closed = False
+            pools.append(self)
+
+        @contextlib.contextmanager
+        def connection(self):
+            yield conn
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_mod = types.ModuleType("psycopg_pool")
+    fake_mod.ConnectionPool = _FakePool
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_mod)
+    return pools
+
+
+def test_failed_schema_apply_is_retried_not_cached(monkeypatch) -> None:
+    """Regression (XERK-1409): the pool was cached BEFORE the schema apply, so one
+    failed apply was never retried and every later call ran against the broken
+    schema while /ready (and the boot probe) reported nothing wrong."""
+    from api.persistence.postgres import SchemaApplyError, SqlConversationStore
+
+    conn = _FailingConn()
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(SchemaApplyError):
+        store._ensure_pool()
+    with pytest.raises(SchemaApplyError):
+        store._ensure_pool()
+
+    assert conn.calls == 2, "the second call must re-attempt the schema apply"
+    assert all(p.closed for p in pools), "a pool whose schema failed must be closed"
+    assert store._pool is None
+
+
+def _serve_store(monkeypatch, store) -> None:
+    """Make the app (boot + /ready) use ``store`` as its conversation store."""
+    from api import main, readiness
+
+    monkeypatch.setattr(main, "get_conversation_store", lambda: store)
+    monkeypatch.setattr(readiness, "get_conversation_store", lambda: store)
+
+
+def test_boot_fails_when_the_database_rejects_the_schema(monkeypatch) -> None:
+    """XERK-1409: a schema the database rejects must abort startup (the pod
+    crashloops) instead of booting a healthy-looking api whose every session.start
+    fails."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from api.persistence.postgres import SchemaApplyError, SqlConversationStore
+
+    _install_fake_pool(monkeypatch, _FailingConn())
+    _serve_store(monkeypatch, SqlConversationStore("postgresql://unused"))
+
+    with pytest.raises(SchemaApplyError), TestClient(app):
+        pass
+
+
+def test_boot_survives_an_unreachable_database_and_ready_reports_it(monkeypatch) -> None:
+    """An unreachable database stays non-fatal at boot (it heals on its own), but
+    /ready must report it — and each probe retries the pool + schema."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from api.persistence.postgres import SqlConversationStore
+
+    attempts = []
+
+    class _Down:
+        def __init__(self, dsn: str, open: bool = True) -> None:  # noqa: A002
+            attempts.append(self)
+
+        def connection(self):
+            raise TimeoutError("couldn't get a connection after 30 sec")
+
+        def close(self) -> None:
+            pass
+
+    fake_mod = types.ModuleType("psycopg_pool")
+    fake_mod.ConnectionPool = _Down
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_mod)
+    _serve_store(monkeypatch, SqlConversationStore("postgresql://unused"))
+
+    with TestClient(app) as client:
+        before = len(attempts)
+        resp = client.get("/ready")
+        assert resp.status_code == 503
+        assert resp.json()["checks"]["conversations"] == "error"
+        assert len(attempts) == before + 1, "/ready must retry opening the pool"
+
+
+def test_user_store_failed_schema_apply_is_retried_not_cached(monkeypatch) -> None:
+    """Same regression in SqlUserStore (XERK-1409): a failed ensure-schema must
+    leave no cached pool, so the next call retries it."""
+    from api.auth.sql_users import SqlUserStore
+
+    conn = _FailingConn()
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = SqlUserStore("postgresql://unused")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            store._ensure_pool()
+
+    assert conn.calls == 2, "the second call must re-attempt the schema apply"
+    assert all(p.closed for p in pools)
+    assert store._pool is None
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -> None:
+    """Concurrent first callers must not each open a pool and run the DDL in
+    parallel — on real Postgres that deadlocks and reads as a rejected schema
+    (QA on XERK-1409). The first caller applies; the rest wait and reuse it."""
+    import importlib
+    import threading
+    import time
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+
+    in_apply = 0
+    max_in_apply = 0
+    guard = threading.Lock()
+
+    class _SlowConn:
+        def execute(self, sql: str, params: object = None) -> None:
+            nonlocal in_apply, max_in_apply
+            with guard:
+                in_apply += 1
+                max_in_apply = max(max_in_apply, in_apply)
+            time.sleep(0.001)
+            with guard:
+                in_apply -= 1
+
+    pools = _install_fake_pool(monkeypatch, _SlowConn())
+    store = store_cls("postgresql://unused")
+    start = threading.Barrier(8)
+
+    def first_use() -> None:
+        start.wait()
+        store._ensure_pool()
+
+    threads = [threading.Thread(target=first_use) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(pools) == 1, "only one pool may be opened"
+    assert max_in_apply == 1, "schema statements must never run concurrently"
+
+
+class _SqlStateError(Exception):
+    """Stands in for a psycopg error carrying a SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"sqlstate {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+class _RaisingConn:
+    def __init__(self, exc: Exception, broken: bool = False) -> None:
+        self.exc = exc
+        self.broken = broken
+
+    def execute(self, sql: str, params: object = None) -> None:
+        raise self.exc
+
+
+@pytest.mark.parametrize(
+    "error", ["ProgramLimitExceeded", "DiskFull", "DeadlockDetected", "UniqueViolation"]
+)
+def test_database_rejections_are_schema_errors(monkeypatch, error) -> None:
+    """A rejection that psycopg classes as OperationalError (54000 index row too
+    large, 53100 disk full, 40P01 deadlock) is still a broken schema and must abort
+    boot — not be mistaken for an outage (QA on XERK-1409). Real psycopg error
+    classes, so a classifier keyed on OperationalError would fail this."""
+    errors = pytest.importorskip("psycopg.errors")
+    from api.persistence.postgres import SchemaApplyError, SqlConversationStore
+
+    _install_fake_pool(monkeypatch, _RaisingConn(getattr(errors, error)("rejected")))
+    store = SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(SchemaApplyError):
+        store.open()
+
+
+@pytest.mark.parametrize(("sqlstate", "broken"), [("57P01", False), ("08006", False), ("", True)])
+def test_connection_lost_mid_apply_is_not_fatal(monkeypatch, sqlstate, broken) -> None:
+    """The server going away mid-apply (admin shutdown, connection failure, a
+    broken connection) is an outage, not a rejected schema: it propagates as-is,
+    boot carries on, and the next use retries."""
+    from api.persistence.postgres import SqlConversationStore
+
+    exc = _SqlStateError(sqlstate)
+    _install_fake_pool(monkeypatch, _RaisingConn(exc, broken=broken))
+    store = SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(_SqlStateError):
+        store._ensure_pool()
+    store.open()  # logged, not raised
+    assert store._pool is None
+
+
+def test_missing_driver_is_fatal_at_boot(monkeypatch) -> None:
+    """The postgres backend without psycopg installed is a permanent
+    misconfiguration, not a DB outage: open() must raise, not log 'not reachable'."""
+    from api.persistence.postgres import SqlConversationStore
+
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)  # import -> ImportError
+    with pytest.raises(ImportError):
+        SqlConversationStore("postgresql://unused").open()
