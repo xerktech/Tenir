@@ -142,3 +142,16 @@ def test_concurrent_ready_requests_share_one_probe(monkeypatch) -> None:
     # A later request probes afresh rather than serving the stale result forever.
     asyncio.run(burst())
     assert calls == 2
+
+
+def test_ready_ignores_a_probe_pending_on_another_loop(monkeypatch) -> None:
+    """A probe future left pending by a closed loop must not be awaited from a new one."""
+    from api import main
+
+    stale_loop = asyncio.new_event_loop()
+    monkeypatch.setattr(main, "_ready_probe", stale_loop.create_future())  # never resolves
+    monkeypatch.setattr(main, "probe_backends", lambda: {"conversations": "ok"})
+    try:
+        assert asyncio.run(main.ready()).status_code == 200
+    finally:
+        stale_loop.close()
