@@ -95,4 +95,13 @@ RUN rm -rf /srv/build /srv/src /srv/tenir_api.egg-info
 # (XERK-236). The /ready probe now catches exactly this class of breakage.
 
 EXPOSE 8080
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# --timeout-graceful-shutdown (XERK-1496): on SIGTERM uvicorn otherwise waits with
+# no limit for in-flight WS handlers and HTTP requests before running the lifespan
+# shutdown, so a close driven from a handler (session.end, an admin revoke) against
+# a hung model ran past the SIGKILL at 30 s (k8s terminationGracePeriodSeconds,
+# compose stop_grace_period). After it, uvicorn cancels those handlers; their
+# session teardowns are shielded tasks, so they keep running and the lifespan
+# shutdown waits on them. Budget: this + the lifespan's session close (bounded at
+# 20 s deadline + 5 s finalize by XERK-1458) must stay under 30 s. Trade-off: a
+# response still streaming at SIGTERM (e.g. a long audio download) is cut at 3 s.
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "3"]

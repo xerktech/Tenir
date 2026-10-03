@@ -592,34 +592,24 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
     raise last_exc or DuplicateUser(sub)
 
 
-def _database_unreachable(exc: BaseException) -> bool:
-    """Whether ``exc`` means the seed should be retried on the next access, rather than
-    a failure that recurs on every attempt, like a constraint the env admin's config
-    violates.
+def _reconcile_is_retryable(exc: BaseException) -> bool:
+    """Whether a failed env-admin seed should be retried on the next access, rather
+    than a failure that recurs on every attempt (e.g. a constraint the admin's
+    config violates), which is logged once instead.
 
-    - The database could not be reached or the connection dropped — mirrors
-      ``persistence.postgres._is_connection_lost``: no SQLSTATE (connect failure, pool
-      timeout), class 08, or 57P01-57P03.
+    - The database is unreachable (``is_database_unavailable``).
     - A serialization failure or deadlock (40001, 40P01): transient by definition.
     - The user store's boot schema apply failed (``SchemaApplyError``), e.g. the
       database came back read-only: its pool isn't cached, so every user-store access
-      fails until it heals anyway — retrying costs nothing and seeds once it does."""
-    from api.persistence.postgres import SchemaApplyError
+      fails until it heals anyway — retrying costs nothing and seeds once it does.
 
-    if isinstance(exc, SchemaApplyError):
+    A read-only database (25006) or statement timeout (57014) from the seed's own
+    statements stays log-once: retrying would fail logins that reads can serve."""
+    from api.persistence.postgres import SchemaApplyError, is_database_unavailable
+
+    if isinstance(exc, SchemaApplyError) or is_database_unavailable(exc):
         return True
-    try:
-        from psycopg import OperationalError
-    except ImportError:  # in-memory deployment without the persistence extra
-        OperationalError = ()  # type: ignore[assignment]  # noqa: N806
-    if OperationalError and isinstance(exc, OperationalError):
-        sqlstate = getattr(exc, "sqlstate", None) or ""
-        return (
-            not sqlstate
-            or sqlstate.startswith("08")
-            or sqlstate in ("57P01", "57P02", "57P03", "40001", "40P01")
-        )
-    return isinstance(exc, (ConnectionError, TimeoutError))
+    return getattr(exc, "sqlstate", None) in ("40001", "40P01")
 
 
 def get_user_store() -> UserStore:
@@ -638,7 +628,7 @@ def get_user_store() -> UserStore:
             try:
                 reconcile_admin(_store)
             except Exception as exc:
-                if _database_unreachable(exc):
+                if _reconcile_is_retryable(exc):
                     raise
                 log.exception("could not reconcile the env admin; not retrying")
             _admin_reconciled = True

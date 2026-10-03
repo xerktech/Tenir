@@ -305,7 +305,7 @@ def test_cue_llm_goes_down_with_the_gateway(monkeypatch: pytest.MonkeyPatch) -> 
 def test_refresh_registers_infra_for_real_backends(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "persistence_backend", "postgres")
     monkeypatch.setattr(settings, "audio_backend", "disk")
-    monkeypatch.setattr(st, "get_conversation_store", lambda: types.SimpleNamespace(households=lambda: None))
+    monkeypatch.setattr(st, "get_conversation_store", lambda: types.SimpleNamespace(ready=lambda: None))
     monkeypatch.setattr(st, "get_audio_store", lambda: types.SimpleNamespace(ready=lambda: None))
 
     async def _infra(fn: object) -> tuple[str, str]:

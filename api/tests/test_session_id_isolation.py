@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api import main, registry
-from api.auth import Principal
+from api.auth import Principal, get_user_store
 from api.config import settings
 from api.main import app
 from api.persistence import audio_key, get_audio_store, get_conversation_store
@@ -50,12 +50,17 @@ def _voice(freq: int = 200, *, ms: int = 100, amp: int = 8000) -> bytes:
 
 
 def _as_household(monkeypatch: pytest.MonkeyPatch, household: str) -> None:
-    """Route the next WS connection's principal to ``household``."""
+    """Route the next WS connection's principal to a real admin of ``household``
+    (session.start re-checks that the account exists, XERK-1504)."""
+    store = get_user_store()
+    user = store.get_by_username(household) or store.create(
+        household, "pw", household=household, role="admin"
+    )
     monkeypatch.setattr(
         main,
         "_ws_principal",
         lambda ws: Principal(
-            user_id=f"u-{household}", username=household, household=household, role="admin"
+            user_id=user.user_id, username=household, household=household, role="admin"
         ),
     )
 

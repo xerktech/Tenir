@@ -8,6 +8,7 @@ import {
   login,
   me,
   NetworkError,
+  ServerUnavailableError,
   type SystemStatus,
   users,
 } from "../src/api";
@@ -63,6 +64,17 @@ describe("request plumbing", () => {
     await expect(me()).rejects.toBeInstanceOf(NetworkError);
   });
 
+  it("a 503 is a transient ServerUnavailableError (a NetworkError), not an ApiError", async () => {
+    setToken("tok-1");
+    mockFetch(() => json({ detail: "the server can't reach its database" }, 503));
+    const err = await me().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerUnavailableError);
+    expect(err).toBeInstanceOf(NetworkError); // callers keep the session, as when unreachable
+    expect(err).not.toBeInstanceOf(ApiError);
+    expect((err as Error).message).toBe("the server can't reach its database");
+    expect(getToken()).toBe("tok-1");
+  });
+
   it("returns undefined for a 204 (delete)", async () => {
     mockFetch(() => new Response(null, { status: 204 }));
     await expect(history.remove("c1")).resolves.toBeUndefined();
@@ -111,6 +123,7 @@ describe("auth", () => {
 
   it("describeLoginError maps the three user-facing cases", () => {
     expect(describeLoginError(new NetworkError("nope"))).toMatch(/reach the server/);
+    expect(describeLoginError(new ServerUnavailableError("db down"))).toMatch(/reach its database/);
     expect(describeLoginError(new ApiError(401, "unauthorized"))).toMatch(/Incorrect username/);
     expect(describeLoginError(new ApiError(500, "boom"))).toMatch(/Server error \(500\)/);
     expect(describeLoginError(new ApiError(409, "conflict"))).toBe("409: conflict");

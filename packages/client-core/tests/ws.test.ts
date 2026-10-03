@@ -258,6 +258,23 @@ describe("ApiClient", () => {
     expect(instances).toHaveLength(2);
   });
 
+  it("reconnects after a 1013 (api's database unavailable, XERK-1510)", () => {
+    const client = new ApiClient("ws://h/ws");
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].close(1013); // try again later — not the 1008 that means re-login
+    vi.advanceTimersByTime(1000);
+    expect(instances).toHaveLength(2);
+    // The 1013 socket opened but never reached session.ready, so the backoff keeps
+    // growing instead of retrying at the base delay for the whole outage.
+    instances[1].open();
+    instances[1].close(1013);
+    vi.advanceTimersByTime(1000);
+    expect(instances).toHaveLength(2);
+    vi.advanceTimersByTime(1000); // second backoff step: 2s
+    expect(instances).toHaveLength(3);
+  });
+
   it("does not reconnect after a 1008 policy close, and surfaces an auth error", () => {
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });

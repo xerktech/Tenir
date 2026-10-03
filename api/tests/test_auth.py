@@ -343,6 +343,7 @@ def test_failed_admin_reconcile_is_retried_on_next_access(monkeypatch: pytest.Mo
     empty) was never retried — the env admin was never seeded and login 401'd until
     restart."""
     from api.auth import get_user_store, users
+    from api.persistence.postgres import DatabaseUnavailable
 
     class _DownOnce(users.InMemoryUserStore):
         def __init__(self) -> None:
@@ -351,7 +352,7 @@ def test_failed_admin_reconcile_is_retried_on_next_access(monkeypatch: pytest.Mo
 
         def get_env_admin(self):
             if self.down:
-                raise ConnectionError("database unreachable")
+                raise DatabaseUnavailable("database unreachable")
             return super().get_env_admin()
 
     flaky = _DownOnce()
@@ -359,7 +360,7 @@ def test_failed_admin_reconcile_is_retried_on_next_access(monkeypatch: pytest.Mo
     _set_admin_env(monkeypatch, "root", "rootpassword")
     reset_user_store()
 
-    with pytest.raises(ConnectionError):
+    with pytest.raises(DatabaseUnavailable):
         get_user_store()
     flaky.down = False  # the database came back
     store = get_user_store()
@@ -396,34 +397,34 @@ def test_permanent_admin_reconcile_failure_is_logged_not_retried(
     reset_user_store()
 
 
-def test_database_unreachable_classification() -> None:
-    """Only an unreachable/lost database is retried (XERK-1430)."""
+def test_reconcile_is_retryable_classification() -> None:
+    """Only a failure that heals on its own is retried (XERK-1430)."""
     psycopg = pytest.importorskip("psycopg")
-    from api.auth.users import _database_unreachable
-    from api.persistence.postgres import SchemaApplyError
-
     from psycopg.errors import lookup
     from psycopg_pool import PoolTimeout
+
+    from api.auth.users import _reconcile_is_retryable
+    from api.persistence.postgres import DatabaseUnavailable, SchemaApplyError
 
     def _op(sqlstate: str) -> Exception:
         return lookup(sqlstate)("x")
 
-    assert _database_unreachable(PoolTimeout("couldn't get a connection after 30 sec"))
-    assert _database_unreachable(psycopg.OperationalError("connection refused"))
-    assert _database_unreachable(_op("08006"))
-    assert _database_unreachable(_op("57P01"))
-    assert _database_unreachable(ConnectionError())
-    assert _database_unreachable(_op("40001"))  # serialization failure
-    assert _database_unreachable(_op("40P01"))  # deadlock
+    assert _reconcile_is_retryable(PoolTimeout("couldn't get a connection after 30 sec"))
+    assert _reconcile_is_retryable(psycopg.OperationalError("connection refused"))
+    assert _reconcile_is_retryable(_op("08006"))
+    assert _reconcile_is_retryable(_op("57P01"))
+    assert _reconcile_is_retryable(DatabaseUnavailable("pool can't open"))
+    assert _reconcile_is_retryable(_op("40001"))  # serialization failure
+    assert _reconcile_is_retryable(_op("40P01"))  # deadlock
     # The user store's schema apply failed (e.g. DB back read-only): its pool isn't
     # cached, so every access fails until it heals — retry, and seed once it does.
-    assert _database_unreachable(SchemaApplyError("read-only transaction"))
-    assert not _database_unreachable(_op("53100"))  # disk full is a real rejection
+    assert _reconcile_is_retryable(SchemaApplyError("read-only transaction"))
+    assert not _reconcile_is_retryable(_op("53100"))  # disk full is a real rejection
     # Deliberately log-once: retrying a read-only DB's or a timed-out seed on every
     # access would 500 logins that reads could otherwise serve.
-    assert not _database_unreachable(_op("25006"))
-    assert not _database_unreachable(_op("57014"))
-    assert not _database_unreachable(RuntimeError("fk"))
+    assert not _reconcile_is_retryable(_op("25006"))
+    assert not _reconcile_is_retryable(_op("57014"))
+    assert not _reconcile_is_retryable(RuntimeError("fk"))
 
 
 def test_concurrently_seeded_admin_is_not_reported_as_a_clash(
@@ -1498,3 +1499,73 @@ def test_sql_user_store_get_by_oidc_sub_and_email_scope_dict_row(fake_psycopg) -
     )
     assert conn2.calls[0][2] is fake_psycopg.dict_row
     assert conn2.row_factory is None
+
+
+@pytest.mark.real_auth
+def test_deleting_a_user_revokes_their_sessions_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revokes run side by side, and one failing revoke doesn't skip the rest.
+
+    XERK-1496: each revoke finalizes a session, which against a hung model can take
+    ~30 s (STT flush + translation drain). One after another, a user with several
+    sessions held the DELETE — and on SIGTERM the whole pod's shutdown, since uvicorn
+    waits for in-flight requests — past the 30 s SIGKILL.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from api import registry
+    from api.auth import get_user_store
+
+    _enable_auth(monkeypatch)
+    store = get_user_store()
+    store.create("admin", "longpassword", household="acme", role="admin")
+    bob = store.create("bob", "longpassword", household="acme")
+    in_flight = 0
+    peak = 0
+    revoked: list[str] = []
+
+    def _session(sid: str, user_id: str, *, fails: bool = False) -> SimpleNamespace:
+        async def revoke(reason: str) -> None:
+            nonlocal in_flight, peak
+            # Every doomed session leaves the registry before any revoke starts, so
+            # nothing (shutdown, a resume) can reach one that's being finalized.
+            assert all(registry.get(f"bob-{i}") is None for i in (1, 2, 3))
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+            if fails:
+                raise RuntimeError("store down")
+            revoked.append(sid)
+
+        async def close() -> None:  # the lifespan shutdown closes what's left
+            pass
+
+        return SimpleNamespace(session_id=sid, user_id=user_id, revoke=revoke, close=close)
+
+    sessions = [
+        _session("bob-1", bob.user_id, fails=True),
+        _session("bob-2", bob.user_id),
+        _session("bob-3", bob.user_id),
+        _session("other", "someone-else"),
+    ]
+    for s in sessions:
+        registry.register(s)  # type: ignore[arg-type]
+    try:
+        with TestClient(app) as client:
+            token = client.post(
+                "/auth/login", json={"username": "admin", "password": "longpassword"}
+            ).json()["token"]
+            r = client.delete(
+                f"/auth/users/{bob.user_id}", headers={"Authorization": f"Bearer {token}"}
+            )
+            assert r.status_code == 204
+            assert registry.get("other") is not None  # another user's session untouched
+        assert peak == 3  # all of bob's sessions at once, not one after another
+        assert sorted(revoked) == ["bob-2", "bob-3"]  # bob-1 raising skipped neither
+        assert all(registry.get(f"bob-{i}") is None for i in (1, 2, 3))
+    finally:
+        for s in sessions:
+            registry.unregister(s)  # type: ignore[arg-type]

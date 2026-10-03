@@ -109,7 +109,6 @@ export class ApiClient {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.reconnectAttempt = 0;
       this.handlers.onConnectionChange?.("open");
       // Resume the prior session if we have an id, else start fresh.
       this.send({
@@ -184,6 +183,10 @@ export class ApiClient {
         // A working session proves the current token was accepted; only now does a
         // later 1008 (a fresh expiry) earn another single silent-refresh attempt.
         this.oidcReauthTried = false;
+        // Reset the backoff here, not on open: the api accepts a socket it then
+        // closes 1013 (database down, XERK-1510), and resetting on that open
+        // retried at the base delay for the whole outage.
+        this.reconnectAttempt = 0;
         this.handlers.onReady?.(msg);
         break;
       case "caption.partial":

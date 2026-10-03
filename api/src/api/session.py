@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 
 from api.config import settings
 from api.contract import (
@@ -57,10 +59,12 @@ from api.persistence import (
     get_audio_store,
     get_conversation_store,
     pcm16_to_wav,
+    stale,
     wav_to_pcm16,
 )
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
+from api.stt.langid import is_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -81,16 +85,26 @@ _DETACHED_BUFFER_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
-# Teardowns whose close() caller was cancelled are still running here; the app's
-# lifespan shutdown drains them so the process doesn't exit before they persist
-# (XERK-1460). Also holds the reference that keeps each task from being GC'd.
+# Every running session teardown. Paths like the grace-window lapse, session.end
+# and revoke unregister the session before closing it, and a cancelled close()
+# caller orphans its teardown, so shutdown waits on these rather than the registry
+# (XERK-1458, XERK-1460). Also holds the reference that keeps each task from
+# being GC'd.
 _teardowns: set[asyncio.Task[None]] = set()
 
 
-async def drain_teardowns() -> None:
-    """Wait for every in-flight session teardown to finish (shutdown)."""
-    while _teardowns:
-        await asyncio.gather(*_teardowns, return_exceptions=True)
+# The session still tearing down for each conversation, by (household, session
+# id). The grace close unregisters a session before its teardown runs, so a
+# resume landing mid-teardown cold-starts a new Session on the same conversation
+# while that sitting's audio and tail finals are not yet stored; the new sitting
+# takes its timeline from the closing one instead (XERK-1500).
+_closing: dict[tuple[str | None, str], "Session"] = {}
+
+
+def teardowns_in_flight() -> list[asyncio.Task[None]]:
+    """Session teardowns still running, for shutdown to wait on (XERK-1458)."""
+    return [t for t in _teardowns if not t.done()]
+
 
 # How many already-surfaced cue titles to hand the generator as "don't repeat"
 # context (XERK-102). Bounds the prompt in a long conversation; the full set is
@@ -117,11 +131,42 @@ def _enum_str(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
-def _same_text(a: str, b: str) -> bool:
-    """Whether a translation is just its source echoed back (XERK-160): compared
-    case-insensitively with whitespace collapsed, so cosmetic differences don't
-    disguise an echo."""
-    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+# A "translation" whose words match the source this closely MAY be the source reworded
+# rather than translated (XERK-1423): an English turn inherited by a run comes back from
+# a completion-prompt model with a word changed ("I made sure I can" -> "I made sure I
+# could", ratio 0.80). Real translations of name-heavy turns score as high ("Marco,
+# Sofia, Lucia, Pedro, sin Ana" -> "... without Ana", 0.83), so the ratio alone does not
+# decide; see ``_same_text``.
+_ECHO_MIN_WORD_RATIO = 0.75
+
+_WORD_RE = re.compile(r"\w+(?:'\w+)?")
+
+
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall(text.casefold().replace("\u2019", "'"))
+
+
+def _same_text(translated: str, source: str) -> bool:
+    """Whether a translation is just its source echoed back (XERK-160) or reworded
+    (XERK-1423). Either way it tells the listener nothing true that the caption
+    doesn't, and a rewording misquotes the speaker.
+
+    Reworded: the casefolded word sequences, punctuation ignored, match at least
+    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed can only be
+    English ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" ->
+    "and") or a shared one (German "was" -> "what") is a real translation, however
+    few words it touches, and is kept. English rewordings outside the small English
+    vocabulary ("I seen" -> "I saw") are kept too: losing a real translation is worse.
+    """
+    src = _words(source)
+    out = _words(translated)
+    if not src or not out:
+        return " ".join(translated.split()).casefold() == " ".join(source.split()).casefold()
+    matcher = SequenceMatcher(None, src, out, autojunk=False)
+    if matcher.ratio() < _ECHO_MIN_WORD_RATIO:
+        return False
+    changed = [w for op, i1, i2, _, _ in matcher.get_opcodes() if op != "equal" for w in src[i1:i2]]
+    return all(is_english_word(w) for w in changed)
 
 
 def is_valid_session_id(value: str) -> bool:
@@ -271,11 +316,15 @@ class Session:
         # enough: the WS handler is parked in receive() and keeps feeding audio
         # into a session that is already finalized, so a revoked account went on
         # streaming until it chose to hang up. Set by the WS endpoint that owns
-        # the socket; None for a Session driven directly (tests, tooling).
-        self._disconnect: Callable[[], Awaitable[None]] | None = None
+        # the socket; empty for a Session driven directly (tests, tooling). One per
+        # socket ever bound: a resume can take the session over while the socket it
+        # displaced is still open, and that socket must close too (XERK-1504).
+        self._disconnects: list[Callable[[], Awaitable[None]]] = []
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
+        # Audio stored whose conversation row doesn't point at it yet.
+        self._audio_key_pending = False
         # Resume support: on a socket drop (not an explicit session.end) the
         # connection is *detached* and the session is kept alive for a grace window
         # so a reconnect carrying the same id rebinds to it — preserving the
@@ -283,6 +332,16 @@ class Session:
         self._closed = False
         # The shielded teardown close() runs (XERK-1460).
         self._teardown: asyncio.Task[None] | None = None
+        # This teardown's first audio retain, and that of the earlier sitting of
+        # this conversation still tearing down when this one resumed — which
+        # must land before ours (XERK-1500).
+        self._first_retain: asyncio.Future[bool] | None = None
+        self._prior_retain: asyncio.Future[bool] | None = None
+        self._prior_teardown: asyncio.Task[None] | None = None
+        # A start() that raised is torn down by close() without ever going live
+        # (XERK-1511); _row_opened says whether it got as far as the store row.
+        self._start_failed = False
+        self._row_opened = False
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
@@ -304,6 +363,32 @@ class Session:
         return self._send
 
     async def start(
+        self,
+        *,
+        mic_source: MicSource,
+        source_lang: Lang | None,
+    ) -> None:
+        # _start() spawns the worker/scan/pump/warmup tasks and creates the live
+        # conversation row before its last await (the session.ready send, which
+        # raises on a socket that just died). The caller only registers the session
+        # once start() returns, so a raise past that point left those tasks running
+        # and the row "live" with nobody to close them (XERK-1511). close() tolerates
+        # any partial state, and a cancel lands here too.
+        try:
+            await self._start(mic_source=mic_source, source_lang=source_lang)
+        except BaseException:
+            self._start_failed = True
+            # No audio of ours to keep in order behind a prior sitting's, so don't
+            # hold this cleanup (and the WS handler) behind its teardown.
+            self._prior_retain = None
+            self._prior_teardown = None
+            try:
+                await self.close()
+            except Exception:
+                log.exception("session %s cleanup after failed start failed", self.session_id)
+            raise
+
+    async def _start(
         self,
         *,
         mic_source: MicSource,
@@ -341,7 +426,16 @@ class Session:
         if self._music is not None:
             self._music_window_bytes = window_bytes(settings.music_window_seconds)
             self._music_scan = asyncio.create_task(self._music_scan_loop())
+        if stale.is_pending(self._conversations):
+            # The boot sweep of a previous process's live rows hasn't succeeded
+            # yet: run it before this session's row exists, so it can never
+            # finalize a recording this process started (XERK-1428).
+            await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
         if self._conversations is not None:
+            # Set before the call: a create that raises may still have written the
+            # live row, which close() then finishes. (A cancel here can let the
+            # INSERT commit after that finish; the next boot's stale sweep repairs it, XERK-1529.)
+            self._row_opened = True
             # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
             # path — never run a blocking store call on the event loop.
@@ -379,7 +473,18 @@ class Session:
         the last persisted segment's end so the transcript at least stays
         monotonic. Store reads are offloaded: both backends block, and this runs
         on the connect path.
+
+        An earlier sitting still tearing down has stored neither yet — reading
+        the stores then restarted this sitting inside it (XERK-1500). Its
+        in-memory timeline end is exact, so take that without waiting: blocking
+        start() on a teardown (up to its flush + drain caps) let a second
+        reconnect cold-start a duplicate sitting in the meantime.
         """
+        prior = _closing.get((self._household, self.session_id))
+        if prior is not None:
+            self._prior_retain = prior._first_retain
+            self._prior_teardown = prior._teardown
+            return prior._current_audio_ms()
         if self._audio_store is not None:
             existing = await asyncio.to_thread(
                 self._audio_store.get, audio_key(self._household, self.session_id)
@@ -660,10 +765,10 @@ class Session:
         if not translated:
             return
         if _same_text(translated, final.text):
-            # The "translation" is the original — an English turn that reached
-            # the queue as an ambiguous run-continuation (the prompt returns
-            # already-English text unchanged). An echo adds nothing to the
-            # listener, so it is dropped rather than rendered twice.
+            # The "translation" is the original, or the original with a word
+            # changed — an English turn that reached the queue as an ambiguous
+            # run-continuation. It adds nothing to the listener and a rewording
+            # misquotes the speaker, so it is dropped rather than rendered.
             metrics.incr("translation.echo_drops")
             return
         try:
@@ -1219,8 +1324,19 @@ class Session:
         metrics.incr("music.done")
 
     def on_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
-        """Register how to drop this session's transport (see ``revoke``)."""
-        self._disconnect = fn
+        """Register how to drop a transport bound to this session (see ``revoke``).
+
+        Each must be safe to call on a socket that has already gone away. The
+        caller drops it with :meth:`drop_disconnect` when its socket ends, or a
+        session resumed over and over keeps every dead socket alive.
+        """
+        if fn not in self._disconnects:  # a socket re-resuming its own session
+            self._disconnects.append(fn)
+
+    def drop_disconnect(self, fn: Callable[[], Awaitable[None]]) -> None:
+        """Forget a hook registered with :meth:`on_disconnect` (no-op if absent)."""
+        if fn in self._disconnects:
+            self._disconnects.remove(fn)
 
     async def revoke(self, reason: str) -> None:
         """Finalize the session AND close its socket — the account is gone.
@@ -1230,9 +1346,10 @@ class Session:
         (XERK-236).
         """
         await self.close()
-        if self._disconnect is not None:
+        # A copy: a handler ending mid-loop drops its hook, which would skip the next.
+        for disconnect in list(self._disconnects):
             try:
-                await self._disconnect()
+                await disconnect()
             except Exception:
                 log.warning("session %s could not close its socket", self.session_id)
         log.info("session %s revoked: %s", self.session_id, reason)
@@ -1266,94 +1383,126 @@ class Session:
         # cancelled WS handler or grace task) must not abandon it halfway and skip
         # _persist(), leaving the conversation "live" (XERK-1460). The caller
         # still sees its CancelledError; the teardown finishes on its own, and
-        # lifespan shutdown waits for it via drain_teardowns().
+        # lifespan shutdown waits for it via teardowns_in_flight().
+        # Started here, not in the teardown, so a resume landing before the
+        # teardown's first step still finds it to order its own retain behind.
+        self._first_retain = asyncio.ensure_future(self._retain_audio_after_prior())
         self._teardown = asyncio.create_task(self._close_teardown())
         _teardowns.add(self._teardown)
         self._teardown.add_done_callback(_teardowns.discard)
+        key = (self._household, self.session_id)
+        # A failed start never buffered audio, so a resume has nothing to order
+        # behind it — and registering would evict the sitting it resumed from if
+        # that one is still tearing down, restarting the next resume's timeline
+        # inside that sitting's (XERK-1500, XERK-1511).
+        if not self._start_failed:
+            _closing[key] = self
+        self._teardown.add_done_callback(
+            lambda _t: _closing.pop(key) if _closing.get(key) is self else None
+        )
         await asyncio.shield(self._teardown)
 
     async def _close_teardown(self) -> None:
-        # A failing STT seam can raise from flush()/close() too; guard each so
-        # teardown still persists the conversation and never leaks an exception
-        # out of close(). They are guarded separately: close() is what ends
-        # results(), so a flush that raises (an STT timeout on the tail decode)
-        # must not skip it, or the pump below is awaited forever.
-        #
-        # CancelledError is caught too unless this task itself is being cancelled
-        # (event-loop shutdown): one escaping a seam otherwise is that seam's own
-        # fault (e.g. a cancelled internal task) and must not skip persistence
-        # (XERK-1460). Both calls are bounded so a wedged seam can't hold teardown.
-        transcriber_closed = True
-        if self._transcriber is not None:
-            try:
-                await asyncio.wait_for(self._transcriber.flush(), timeout=_STT_FLUSH_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                log.warning("session %s STT flush timed out", self.session_id)
-                metrics.incr("stage.stt.flush_timeouts")
-            except (Exception, asyncio.CancelledError):
-                self._reraise_if_cancelling()
-                log.exception("session %s transcriber flush failed", self.session_id)
-                metrics.incr("stage.stt.errors")
-            # Close even when flush failed: it ends results(), and the pump join
-            # below waits on that — a skipped close hung teardown forever.
-            try:
-                await asyncio.wait_for(self._transcriber.close(), timeout=_STT_FLUSH_TIMEOUT_S)
-            except (Exception, asyncio.CancelledError):
-                self._reraise_if_cancelling()
-                log.exception("session %s transcriber close failed", self.session_id)
-                metrics.incr("stage.stt.errors")
-                transcriber_closed = False
-        if self._pump is not None:
-            # A failed close() never queued the sentinel that ends results(), so
-            # the pump would drain forever: cancel it instead (XERK-1460). Any
-            # finals not yet drained are dropped from the transcript only; the
-            # audio is retained and persisted below.
-            if not transcriber_closed:
-                self._pump.cancel()
-            try:
-                await self._pump
-            except asyncio.CancelledError:
-                self._reraise_if_cancelling()
-        if self._translation_worker is not None:
-            # The pump is done, so every translate job is queued. A run still open
-            # at teardown is over by definition (queues the `done` marker); then a
-            # stop sentinel lets the worker drain pending translations first, so
-            # the tail turns still persist translated. Bounded: a wedged model
-            # call must not hold teardown hostage.
-            self._end_translation_run()
-            assert self._translation_queue is not None
-            self._translation_queue.put_nowait(("stop", None, None))
-            try:
-                await asyncio.wait_for(self._translation_worker, timeout=15)
-            except asyncio.TimeoutError:
-                log.warning("session %s translation drain timed out", self.session_id)
-            self._translation_worker = None
-        if self._translation_hold is not None:
-            self._translation_hold.cancel()
-            self._translation_hold = None
-        # Stop the music scan loop and release its service (XERK-184). A song run
-        # left open just ends with the session — the client is tearing down too.
-        if self._music_end_task is not None:
-            self._music_end_task.cancel()
-            self._music_end_task = None
-        if self._music_scan is not None:
-            self._music_scan.cancel()
-            try:
-                await self._music_scan
-            except asyncio.CancelledError:
-                pass
-            self._music_scan = None
-        if self._music is not None:
-            try:
-                await self._music.close()
-            except Exception:
-                log.warning("session %s music service close failed", self.session_id)
-        if self._cue_retriever is not None:
-            try:
-                await self._cue_retriever.close()
-            except Exception:
-                log.warning("session %s cue retriever close failed", self.session_id)
-        await self._persist()
+        # Retain the audio BEFORE the model drains below. They can take ~30 s
+        # together against a slow or hung model, and pod shutdown is SIGKILLed at
+        # the 30 s grace period: the recording must already be on disk by then,
+        # not queued behind STT/translation calls that can't affect it (XERK-1458).
+        # Shielded: the store write runs in a thread that a cancel can't stop, so
+        # a cancel landing here must not abandon the retain half-done — the finally
+        # waits for it (and its buffer trim) before storing the remainder, or the
+        # remainder would be stored behind a second copy of the same audio.
+        retain = self._first_retain
+        assert retain is not None
+        # Finalize the conversation even if this teardown is cancelled mid-drain —
+        # the shutdown deadline in main.py cancels teardowns that overrun it.
+        try:
+            await asyncio.shield(retain)
+            # A failing STT seam can raise from flush()/close() too; guard each so
+            # teardown still persists the conversation and never leaks an exception
+            # out of close(). They are guarded separately: close() is what ends
+            # results(), so a flush that raises (an STT timeout on the tail decode)
+            # must not skip it, or the pump below is awaited forever.
+            #
+            # CancelledError is caught too unless this task itself is being cancelled
+            # (event-loop shutdown): one escaping a seam otherwise is that seam's own
+            # fault (e.g. a cancelled internal task) and must not skip persistence
+            # (XERK-1460). Both calls are bounded so a wedged seam can't hold teardown.
+            transcriber_closed = True
+            if self._transcriber is not None:
+                try:
+                    await asyncio.wait_for(self._transcriber.flush(), timeout=_STT_FLUSH_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    log.warning("session %s STT flush timed out", self.session_id)
+                    metrics.incr("stage.stt.flush_timeouts")
+                except (Exception, asyncio.CancelledError):
+                    self._reraise_if_cancelling()
+                    log.exception("session %s transcriber flush failed", self.session_id)
+                    metrics.incr("stage.stt.errors")
+                # Close even when flush failed: it ends results(), and the pump join
+                # below waits on that — a skipped close hung teardown forever.
+                try:
+                    await asyncio.wait_for(self._transcriber.close(), timeout=_STT_FLUSH_TIMEOUT_S)
+                except (Exception, asyncio.CancelledError):
+                    self._reraise_if_cancelling()
+                    log.exception("session %s transcriber close failed", self.session_id)
+                    metrics.incr("stage.stt.errors")
+                    transcriber_closed = False
+            if self._pump is not None:
+                # A failed close() never queued the sentinel that ends results(), so
+                # the pump would drain forever: cancel it instead (XERK-1460). Any
+                # finals not yet drained are dropped from the transcript only; the
+                # audio is retained and persisted below.
+                if not transcriber_closed:
+                    self._pump.cancel()
+                try:
+                    await self._pump
+                except asyncio.CancelledError:
+                    self._reraise_if_cancelling()
+            if self._translation_worker is not None:
+                # The pump is done, so every translate job is queued. A run still open
+                # at teardown is over by definition (queues the `done` marker); then a
+                # stop sentinel lets the worker drain pending translations first, so
+                # the tail turns still persist translated. Bounded: a wedged model
+                # call must not hold teardown hostage.
+                self._end_translation_run()
+                assert self._translation_queue is not None
+                self._translation_queue.put_nowait(("stop", None, None))
+                try:
+                    await asyncio.wait_for(self._translation_worker, timeout=15)
+                except asyncio.TimeoutError:
+                    log.warning("session %s translation drain timed out", self.session_id)
+                self._translation_worker = None
+            if self._translation_hold is not None:
+                self._translation_hold.cancel()
+                self._translation_hold = None
+            # Stop the music scan loop and release its service (XERK-184). A song run
+            # left open just ends with the session — the client is tearing down too.
+            if self._music_end_task is not None:
+                self._music_end_task.cancel()
+                self._music_end_task = None
+            if self._music_scan is not None:
+                self._music_scan.cancel()
+                try:
+                    await self._music_scan
+                except asyncio.CancelledError:
+                    # The scan's own cancel is expected; the shutdown deadline's
+                    # cancel of this teardown must still reach the finally, not
+                    # run on into the unbounded music/cue closes (XERK-1458).
+                    self._reraise_if_cancelling()
+                self._music_scan = None
+            if self._music is not None:
+                try:
+                    await self._music.close()
+                except Exception:
+                    log.warning("session %s music service close failed", self.session_id)
+            if self._cue_retriever is not None:
+                try:
+                    await self._cue_retriever.close()
+                except Exception:
+                    log.warning("session %s cue retriever close failed", self.session_id)
+        finally:
+            await asyncio.wait({retain})
+            await self._persist()
         log.info("session %s closed", self.session_id)
 
     @staticmethod
@@ -1372,29 +1521,77 @@ class Session:
         """
         if self._conversations is None:
             return
-        # Persist retained audio, then point the conversation at it.
-        #
-        # Guarded as a whole: audio retention is best-effort, but FINALIZING the
-        # conversation is not. Anything raising in here — an unwritable audio
-        # dir, a full disk, or audio_key() rejecting an unusual household name —
-        # used to propagate out of close() and skip finish() below, leaving the
-        # session stuck "live" forever on top of having lost its audio
-        # (XERK-236). Losing the recording is bad; losing the recording AND the
-        # record of it is worse.
+        # A resumed sitting whose earlier sitting's first retain failed stores
+        # only after that sitting's own retry, to keep the recording in order.
+        cancelled = False
+        prior, self._prior_teardown = self._prior_teardown, None
+        if prior is not None:
+            try:
+                await asyncio.wait({prior})
+            except asyncio.CancelledError:
+                # The shutdown deadline: it cancels that teardown too and gives
+                # both a bounded finalize window. Spend ours finishing the wait
+                # and storing, or this sitting's audio would never be stored.
+                cancelled = True
+                await asyncio.wait({prior})
+        # Picks up any audio that arrived after close() retained the buffer
+        # (a no-op when it is empty), then finalizes.
+        await self._retain_audio()
+        if self._start_failed and not self._row_opened:
+            # Never reached the store: there is no live row of ours to finalize, and
+            # finish() on a resumed recording would rewrite its ended_at.
+            return
+        await asyncio.to_thread(
+            self._conversations.finish, self._household, self.session_id, status="ready"
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _retain_audio_after_prior(self) -> bool:
+        """Retain, but never ahead of the sitting this one resumed mid-teardown:
+        _persist_audio appends to whatever is stored, so storing first would put
+        this sitting's audio before the earlier one's (XERK-1500). Normally only
+        the earlier sitting's first retain is waited on, not its model drains;
+        if that retain failed, its audio is only retried by its final _persist,
+        so ours waits for our own _persist (see there)."""
+        prior_retain = self._prior_retain
+        self._prior_retain = None
+        if prior_retain is not None:
+            await asyncio.wait({prior_retain})
+            if prior_retain.cancelled() or not prior_retain.result():
+                # Leave our audio buffered for _persist, which waits on that
+                # teardown — waiting here would hold our own flush behind its
+                # model drains, and a shutdown deadline would drop our tail.
+                return False
+            self._prior_teardown = None
+        return await self._retain_audio()
+
+    async def _retain_audio(self) -> bool:
+        """Best-effort audio retention that never raises; returns whether it stored.
+
+        Guarded as a whole: audio retention is best-effort, but FINALIZING the
+        conversation is not. Anything raising in here — an unwritable audio dir,
+        a full disk, or audio_key() rejecting an unusual household name — used
+        to propagate out of close() and skip finish(), leaving the session stuck
+        "live" forever on top of having lost its audio (XERK-236). Losing the
+        recording is bad; losing the recording AND the record of it is worse.
+        """
+        if self._conversations is None:
+            return True
         try:
             await self._persist_audio()
         except Exception:
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
-        await asyncio.to_thread(
-            self._conversations.finish, self._household, self.session_id, status="ready"
-        )
+            return False
+        return True
 
     async def _persist_audio(self) -> None:
         """Flush the retained full-session audio to the audio store."""
         if self._audio_store is not None and self._full_audio:
             key = audio_key(self._household, self.session_id)
             pcm = bytes(self._full_audio)
+            taken = len(pcm)
             # Extend, don't overwrite. A session that resumes after the grace window
             # has lapsed reaches the api as a *new* Session on the same conversation
             # id, so its buffer holds only the post-resume audio — the glasses do
@@ -1407,7 +1604,19 @@ class Session:
                 pcm = wav_to_pcm16(existing) + pcm
             wav = pcm16_to_wav(pcm)
             await asyncio.to_thread(self._audio_store.put, key, wav)
+            # Trim as soon as the audio is stored, before anything else can fail:
+            # close() retains twice, and an untrimmed buffer would be prepended
+            # with its own stored copy on the second pass. Drop only what was
+            # written — audio can still arrive during the awaits above, and the
+            # final _persist() stores that remainder.
+            del self._full_audio[:taken]
+            self._audio_key_pending = True
+        if self._audio_store is not None and self._audio_key_pending:
+            # Retried on the next retain if it fails (the audio itself is stored).
             await asyncio.to_thread(
-                self._conversations.set_audio_key, self._household, self.session_id, key
+                self._conversations.set_audio_key,
+                self._household,
+                self.session_id,
+                audio_key(self._household, self.session_id),
             )
-            self._full_audio.clear()
+            self._audio_key_pending = False

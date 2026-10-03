@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from api.persistence.models import (
     Conversation,
@@ -30,6 +31,13 @@ from api.persistence.models import (
 )
 
 log = logging.getLogger("api.persistence.postgres")
+
+# How long opening the pool may wait for its first connections, how long a failed
+# open is remembered before the next attempt, and how long any caller waits for a
+# pooled connection. psycopg's 30s default applied to every call while the database was down,
+# each one building a fresh pool behind ``_pool_lock``: boot blocked ~2 minutes and
+# every /ready held a worker thread 30-60s (XERK-1434).
+OPEN_TIMEOUT_SECONDS = 5.0
 
 
 def find_schema_file() -> Path | None:
@@ -71,6 +79,20 @@ def apply_schema(conn, sql: str) -> None:
         conn.execute(statement)
 
 
+# pg_advisory_xact_lock key every boot-time DDL apply takes first ("Tenir" in ASCII).
+# The stores' ``_pool_lock`` only serializes within one process: two api processes
+# booting at once (a rolling update, >1 replica) raced the same CREATE ... IF NOT
+# EXISTS and Postgres failed one with 40P01 or a pg_type unique violation, which
+# reads as a rejected schema and aborts startup (XERK-1509).
+SCHEMA_LOCK_KEY = 0x54656E6972
+
+
+def lock_schema(conn) -> None:
+    """Block until no other connection is applying DDL, holding the lock until this
+    transaction ends. ``conn`` must not be autocommit, or it is released at once."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+
+
 class SchemaApplyError(RuntimeError):
     """schema.sql was rejected by a reachable database (XERK-1409).
 
@@ -78,6 +100,61 @@ class SchemaApplyError(RuntimeError):
     database refuses — e.g. a migration that only fails on production data — leaves
     every session.start broken, so boot treats it as fatal rather than rolling out
     a pod that looks healthy and can't record."""
+
+
+class DatabaseUnavailable(RuntimeError):
+    """The pool could not be opened: the last attempt, under OPEN_TIMEOUT_SECONDS
+    ago, found the database unreachable (XERK-1434)."""
+
+
+class PoolOpener:
+    """Opens a store's connection pool with bounded waits (XERK-1434).
+
+    A pool that can't open within OPEN_TIMEOUT_SECONDS is closed and its error is
+    shared with every caller for that long, instead of each one queueing another
+    full wait behind the store's lock. The caller holds its own lock and caches
+    the returned pool."""
+
+    def __init__(self, dsn: str, name: str) -> None:
+        self._dsn = dsn
+        self._name = name
+        self._failure: tuple[float, Exception] | None = None
+
+    def open(self, init: Callable[[Any], None]):
+        """A ready pool with ``init(pool)`` applied; closed again if either fails.
+        Only a failure to open is remembered: an ``init`` error (a rejected schema)
+        is retried on the very next call."""
+        failure = self._failure
+        if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
+            raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
+        from psycopg_pool import ConnectionPool
+
+        log.info("opening Postgres connection pool (%s)", self._name)
+        pool = ConnectionPool(
+            self._dsn,
+            open=False,
+            # libpq's connect_timeout too: closing a pool that timed out waits for
+            # its in-flight connects, which against a blackholed host never return.
+            kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)},
+            # Every request's wait for a connection, too: with the database gone
+            # after the pool opened, psycopg's 30s default held a worker thread per
+            # request, and 50 of them stalled every sync endpoint for 30-60s.
+            timeout=OPEN_TIMEOUT_SECONDS,
+            # Pooled connections outlive a Postgres restart; without a check each
+            # one fails its next borrower once (AdminShutdown) before it is dropped.
+            check=ConnectionPool.check_connection,
+        )
+        try:
+            try:
+                pool.open(wait=True, timeout=OPEN_TIMEOUT_SECONDS)
+            except Exception as exc:
+                self._failure = (time.monotonic(), exc)
+                raise
+            init(pool)
+        except BaseException:
+            pool.close()
+            raise
+        return pool
 
 
 def _is_connection_lost(conn, exc: BaseException) -> bool:
@@ -88,35 +165,66 @@ def _is_connection_lost(conn, exc: BaseException) -> bool:
     treating those as an outage booted a Ready pod on a broken schema again."""
     if getattr(conn, "broken", False):
         return True
-    sqlstate = getattr(exc, "sqlstate", None) or ""
+    return _is_connection_sqlstate(getattr(exc, "sqlstate", None) or "")
+
+
+def _is_connection_sqlstate(sqlstate: str) -> bool:
     # Class 08: connection exception; 57P01-57P03: admin/crash shutdown, cannot connect.
     return sqlstate.startswith("08") or sqlstate in ("57P01", "57P02", "57P03")
 
 
-# Key for the transaction-scoped advisory lock every boot schema apply takes first.
-# SqlConversationStore and SqlUserStore each apply DDL on pool open, and their
-# per-store locks don't see each other (nor other replicas): concurrent first use on
-# an empty database raced CREATE TABLE IF NOT EXISTS (UniqueViolation on
-# pg_type_typname_nsp_index) or ran the users DDL before households existed
-# (XERK-1430). One database-wide lock serializes every apply, in any process.
-_SCHEMA_LOCK_KEY = 0x54454E4952  # "TENIR"
+def database_error_types() -> tuple[type[BaseException], ...]:
+    """The exception classes ``is_database_unavailable`` may accept, for registering
+    handlers by class. psycopg's only exist when the persistence extra is installed."""
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:
+        return (DatabaseUnavailable,)
+    return (DatabaseUnavailable, PoolTimeout, psycopg.OperationalError)
+
+
+def is_database_unavailable(exc: BaseException) -> bool:
+    """True when ``exc`` means "the database can't be reached right now" — a
+    retryable outage the API answers with 503 rather than a 500 (XERK-1510).
+
+    Covers ``DatabaseUnavailable`` (the pool can't open), psycopg_pool's
+    ``PoolTimeout`` (no connection within the request's wait) and a connection-level
+    ``OperationalError``: a lost/refused connection carries no SQLSTATE (the server
+    never answered) or a class-08/57P0x one. Other OperationalErrors (disk full, a
+    too-large index row) are real faults and stay 500s, as in ``_is_connection_lost``."""
+    if isinstance(exc, DatabaseUnavailable):
+        return True
+    try:
+        import psycopg
+        from psycopg_pool import PoolTimeout
+    except ImportError:  # in-memory install: no Postgres to be unavailable
+        return False
+    if isinstance(exc, PoolTimeout):
+        return True
+    if isinstance(exc, psycopg.OperationalError):
+        sqlstate = exc.sqlstate
+        return sqlstate is None or _is_connection_sqlstate(sqlstate)
+    return False
 
 
 def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
-    """Apply schema.sql, then ``extra`` statements, in one transaction holding the
-    database-wide schema lock.
+    """Apply schema.sql, then a store's ``extra`` DDL, in one transaction under the
+    cross-process schema lock.
 
-    A statement the database rejects raises ``SchemaApplyError``; failing to get a
-    connection, or losing it mid-apply, propagates as-is (database unreachable)."""
+    Both stores apply through here (XERK-1430): the users DDL references households,
+    which on an empty database only exists once schema.sql ran, so the user store
+    applying its own DDL alone failed (UndefinedTable) whenever it opened first —
+    and its env-admin seed with it. A statement the database rejects raises
+    ``SchemaApplyError``; failing to get a connection, or losing it mid-apply,
+    propagates as-is (database unreachable)."""
     path = find_schema_file()
     if path is None:
         log.warning("schema.sql not found; skipping it in the boot schema apply")
     sql = path.read_text(encoding="utf-8") if path is not None else ""
-    # pool.connection() runs the block as one transaction (committed on exit), so the
-    # xact lock is held until every statement below is committed.
     with pool.connection() as conn:
         try:
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
+            lock_schema(conn)
             apply_schema(conn, sql)
             for statement in extra:
                 conn.execute(statement)
@@ -137,6 +245,7 @@ class SqlConversationStore:
         # Serializes pool open + schema apply. Without it, concurrent first callers
         # each open a pool and run the DDL in parallel, which Postgres deadlocks on.
         self._pool_lock = threading.Lock()
+        self._opener = PoolOpener(dsn, "conversations")
 
     def open(self) -> None:  # pragma: no cover - requires psycopg + a live database
         """Eagerly open the pool and apply the schema at boot.
@@ -159,10 +268,6 @@ class SqlConversationStore:
         with self._pool_lock:
             if self._pool is not None:
                 return self._pool
-            from psycopg_pool import ConnectionPool
-
-            log.info("opening Postgres connection pool")
-            pool = ConnectionPool(self._dsn, open=True)
             # Self-heal schema drift on boot. Postgres only applies schema.sql on a
             # FRESH data volume (docker-entrypoint-initdb.d), so a database created
             # before an additive change — e.g. the `cues` table (XERK-81) that reads
@@ -173,12 +278,7 @@ class SqlConversationStore:
             # The pool is cached only once the schema applied: caching it first meant
             # one failed apply was never retried and every later call ran against the
             # broken schema with nothing reporting it (XERK-1409).
-            try:
-                self._apply_schema(pool)
-            except BaseException:
-                pool.close()
-                raise
-            self._pool = pool
+            self._pool = self._opener.open(self._apply_schema)
         return self._pool
 
     def _apply_schema(self, pool) -> None:  # pragma: no cover - requires a live database
@@ -363,24 +463,35 @@ class SqlConversationStore:
                 ).fetchone()
             if row is None:
                 return None
-            seg_rows = cur.execute(
-                "SELECT * FROM segments WHERE conversation_id = %s ORDER BY start_ms",
-                (conversation_id,),
-            ).fetchall()
-            cue_rows = cur.execute(
-                "SELECT * FROM cues WHERE conversation_id = %s ORDER BY at_ms",
-                (conversation_id,),
-            ).fetchall()
-            song_rows = cur.execute(
-                "SELECT * FROM songs WHERE conversation_id = %s ORDER BY at_ms",
-                (conversation_id,),
-            ).fetchall()
-        return self._row_to_conversation(
-            row,
-            [self._row_to_segment(r) for r in seg_rows],
-            [self._row_to_cue(r) for r in cue_rows],
-            [self._row_to_song(r) for r in song_rows],
-        )
+            return self._assemble(cur, [row])[0]
+
+    def _assemble(self, cur, rows) -> list[Conversation]:  # pragma: no cover - live database
+        """Build conversations from their rows, reading every child table once for all of
+        them on the caller's cursor. Listing used to call get() per row — a pool borrow
+        plus three reads each — so one /conversations queued 1+N times for the small pool
+        (XERK-1518)."""
+        if not rows:
+            return []
+        ids = [r["id"] for r in rows]
+        segs: dict[str, list[Segment]] = {i: [] for i in ids}
+        cues: dict[str, list[Cue]] = {i: [] for i in ids}
+        songs: dict[str, list[Song]] = {i: [] for i in ids}
+        for r in cur.execute(
+            "SELECT * FROM segments WHERE conversation_id = ANY(%s) ORDER BY start_ms, segment_id",
+            (ids,),
+        ).fetchall():
+            segs[r["conversation_id"]].append(self._row_to_segment(r))
+        for r in cur.execute(
+            "SELECT * FROM cues WHERE conversation_id = ANY(%s) ORDER BY at_ms, cue_id", (ids,)
+        ).fetchall():
+            cues[r["conversation_id"]].append(self._row_to_cue(r))
+        for r in cur.execute(
+            "SELECT * FROM songs WHERE conversation_id = ANY(%s) ORDER BY at_ms, song_id", (ids,)
+        ).fetchall():
+            songs[r["conversation_id"]].append(self._row_to_song(r))
+        return [
+            self._row_to_conversation(r, segs[r["id"]], cues[r["id"]], songs[r["id"]]) for r in rows
+        ]
 
     @staticmethod
     def _row_to_segment(row) -> Segment:  # pragma: no cover - requires a live database
@@ -423,18 +534,15 @@ class SqlConversationStore:
         where = "household = %s" if owner is None else "household = %s AND owner = %s"
         params: tuple = (household,) if owner is None else (household, owner)
         with self._ensure_pool().connection() as conn:
-            rows = (
-                conn.cursor(row_factory=dict_row)
-                .execute(
-                    f"""
+            cur = conn.cursor(row_factory=dict_row)
+            rows = cur.execute(
+                f"""
                 SELECT * FROM conversations WHERE {where}
                 ORDER BY started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (*params, limit, offset),
-                )
-                .fetchall()
-            )
-        return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
+                (*params, limit, offset),
+            ).fetchall()
+            return self._assemble(cur, rows)
 
     def search(  # pragma: no cover - requires a live database
         self,
@@ -457,11 +565,10 @@ class SqlConversationStore:
             # tsvector built over an aggregate (string_agg) can't use that index and
             # forces a full scan + per-query recompute. Rank by recency of the
             # matching conversation; relevance ranking can layer on later if needed.
-            rows = (
-                conn.cursor(row_factory=dict_row)
-                .execute(
-                    f"""
-                SELECT c.id FROM conversations c
+            cur = conn.cursor(row_factory=dict_row)
+            rows = cur.execute(
+                f"""
+                SELECT c.* FROM conversations c
                 WHERE c.household = %s {owner_clause}
                   AND EXISTS (
                       SELECT 1 FROM segments s
@@ -471,11 +578,9 @@ class SqlConversationStore:
                   )
                 ORDER BY c.started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (household, *owner_param, query, limit, offset),
-                )
-                .fetchall()
-            )
-        return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
+                (household, *owner_param, query, limit, offset),
+            ).fetchall()
+            return self._assemble(cur, rows)
 
     def delete(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str
@@ -486,6 +591,13 @@ class SqlConversationStore:
                 (household, conversation_id),
             )
             return cur.rowcount > 0
+
+    def ready(self) -> None:
+        """Readiness probe: one round trip, never waiting longer than
+        OPEN_TIMEOUT_SECONDS for a connection (the request path keeps the pool's own
+        timeout). Raises when the database is unreachable."""
+        with self._ensure_pool().connection(timeout=OPEN_TIMEOUT_SECONDS) as conn:
+            conn.execute("SELECT 1")
 
     def households(self) -> list[str]:  # pragma: no cover - requires a live database
         with self._ensure_pool().connection() as conn:

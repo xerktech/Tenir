@@ -40,14 +40,14 @@ def probe_backends() -> dict[str, str]:
     The failure detail is logged, never returned: the result is served on the
     unauthenticated ``/ready``.
 
-    Only the enabled stores are probed (a disabled/``off`` store is omitted), with a
-    cheap operation each — listing households, an audio-store ``ready()`` — so the
-    same call works for both the in-memory and the real backends.
+    Only the enabled stores are probed (a disabled/``off`` store is omitted), with
+    each store's cheap, time-bounded ``ready()`` — so the same call works for both
+    the in-memory and the real backends.
     """
     checks: dict[str, str] = {}
     conv = get_conversation_store()
     if conv is not None:
-        checks["conversations"] = _probe("conversations", conv.households)
+        checks["conversations"] = _probe("conversations", conv.ready)
     audio = get_audio_store()
     if audio is not None:
         checks["audio"] = _probe("audio", audio.ready)

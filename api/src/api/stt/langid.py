@@ -86,6 +86,11 @@ _ENGLISH_HOMOGRAPHS = frozenset(
     "ya yo".split()
 )
 
+# English vocab that is also an everyday word of another contract language, ASR-spelled
+# (no accents): de "was"/"is"(ist)/"so"/"in", es "has", pt "to"(tô)/"for", it "be"/"so"/"in",
+# fr "but"/"the"(thé). Found by QA of XERK-1423 with the real translation model.
+_SHARED_EN = frozenset("was is so in has to for be but the".split())
+
 # Characters that pin a language on their own (strong evidence — they are typed
 # by the STT model's own orthography, not by chance).
 _CHARS: dict[str, str] = {
@@ -165,6 +170,15 @@ def leans_english(text: str, versus: str) -> bool:
     return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
 
 
+def is_english_word(word: str) -> bool:
+    """Whether a lowercased token can only be English: English vocabulary that is no
+    word of another contract language (not a homograph, not in ``_SHARED_EN``, not in
+    another language's vocabulary). "was" is German "what", so it is not one."""
+    if word not in _WORDS["en"] or word in _ENGLISH_HOMOGRAPHS or word in _SHARED_EN:
+        return False
+    return not any(word in vocab for code, vocab in _WORDS.items() if code != "en")
+
+
 def detect_lang(text: str) -> str | None:
     """Best-effort language of one finalized turn, as a contract code, or None.
 
@@ -188,6 +202,10 @@ def detect_lang(text: str) -> str | None:
         # One English word next to a homograph or an accented letter is a
         # code-switched turn ("Like, no sé.", "Ya, it's ok."), not an English one:
         # calling it en would close a live run mid-Spanish (XERK-1415 QA).
+        return None
+    if best == "en" and best_score < _MIN_HITS and any(w in _SHARED_EN for w in words):
+        # The one English hit is a shared word, as native as it is English: pt "to cansado",
+        # de "is mir egal", fr "the vert" closed live runs as en (XERK-1516).
         return None
     return best
 
