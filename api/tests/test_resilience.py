@@ -547,3 +547,85 @@ def test_failed_start_whose_cleanup_raises_reraises_the_original(
             await session.start(mic_source="phone", source_lang=None)
 
     asyncio.run(run())
+
+
+def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an STT outage the queued finals land as one burst (XERK-1447). A final
+    whose audio arrived longer ago than _STALE_FINAL_S goes to the stored transcript
+    only — not to the caption band, translation or cues — while a fresh one is pushed."""
+    import api.session as session_mod
+    from api.config import settings
+    from api.contract import CaptionFinal, MicSource
+    from api.stt.stub import StubTranscriber
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    class Outage(StubTranscriber):
+        """Holds every final until release(), as a hung upstream holds the queue."""
+
+        async def push(self, pcm: bytes) -> None:
+            self._total_bytes += len(pcm)
+
+        async def release(self, *ends_ms: int) -> None:
+            start = 0
+            for end in ends_ms:
+                await self._queue.put(
+                    CaptionFinal(
+                        type="caption.final",
+                        segmentId=f"seg-{end}",
+                        text=f"turn {end}",
+                        lang="en",
+                        startMs=start,
+                        endMs=end,
+                    )
+                )
+                start = end
+
+    outage = Outage()
+    monkeypatch.setattr(session_mod, "make_transcriber", lambda *a, **k: outage)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+        await session.on_audio(b"\x00" * 64000)  # 0-2000 ms, spoken before the outage
+        # That audio arrived 40 s ago; the next turn's audio arrives now.
+        session._audio_arrivals = type(session._audio_arrivals)(
+            ((ms, t - 40.0) for ms, t in session._audio_arrivals),
+            maxlen=session._audio_arrivals.maxlen,
+        )
+        await session.on_audio(b"\x00" * 64000)  # 2000-4000 ms
+        considered: list[str] = []
+        session._consider_translation = lambda f: considered.append(f"tr:{f.segmentId}")  # type: ignore[method-assign]
+        session._consider_cue = lambda f: considered.append(f"cue:{f.segmentId}")  # type: ignore[method-assign]
+        await outage.release(2000, 4000)
+        await session.close()
+
+        live = [m.segmentId for m in sent if isinstance(m, CaptionFinal)]
+        assert live == ["seg-4000"]
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None
+        assert [s.segment_id for s in conv.segments] == ["seg-2000", "seg-4000"]
+        # Only the fresh turn reached translation and cue consideration.
+        assert considered == ["tr:seg-4000", "cue:seg-4000"]
+        assert metrics.snapshot()["counters"]["caption.final_stale"] == 1
+
+    asyncio.run(run())
+
+
+def test_final_with_no_dated_audio_is_not_stale() -> None:
+    """A final past the last audio sample (or before any audio) can't be dated; it is
+    treated as fresh rather than silently withheld from the caption band."""
+    from api.contract import CaptionFinal
+
+    session = Session(_noop_send(None))
+    final = CaptionFinal(type="caption.final", segmentId="s", text="t", startMs=0, endMs=500)
+    assert session._final_age_s(final) == 0.0  # before any audio
+    session._audio_arrivals.append((400, 0.0))  # one push, dated long ago
+    assert session._final_age_s(final) == 0.0  # final runs past the last sample

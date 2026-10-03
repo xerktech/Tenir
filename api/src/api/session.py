@@ -85,6 +85,18 @@ _DETACHED_BUFFER_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
+# A caption.final whose turn's last audio arrived more than this long ago is stored
+# but not pushed live, translated or cued. Finals queue through an STT outage and
+# land as one burst on recovery (XERK-1447); on the glasses that buried the present
+# under seconds-old turns. A healthy final lands within ~1-2 s of its turn's end.
+_STALE_FINAL_S = 10.0
+
+# How many (audio position, arrival time) samples the session keeps to date a final's
+# audio. Pruned as finals land; the cap only bounds a long silent stretch with no
+# finals. A final older than the oldest sample counts as stale: even at 20 ms chunks
+# this spans minutes, far past _STALE_FINAL_S.
+_AUDIO_ARRIVALS_MAX = 6000
+
 # Every running session teardown. Paths like the grace-window lapse, session.end
 # and revoke unregister the session before closing it, and a cancelled close()
 # caller orphans its teardown, so shutdown waits on these rather than the registry
@@ -303,6 +315,9 @@ class Session:
         # timeline cues/segments use), independent of the STT seam.
         self._start_offset_ms = 0
         self._audio_bytes_pushed = 0
+        # (session-timeline ms after a push, monotonic time of that push), oldest
+        # first, so a final can be dated by when its audio arrived (_final_age_s).
+        self._audio_arrivals: deque[tuple[int, float]] = deque(maxlen=_AUDIO_ARRIVALS_MAX)
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -515,6 +530,7 @@ class Session:
         # Track the session-timeline position so the music scan can stamp a song
         # at "now" (cheap counter; independent of any backend being on).
         self._audio_bytes_pushed += len(pcm)
+        self._audio_arrivals.append((self._current_audio_ms(), time.monotonic()))
         # Music ID (XERK-184): keep a bounded rolling window of the most recent
         # audio for the scan loop to fingerprint. The one place music diverges
         # from cues/translations — it needs the audio, not the transcript.
@@ -603,19 +619,29 @@ class Session:
         async for result in self._transcriber.results():
             if isinstance(result, CaptionPartial) and not result.text:
                 continue  # close() sentinel
-            try:
-                await self._send(result)
-            except Exception:
-                # The socket can be gone before the drain finishes: a client that
-                # sends session.end and closes immediately is torn down while the
-                # end-of-session flush is still producing finals. Delivery is
-                # best-effort, the transcript is not — swallow the send failure and
-                # keep draining so those turns are still persisted below (XERK-58).
-                log.warning("session %s could not deliver a caption (client gone)", self.session_id)
-                metrics.incr("caption.send_errors")
-            metrics.incr(
-                "caption.partial" if isinstance(result, CaptionPartial) else "caption.final"
+            # A final that sat out an STT outage is history, not a live caption: it
+            # goes to the stored transcript only (XERK-1447).
+            is_stale = (
+                isinstance(result, CaptionFinal) and self._final_age_s(result) > _STALE_FINAL_S
             )
+            if is_stale:
+                metrics.incr("caption.final_stale")
+            else:
+                try:
+                    await self._send(result)
+                except Exception:
+                    # The socket can be gone before the drain finishes: a client that
+                    # sends session.end and closes immediately is torn down while the
+                    # end-of-session flush is still producing finals. Delivery is
+                    # best-effort, the transcript is not — swallow the send failure and
+                    # keep draining so those turns are still persisted below (XERK-58).
+                    log.warning(
+                        "session %s could not deliver a caption (client gone)", self.session_id
+                    )
+                    metrics.incr("caption.send_errors")
+                metrics.incr(
+                    "caption.partial" if isinstance(result, CaptionPartial) else "caption.final"
+                )
             if isinstance(result, CaptionFinal) and self._conversations is not None:
                 # Persist the finalized turn to the conversation transcript.
                 # Offloaded: a real (Postgres) store does a blocking round-trip;
@@ -637,13 +663,28 @@ class Session:
                 # Speech is still flowing: keep a live translation run's silence
                 # hold from expiring mid-utterance (finals only land at pauses).
                 self._touch_translation_hold()
-            if isinstance(result, CaptionFinal):
+            if isinstance(result, CaptionFinal) and not is_stale:
                 # A non-English turn opens/extends a translation run (XERK-160);
                 # an English one closes it. Considered before the cue so the same
                 # turn that opens a run never also produces a cue.
                 self._consider_translation(result)
                 # A finalized turn may be cue-worthy; consider it out of band.
                 self._consider_cue(result)
+
+    def _final_age_s(self, final: CaptionFinal) -> float:
+        """Seconds since the audio that ends `final` reached the session.
+
+        Dated by arrival rather than by the session timeline, so audio pushed faster
+        than real time (tests, a simulator) doesn't read as old. Finals land in
+        timeline order, so samples before this one's end are pruned as they go."""
+        arrivals = self._audio_arrivals
+        if not arrivals or final.endMs > arrivals[-1][0]:
+            return 0.0  # no dated audio covers it (e.g. a backend's own timeline)
+        # The first sample at or past its end is the push that delivered that audio.
+        # If the cap already dropped it, the oldest kept sample is minutes old anyway.
+        while len(arrivals) > 1 and arrivals[0][0] < final.endMs:
+            arrivals.popleft()
+        return time.monotonic() - arrivals[0][1]
 
     def _consider_translation(self, result: CaptionFinal) -> None:
         """Track the translation run across finalized turns (XERK-160).
