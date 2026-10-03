@@ -37,6 +37,12 @@ def decide(finals: list[dict], hold_ms: int) -> list[tuple[dict, str | None, str
     for f in sorted(finals, key=lambda f: f["startMs"]):
         if active and last_end is not None and f["startMs"] - last_end > hold_ms:
             active = False
+        if not f["text"].strip():
+            # A blank final never reaches the session (the transcriber drops it); one
+            # can appear here when a candidate model returns nothing for a turn.
+            f["lang"] = None
+            out.append(None)
+            continue
         lang = detect_lang(f["text"])
         f["lang"] = lang
         if lang is not None and lang != "en":

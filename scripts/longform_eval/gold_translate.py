@@ -37,6 +37,8 @@ def expects_call(tr, text: str, source_lang: str | None, run_lang: str | None) -
     *was* sent is the only sign of a failed call (timeout, 4xx/5xx) or empty output;
     a None from a turn the translator declines (completion style: no nameable source
     language, or an inherited turn leaning English) is a decision, not a failure."""
+    if not text.strip():
+        return False  # translate() returns None for blank text without a call
     build = tr._build_payload
     if "run_lang" in build.__code__.co_varnames:
         return build(text, source_lang=source_lang, run_lang=run_lang) is not None
