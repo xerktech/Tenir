@@ -90,8 +90,16 @@ _PARTIAL_STALE_S = 1.0
 # and takes the old fallback, so a dead upstream can't hold the worker (or the
 # translation hold on `finalizing`) for budget x turns. Session.close still caps the
 # end-of-session flush at 15 s and drops whatever is left (XERK-1424).
+#
+# Only an outage is retried. The upstream can also fail one input deterministically
+# (Parakeet 500s on 10-20 ms tails), and retrying that would hold every later turn for
+# the whole budget — on a healthy upstream — and lose them all if the session ended
+# meanwhile. So after a turn's first failure one second of silence is decoded as a
+# probe: if that answers, the upstream is up and the turn takes the fallback at once.
+# No probe while an outage is already known (_outage_since set).
 _FINAL_RETRY_BUDGET_S = 60.0
 _FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
+_PROBE_PCM = bytes(BYTES_PER_SEC)
 _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
 
@@ -420,13 +428,19 @@ class StreamingTranscriber:
         return retry
 
     async def _decode_final(self, pcm: bytes) -> EngineResult:
-        """Whole-turn decode, retried with backoff while the upstream is failing and
-        the outage is within _FINAL_RETRY_BUDGET_S. Raises once the budget is spent."""
+        """Whole-turn decode, retried with backoff while the upstream is down and the
+        outage is within _FINAL_RETRY_BUDGET_S. Raises once the budget is spent, or at
+        once when the upstream answers a probe (a failure of this input, not an outage)."""
         attempt = 0
         while True:
             try:
                 return await self._run_engine(pcm, stage="final", want_words=self._final_words)
             except Exception:
+                # Probe once, and not mid-outage: a dead upstream would only fail
+                # the probe too, at the cost of another request timeout per turn.
+                if attempt == 0 and self._outage_since is None and await self._upstream_answers():
+                    metrics.incr("stage.stt.final_input_errors")
+                    raise
                 now = time.perf_counter()
                 if self._outage_since is None:
                     self._outage_since = now
@@ -439,14 +453,23 @@ class StreamingTranscriber:
                 attempt += 1
                 await _retry_sleep(delay)
 
+    async def _upstream_answers(self) -> bool:
+        """Probe with silence after a failed final: True if the upstream is up."""
+        try:
+            await self._run_engine(_PROBE_PCM, stage="probe", want_words=False)
+        except Exception:
+            return False
+        return True
+
     async def _finalize(self, pcm: bytes, start: int, has_speech: bool) -> None:
         try:
             result = await self._decode_final(pcm)
         except Exception:
-            # The outage outlasted the retry budget: treat the turn as an empty decode
-            # — no padded retry against an upstream that just failed — so it still
-            # falls back to the partial the user already watched, if there was one.
-            log.exception("STT final decode failed past the retry budget")
+            # The upstream rejects this input, or the outage outlasted the retry
+            # budget: treat the turn as an empty decode — no padded retry against an
+            # upstream that just failed it — so it still falls back to the partial the
+            # user already watched, if there was one.
+            log.exception("STT final decode failed")
             metrics.incr("stage.stt.final_retry_exhausted")
             result = EngineResult(text="", words=[], language=None)
         else:

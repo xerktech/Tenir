@@ -1585,33 +1585,88 @@ def test_turns_whose_final_raises_during_an_outage_land_once_it_recovers(_outage
 
 
 def test_final_retries_give_up_once_the_outage_outlasts_the_budget(_outage) -> None:
-    """A dead upstream can't hold the worker (and the translation hold) forever: past
-    _FINAL_RETRY_BUDGET_S the turn takes the old partial fallback, and later turns of
-    the same outage get one attempt each instead of a fresh budget."""
-    import api.stt.streaming as streaming_mod
+    """A dead upstream can't hold the worker (and the translation hold) forever: the
+    budget runs once per outage, from its first failure, not per turn. Turn 1 retries
+    on the backoff schedule until the next wait would pass the budget, later turns only
+    use what is left of it, and past it each turn gets one attempt and the fallback."""
     from api.metrics import metrics
 
     async def run() -> None:
         metrics.reset()
-        eng = OutageEngine(_outage, recover_after=None)
+        eng = OutageEngine(_outage, recover_after=None, call_s=0.0)
         t = StreamingTranscriber(
             eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
         )
-        await _outage_turns(t, 3)
+        await _outage_turns(t, 5)
         assert [m for m in await _drain(t) if isinstance(m, CaptionFinal)] == []
-        assert _outage.now >= streaming_mod._FINAL_RETRY_BUDGET_S
-        first_turn_calls = len(eng.calls) - 2
-        assert first_turn_calls > 1  # retried while within budget
-        assert metrics.snapshot()["counters"]["stage.stt.final_retry_exhausted"] == 3
+        # Waits 0.5+1+2+4+8x6 = 55.5 s on turn 1 (11 attempts); turn 2 waits 0.5+1+2
+        # (4 attempts), turns 3 and 4 0.5 each (2 attempts) and turn 5, past the
+        # budget, gets 1: the clock stops exactly on the budget. One probe, on the
+        # outage's first failure only.
+        assert _outage.now == 60.0
+        assert eng.calls.count(True) == 11 + 4 + 2 + 2 + 1
+        assert eng.calls.count(False) == 1
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_retry_exhausted"] == 5
+        assert "stage.stt.final_input_errors" not in counters
         assert not t.finalizing
         metrics.reset()
 
-        # The upstream recovers: the next turn decodes and a later outage gets a
-        # fresh budget.
+        # The upstream recovers: the next turn decodes and the outage is over.
         eng.recover_after = 0
         await _outage_turns(t, 1)
-        assert [f.text for f in await _drain(t) if isinstance(f, CaptionFinal)] != []
+        assert len([f for f in await _drain(t) if isinstance(f, CaptionFinal)]) == 1
         assert t._outage_since is None
+        await t.close()
+
+    asyncio.run(run())
+
+
+class PoisonEngine(FakeEngine):
+    """A healthy upstream that rejects one input every time (Parakeet 500s on 10-20 ms
+    tails): any decode of audio at ``poison`` amplitude raises."""
+
+    POISON = 6000 / 32768
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.finals = 0
+
+    def transcribe(self, samples, *, language, want_words=True):
+        if want_words:
+            self.finals += 1
+        if samples.size and abs(float(np.abs(samples).max()) - self.POISON) < 1e-3:
+            raise RuntimeError("500 Internal Server Error")
+        return super().transcribe(samples, language=language, want_words=want_words)
+
+
+def test_a_turn_the_upstream_rejects_is_not_retried_as_an_outage(_outage) -> None:
+    """QA on XERK-1499: retrying every exception made one bad input look like an
+    outage — on a healthy upstream it held every later turn for the whole budget,
+    and a session ending meanwhile lost them all. The silence probe answers, so the
+    turn takes the fallback at once and later turns decode live."""
+    from api.metrics import metrics
+
+    async def run() -> None:
+        metrics.reset()
+        eng = PoisonEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        for amp in (4000, 6000, 4000):
+            for _ in range(5):
+                await t.push(_pcm(100, amplitude=amp))
+            for _ in range(3):
+                await t.push(_pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 800), (1600, 2400)]
+        assert eng.finals == 3  # the rejected turn was tried once
+        assert _outage.now == 0.0  # no backoff waited
+        assert t._outage_since is None
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_input_errors"] == 1
+        assert "stage.stt.final_retries" not in counters
+        metrics.reset()
         await t.close()
 
     asyncio.run(run())

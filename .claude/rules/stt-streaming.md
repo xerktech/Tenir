@@ -26,8 +26,13 @@ paths:
   - The retry budget (`_FINAL_RETRY_BUDGET_S`) runs from the outage's first failure, not per
     turn, and any successful decode resets it. Per-turn budgets would hold the worker and
     the translation hold for budget x queued turns on a dead upstream.
+  - Retry only an outage, never one bad input: real Parakeet 500s every time on 10-20 ms tails.
+    Retrying that held every later turn for the budget on a healthy upstream, and a session
+    ending meanwhile lost them all. After a turn's first failure a 1 s silence probe decides;
+    no probe once an outage is known (a hung upstream would cost a timeout per turn).
   - Tests: `test_streaming_stt.py::test_turns_whose_final_raises_during_an_outage_land_once_it_recovers`,
-    `::test_final_retries_give_up_once_the_outage_outlasts_the_budget`. The autouse fixture
+    `::test_final_retries_give_up_once_the_outage_outlasts_the_budget`,
+    `::test_a_turn_the_upstream_rejects_is_not_retried_as_an_outage`. The autouse fixture
     swaps `_retry_sleep` for one that advances the fake clock.
 - `finalizing` (XERK-1377 translation hold) counts speech finals that are queued or decoding,
   plus finals that are queued but not yet handled.
