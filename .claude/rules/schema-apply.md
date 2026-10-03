@@ -21,6 +21,14 @@ paths:
   meant one failed apply was never retried.
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
+- Across processes, every DDL apply (both stores) first takes `lock_schema()`
+  (`pg_advisory_xact_lock(SCHEMA_LOCK_KEY)`) in the same, non-autocommit transaction.
+  - Without it two api processes booting together (rolling update, >1 replica) fail one with 40P01
+    or a `pg_type` unique violation, which aborts startup as a rejected schema (XERK-1509).
+  - It does not cover apply-vs-request-traffic: a boot apply can still hit 40P01 against live
+    writes, so 40P01 at boot is not proof the schema itself is bad.
+  - Tests: `test_schema_apply_takes_the_cross_process_lock_first`,
+    `test_concurrent_boot_applies_do_not_collide` (live).
 - Both stores open their pool through `PoolOpener` (postgres.py). It bounds every wait at
   `OPEN_TIMEOUT_SECONDS`: `pool.open(wait=True, timeout=)`, libpq `connect_timeout`, and the
   pool's per-request connection `timeout`. Callers within that window of a failed open share
