@@ -280,3 +280,62 @@ def test_ws_resume_after_finalize_extends_retained_audio() -> None:
 
         # The retained clip spans both legs, not just the most recent one.
         assert audio_samples(sid) > first
+
+
+def test_racing_cold_resumes_of_one_id_share_a_single_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1514): two reconnects carrying the same finalized id that
+    land inside one cold start's start() window must not each build their own
+    Session — the second has to resume onto the first, or the duplicate writes
+    the same conversation unseen by /health, warm resume, revoke and shutdown."""
+    started: list[Session] = []
+    real_start = Session.start
+
+    async def slow_start(self: Session, **kwargs: object) -> None:
+        started.append(self)
+        await asyncio.sleep(0.3)  # widen the check-then-register window
+        await real_start(self, **kwargs)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert ws.receive_json()["type"] == "pong"
+        assert registry.get(sid) is None
+
+        monkeypatch.setattr(Session, "start", slow_start)
+        start = json.dumps(
+            {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+        )
+        with client.websocket_connect("/ws") as b, client.websocket_connect("/ws") as c:
+            b.send_text(start)
+            c.send_text(start)
+            ready = [b.receive_json(), c.receive_json()]
+            assert [r["sessionId"] for r in ready] == [sid, sid]
+            assert len(started) == 1, "both reconnects cold-started their own Session"
+            # The one Session is the registered one, so both sockets are bound to
+            # something /health, warm resume, revoke and shutdown can all see.
+            assert registry.get(sid) is started[0]
+            assert registry.count() == 1
+
+
+def test_start_lock_serializes_one_id_and_forgets_it_after() -> None:
+    async def run() -> None:
+        order: list[str] = []
+
+        async def hold(tag: str, sid: str | None) -> None:
+            async with registry.start_lock(sid):
+                order.append(f"{tag}+")
+                await asyncio.sleep(0.01)
+                order.append(f"{tag}-")
+
+        await asyncio.gather(hold("a", "x"), hold("b", "x"), hold("n", None))
+        # Same id: strictly one after the other. No id: never blocked.
+        assert order.index("a-") < order.index("b+")
+        assert order[0] == "a+" and order[1] == "n+"
+        assert registry._start_locks == {}
+
+    asyncio.run(run())
