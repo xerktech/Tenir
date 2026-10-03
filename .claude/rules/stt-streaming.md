@@ -3,6 +3,8 @@ paths:
   - "api/src/api/stt/streaming.py"
   - "api/src/api/session.py"
   - "api/tests/test_streaming_stt.py"
+  - "api/src/api/stt/parakeet.py"
+  - "api/tests/test_stt_backends.py"
 ---
 
 # Streaming STT decode worker (XERK-1424)
@@ -32,3 +34,7 @@ paths:
 - Repro harness for regressions: real uvicorn (`ws_ping_interval=5`) plus a `websockets`
   client, with an engine that sleeps 15 s. Main closes every session with 1011 at about 10 s.
   `API_AUTH_SECRET` must be at least 32 characters.
+- An engine's HTTP timeout must be a whole-request deadline, not httpx's `timeout=` alone: that
+  is per phase and per read, so a trickling upstream holds the single decode worker forever.
+  `ParakeetEngine._post` wraps the request in `asyncio.wait_for` (XERK-1448).
+  - Tests: `test_stt_backends.py::test_parakeet_timeout_is_a_whole_request_deadline`.

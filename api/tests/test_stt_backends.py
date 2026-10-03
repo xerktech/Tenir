@@ -7,7 +7,10 @@ the *selection* logic and the pure WAV encoding the engine sends.
 from __future__ import annotations
 
 import io
+import threading
+import time
 import wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 import pytest
@@ -114,12 +117,12 @@ def test_parakeet_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch
         def json(self) -> dict:
             return {"text": "hello", "language": "en"}
 
-    def _fake_post(url, *, data, files, headers, timeout):  # noqa: ANN001
+    async def _fake_post(self, url, *, data, files, headers):  # noqa: ANN001
         captured["data"] = data
         captured["headers"] = headers
         return _Resp()
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
     engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
     result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
@@ -143,11 +146,11 @@ def test_parakeet_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> No
         def json(self) -> dict:
             return {"text": "hi", "language": "en"}
 
-    def _fake_post(url, *, data, files, headers, timeout):  # noqa: ANN001
+    async def _fake_post(self, url, *, data, files, headers):  # noqa: ANN001
         captured["headers"] = headers
         return _Resp()
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
     engine = ParakeetEngine(endpoint="http://litellm:4000/v1", model="parakeet", api_key="sk-key")
     engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
@@ -168,11 +171,11 @@ def test_parakeet_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.Monk
         def json(self) -> dict:
             return {"text": "hello", "language": "en"}
 
-    def _fake_post(url, *, data, files, headers, timeout):  # noqa: ANN001
+    async def _fake_post(self, url, *, data, files, headers):  # noqa: ANN001
         captured["data"] = data
         return _Resp()
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
     engine = ParakeetEngine(endpoint="http://parakeet:8000/v1", model="parakeet")
 
     samples = np.zeros(SAMPLE_RATE // 10, dtype=np.float32)
@@ -182,6 +185,66 @@ def test_parakeet_skips_word_timestamps_when_not_wanted(monkeypatch: pytest.Monk
     # A final wants word timing, so the flag is absent and the server's default (on) wins.
     engine.transcribe(samples, language=None, want_words=True)
     assert "timestamps" not in captured["data"]
+
+
+def _trickling_server(body: bytes, *, delay: float) -> ThreadingHTTPServer:
+    """A local transcription server that sends its response one byte per ``delay`` s."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                for b in body:
+                    self.wfile.write(bytes([b]))
+                    self.wfile.flush()
+                    time.sleep(delay)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client gave up — that's the behaviour under test
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_parakeet_timeout_is_a_whole_request_deadline() -> None:
+    # Regression (XERK-1448): httpx's timeout is per read, so a server trickling
+    # one byte every 0.2 s (each read well inside the 0.5 s timeout) held a decode
+    # for the full ~3.4 s body. The engine's timeout must bound the whole request.
+    server = _trickling_server(b'{"text": "never finishes in time"}', delay=0.2)
+    try:
+        engine = ParakeetEngine(
+            endpoint=f"http://127.0.0.1:{server.server_port}/v1", model="parakeet", timeout=0.5
+        )
+        t0 = time.monotonic()
+        with pytest.raises(TimeoutError):
+            engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+        assert time.monotonic() - t0 < 1.5
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_parakeet_returns_a_response_inside_the_deadline() -> None:
+    # The deadline mustn't cost a healthy (if slowish) server its result.
+    server = _trickling_server(b'{"text": " hi ", "language": "en"}', delay=0.001)
+    try:
+        engine = ParakeetEngine(
+            endpoint=f"http://127.0.0.1:{server.server_port}/v1", model="parakeet", timeout=5.0
+        )
+        result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language="en")
+        assert result.text == "hi"
+        assert result.language == "en"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 # ----- direct STT route (XERK-115) ------------------------------------------
