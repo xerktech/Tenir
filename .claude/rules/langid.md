@@ -25,5 +25,7 @@ paths:
 - `_same_text` (session.py) can't use word-overlap ratio alone: name-heavy real translations
   ("…, Pedro, sin Ana" → "…, without Ana") score as high as English rewordings. It drops a
   close match only when every changed source word is `is_english_word`.
+- `is_english_word` excludes English vocab that is also a native word (`_SHARED_EN`: de `was`,
+  pt `to`/`for`, fr `but`/`the`, …): "…, Pedro, was?" → "…, what?" is a real translation.
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
   `detect_lang`, hand-read every changed label), not intuition. Keep transcript text out of tests.

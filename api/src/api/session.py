@@ -144,9 +144,11 @@ def _same_text(translated: str, source: str) -> bool:
     doesn't, and a rewording misquotes the speaker.
 
     Reworded: the casefolded word sequences, punctuation ignored, match at least
-    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed is English
-    ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" -> "and")
-    is a real translation, however few words it touches, and is kept.
+    ``_ECHO_MIN_WORD_RATIO`` AND every source word the model changed can only be
+    English ("can" -> "could"). A changed foreign word ("sin" -> "without", "y" ->
+    "and") or a shared one (German "was" -> "what") is a real translation, however
+    few words it touches, and is kept. English rewordings outside the small English
+    vocabulary ("I seen" -> "I saw") are kept too: losing a real translation is worse.
     """
     src = _words(source)
     out = _words(translated)

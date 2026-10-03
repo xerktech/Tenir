@@ -514,7 +514,7 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         # XERK-1423: English turns inherited by a run come back reworded by the real
         # completion-prompt model — a rewording misquotes the speaker, so it is dropped.
         ("I made sure I can", "I made sure I could", True),
-        ("I did the thing", "I did that thing", True),
+        ("I think we can go", "I think we could go", True),
         ("Okay so then he left", "Okay, so then he left.", True),
         # Real translations (milmmt output) share few words with their source, even
         # with names or English titles in the turn, and are delivered.
@@ -543,6 +543,11 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         ),
         ("OK, OK, OK, vale", "OK, OK, OK, fine", False),
         ("das Hotel in Berlin", "the hotel in Berlin", False),
+        # ...and so is a changed word that is English AND a native word (XERK-1423 QA)
+        ("Marco, Sofia, Lucia, Pedro, was?", "Marco, Sofia, Lucia, Pedro, what?", False),
+        ("Marco, Sofia, Lucia, i Beatles", "Marco, Sofia, Lucia, the Beatles", False),
+        ("Marco, Sofia, Lucia, Pedro, a Madrid", "Marco, Sofia, Lucia, Pedro, to Madrid", False),
+        ("Marco, Sofia, Lucia, Pedro, but!", "Marco, Sofia, Lucia, Pedro, goal!", False),
         # curly apostrophes from the model don't disguise an echo
         ("I don't remember it", "I don\u2019t remember it.", True),
         ("Perfecto", "Perfect", False),
