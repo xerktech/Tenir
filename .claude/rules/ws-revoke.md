@@ -20,4 +20,7 @@ paths:
 - Tests that monkeypatch `main._ws_principal` must name a user that exists in the user store,
   or `session.start` closes 1008. A WS test that waits on a close should first assert on
   something synchronous (log/count) so a regression fails instead of hanging.
+- A revoke closes the socket from another task, so the handler can still read a queued frame and
+  reply to a closed socket. That RuntimeError (starlette `WebSocketDisconnected`) is a disconnect
+  only when the socket state is DISCONNECTED. Never catch it by class alone (XERK-1517).
 - Tests: `api/tests/test_ws_deleted_user.py`.

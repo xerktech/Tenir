@@ -544,6 +544,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
     except WebSocketDisconnect:
         log.info("client disconnected")
+    except RuntimeError as exc:
+        # A send after the socket closed (a ping read after a revoke's ws.close) or a
+        # receive after a disconnect raises starlette's WebSocketDisconnected, a
+        # RuntimeError — plain RuntimeError on older starlette, which isn't pinned.
+        # The socket state, not the class, tells it apart from a real bug (XERK-1517).
+        if WebSocketState.DISCONNECTED not in (ws.client_state, ws.application_state):
+            raise
+        log.info("client disconnected: %s", exc)
     finally:
         # Socket dropped without an explicit session.end: keep the session alive for
         # a grace window so a reconnect can resume it. Only detach if this handler
