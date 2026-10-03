@@ -236,3 +236,95 @@ def test_cancelling_close_still_persists() -> None:
         assert not _is_live(session)
 
     asyncio.run(run())
+
+
+def test_close_persists_when_transcriber_close_raises_cancelled_error() -> None:
+    """A CancelledError out of transcriber.close() is a seam failure like any other:
+    the pump is cancelled and the conversation still finalized (XERK-1460)."""
+    from api.stt.stub import StubTranscriber
+
+    class CloseCancelled(StubTranscriber):
+        async def close(self) -> None:
+            raise asyncio.CancelledError
+
+    async def run() -> None:
+        session = _persisting_session(CloseCancelled())
+        await asyncio.wait_for(session.close(), timeout=5)
+        assert session._pump.done()
+        assert not _is_live(session)
+
+    asyncio.run(run())
+
+
+def test_second_close_waits_for_an_in_flight_teardown() -> None:
+    """A close() racing one whose caller was cancelled returns only once the
+    conversation is finalized, not while it is still live (XERK-1460)."""
+    from api.stt.stub import StubTranscriber
+
+    gate = asyncio.Event()
+
+    class SlowFlush(StubTranscriber):
+        async def flush(self) -> None:
+            await gate.wait()
+
+    async def run() -> None:
+        session = _persisting_session(SlowFlush())
+        closer = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+        closer.cancel()
+        second = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        gate.set()
+        await asyncio.wait_for(second, timeout=5)
+        assert not _is_live(session)
+
+    asyncio.run(run())
+
+
+def test_drain_teardowns_waits_for_orphaned_teardowns() -> None:
+    """Lifespan shutdown drains teardowns whose close() caller was cancelled, so the
+    process can't exit before they persist (XERK-1460)."""
+    from api.session import _teardowns, drain_teardowns
+    from api.stt.stub import StubTranscriber
+
+    class SlowFlush(StubTranscriber):
+        async def flush(self) -> None:
+            await asyncio.sleep(0.2)
+
+    async def run() -> None:
+        session = _persisting_session(SlowFlush())
+        closer = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+        closer.cancel()
+        await asyncio.wait_for(drain_teardowns(), timeout=5)
+        assert not _is_live(session)
+        assert not _teardowns
+
+    asyncio.run(run())
+
+
+def test_cancelling_the_teardown_itself_is_not_swallowed() -> None:
+    """Event-loop shutdown cancels the teardown task directly; that cancellation
+    must propagate, not be swallowed into an unbounded wait on a wedged seam."""
+    from api.stt.stub import StubTranscriber
+
+    class Wedged(StubTranscriber):
+        async def flush(self) -> None:
+            await asyncio.Event().wait()
+
+        async def close(self) -> None:
+            await asyncio.Event().wait()
+
+    async def run() -> None:
+        session = _persisting_session(Wedged())
+        closer = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+        closer.cancel()
+        assert session._teardown is not None
+        session._teardown.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(session._teardown, timeout=5)
+        session._pump.cancel()
+
+    asyncio.run(run())

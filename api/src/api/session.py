@@ -81,6 +81,17 @@ _DETACHED_BUFFER_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
+# Teardowns whose close() caller was cancelled are still running here; the app's
+# lifespan shutdown drains them so the process doesn't exit before they persist
+# (XERK-1460). Also holds the reference that keeps each task from being GC'd.
+_teardowns: set[asyncio.Task[None]] = set()
+
+
+async def drain_teardowns() -> None:
+    """Wait for every in-flight session teardown to finish (shutdown)."""
+    while _teardowns:
+        await asyncio.gather(*_teardowns, return_exceptions=True)
+
 # How many already-surfaced cue titles to hand the generator as "don't repeat"
 # context (XERK-102). Bounds the prompt in a long conversation; the full set is
 # still enforced by the post-hoc de-dupe, so nothing repeats beyond this window —
@@ -270,7 +281,7 @@ class Session:
         # so a reconnect carrying the same id rebinds to it — preserving the
         # transcriber state instead of resetting it.
         self._closed = False
-        # The shielded teardown close() runs (XERK-1460); kept so it isn't GC'd.
+        # The shielded teardown close() runs (XERK-1460).
         self._teardown: asyncio.Task[None] | None = None
         self._detached = False
         self._grace_task: asyncio.Task[None] | None = None
@@ -1228,6 +1239,11 @@ class Session:
 
     async def close(self) -> None:
         if self._closed:
+            # Already closing: wait for that teardown rather than returning while
+            # the conversation is still "live" (e.g. revoke() racing a close whose
+            # caller was cancelled).
+            if self._teardown is not None and self._teardown is not asyncio.current_task():
+                await asyncio.shield(self._teardown)
             return
         self._closed = True
         # Cancel the pending grace task — UNLESS this close IS the grace task
@@ -1246,11 +1262,14 @@ class Session:
         if self._warmup is not None:
             self._warmup.cancel()
             self._warmup = None
-        # Teardown runs as its own task, shielded: cancelling the caller (server
-        # shutdown, a cancelled WS handler) must not abandon it halfway and skip
+        # Teardown runs as its own task, shielded: cancelling the caller (a
+        # cancelled WS handler or grace task) must not abandon it halfway and skip
         # _persist(), leaving the conversation "live" (XERK-1460). The caller
-        # still sees its CancelledError; the teardown finishes on its own.
+        # still sees its CancelledError; the teardown finishes on its own, and
+        # lifespan shutdown waits for it via drain_teardowns().
         self._teardown = asyncio.create_task(self._close_teardown())
+        _teardowns.add(self._teardown)
+        self._teardown.add_done_callback(_teardowns.discard)
         await asyncio.shield(self._teardown)
 
     async def _close_teardown(self) -> None:
@@ -1260,9 +1279,10 @@ class Session:
         # results(), so a flush that raises (an STT timeout on the tail decode)
         # must not skip it, or the pump below is awaited forever.
         #
-        # CancelledError is caught too: this task is shielded and never cancelled
-        # by anyone, so one escaping a seam is that seam's own fault (e.g. a
-        # cancelled internal task) and must not skip persistence (XERK-1460).
+        # CancelledError is caught too unless this task itself is being cancelled
+        # (event-loop shutdown): one escaping a seam otherwise is that seam's own
+        # fault (e.g. a cancelled internal task) and must not skip persistence
+        # (XERK-1460). Both calls are bounded so a wedged seam can't hold teardown.
         transcriber_closed = True
         if self._transcriber is not None:
             try:
@@ -1271,13 +1291,15 @@ class Session:
                 log.warning("session %s STT flush timed out", self.session_id)
                 metrics.incr("stage.stt.flush_timeouts")
             except (Exception, asyncio.CancelledError):
+                self._reraise_if_cancelling()
                 log.exception("session %s transcriber flush failed", self.session_id)
                 metrics.incr("stage.stt.errors")
             # Close even when flush failed: it ends results(), and the pump join
             # below waits on that — a skipped close hung teardown forever.
             try:
-                await self._transcriber.close()
+                await asyncio.wait_for(self._transcriber.close(), timeout=_STT_FLUSH_TIMEOUT_S)
             except (Exception, asyncio.CancelledError):
+                self._reraise_if_cancelling()
                 log.exception("session %s transcriber close failed", self.session_id)
                 metrics.incr("stage.stt.errors")
                 transcriber_closed = False
@@ -1291,7 +1313,7 @@ class Session:
             try:
                 await self._pump
             except asyncio.CancelledError:
-                pass
+                self._reraise_if_cancelling()
         if self._translation_worker is not None:
             # The pump is done, so every translate job is queued. A run still open
             # at teardown is over by definition (queues the `done` marker); then a
@@ -1333,6 +1355,13 @@ class Session:
                 log.warning("session %s cue retriever close failed", self.session_id)
         await self._persist()
         log.info("session %s closed", self.session_id)
+
+    @staticmethod
+    def _reraise_if_cancelling() -> None:
+        """Re-raise the active CancelledError if this task is itself being cancelled."""
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
 
     async def _persist(self) -> None:
         """Retain the full audio and finalize the conversation.
