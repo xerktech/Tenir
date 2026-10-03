@@ -284,3 +284,96 @@ def test_transcript_survives_a_client_that_disconnects_on_end() -> None:
         assert conv.status == "ready"
 
     asyncio.run(run())
+
+
+def _hold_flush(session: Session) -> asyncio.Event:
+    """Stall `session`'s STT flush until the returned event is set — the shape of a
+    teardown flushing against an STT outage (up to its 15 s cap)."""
+    release = asyncio.Event()
+    transcriber = session._transcriber
+    real_flush = transcriber.flush
+
+    async def held_flush() -> None:
+        await release.wait()
+        await real_flush()
+
+    transcriber.flush = held_flush
+    return release
+
+
+def test_resume_during_prior_teardown_waits_for_its_timeline() -> None:
+    """Regression (XERK-1500): a resume arriving after the grace window but while
+    the old sitting is still closing used to read the offset before that sitting's
+    flushed tail (and audio) was persisted, so the new sitting's segments
+    overlapped the old ones. Its start must wait for the old teardown."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-closing")
+        leg1._audio_store = None  # offset comes from the segments alone
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(25):  # ~2.5s -> stub final at [0,2000], tail [2000,2500] on flush
+            await leg1.on_audio(_voice_chunk())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        release = _hold_flush(leg1)
+        closing = asyncio.create_task(leg1.close())  # the grace close, unregistered
+        await asyncio.sleep(0)
+
+        leg2 = Session(send, session_id="conv-closing")
+        leg2._audio_store = None
+        starting = asyncio.create_task(
+            leg2.start(mic_source="g2-microphone", source_lang=None)
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not starting.done(), "resume must wait for the closing sitting"
+
+        release.set()
+        await closing
+        await starting
+        first_end = max(
+            s.end_ms for s in get_conversation_store().get("default", "conv-closing").segments
+        )
+        assert first_end == 2500
+        assert leg2._start_offset_ms == first_end
+        await leg2.close()
+
+    asyncio.run(run())
+
+
+def test_cancelled_resume_does_not_cancel_the_prior_teardown() -> None:
+    """The resume's wait on the old teardown is not ownership of it: cancelling
+    the waiting start (its socket dropped) must still let the old sitting persist."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        leg1 = Session(send, session_id="conv-cancel")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(25):
+            await leg1.on_audio(_voice_chunk())
+        release = _hold_flush(leg1)
+        closing = asyncio.create_task(leg1.close())
+        await asyncio.sleep(0)
+
+        leg2 = Session(send, session_id="conv-cancel")
+        starting = asyncio.create_task(
+            leg2.start(mic_source="g2-microphone", source_lang=None)
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+
+        release.set()
+        await closing
+        conv = get_conversation_store().get("default", "conv-cancel")
+        assert conv.status == "ready"
+        assert max(s.end_ms for s in conv.segments) == 2500
+
+    asyncio.run(run())

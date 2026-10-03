@@ -89,6 +89,13 @@ _STT_FLUSH_TIMEOUT_S = 15.0
 _teardowns: set[asyncio.Task[None]] = set()
 
 
+# The teardown still running for each conversation, by (household, session id).
+# The grace close unregisters a session before its teardown runs, so a resume
+# landing mid-teardown cold-starts a new Session on the same conversation; it
+# waits here before reading the resume offset (XERK-1500).
+_closing: dict[tuple[str | None, str], asyncio.Task[None]] = {}
+
+
 def teardowns_in_flight() -> list[asyncio.Task[None]]:
     """Session teardowns still running, for shutdown to wait on (XERK-1458)."""
     return [t for t in _teardowns if not t.done()]
@@ -322,7 +329,10 @@ class Session:
         # sitting's audio after the existing recording, so segments must continue
         # that timeline too or the merged transcript interleaves sittings and
         # History playback desyncs from the audio.
-        start_offset_ms = await self._resume_offset_ms() if self.resumed else 0
+        start_offset_ms = 0
+        if self.resumed:
+            await self._await_prior_teardown()
+            start_offset_ms = await self._resume_offset_ms()
         self._start_offset_ms = start_offset_ms
         self._transcriber = make_transcriber(
             source_lang=source_lang, start_offset_ms=start_offset_ms
@@ -372,6 +382,21 @@ class Session:
             SessionReady(type="session.ready", sessionId=self.session_id, resumed=self.resumed)
         )
         log.info("session %s ready (mic=%s)", self.session_id, mic_source)
+
+    async def _await_prior_teardown(self) -> None:
+        """Wait for an earlier sitting of this conversation to finish closing.
+
+        Until its teardown has retained the audio and persisted the flushed tail
+        finals, neither _resume_offset_ms source is complete: a resume landing
+        mid-teardown (e.g. a flush stalled by an STT outage) read offset 0 and its
+        segments overlapped the earlier sitting's (XERK-1500). Serializing here
+        also keeps the earlier sitting's finish() from landing after this one has
+        started. asyncio.wait, not await: cancelling this start must not cancel
+        that teardown, and its outcome is that sitting's business, not this one's.
+        """
+        prior = _closing.get((self._household, self.session_id))
+        if prior is not None:
+            await asyncio.wait({prior})
 
     async def _resume_offset_ms(self) -> int:
         """Where a resumed conversation's timeline stands, in ms.
@@ -1274,6 +1299,11 @@ class Session:
         self._teardown = asyncio.create_task(self._close_teardown())
         _teardowns.add(self._teardown)
         self._teardown.add_done_callback(_teardowns.discard)
+        key = (self._household, self.session_id)
+        _closing[key] = self._teardown
+        self._teardown.add_done_callback(
+            lambda t: _closing.pop(key) if _closing.get(key) is t else None
+        )
         await asyncio.shield(self._teardown)
 
     async def _close_teardown(self) -> None:
