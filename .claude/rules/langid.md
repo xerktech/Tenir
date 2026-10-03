@@ -25,6 +25,9 @@ paths:
 - `_same_text` (session.py) can't use word-overlap ratio alone: name-heavy real translations
   ("…, Pedro, sin Ana" → "…, without Ana") score as high as English rewordings. It drops a
   close match only when every changed source word is `is_english_word`.
+- A one-hit `en` call whose hit is a `_SHARED_EN` word returns `None` ("to cansado", "the vert"
+  closed live runs, XERK-1516). Gate the decision, not `_scores`: dropping shared words from the
+  score lost ~13% of English and let "The Las Vegas trip." win es. Costs ~3.5% of short English.
 - `is_english_word` excludes English vocab that is also a native word (`_SHARED_EN`: de `was`,
   pt `to`/`for`, fr `but`/`the`, …): "…, Pedro, was?" → "…, what?" is a real translation.
 - Measure vocab changes against recorded segments (export `segments.text`, run old vs new
