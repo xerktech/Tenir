@@ -1255,8 +1255,8 @@ class Session:
                 await self._send(SongDone(type="song.done", songId=song_id))
             except Exception:
                 log.warning(
-                "session %s could not deliver song.done (client gone)", self.session_id
-            )
+                    "session %s could not deliver song.done (client gone)", self.session_id
+                )
                 metrics.incr("music.send_errors")
         metrics.incr("music.done")
 
