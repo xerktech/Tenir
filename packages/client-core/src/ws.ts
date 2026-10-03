@@ -54,6 +54,10 @@ export interface ApiHandlers {
 const MAX_BUFFERED_BYTES = 256 * 1024;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 16000;
+// The api's close for a socket whose session another connection resumed (a second
+// tab or device carrying the same id). Mirrors `WS_CLOSE_RESUMED_ELSEWHERE` in
+// api/src/api/main.py.
+const CLOSE_RESUMED_ELSEWHERE = 4001;
 
 export class ApiClient {
   private ws: WebSocket | null = null;
@@ -123,6 +127,19 @@ export class ApiClient {
 
     ws.onclose = (ev) => {
       this.handlers.onConnectionChange?.("closed");
+      // The session now lives on another connection. Not a drop: reconnecting with
+      // the same id would take it back and displace that connection in turn, and
+      // the two would bounce the session between them forever (XERK-1526).
+      if (ev.code === CLOSE_RESUMED_ELSEWHERE) {
+        this.fatal = true;
+        this.handlers.onError?.({
+          type: "error",
+          code: "resumed_elsewhere",
+          message: "this session continued on another connection",
+          fatal: true,
+        });
+        return;
+      }
       // 1008 (policy violation) is the api rejecting the connection itself —
       // missing/invalid/expired token, or capture disabled. It is not a transient
       // drop: reconnecting loops forever without re-auth, so stop and surface it so

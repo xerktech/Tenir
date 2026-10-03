@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from api import registry
+from api import main, registry
+from api.auth import Principal, get_user_store
 from api.contract import Pong, ServerMessage
-from api.main import app
+from api.main import WS_CLOSE_RESUMED_ELSEWHERE, app, settings
+from api.metrics import metrics
 from api.persistence import audio_key, get_audio_store, get_conversation_store, wav_to_pcm16
 from api.session import Session
 
@@ -320,6 +324,103 @@ def test_racing_cold_resumes_of_one_id_share_a_single_session(
             # something /health, warm resume, revoke and shutdown can all see.
             assert registry.get(sid) is started[0]
             assert registry.count() == 1
+
+
+def test_warm_resume_closes_the_socket_it_takes_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (XERK-1526): resuming a session that is still bound to an OPEN
+    socket used to leave that socket open and silent. Once the new socket dropped
+    and the grace close finalized the session, the old one kept streaming audio
+    into a closed Session with no captions and no close. It must instead get a
+    distinct close code its client does not auto-reconnect on."""
+    monkeypatch.setattr(settings, "session_resume_grace_seconds", 0.2)
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as b:
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            live = registry.get(sid)
+            displaced = metrics.snapshot()["counters"].get("ws.displaced", 0)
+            with client.websocket_connect("/ws") as c:
+                c.send_text(json.dumps({**start, "sessionId": sid}))
+                assert c.receive_json()["resumed"] is True
+                # The takeover closes the old socket before it sends session.ready:
+                # checked synchronously so a regression fails instead of hanging below.
+                assert metrics.snapshot()["counters"].get("ws.displaced", 0) == displaced + 1
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    b.receive_json()
+                assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+                # The displaced socket can no longer end the session it lost: the
+                # takeover stops its handler before it can process another frame.
+                b.send_text(json.dumps({"type": "session.end"}))
+                c.send_text(json.dumps({"type": "ping", "t": 1}))
+                assert c.receive_json()["type"] == "pong"
+                assert registry.get(sid) is live and not live.is_closed
+            # The new socket dropping still parks the session for its own resume.
+            time.sleep(0.05)
+            assert registry.get(sid) is live
+
+
+def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps(start))
+        sid = ws.receive_json()["sessionId"]
+        ws.send_text(json.dumps({**start, "sessionId": sid}))
+        assert ws.receive_json()["resumed"] is True
+        ws.send_text(json.dumps({"type": "ping", "t": 1}))
+        assert ws.receive_json()["type"] == "pong"
+
+
+def _as_household(monkeypatch: pytest.MonkeyPatch, household: str) -> None:
+    """Route the next WS connection's principal to a real admin of ``household``."""
+    store = get_user_store()
+    user = store.get_by_username(household) or store.create(
+        household, "pw", household=household, role="admin"
+    )
+    monkeypatch.setattr(
+        main,
+        "_ws_principal",
+        lambda ws: Principal(
+            user_id=user.user_id, username=household, household=household, role="admin"
+        ),
+    )
+
+
+def test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1526): a start presenting another household's live id runs
+    under a fresh server id, so it must not hold that id's start lock for its whole
+    start() — anyone knowing the UUID could delay the owner's resume with it."""
+    real_start = Session.start
+
+    async def slow_foreign_start(self: Session, **kwargs: object) -> None:
+        if self.household == "intruder":
+            await asyncio.sleep(0.6)
+        await real_start(self, **kwargs)
+
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        _as_household(monkeypatch, "owner")
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps(start))
+            sid = ws.receive_json()["sessionId"]
+        assert registry.get(sid) is not None  # parked for resume
+
+        monkeypatch.setattr(Session, "start", slow_foreign_start)
+        _as_household(monkeypatch, "intruder")
+        with client.websocket_connect("/ws") as intruder:
+            intruder.send_text(json.dumps({**start, "sessionId": sid}))
+            time.sleep(0.1)  # let it take the lock and enter its slow start()
+            _as_household(monkeypatch, "owner")
+            with client.websocket_connect("/ws") as owner:
+                began = time.monotonic()
+                owner.send_text(json.dumps({**start, "sessionId": sid}))
+                ready = owner.receive_json()
+                waited = time.monotonic() - began
+            assert ready == {"type": "session.ready", "sessionId": sid, "resumed": True}
+            assert waited < 0.4, f"owner's resume waited {waited:.2f}s behind the intruder"
+            assert intruder.receive_json()["sessionId"] != sid
 
 
 def test_start_lock_serializes_one_id_and_forgets_it_after() -> None:

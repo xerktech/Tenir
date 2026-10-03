@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from api import registry
 from api.auth import Principal, get_user_store, issue_token, reset_user_store
-from api.main import app
+from api.main import WS_CLOSE_RESUMED_ELSEWHERE, app
 from conftest import TEST_AUTH_SECRET
 
 START = json.dumps({"type": "session.start", "micSource": "phone-microphone"})
@@ -167,11 +167,12 @@ def test_resumed_socket_is_closed_when_its_account_is_deleted(
 
 
 @pytest.mark.real_auth
-def test_delete_closes_both_sockets_when_a_resume_takes_over_an_open_one(
+def test_delete_closes_the_socket_a_resume_took_over_from_an_open_one(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A resume can take a session over while the socket it displaced is still open.
-    The delete must close both, not just whichever socket bound it last."""
+    The takeover closes the displaced one (XERK-1526), and the delete must then close
+    the socket that took it over — not only the one the session was started on."""
     _, admin_token = _token("admin", "admin")
     member_id, member_token = _token("member", "member")
     admin = {"Authorization": f"Bearer {admin_token}"}
@@ -188,15 +189,17 @@ def test_delete_closes_both_sockets_when_a_resume_takes_over_an_open_one(
                 )
             )
             assert ws2.receive_json()["resumed"] is True
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws1.receive_json()
+            assert exc.value.code == WS_CLOSE_RESUMED_ELSEWHERE
             assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
-            # The revoke ran inside the DELETE: both sockets were open, so both must
-            # have been closed — checked here so a regression fails rather than hangs.
-            assert caplog.text.count("ws closed: account no longer exists") == 2
+            # The revoke ran inside the DELETE: checked here so a regression fails
+            # rather than hangs.
+            assert caplog.text.count("ws closed: account no longer exists") == 1
             assert "could not close its socket" not in caplog.text
-            for ws in (ws1, ws2):
-                with pytest.raises(WebSocketDisconnect) as exc:
-                    ws.receive_json()
-                assert exc.value.code == 1008
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws2.receive_json()
+            assert exc.value.code == 1008
 
 
 @pytest.mark.real_auth

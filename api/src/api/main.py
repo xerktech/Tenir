@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -55,12 +55,21 @@ from api.persistence.postgres import (
 )
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session, is_valid_session_id, teardowns_in_flight
+from api.session import Sender, Session, is_valid_session_id, teardowns_in_flight
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("api")
+
+# Close code for a socket whose session a newer socket warm-resumed. Clients must
+# NOT reconnect on it: resuming the same id would displace the newer socket in
+# turn, and the two would take the session from each other forever (XERK-1526).
+WS_CLOSE_RESUMED_ELSEWHERE = 4001
+
+# How to displace each live socket, keyed by its handler's ``send`` — the one
+# handle a Session keeps on the socket it is bound to (``current_send``).
+_displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
 
 
 @asynccontextmanager
@@ -432,11 +441,29 @@ async def ws_endpoint(ws: WebSocket) -> None:
         metrics.incr("ws.account_removed")
         await ws.close(code=1008, reason="account removed")
 
+    displaced = False
+
+    async def close_displaced() -> None:
+        # Another socket warm-resumed this one's session. Stop handling frames
+        # BEFORE the first await, so a session.end or audio frame already queued
+        # here can't end or feed the session the new socket now owns; then tell
+        # the client, which would otherwise sit OPEN on a session it no longer
+        # receives anything from — and that the grace close may finalize (XERK-1526).
+        nonlocal displaced
+        displaced = True
+        if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
+            return
+        log.info("ws closed: session resumed on another socket")
+        metrics.incr("ws.displaced")
+        await ws.close(code=WS_CLOSE_RESUMED_ELSEWHERE, reason="session resumed elsewhere")
+
+    _displacers[send] = close_displaced
+
     try:
         while True:
             frame = await ws.receive()
 
-            if frame["type"] == "websocket.disconnect":
+            if frame["type"] == "websocket.disconnect" or displaced:
                 break
 
             # Binary frames are raw PCM audio (see the contract transport notes).
@@ -513,7 +540,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # one id would both miss the registry and each start their own Session
                 # on the same conversation. Holding the lock until register() makes the
                 # second one find the first and warm-resume onto it (XERK-1514).
-                async with registry.start_lock(msg.sessionId):
+                async with AsyncExitStack() as start_guard:
+                    await start_guard.enter_async_context(registry.start_lock(msg.sessionId))
                     # Resume a still-live session if the client presents its id and both
                     # the household AND the owner match: rebind to it, preserving the
                     # transcriber state, instead of starting fresh. Owning the socket is
@@ -531,6 +559,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
                             registry.unregister(session)
                             await session.close()
                         session = resumable
+                        # The socket it is bound to now, if any (a dropped one left a
+                        # buffer, not a socket), loses it: displace it first, so it
+                        # stops touching the session before this one takes over.
+                        previous = session.current_send
+                        if previous is not send and (displace := _displacers.get(previous)):
+                            try:
+                                await displace()
+                            except Exception:
+                                log.warning("could not close the displaced socket")
                         await session.rebind(send)
                         # A revoke must drop THIS socket too, not only the one the session
                         # was started on, or a resumed socket outlives its account (XERK-1504).
@@ -589,6 +626,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
                             )
                             metrics.incr("sessions.cross_user_resume")
                             requested_id = None
+                    # Starting fresh under a server id has nothing to race on: let go of
+                    # the presented id's lock now, or anyone who knows another user's id
+                    # could hold that id's owner off a resume for a whole start() each.
+                    if requested_id is None:
+                        await start_guard.aclose()
                     if session is not None:
                         registry.unregister(session)
                         await session.close()
@@ -661,6 +703,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # connection, which must not be torn down here.
         if session is not None and not session.is_closed and session.current_send is send:
             session.detach(grace_seconds=settings.session_resume_grace_seconds)
+        _displacers.pop(send, None)
         if session is not None:
             # This socket is gone: don't let a session that keeps getting resumed pin
             # it (and every earlier one) in memory through its revoke hook.

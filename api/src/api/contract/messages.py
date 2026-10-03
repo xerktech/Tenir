@@ -300,6 +300,7 @@ class Code(StrEnum):
     session_not_found = 'session_not_found'
     rate_limited = 'rate_limited'
     internal = 'internal'
+    resumed_elsewhere = 'resumed_elsewhere'
 
 
 class ErrorMessage(BaseModel):
