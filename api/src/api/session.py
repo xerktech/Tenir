@@ -81,6 +81,16 @@ _DETACHED_BUFFER_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
+# Tasks currently running a Session.close(). Paths like the grace-window lapse,
+# session.end and revoke unregister the session before closing it, so shutdown
+# can't find those closes in the registry; it waits on these instead (XERK-1458).
+_closing: set[asyncio.Task[object]] = set()
+
+
+def closes_in_flight() -> list[asyncio.Task[object]]:
+    """Tasks mid-way through a Session.close(), for shutdown to wait on."""
+    return [t for t in _closing if not t.done()]
+
 # How many already-surfaced cue titles to hand the generator as "don't repeat"
 # context (XERK-102). Bounds the prompt in a long conversation; the full set is
 # still enforced by the post-hoc de-dupe, so nothing repeats beyond this window —
@@ -265,6 +275,8 @@ class Session:
         self._conversations = get_conversation_store()
         self._audio_store = get_audio_store()
         self._full_audio = bytearray()
+        # Audio stored whose conversation row doesn't point at it yet.
+        self._audio_key_pending = False
         # Resume support: on a socket drop (not an explicit session.end) the
         # connection is *detached* and the session is kept alive for a grace window
         # so a reconnect carrying the same id rebinds to it — preserving the
@@ -1248,10 +1260,18 @@ class Session:
         # together against a slow or hung model, and pod shutdown is SIGKILLed at
         # the 30 s grace period: the recording must already be on disk by then,
         # not queued behind STT/translation calls that can't affect it (XERK-1458).
-        await self._retain_audio()
+        # Shielded: the store write runs in a thread that a cancel can't stop, so
+        # a cancel landing here must not abandon the retain half-done — the finally
+        # waits for it (and its buffer trim) before storing the remainder, or the
+        # remainder would be stored behind a second copy of the same audio.
+        retain = asyncio.ensure_future(self._retain_audio())
+        task = asyncio.current_task()
+        if task is not None:
+            _closing.add(task)
         # Finalize the conversation even if this close is cancelled mid-drain —
         # the shutdown deadline in main.py cancels closes that overrun it.
         try:
+            await asyncio.shield(retain)
             # A failing STT seam can raise from flush()/close() too; guard each so
             # teardown still persists the conversation and never leaks an exception
             # out of close(). They are guarded separately: close() is what ends
@@ -1315,7 +1335,12 @@ class Session:
                 except Exception:
                     log.warning("session %s cue retriever close failed", self.session_id)
         finally:
-            await self._persist()
+            try:
+                await asyncio.wait({retain})
+                await self._persist()
+            finally:
+                if task is not None:
+                    _closing.discard(task)
         log.info("session %s closed", self.session_id)
 
     async def _persist(self) -> None:
@@ -1370,10 +1395,19 @@ class Session:
                 pcm = wav_to_pcm16(existing) + pcm
             wav = pcm16_to_wav(pcm)
             await asyncio.to_thread(self._audio_store.put, key, wav)
-            await asyncio.to_thread(
-                self._conversations.set_audio_key, self._household, self.session_id, key
-            )
-            # Drop only what was written: audio can still arrive during the awaits
-            # above (close() retains before its drains), and the final _persist()
-            # call stores that remainder.
+            # Trim as soon as the audio is stored, before anything else can fail:
+            # close() retains twice, and an untrimmed buffer would be prepended
+            # with its own stored copy on the second pass. Drop only what was
+            # written — audio can still arrive during the awaits above, and the
+            # final _persist() stores that remainder.
             del self._full_audio[:taken]
+            self._audio_key_pending = True
+        if self._audio_store is not None and self._audio_key_pending:
+            # Retried on the next retain if it fails (the audio itself is stored).
+            await asyncio.to_thread(
+                self._conversations.set_audio_key,
+                self._household,
+                self.session_id,
+                audio_key(self._household, self.session_id),
+            )
+            self._audio_key_pending = False

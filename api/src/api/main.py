@@ -49,7 +49,7 @@ from api.persistence import get_conversation_store
 from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session, is_valid_session_id
+from api.session import Session, closes_in_flight, is_valid_session_id
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -123,6 +123,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # uvicorn spends some of that draining connections before the lifespan exits. Stay
 # well under it so every session is finalized rather than killed mid-close.
 _SHUTDOWN_DEADLINE_S = 20.0
+_SHUTDOWN_FINALIZE_S = 5.0
 
 
 async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
@@ -137,19 +138,24 @@ async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
     sessions = registry.active()
     for session in sessions:
         registry.unregister(session)
-    if not sessions:
-        return
     tasks = [asyncio.create_task(session.close()) for session in sessions]
-    _, pending = await asyncio.wait(tasks, timeout=deadline)
+    # Closes already under way elsewhere (grace lapse, session.end, revoke): their
+    # sessions left the registry first, and the process exits as soon as this
+    # returns, so they must be waited on too or they die before persisting.
+    others = closes_in_flight()
+    if not tasks and not others:
+        return
+    _, pending = await asyncio.wait([*tasks, *others], timeout=deadline)
     if pending:
         log.warning("cancelling %d session close(s) past the shutdown deadline", len(pending))
         for task in pending:
             task.cancel()
-    for session, result in zip(
-        sessions, await asyncio.gather(*tasks, return_exceptions=True), strict=True
-    ):
-        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-            log.error("session %s close failed", session.session_id, exc_info=result)
+        # A cancelled close still finalizes in its finally; bound that too, so a
+        # hung store can't hold shutdown until the SIGKILL.
+        await asyncio.wait(pending, timeout=_SHUTDOWN_FINALIZE_S)
+    for session, task in zip(sessions, tasks, strict=True):
+        if task.done() and not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("session %s close failed", session.session_id, exc_info=exc)
 
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
