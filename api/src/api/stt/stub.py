@@ -27,6 +27,8 @@ class StubTranscriber:
         # its timeline from the duration already retained instead of restarting at 0.
         self._start_offset_ms = start_offset_ms
         self._closed = False
+        # Finals are emitted synchronously; there is never a decode in flight.
+        self.finalizing = False
 
     async def warmup(self) -> None:
         # No model, no socket — nothing to warm.

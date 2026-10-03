@@ -170,6 +170,11 @@ class StreamingTranscriber:
         # turn the partial decode transcribed — e.g. a session pinned to one language
         # force-decoding another). Reset at every turn boundary.
         self._turn_partial = ""
+        # Final-in-flight tracking (Transcriber.finalizing): a turn with speech is
+        # being decoded, or its caption.final is queued but the consumer hasn't
+        # finished handling it yet.
+        self._decoding_speech = False
+        self._finals_undelivered = 0
         # Segment times count audio bytes from here on. A resumed conversation
         # (a new Session on an existing conversation id) seeds this with the
         # duration already retained, so its segments continue the conversation's
@@ -194,6 +199,10 @@ class StreamingTranscriber:
         per-session state to prime, so this is a no-op — kept to satisfy the
         `Transcriber` seam, which lets the session warm every backend uniformly."""
         return None
+
+    @property
+    def finalizing(self) -> bool:
+        return self._decoding_speech or self._finals_undelivered > 0
 
     def _intake_lag_s(self, now: float) -> float:
         """How far behind real time this push's audio arrives (>= 0). Rebased when
@@ -364,9 +373,13 @@ class StreamingTranscriber:
         return retry
 
     async def _finalize(self) -> None:
-        result = await self._run_engine(stage="final", want_words=self._final_words)
-        if not result.text.strip() and self._has_speech:
-            result = await self._retry_blank_final(result)
+        self._decoding_speech = self._has_speech
+        try:
+            result = await self._run_engine(stage="final", want_words=self._final_words)
+            if not result.text.strip() and self._has_speech:
+                result = await self._retry_blank_final(result)
+        finally:
+            self._decoding_speech = False
         start = self._segment_start_ms
         end = start + _bytes_to_ms(len(self._buf))
 
@@ -441,6 +454,7 @@ class StreamingTranscriber:
         # text-based identification of the final itself; an ambiguous turn stays
         # None, which decides nothing downstream.
         lang = _lang(result.language or self._language) or _lang(detect_lang(text))
+        self._finals_undelivered += 1
         await self._queue.put(
             CaptionFinal(
                 type="caption.final",
@@ -459,7 +473,12 @@ class StreamingTranscriber:
         # still catching up must not drop them — stopping at the flag alone
         # lost the final turns of a session closed mid-drain.
         while not (self._closed and self._queue.empty()):
-            yield await self._queue.get()
+            result = await self._queue.get()
+            yield result
+            # Resumed only once the consumer has handled the final, so `finalizing`
+            # stays set until the session has seen it (no gap for its hold to expire).
+            if isinstance(result, CaptionFinal):
+                self._finals_undelivered -= 1
 
     async def flush(self) -> None:
         if self._buf and self._has_speech:
