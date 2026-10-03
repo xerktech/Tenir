@@ -45,7 +45,7 @@ from api.contract import (
 from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
-from api.persistence import get_conversation_store
+from api.persistence import get_conversation_store, stale
 from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
@@ -86,15 +86,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
     # reboot or a stop that overruns the grace period leaves rows stuck "live",
     # and nothing ever came back for them — they showed as permanently recording
-    # in every client's history (XERK-236). Sweep them once here, before any new
-    # session can register, so a restart heals the previous process's mess.
+    # in every client's history (XERK-236). Sweep them here, before any new
+    # session can register, so a restart heals the previous process's mess. If
+    # the database is down now, keep retrying in the background (and from every
+    # session.start) until it succeeds (XERK-1428).
+    stale_task: asyncio.Task[None] | None = None
     if conversations is not None:
+        stale.arm(conversations)
         try:
-            swept = await asyncio.to_thread(conversations.finish_stale)
-            if swept:
-                log.warning("finalized %d conversation(s) left live by a previous run", swept)
+            await asyncio.to_thread(stale.sweep_if_pending, conversations)
         except Exception:
-            log.exception("could not finalize stale conversations at startup")
+            log.exception("could not finalize stale conversations at startup; will retry")
+            stale_task = asyncio.create_task(stale.retry_loop(conversations))
     # Seed the component-status cache once at boot (so GET /status answers
     # immediately) and keep it fresh on a background loop.
     status_task: asyncio.Task[None] | None = None
@@ -112,6 +115,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
         rss_task = asyncio.create_task(ingest_loop())
     yield
+    if stale_task is not None:
+        stale_task.cancel()
     if rss_task is not None:
         rss_task.cancel()
     if status_task is not None:
