@@ -18,12 +18,28 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import DuplicateUser, User
 from api.persistence.postgres import PoolOpener, apply_boot_schema
 
 log = logging.getLogger("api.auth.sql_users")
+
+
+def _is_uuid(user_id: str) -> bool:
+    """Whether ``user_id`` is a canonical (lowercase, hyphenated) UUID string.
+
+    ``users.id`` is a UUID column and Postgres rejects a non-UUID literal with
+    InvalidTextRepresentation (22P02) rather than matching nothing, so an id from a
+    URL like ``/auth/users/x`` is screened first: it is "no such user" (404), as on
+    ``InMemoryUserStore``, not a 500 (XERK-1532). Only the canonical form passes —
+    Postgres would also match ``{...}``/uppercase/unhyphenated spellings of a real id,
+    slipping them past the router's string-equality guards (self-delete, env admin)."""
+    try:
+        return str(uuid.UUID(user_id)) == user_id
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 # psycopg3 executes one statement per call (extended protocol), so keep these
 # separate rather than one multi-statement string.
@@ -206,6 +222,8 @@ class SqlUserStore:
     def get_by_id(self, user_id: str) -> User | None:  # pragma: no cover
         from psycopg.rows import dict_row
 
+        if not _is_uuid(user_id):
+            return None
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
                 f"SELECT {_USER_COLUMNS} FROM users WHERE id = %s",
@@ -258,6 +276,8 @@ class SqlUserStore:
         return [self._row_to_user(row) for row in rows]
 
     def delete(self, user_id: str) -> None:  # pragma: no cover
+        if not _is_uuid(user_id):
+            raise KeyError(user_id)
         with self._ensure_pool().connection() as conn:
             cur = conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
             if cur.rowcount == 0:
@@ -284,6 +304,8 @@ class SqlUserStore:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
 
+        if not _is_uuid(user_id):
+            raise KeyError(user_id)
         sets: list[str] = []
         params: list[object] = []
         if username is not None:
@@ -332,6 +354,8 @@ class SqlUserStore:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
 
+        if not _is_uuid(user_id):
+            raise KeyError(user_id)
         sets: list[str] = []
         params: list[object] = []
         if oidc_sub is not None:
