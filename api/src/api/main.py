@@ -47,7 +47,12 @@ from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
 from api.persistence import get_conversation_store, stale
-from api.persistence.postgres import SqlConversationStore
+from api.persistence.postgres import (
+    OPEN_TIMEOUT_SECONDS,
+    SqlConversationStore,
+    database_error_types,
+    is_database_unavailable,
+)
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
 from api.session import Session, is_valid_session_id, teardowns_in_flight
@@ -171,6 +176,31 @@ async def close_all_sessions(deadline: float = _SHUTDOWN_DEADLINE_S) -> None:
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
 
+# The 503 contract for a database outage (XERK-1510): clients read the status as
+# "retryable, keep the session" — not a 401 to re-login over, not a generic 500.
+DB_UNAVAILABLE_DETAIL = "the server can't reach its database — try again shortly"
+
+
+async def _database_unavailable(request: Request, exc: Exception) -> Response:
+    """Answer a database outage with 503 + Retry-After, logged as one WARNING line.
+
+    Unhandled, it was a 500 with a full traceback per request, and uvicorn then
+    dropped the connection, so a keepalive client's NEXT request failed too."""
+    if not is_database_unavailable(exc):
+        raise exc  # e.g. an OperationalError that is a real fault (disk full): stays a 500
+    log.warning("database unavailable: %s %s -> 503 (%s)", request.method, request.url.path, exc)
+    metrics.incr("db.unavailable")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": DB_UNAVAILABLE_DETAIL},
+        # The pool shares an open failure with every caller for this long.
+        headers={"Retry-After": str(int(OPEN_TIMEOUT_SECONDS))},
+    )
+
+
+for _exc_type in database_error_types():
+    app.add_exception_handler(_exc_type, _database_unavailable)
+
 # Sliding token renewal (XERK-168): the header a renewed bearer token rides back
 # on. Clients adopt it in their shared request path, so an actively-used device
 # keeps refreshing its token and is never logged out by plain expiry.
@@ -214,7 +244,16 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
     )
     if fresh is None:
         return response
-    user = await asyncio.to_thread(get_user_store().get_by_id, principal_from_token(fresh).user_id)
+    try:
+        user = await asyncio.to_thread(
+            get_user_store().get_by_id, principal_from_token(fresh).user_id
+        )
+    except Exception as exc:
+        # Renewal is best-effort and the next request retries it; a database outage
+        # here must not turn the route's own response into a 500 (XERK-1510).
+        if not is_database_unavailable(exc):
+            raise
+        return response
     if user is None:
         return response
     response.headers[RENEWED_TOKEN_HEADER] = fresh
@@ -326,7 +365,19 @@ def _ws_reject_reason(ws: WebSocket) -> str:
 async def ws_endpoint(ws: WebSocket) -> None:
     # Off the event loop: resolving a token reads the user store, and a blocking
     # read here (database down) froze every request on the server until it gave up.
-    principal = await asyncio.to_thread(_ws_principal, ws)
+    try:
+        principal = await asyncio.to_thread(_ws_principal, ws)
+    except Exception as exc:
+        if not is_database_unavailable(exc):
+            raise
+        # The token couldn't be checked, not rejected: accept and close 1013 (try
+        # again later) so the client's backoff reconnects instead of failing the
+        # handshake with a 500 — and without the 1008 that means "re-login" (XERK-1510).
+        log.warning("ws rejected: database unavailable (%s)", exc)
+        metrics.incr("ws.db_unavailable")
+        await ws.accept()
+        await ws.close(code=1013, reason="database unavailable")
+        return
     if principal is None:
         # Reject AFTER accepting, and log it. Closing before accept surfaces to
         # browser/RN clients as an opaque failed handshake (HTTP 403 → close code
