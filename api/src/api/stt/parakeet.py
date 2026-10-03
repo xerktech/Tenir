@@ -8,13 +8,14 @@ each window as an in-memory WAV. (It replaced the retired Voxtral audio-LLM —
 see ``parakeet-stt/README.md`` for that history; a few defensive choices below
 date from it.)
 
-Network/model I/O, so excluded from coverage — CI runs the deterministic stub and
-the windowing is covered by ``StreamingTranscriber`` tests against a fake engine;
-the factory wiring is covered in ``tests/test_streaming_stt.py``.
+The windowing is covered by ``StreamingTranscriber`` tests against a fake engine;
+the request shape and the whole-request deadline by ``tests/test_stt_backends.py``
+(the latter against a real local server that trickles its response).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import numpy as np
@@ -38,11 +39,30 @@ class ParakeetEngine:
         """Encode a mono float32 [-1, 1] window as 16 kHz s16le WAV in memory."""
         return float32_to_wav(samples)
 
-    def transcribe(  # pragma: no cover - requires httpx + a live STT endpoint
-        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
-    ) -> EngineResult:
+    async def _post(self, *, data: dict, files: dict, headers: dict) -> dict:
+        """POST one window, bounded by a single deadline over the whole request.
+
+        httpx's ``timeout`` is per phase and its read timeout is per chunk, so an
+        upstream that trickles bytes (a degraded proxy or port-forward) would hold a
+        decode — and, with one decode worker per session, that session's whole
+        caption backlog — indefinitely (XERK-1448). ``wait_for`` caps connect +
+        upload + headers + body together; on expiry it raises ``TimeoutError``
+        like any other failed decode. ``transcribe`` runs in a worker thread
+        (``asyncio.to_thread``) with no loop of its own, so it can run a private loop.
+        """
         import httpx
 
+        async def _request() -> dict:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(self._url, data=data, files=files, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
+
+        return await asyncio.wait_for(_request(), self._timeout)
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
         # response_format "json" (no per-word timestamps in the body itself):
         # chosen when the retired vLLM-Voxtral server 400'd on verbose_json, and
         # kept — the Parakeet server returns its words field either way, and
@@ -60,11 +80,15 @@ class ParakeetEngine:
         # The LiteLLM gateway requires a bearer token; a direct model server ignores
         # it (no key configured → no header sent).
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        resp = httpx.post(
-            self._url, data=data, files=files, headers=headers, timeout=self._timeout
-        )
-        resp.raise_for_status()
-        body = resp.json()
+        # Not asyncio.run: on exit it joins the default executor, so a hung DNS lookup
+        # (getaddrinfo runs in that executor) would outlast the deadline. close() shuts
+        # the executor down without waiting; the stuck thread ends with the resolver.
+        loop = asyncio.new_event_loop()
+        try:
+            body = loop.run_until_complete(self._post(data=data, files=files, headers=headers))
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
         # Word timestamps are returned only when the server supports them; absent,
         # the streaming layer falls back to segment-boundary timing.
         words = [
