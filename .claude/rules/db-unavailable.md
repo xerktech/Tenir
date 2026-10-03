@@ -34,7 +34,8 @@ paths:
   timeout during an outage, so captions went stale; an outage raised there killed the pump or
   translation worker and lost every later turn.
 - The queue is ordered on purpose: a translation's UPDATE must land after its segment's INSERT.
-- `_finalize` refuses while the audio key is unwritten, or the row ends ready but unplayable.
+- `_finalize` refuses while an *outage* left the audio key unwritten (else ready but unplayable).
+  Any other failure must finalize (XERK-236): one stuck session stalls the serial retry.
 - Deferred finalizes retry serially in one task: an outage ties up one executor thread, not one
   per ended session. Held writes are lost if the process exits before the database is back.
 - Tests: `api/tests/test_finalize_outage.py`.

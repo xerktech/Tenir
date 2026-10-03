@@ -384,6 +384,9 @@ class Session:
         self._full_audio = bytearray()
         # Audio stored whose conversation row doesn't point at it yet.
         self._audio_key_pending = False
+        # Whether the last failed retain was a database outage, which holds the
+        # finalize back; any other failure finalizes without audio (XERK-236).
+        self._retain_outage = False
         # Transcript writes (segments, translations, cues, songs) not yet stored, in
         # order, with the task storing them. A database outage holds them here for the
         # next write or the finalize retry instead of losing them (XERK-1531).
@@ -1677,11 +1680,12 @@ class Session:
     async def _finalize(self) -> bool:
         """Store the held writes, then mark the conversation ready.
 
-        Returns False while a database outage stops it — including an audio key the
-        last retain couldn't write, or the row would be ready but unplayable.
+        Returns False only while a database outage stops it — including an audio key
+        the last retain couldn't write, or the row would be ready but unplayable. Any
+        other failure must not hold it: the serial retry would stall behind it.
         """
         assert self._conversations is not None
-        if not await self._flush_writes() or self._audio_key_pending:
+        if not await self._flush_writes() or (self._audio_key_pending and self._retain_outage):
             return False
         try:
             await asyncio.to_thread(
@@ -1726,10 +1730,12 @@ class Session:
             return True
         try:
             await self._persist_audio()
-        except Exception:
+        except Exception as exc:
+            self._retain_outage = is_database_unavailable(exc)
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
             return False
+        self._retain_outage = False
         return True
 
     async def _persist_audio(self) -> None:

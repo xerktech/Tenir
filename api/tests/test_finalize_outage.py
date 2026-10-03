@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import numpy as np
 import pytest
@@ -38,16 +39,18 @@ def _voice_chunk(*, ms: int = 100, freq: int = 200) -> bytes:
 _WRITES = ("add_segment", "set_segment_translation", "finish", "set_audio_key")
 
 
-def _outage(monkeypatch: pytest.MonkeyPatch, *names: str) -> dict[str, bool]:
+def _outage(monkeypatch: pytest.MonkeyPatch, *names: str, wait_s: float = 0.0) -> dict[str, bool]:
     """Make conversation writes (default: all of them) raise like a Postgres outage
-    while ``down``."""
-    state = {"down": False}
+    while ``down``, after ``wait_s`` (the pool timeout). ``calls`` counts attempts."""
+    state = {"down": False, "calls": 0}
     store = get_conversation_store()
     for name in names or _WRITES:
         real = getattr(store, name)
 
         def call(*args, _real=real, **kwargs):
             if state["down"]:
+                state["calls"] += 1
+                time.sleep(wait_s)
                 raise DatabaseUnavailable("database unavailable")
             return _real(*args, **kwargs)
 
@@ -83,9 +86,12 @@ def test_end_during_outage_finalizes_once_the_database_is_back(
         conv = get_conversation_store().get("default", "conv-outage")
         assert conv is not None and conv.status == "live"
 
+        attempts = db["calls"]
         await asyncio.sleep(0.1)  # several retries while still down
         conv = get_conversation_store().get("default", "conv-outage")
         assert conv is not None and conv.status == "live"
+        # Paced by the retry interval (0.01 s), not a hot loop.
+        assert 2 <= db["calls"] - attempts <= 25
 
         db["down"] = False
         conv = await _until_ready("conv-outage")
@@ -224,5 +230,68 @@ def test_a_non_outage_write_error_drops_only_that_write() -> None:
         conv = store.get("default", "conv-fault")
         assert conv is not None and conv.status == "ready"
         assert [s.segment_id for s in conv.segments] == ["s"]
+
+    asyncio.run(run())
+
+
+def test_outage_writes_never_hold_the_caption_pump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each write waits out the pool timeout during an outage; awaited on the pump,
+    that held every later caption until it went stale."""
+    db = _outage(monkeypatch, wait_s=0.5)
+
+    async def run() -> None:
+        captions: list[str] = []
+
+        async def send(msg) -> None:
+            if msg.type == "caption.final":
+                captions.append(msg.segmentId)
+
+        session = Session(send, session_id="conv-live")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+        db["down"] = True
+        for _ in range(50):  # ~5s -> stub finals [0,2000] and [2000,4000]
+            await session.on_audio(_voice_chunk())
+        for _ in range(50):
+            if len(captions) == 2:
+                break
+            await asyncio.sleep(0.002)
+        assert len(captions) == 2, "a held write blocked the pump"
+        db["down"] = False
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_a_non_outage_audio_key_failure_does_not_stall_other_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_key = store.set_audio_key
+
+    def key(household, conversation_id, audio_key):
+        if conversation_id == "conv-badkey":
+            raise ValueError("disk full")
+        return real_key(household, conversation_id, audio_key)
+
+    monkeypatch.setattr(store, "set_audio_key", key)
+    db = _outage(monkeypatch, "finish")
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        bad = Session(send, session_id="conv-badkey")
+        await bad.start(mic_source="phone-microphone", source_lang=None)
+        await bad.on_audio(_voice_chunk())
+        db["down"] = True
+        await bad.close()  # finish deferred by the outage; its key never writes
+        other = Session(send, session_id="conv-other")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        await other.close()
+
+        db["down"] = False
+        assert (await _until_ready("conv-badkey")).audio_key is None
+        assert (await _until_ready("conv-other")).status == "ready"
 
     asyncio.run(run())
