@@ -19,7 +19,9 @@ import time
 import types
 
 import pytest
+from fastapi.testclient import TestClient
 
+from api.auth.sql_users import SqlUserStore
 from api.persistence import postgres
 from api.persistence.postgres import (
     OPEN_TIMEOUT_SECONDS,
@@ -37,9 +39,15 @@ def _install_unreachable_pool(monkeypatch) -> list:
     pools: list = []
 
     class _FakePool:
-        def __init__(self, dsn: str, open: bool = True, kwargs: dict | None = None) -> None:  # noqa: A002
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn: str, open: bool = True, **kw: object) -> None:  # noqa: A002
             assert open is False, "the pool must be opened with a bounded wait"
-            assert kwargs == {"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
+            assert kw["kwargs"] == {"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
+            # The request path's wait for a connection is bounded too, not 30s.
+            assert kw["timeout"] == OPEN_TIMEOUT_SECONDS
+            # Stale connections from before a Postgres restart are checked, not lent.
+            assert kw["check"] is _FakePool.check_connection
             self.open_timeout: float | None = None
             self.closed = False
             pools.append(self)
@@ -58,9 +66,12 @@ def _install_unreachable_pool(monkeypatch) -> list:
     return pools
 
 
-def test_unreachable_open_is_bounded_and_its_verdict_shared(monkeypatch) -> None:
+@pytest.mark.parametrize("store_cls", [SqlConversationStore, SqlUserStore])
+def test_unreachable_open_is_bounded_and_its_verdict_shared(monkeypatch, store_cls) -> None:
+    """Both stores: the user store's 30s opens queued behind its lock on every
+    authenticated request, stalling the shared thread pool (XERK-1434 QA)."""
     pools = _install_unreachable_pool(monkeypatch)
-    store = SqlConversationStore("postgresql://unused")
+    store = store_cls("postgresql://unused")
 
     with pytest.raises(_PoolTimeout):
         store._ensure_pool()
@@ -155,3 +166,26 @@ def test_ready_ignores_a_probe_pending_on_another_loop(monkeypatch) -> None:
         assert asyncio.run(main.ready()).status_code == 200
     finally:
         stale_loop.close()
+
+
+def test_ws_token_resolution_runs_off_the_event_loop(monkeypatch) -> None:
+    """Resolving a WS token reads the user store; on the event loop a blocking read
+    (database down) froze every request server-wide, /health included."""
+    from api import main
+
+    on_loop: list[bool] = []
+
+    def fake_principal(ws) -> None:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return None  # rejected -> the endpoint logs the reason and closes 1008
+
+    monkeypatch.setattr(main, "_ws_principal", fake_principal)
+    monkeypatch.setattr(main, "_ws_reject_reason", fake_principal)
+    with TestClient(main.app) as client, client.websocket_connect("/ws?token=x") as ws:
+        with pytest.raises(Exception):  # noqa: B017 - closed with 1008
+            ws.receive_text()
+    assert on_loop == [False, False]
