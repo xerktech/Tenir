@@ -49,7 +49,7 @@ from api.persistence import get_conversation_store
 from api.persistence.postgres import SqlConversationStore
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Session, is_valid_session_id
+from api.session import Session, drain_teardowns, is_valid_session_id
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 
@@ -121,6 +121,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     for session in registry.active():
         registry.unregister(session)
         await session.close()
+    # Sessions already unregistered may still be tearing down (their close() caller
+    # was cancelled); wait for them so the process doesn't exit before they persist.
+    await drain_teardowns()
 
 
 app = FastAPI(title="tenir api", version="0.1.1", lifespan=lifespan)
