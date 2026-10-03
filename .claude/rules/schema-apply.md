@@ -4,6 +4,7 @@ paths:
   - "api/src/api/auth/sql_users.py"
   - "api/src/api/main.py"
   - "api/tests/test_pg_schema_apply.py"
+  - "api/tests/test_pg_list_live.py"
 ---
 
 # Boot schema apply (Postgres stores)
@@ -40,6 +41,12 @@ paths:
   `test_database_rejections_are_schema_errors` raises real psycopg errors and skips without it,
   so dropping the extra silently disarms the OperationalError-misclassification guard.
 - Real-Postgres coverage of schema.sql itself is `test_pg_schema_live.py` (`TENIR_TEST_PG_DSN`).
+  - No Docker on the dev hosts: `pip install pgserver` and use `pgserver.get_server(dir).get_uri()`
+    as the DSN. Its socket dies with the session that started it — restart it, don't reuse a DSN.
+- One request-path read = one pool borrow. list()/search() read a whole page's children with
+  `= ANY(%s)` via `_assemble`; never call get() per row (1+N queued borrows on a 4-conn pool,
+  XERK-1518). Child ORDER BY carries the id as tie-breaker so get/list/search agree.
+  - Tests: `test_pg_list_live.py`.
 - Tests: `test_pg_schema_apply.py` — `test_boot_fails_when_the_database_rejects_the_schema`,
   `test_database_rejections_are_schema_errors`, `test_connection_lost_mid_apply_is_not_fatal`,
   `test_concurrent_first_use_applies_the_schema_once`.

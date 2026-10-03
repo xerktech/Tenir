@@ -395,24 +395,35 @@ class SqlConversationStore:
                 ).fetchone()
             if row is None:
                 return None
-            seg_rows = cur.execute(
-                "SELECT * FROM segments WHERE conversation_id = %s ORDER BY start_ms",
-                (conversation_id,),
-            ).fetchall()
-            cue_rows = cur.execute(
-                "SELECT * FROM cues WHERE conversation_id = %s ORDER BY at_ms",
-                (conversation_id,),
-            ).fetchall()
-            song_rows = cur.execute(
-                "SELECT * FROM songs WHERE conversation_id = %s ORDER BY at_ms",
-                (conversation_id,),
-            ).fetchall()
-        return self._row_to_conversation(
-            row,
-            [self._row_to_segment(r) for r in seg_rows],
-            [self._row_to_cue(r) for r in cue_rows],
-            [self._row_to_song(r) for r in song_rows],
-        )
+            return self._assemble(cur, [row])[0]
+
+    def _assemble(self, cur, rows) -> list[Conversation]:  # pragma: no cover - live database
+        """Build conversations from their rows, reading every child table once for all of
+        them on the caller's cursor. Listing used to call get() per row — a pool borrow
+        plus three reads each — so one /conversations queued 1+N times for the small pool
+        (XERK-1518)."""
+        if not rows:
+            return []
+        ids = [r["id"] for r in rows]
+        segs: dict[str, list[Segment]] = {i: [] for i in ids}
+        cues: dict[str, list[Cue]] = {i: [] for i in ids}
+        songs: dict[str, list[Song]] = {i: [] for i in ids}
+        for r in cur.execute(
+            "SELECT * FROM segments WHERE conversation_id = ANY(%s) ORDER BY start_ms, segment_id",
+            (ids,),
+        ).fetchall():
+            segs[r["conversation_id"]].append(self._row_to_segment(r))
+        for r in cur.execute(
+            "SELECT * FROM cues WHERE conversation_id = ANY(%s) ORDER BY at_ms, cue_id", (ids,)
+        ).fetchall():
+            cues[r["conversation_id"]].append(self._row_to_cue(r))
+        for r in cur.execute(
+            "SELECT * FROM songs WHERE conversation_id = ANY(%s) ORDER BY at_ms, song_id", (ids,)
+        ).fetchall():
+            songs[r["conversation_id"]].append(self._row_to_song(r))
+        return [
+            self._row_to_conversation(r, segs[r["id"]], cues[r["id"]], songs[r["id"]]) for r in rows
+        ]
 
     @staticmethod
     def _row_to_segment(row) -> Segment:  # pragma: no cover - requires a live database
@@ -455,18 +466,15 @@ class SqlConversationStore:
         where = "household = %s" if owner is None else "household = %s AND owner = %s"
         params: tuple = (household,) if owner is None else (household, owner)
         with self._ensure_pool().connection() as conn:
-            rows = (
-                conn.cursor(row_factory=dict_row)
-                .execute(
-                    f"""
+            cur = conn.cursor(row_factory=dict_row)
+            rows = cur.execute(
+                f"""
                 SELECT * FROM conversations WHERE {where}
                 ORDER BY started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (*params, limit, offset),
-                )
-                .fetchall()
-            )
-        return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
+                (*params, limit, offset),
+            ).fetchall()
+            return self._assemble(cur, rows)
 
     def search(  # pragma: no cover - requires a live database
         self,
@@ -489,11 +497,10 @@ class SqlConversationStore:
             # tsvector built over an aggregate (string_agg) can't use that index and
             # forces a full scan + per-query recompute. Rank by recency of the
             # matching conversation; relevance ranking can layer on later if needed.
-            rows = (
-                conn.cursor(row_factory=dict_row)
-                .execute(
-                    f"""
-                SELECT c.id FROM conversations c
+            cur = conn.cursor(row_factory=dict_row)
+            rows = cur.execute(
+                f"""
+                SELECT c.* FROM conversations c
                 WHERE c.household = %s {owner_clause}
                   AND EXISTS (
                       SELECT 1 FROM segments s
@@ -503,11 +510,9 @@ class SqlConversationStore:
                   )
                 ORDER BY c.started_at DESC LIMIT %s OFFSET %s
                 """,
-                    (household, *owner_param, query, limit, offset),
-                )
-                .fetchall()
-            )
-        return [self.get(household, r["id"]) for r in rows]  # type: ignore[misc]
+                (household, *owner_param, query, limit, offset),
+            ).fetchall()
+            return self._assemble(cur, rows)
 
     def delete(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str
