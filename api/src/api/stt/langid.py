@@ -115,8 +115,11 @@ _CHARS: dict[str, str] = {
 # it. French has no á/í/ó/ú/ñ, so "Va a casa de la música." can't be French however
 # many la/de/a it shares with Spanish (XERK-1419). Capitalised words are skipped: a
 # French turn names "María" or "Málaga" (QA).
+# Italian writes only grave accents (à è ì ò ù, é in "perché"): "Tu número." tied fr/it on
+# "tu" and went it once fr was ruled out (QA).
 _FOREIGN_CHARS: dict[str, str] = {
     "fr": "áíóúñ",
+    "it": "áíóúñ",
 }
 
 # One distinctive-word hit is enough only when the turn is this short — "Los
@@ -273,7 +276,8 @@ def detect_lang(text: str) -> str | None:
         return by_words
     to_correct = by_words or (raw if raw in ruled_out else None)
     by_freq = _frequency_lang(scores, words, to_correct)
-    return (by_freq if by_freq not in ruled_out else None) or by_words
+    # A clear frequency call outranks the letters: French borrows "jalapeño", "piñata".
+    return by_freq or by_words
 
 
 def _word_list_lang(text: str, scores: dict[str, int], words: list[str]) -> str | None:

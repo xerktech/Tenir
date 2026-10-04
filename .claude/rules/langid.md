@@ -60,9 +60,10 @@ paths:
   scored only for fr tipped real Spanish to fr. (pt "está" was tried: "Está bien." became None.)
 - Spanish loanwords in English (hay, hola, gracias, bueno, mucho, donde, aquí) are homographs, not
   plain es vocab: with "a" corroborating, "a bale of hay" was tagged es and translated (XERK-1419 QA).
-- `_FOREIGN_CHARS` zeroes a language for letters it never writes (fr: á í ó ú ñ), in lowercase
+- `_FOREIGN_CHARS` zeroes a language for letters it never writes (fr, it: á í ó ú ñ), in lowercase
   words only: French turns name "María"/"Cancún". Don't add `en` (English names "José" too).
   A list call it overturns still reaches `_frequency_lang` as a correction: zeroing fr first
-  sent "Tu pelo volverá a crecer." through the stricter None-turn gate and lost it.
+  sent "Tu pelo volverá a crecer." through the stricter None-turn gate and lost it. A clear
+  frequency call still wins over the letters ("Le jalapeño est très piquant." stays fr).
 - New es vocab must be ≥10× rarer (wordfreq) in pt/it: pt `vamos`/`estás`, it `tengo`/`ella`
   are Spanish-looking but native there, so they stay out.

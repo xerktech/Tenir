@@ -315,7 +315,15 @@ def test_letters_french_never_writes_rule_it_out() -> None:
     # A French word-list call they overturn is still corrected by frequencies.
     assert detect_lang("Tu pelo volverá a crecer.") == "es"
     assert detect_lang("Tu es fou.") is None
+    # ...and a clear French frequency call outranks them: French borrows ñ words.
+    assert detect_lang("Nous avons mangé des jalapeños avec les amis.") == "fr"
+    assert detect_lang("Le jalapeño est très piquant ce soir.") == "fr"
+    assert detect_lang("Je voudrais une piñata pour mon fils.") == "fr"
+    # Italian writes none of them either: "tu" is not an Italian tie-breaker here.
+    assert detect_lang("Tu número.") is None
+    assert detect_lang("Tu habitación.") is None
     assert detect_lang("Il a dit que c'est fini.") == "fr"
+
 
 # Public FLEURS es_419 sentences (XERK-1349) the word lists left None or tagged fr: a
 # Spanish turn that starts a conversation that way is never translated.
