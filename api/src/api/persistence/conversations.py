@@ -100,8 +100,12 @@ class InMemoryConversationStore:
             convs = self._conversations(household)
             # Idempotent so a resumed session (same id) keeps its existing record —
             # including its original owner; a resume never re-owns a recording.
+            # A cold resume of a finished one reopens it: it is being recorded
+            # again, so it reads live until this sitting finishes it (XERK-1502).
             existing = convs.get(conversation_id)
             if existing is not None:
+                existing.status = "live"
+                existing.ended_at = None
                 return existing
             conv = Conversation(
                 id=conversation_id,

@@ -637,3 +637,45 @@ def test_resume_owner_check_fails_closed_on_a_transient_store_error(
             assert ws.receive_json()["type"] == "error"
             assert calls == 1
             assert registry.count() == 0
+
+
+def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
+    """Regression (XERK-1502): a cold resume of a finalized conversation must read
+    as live — not "ready" with the first sitting's ended_at — for the whole new
+    sitting, and finalize again when that sitting ends."""
+
+    def drain_to_pong(ws) -> None:
+        while ws.receive_json()["type"] != "pong":
+            pass
+
+    store = get_conversation_store()
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            drain_to_pong(ws)
+        first = store.get("default", sid)
+        assert first is not None and first.status == "ready" and first.ended_at is not None
+        started_at, first_end = first.started_at, first.ended_at
+
+        with client.websocket_connect("/ws") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["sessionId"] == sid
+            live = store.get("default", sid)
+            assert live is not None
+            assert live.status == "live"
+            assert live.ended_at is None
+            assert live.started_at == started_at  # the recording's start is kept
+            ws2.send_text(json.dumps({"type": "session.end"}))
+            ws2.send_text(json.dumps({"type": "ping", "t": 2}))
+            drain_to_pong(ws2)
+
+        done = store.get("default", sid)
+        assert done is not None and done.status == "ready"
+        assert done.ended_at is not None and done.ended_at >= first_end

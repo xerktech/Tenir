@@ -450,6 +450,9 @@ class Session:
         self._first_retain: asyncio.Future[bool] | None = None
         self._prior_retain: asyncio.Future[bool] | None = None
         self._prior_teardown: asyncio.Task[None] | None = None
+        # The sitting that resumed this conversation while this one was still
+        # tearing down: our late finish() must not close the row it reopened.
+        self._successor: Session | None = None
         # A start() that raised is torn down by close() without ever going live
         # (XERK-1511); _row_opened says whether it got as far as the store row.
         self._start_failed = False
@@ -604,6 +607,7 @@ class Session:
         if prior is not None:
             self._prior_retain = prior._first_retain
             self._prior_teardown = prior._teardown
+            prior._successor = self
             return prior._current_audio_ms()
         if self._audio_store is not None:
             existing = await asyncio.to_thread(
@@ -1747,6 +1751,11 @@ class Session:
         assert self._conversations is not None
         if not await self._flush_writes() or (self._audio_key_pending and self._retain_outage):
             return False
+        if self._resumed_live():
+            # A later sitting reopened the row and is still recording into it: it
+            # finishes the row itself, and doing it now would show it ready with
+            # this sitting's ended_at for the rest of that one (XERK-1502).
+            return True
         try:
             await asyncio.to_thread(
                 self._conversations.finish, self._household, self.session_id, status="ready"
@@ -1756,6 +1765,17 @@ class Session:
                 raise
             return False
         return True
+
+    def _resumed_live(self) -> bool:
+        """Whether a later sitting of this conversation has opened its row and not
+        closed yet — following the chain, as that one may itself have been resumed
+        mid-teardown."""
+        later = self._successor
+        while later is not None:
+            if later._row_opened and not later._closed:
+                return True
+            later = later._successor
+        return False
 
     async def _retain_audio_after_prior(self) -> bool:
         """Retain, but never ahead of the sitting this one resumed mid-teardown:
