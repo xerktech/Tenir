@@ -12,6 +12,7 @@ database.
 from __future__ import annotations
 
 import asyncio
+import socket
 import contextlib
 import sys
 import threading
@@ -43,11 +44,17 @@ def _install_unreachable_pool(monkeypatch) -> list:
 
         def __init__(self, dsn: str, open: bool = True, **kw: object) -> None:  # noqa: A002
             assert open is False, "the pool must be opened with a bounded wait"
-            assert kw["kwargs"] == {"connect_timeout": int(OPEN_TIMEOUT_SECONDS)}
+            assert kw["kwargs"]["connect_timeout"] == int(OPEN_TIMEOUT_SECONDS)
+            # A blackholed network is bounded by TCP, not the kernel's ~15 minutes.
+            assert kw["kwargs"]["keepalives"] == 1
+            assert kw["kwargs"]["tcp_user_timeout"] > 0
             # The request path's wait for a connection is bounded too, not 30s.
             assert kw["timeout"] == OPEN_TIMEOUT_SECONDS
             # Stale connections from before a Postgres restart are checked, not lent.
-            assert kw["check"] is _FakePool.check_connection
+            # ...by a check that can't hang on a server that stopped answering.
+            assert kw["check"] is postgres.check_connection
+            # A failed reconnect is retried fresh, not on a minute-long backoff.
+            assert kw["reconnect_timeout"] == OPEN_TIMEOUT_SECONDS
             self.open_timeout: float | None = None
             self.closed = False
             pools.append(self)
@@ -189,3 +196,122 @@ def test_ws_token_resolution_runs_off_the_event_loop(monkeypatch) -> None:
         with pytest.raises(Exception):  # noqa: B017 - closed with 1008
             ws.receive_text()
     assert on_loop == [False, False]
+
+
+# --- A database that stops answering after the pool opened (XERK-1513) ---------------
+
+
+class _SocketConn:
+    """A connection whose every statement blocks reading its socket, as against a
+    server that stopped answering; a severed socket makes it fail like libpq does."""
+
+    def __init__(self) -> None:
+        self.sock, self.peer = socket.socketpair()
+        self.autocommit = True
+
+    def fileno(self) -> int:
+        return self.sock.fileno()
+
+    def execute(self, query: str) -> None:
+        if not self.sock.recv(1):
+            raise OSError("server closed the connection unexpectedly")
+
+
+def _install_base_pool(monkeypatch) -> type:
+    class _BasePool:
+        def __init__(self, *a: object, configure=None, **kw: object) -> None:
+            self.timeout = kw.get("timeout", 30.0)
+            self.name = "fake"
+            self.configure = configure
+            self.lent: list = []
+            self.waits: list = []
+            self.returned: list = []
+
+        @staticmethod
+        def check_connection(conn) -> None:
+            conn.execute("")
+
+        def getconn(self, timeout=None):
+            self.waits.append(timeout)
+            return self.lent.pop()
+
+        def putconn(self, conn) -> None:
+            self.returned.append(conn)
+
+        def reconnect_failed(self) -> None:
+            pass
+
+    fake_mod = types.ModuleType("psycopg_pool")
+    fake_mod.ConnectionPool = _BasePool
+    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_mod)
+    return postgres._guarded_pool_class()
+
+
+def test_check_on_a_hung_server_is_bounded(monkeypatch) -> None:
+    """psycopg's check runs execute("") with no limit: against a SIGSTOPped server
+    each pooled connection trapped its borrower's thread indefinitely."""
+    _install_base_pool(monkeypatch)
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 0.2)
+    conn = _SocketConn()
+    t0 = time.monotonic()
+    with pytest.raises(OSError, match="closed"):
+        postgres.check_connection(conn)
+    assert time.monotonic() - t0 < 2
+
+
+def test_healthy_check_and_borrow_leave_the_connection_alone(monkeypatch) -> None:
+    pool_cls = _install_base_pool(monkeypatch)
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 0.1)
+    conn = _SocketConn()
+    conn.peer.sendall(b"x")
+    postgres.check_connection(conn)  # answered in time: disarmed
+
+    pool = pool_cls(timeout=5.0)
+    pool.borrow_timeout = 0.1
+    pool.lent.append(conn)
+    assert pool.getconn() is conn
+    pool.putconn(conn)
+    time.sleep(0.3)  # past both bounds: neither watchdog may fire after its disarm
+    conn.peer.sendall(b"y")
+    assert conn.sock.recv(1) == b"y"
+    assert pool.returned == [conn]
+
+
+def test_a_borrow_on_a_hung_server_is_severed(monkeypatch) -> None:
+    """An in-flight query has no client-side bound of its own; the borrow watchdog
+    fails it instead of waiting for TCP to give up."""
+    pool_cls = _install_base_pool(monkeypatch)
+    pool = pool_cls(timeout=5.0)
+    conn = _SocketConn()
+    pool.lent.append(conn)
+    assert pool.getconn() is conn  # no bound until the boot schema applied
+    pool.putconn(conn)
+
+    pool.borrow_timeout = 0.2
+    pool.lent.append(conn)
+    borrowed = pool.getconn()
+    t0 = time.monotonic()
+    with pytest.raises(OSError):
+        borrowed.execute("SELECT 1")
+    assert time.monotonic() - t0 < 2
+    pool.putconn(borrowed)
+
+
+def test_breaker_shortens_the_wait_only_while_the_database_is_unreachable(monkeypatch) -> None:
+    """A burst against a dead database queued ceil(N/40) x 5s behind the worker
+    limiter. Only a failed reconnect opens the breaker, never load; the next
+    connection that opens closes it."""
+    pool_cls = _install_base_pool(monkeypatch)
+    pool = pool_cls(timeout=5.0)
+    pool.lent += [object(), object(), object(), object()]
+
+    pool.getconn()
+    pool.getconn(timeout=OPEN_TIMEOUT_SECONDS)
+    pool.reconnect_failed()
+    pool.getconn()
+    pool.getconn(timeout=OPEN_TIMEOUT_SECONDS)
+    assert pool.waits[:2] == [None, OPEN_TIMEOUT_SECONDS]
+    assert pool.waits[2:] == [postgres.OUTAGE_WAIT_SECONDS] * 2
+
+    pool.configure(object())  # a connection opened: the database is back
+    assert not pool.unreachable

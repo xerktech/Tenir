@@ -6,6 +6,8 @@ paths:
   - packages/client-core/src/api.ts
   - packages/client-core/src/ws.ts
   - api/tests/test_db_unavailable.py
+  - api/tests/test_pg_outage_live.py
+  - api/tests/test_pg_unreachable.py
 ---
 
 # Database outage contract (XERK-1510)
@@ -38,5 +40,15 @@ paths:
   Any other failure must finalize (XERK-236): one stuck session stalls the serial retry.
 - Deferred finalizes retry serially in one task: an outage ties up one executor thread, not one
   per ended session. Held writes are lost if the process exits before the database is back.
+- Pools come from `PoolOpener` only: its `GuardedPool` bounds a hung server client-side (XERK-1513).
+  A SIGSTOPped server ACKs at TCP, so connect_timeout, keepalives and statement_timeout never fire.
+- The watchdog severs with `shutdown()` on a dup of libpq's fd; never close libpq's own fd.
+- The borrow watchdog is armed only after the boot schema applied: DDL may run for minutes.
+- `reconnect_timeout` stays short: psycopg's 5-min default backs off to 64s, so the first request
+  after an outage succeeded up to a minute late. Giving up also opens the outage breaker.
+- The breaker opens only on a failed reconnect, never on a `PoolTimeout`: load must not trip it.
+  It shortens the wait rather than skipping `getconn`, which is what starts the next reconnect.
+- Don't cap the pool's `max_waiting`: min=max=4, so 40 healthy concurrent requests hit any cap.
 - Tests: `api/tests/test_finalize_outage.py`.
+- Tests: `api/tests/test_pg_outage_live.py` (TCP proxy that refuses or freezes a real Postgres).
 - Tests: `api/tests/test_db_unavailable.py`; `packages/client-core/tests/api.test.ts` (503 case).
