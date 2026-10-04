@@ -295,3 +295,42 @@ def test_a_non_outage_audio_key_failure_does_not_stall_other_finalizes(
         assert (await _until_ready("conv-other")).status == "ready"
 
     asyncio.run(run())
+
+
+def test_a_deferred_finalize_does_not_close_a_cold_resumed_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1502, QA): a sitting that ended during an outage finishes
+    the row from the retry loop, after its teardown left the resume handoff. A cold
+    resume landing before that retry reopens the row, and the retry must leave it
+    live for the new sitting, which finishes it itself."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.05)
+    db = _outage(monkeypatch, "finish")
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-deferred-resume")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        db["down"] = True
+        await first.close()
+        assert first in session_mod._unfinalized
+        assert not session_mod._closing  # its teardown is done; only the retry is left
+        db["down"] = False
+
+        resumed = Session(send, session_id="conv-deferred-resume")
+        await resumed.start(mic_source="phone-microphone", source_lang=None)
+        for _ in range(100):  # the retry runs and drains the deferred finalize
+            if not session_mod._unfinalized:
+                break
+            await asyncio.sleep(0.01)
+        assert not session_mod._unfinalized
+        conv = get_conversation_store().get("default", "conv-deferred-resume")
+        assert conv is not None and conv.status == "live" and conv.ended_at is None
+
+        await resumed.close()
+        conv = await _until_ready("conv-deferred-resume")
+        assert conv.ended_at is not None
+
+    asyncio.run(run())

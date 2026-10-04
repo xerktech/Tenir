@@ -378,8 +378,8 @@ def test_prior_sitting_finishing_late_leaves_the_resumed_row_live() -> None:
 
 
 def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
-    """The skip only holds while the later sitting is live: once it has closed
-    (e.g. a start that failed after opening the row) the old sitting finishes."""
+    """A later sitting that closed before the old one finishes (e.g. a start that
+    failed after opening the row) leaves the conversation ready, not live."""
 
     async def run() -> None:
         async def send(_msg) -> None:
@@ -404,6 +404,47 @@ def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
         await closing
         conv = store.get("default", "conv-successor-closed")
         assert conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
+def test_a_closed_successor_in_the_chain_does_not_unblock_the_first_sittings_finish() -> None:
+    """A closes, B resumes and closes, C resumes — all while A is still tearing
+    down. A's late finish() must follow the chain to C, still live (XERK-1502)."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_conversation_store()
+        sid = "conv-chain"
+        a = Session(send, session_id=sid)
+        await a.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(5):
+            await a.on_audio(_voice_chunk())
+        release_a = _hold_flush(a)
+        closing_a = asyncio.create_task(a.close())
+        await asyncio.sleep(0)
+
+        b = Session(send, session_id=sid)
+        await asyncio.wait_for(b.start(mic_source="g2-microphone", source_lang=None), 1)
+        release_b = _hold_flush(b)
+        closing_b = asyncio.create_task(b.close())
+        await asyncio.sleep(0)
+
+        c = Session(send, session_id=sid)
+        await asyncio.wait_for(c.start(mic_source="g2-microphone", source_lang=None), 1)
+        assert a._successor is b and b._successor is c
+
+        release_a.set()
+        await closing_a
+        release_b.set()
+        await closing_b
+        conv = store.get("default", sid)
+        assert conv.status == "live" and conv.ended_at is None
+
+        await c.close()
+        assert store.get("default", sid).status == "ready"
 
     asyncio.run(run())
 

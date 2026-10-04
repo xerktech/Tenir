@@ -603,7 +603,13 @@ class Session:
         start() on a teardown (up to its flush + drain caps) let a second
         reconnect cold-start a duplicate sitting in the meantime.
         """
-        prior = _closing.get((self._household, self.session_id))
+        key = (self._household, self.session_id)
+        for deferred in _unfinalized:
+            # A sitting whose finalize an outage deferred has left _closing, but its
+            # retry still runs finish(): it must not close the row we reopen (XERK-1502).
+            if (deferred._household, deferred.session_id) == key:
+                deferred._successor = self
+        prior = _closing.get(key)
         if prior is not None:
             self._prior_retain = prior._first_retain
             self._prior_teardown = prior._teardown
