@@ -14,6 +14,7 @@ const startOidcLogin = core.startOidcLogin as unknown as Mock;
 const completeOidcCallback = core.completeOidcCallback as unknown as Mock;
 const oidcLogout = core.oidcLogout as unknown as Mock;
 const logout = core.logout as unknown as Mock;
+const describeLoginError = core.describeLoginError as unknown as Mock;
 
 const { me, getToken, captureStats } = vi.hoisted(() => ({
   me: vi.fn(),
@@ -34,7 +35,7 @@ vi.mock("@tenir/client-core", () => ({
   getToken,
   login: vi.fn(),
   logout: vi.fn(),
-  describeLoginError: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  describeLoginError: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
   // OIDC surface (docs/auth-oidc.md §10). Default: server advertises OIDC off, so
   // the existing suites see the login form + dashboard exactly as before.
   getAuthConfig: vi.fn(async () => ({ builtin: true })),
@@ -510,6 +511,15 @@ describe("boot with the server unreachable", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Can't reach the Tenir server.");
     expect(screen.queryByRole("heading", { name: "Log in" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+  });
+
+  it("shows client-core's friendly wording, not the raw transport message", async () => {
+    describeLoginError.mockImplementation(() => "Friendly: server unreachable");
+    me.mockRejectedValue(new core.NetworkError("raw fetch failure"));
+    renderApp();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Friendly: server unreachable");
+    expect(screen.queryByText(/raw fetch failure/)).not.toBeInTheDocument();
+    describeLoginError.mockImplementation((err: unknown) => (err instanceof Error ? err.message : String(err)));
   });
 
   it("treats a 503 (the api can't reach its database) the same way", async () => {
