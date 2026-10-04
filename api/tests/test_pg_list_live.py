@@ -131,6 +131,18 @@ def test_search_reads_the_page_in_one_borrow(store) -> None:
     assert store.borrows == 1
 
 
+def test_tied_start_times_page_without_repeats_or_gaps(store) -> None:
+    ids = _seed(store, 9)
+    with store._pool.connection() as conn:
+        conn.execute("UPDATE conversations SET started_at = '2026-01-01T00:00:00Z'")
+    for listing in (
+        lambda o: store.list(HH, limit=2, offset=o),
+        lambda o: store.search(HH, "needle", limit=2, offset=o),
+    ):
+        paged = [c.id for o in range(0, 10, 2) for c in listing(o)]
+        assert paged == sorted(ids)
+
+
 def test_empty_page_and_owner_scope(store) -> None:
     store.borrows = 0
     assert store.list(HH) == []
@@ -142,6 +154,15 @@ def test_empty_page_and_owner_scope(store) -> None:
     store.create(HH, empty)
     (row,) = store.list(HH)
     assert (row.id, row.segment_count, row.duration_ms) == (empty, 0, 0)
+    store.delete(HH, empty)
+
+    # A span past 2^31 ms is summed in bigint, not overflowed into a 500 (XERK-1524).
+    store.create(HH, empty)
+    store.add_segment(
+        HH, empty, Segment(segment_id="wide", text="w", start_ms=-10, end_ms=2_147_483_640)
+    )
+    (row,) = store.list(HH)
+    assert row.duration_ms == 2_147_483_650
     store.delete(HH, empty)
 
     with store._pool.connection() as conn:

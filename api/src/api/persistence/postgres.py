@@ -241,16 +241,21 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
 
 # Listing and search render a count and a duration per conversation, so they aggregate
 # the page's segments in SQL rather than loading every segment, cue and song row just to
-# count them (XERK-1524). The lateral subquery runs per page row off
-# segments_conversation_idx; duration matches Conversation.duration_ms (0 when empty).
-_SUMMARY_COLUMNS = "c.*, agg.segment_count, agg.duration_ms"
-_SUMMARY_JOIN = """
-    CROSS JOIN LATERAL (
-        SELECT count(*)::int AS segment_count,
-               COALESCE(max(s.end_ms) - min(s.start_ms), 0)::int AS duration_ms
-        FROM segments s WHERE s.conversation_id = c.id
-    ) agg
-"""
+# count them (XERK-1524). The page is cut first and only its rows are aggregated: a
+# lateral join outside the LIMIT would run for every skipped or sorted row. Duration
+# matches Conversation.duration_ms (0 when empty), in bigint so a span past 2^31 ms can't
+# 500 the listing. id breaks started_at ties so paging never repeats or drops a row.
+def _summary_page(page_sql: str) -> str:
+    return f"""
+        SELECT c.*, agg.segment_count, agg.duration_ms
+        FROM ({page_sql}) c
+        CROSS JOIN LATERAL (
+            SELECT count(*)::int AS segment_count,
+                   COALESCE(max(s.end_ms)::bigint - min(s.start_ms), 0) AS duration_ms
+            FROM segments s WHERE s.conversation_id = c.id
+        ) agg
+        ORDER BY c.started_at DESC, c.id
+    """
 
 
 class SqlConversationStore:
@@ -567,11 +572,12 @@ class SqlConversationStore:
         with self._ensure_pool().connection() as conn:
             cur = conn.cursor(row_factory=dict_row)
             rows = cur.execute(
-                f"""
-                SELECT {_SUMMARY_COLUMNS} FROM conversations c {_SUMMARY_JOIN}
-                WHERE {where}
-                ORDER BY c.started_at DESC LIMIT %s OFFSET %s
-                """,
+                _summary_page(
+                    f"""
+                    SELECT * FROM conversations c WHERE {where}
+                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                    """
+                ),
                 (*params, limit, offset),
             ).fetchall()
             return [self._row_to_summary(r) for r in rows]
@@ -599,17 +605,19 @@ class SqlConversationStore:
             # matching conversation; relevance ranking can layer on later if needed.
             cur = conn.cursor(row_factory=dict_row)
             rows = cur.execute(
-                f"""
-                SELECT {_SUMMARY_COLUMNS} FROM conversations c {_SUMMARY_JOIN}
-                WHERE c.household = %s {owner_clause}
-                  AND EXISTS (
-                      SELECT 1 FROM segments s
-                      WHERE s.conversation_id = c.id
-                        AND to_tsvector('simple', s.text)
-                            @@ websearch_to_tsquery('simple', %s)
-                  )
-                ORDER BY c.started_at DESC LIMIT %s OFFSET %s
-                """,
+                _summary_page(
+                    f"""
+                    SELECT c.* FROM conversations c
+                    WHERE c.household = %s {owner_clause}
+                      AND EXISTS (
+                          SELECT 1 FROM segments s
+                          WHERE s.conversation_id = c.id
+                            AND to_tsvector('simple', s.text)
+                                @@ websearch_to_tsquery('simple', %s)
+                      )
+                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                    """
+                ),
                 (household, *owner_param, query, limit, offset),
             ).fetchall()
             return [self._row_to_summary(r) for r in rows]
