@@ -3,6 +3,7 @@
 from api.contract.messages import (  # noqa: F401
     CaptionFinal,
     CaptionPartial,
+    CaptionStatus,
     ClientMessage,
     Cue,
     ErrorMessage,

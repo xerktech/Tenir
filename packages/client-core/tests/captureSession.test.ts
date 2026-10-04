@@ -834,6 +834,29 @@ describe("CaptureSession song handlers (XERK-184)", () => {
   });
 });
 
+describe("captions delayed status (XERK-1498)", () => {
+  it("flags and clears delayed captions from caption.status, and resets on stop", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    expect(session.getState().captionsDelayed).toBe(false);
+    refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: true });
+    expect(session.getState().captionsDelayed).toBe(true);
+    // A reconnect keeps it: the api replays status changes made while detached.
+    refs.client!.handlers.onConnectionChange?.("closed");
+    expect(session.getState().captionsDelayed).toBe(true);
+    refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: false });
+    expect(session.getState().captionsDelayed).toBe(false);
+    refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: true });
+    await session.stop();
+    expect(session.getState().captionsDelayed).toBe(false);
+  });
+
+  it("leaves the state untouched when the status does not change", () => {
+    const s = { ...initialCaptureState("phone-microphone"), running: true };
+    expect(reduce(s, { type: "captionStatus", delayed: false })).toBe(s);
+  });
+});
+
 describe("a fatal error must end the capture, not just record a string (XERK-236)", () => {
   const fatal = (message = "connection rejected — please sign in again"): ErrorMessage => ({
     type: "error",

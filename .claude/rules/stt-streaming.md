@@ -52,6 +52,20 @@ paths:
     glasses' caption band with turns from tens of seconds earlier.
   - Age is dated by audio *arrival* time, not the session timeline, so tests that push audio
     faster than real time never read as stale.
+- An engine slower than real time sheds load by merging the final backlog (XERK-1498).
+  - Trigger: the last answered final decode took longer than its audio, and the next final
+    waited over `_FINAL_BEHIND_S`; it is decoded with every final queued behind it (up to
+    `_COALESCE_MAX_MS`) as one turn. Queued partials among them are dropped.
+  - Never merge on wait time alone: a backlog left by an outage drains turn by turn on a
+    recovered engine, keeping its turn boundaries.
+  - `_speech_finals_pending` is decremented once per merged speech turn, in the same `finally`.
+  - Tests: `test_streaming_stt.py::test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn`.
+- `caption.status` tells the clients when captions are delayed (XERK-1498).
+  - It is set by any final older than `_LATE_FINAL_S`, and cleared only after `_CAUGHT_UP_S` of
+    on-time finals, so a backlog that catches up in bursts doesn't make it flap.
+  - It is sent on change only. It is buffered across a detach and replayed on resume, so
+    clients keep the flag through a reconnect and reset it only at start or stop.
+  - Tests: `test_resilience.py::test_client_is_told_when_captions_fall_behind_and_catch_up`.
 - Tests: push through the `_push` / `_drain` helpers, which join the job queue. A bare
   `t.push` returns before any decode has run.
 - Repro harness for regressions: real uvicorn (`ws_ping_interval=5`) plus a `websockets`

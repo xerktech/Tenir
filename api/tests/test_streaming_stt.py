@@ -1500,6 +1500,73 @@ def test_partial_queued_behind_a_slow_final_is_dropped_when_stale(
     asyncio.run(run())
 
 
+def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine slower than real time grows the final backlog without bound, and
+    every final past the session's stale cutoff was stored but never shown live
+    (XERK-1498). A final that waited past _FINAL_BEHIND_S is decoded together with the
+    finals queued behind it, so the worker catches up and no turn's text is lost."""
+    import api.stt.streaming as streaming_mod
+    from api.metrics import metrics
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming_mod, "time", clock)
+    before = metrics.snapshot()["counters"].get("stage.stt.finals_coalesced", 0)
+
+    async def run() -> None:
+        eng = GatedEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        turn = [_pcm(200, amplitude=4000), _pcm(300, amplitude=0)]  # 500 ms each
+        for chunk in turn:
+            await t.push(chunk)
+        await asyncio.sleep(0.05)  # turn 1's final is decoding, blocked on the engine
+        for chunk in turn * 2:
+            await t.push(chunk)
+        assert [job[0] for job in t._jobs._queue] == ["final", "final"]
+        clock.now += 5.0  # turn 1 took 5 s: turns 2 and 3 are behind real time
+        eng.gate.set()
+        finals = [r for r in await _drain(t) if isinstance(r, CaptionFinal)]
+        assert eng.calls == [True, True]  # one decode for the whole backlog
+        assert [(f.startMs, f.endMs) for f in finals] == [(0, 500), (500, 1500)]
+        assert t._speech_finals_pending == 0  # each merged turn counted down once
+        await t.close()
+
+    asyncio.run(run())
+    assert metrics.snapshot()["counters"]["stage.stt.finals_coalesced"] == before + 1
+
+
+def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial queued among the backlog is dropped (it would be stale after the merged
+    decode) and frees the partial cadence; merging stops once the audio reaches
+    _COALESCE_MAX_MS, leaving the rest queued for the next decode."""
+    import api.stt.streaming as streaming_mod
+
+    monkeypatch.setattr(streaming_mod, "_COALESCE_MAX_MS", 1000)
+
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), language="en")
+        speech, silence = _pcm(500, amplitude=4000), _pcm(500, amplitude=0)
+        t._partial_pending = True
+        for job in [
+            ("partial", speech, 0, True, 0.0),
+            ("final", silence, 500, False, 0.0),
+            ("final", speech, 1000, True, 0.0),
+        ]:
+            t._jobs.put_nowait(job)
+        merged, speech_turns = t._coalesce_backlog(speech)
+        assert merged == speech + silence  # reached the 1000 ms cap
+        assert speech_turns == 0  # the merged turn was silence
+        assert not t._partial_pending
+        assert [job[2] for job in t._jobs._queue] == [1000]  # left for the next decode
+
+    asyncio.run(run())
+
+
 def test_finalizing_clears_when_finalize_raises_after_the_decode() -> None:
     """_finalize can raise past the engine call (here an out-of-range word confidence
     fails Word validation). The worker must still count the turn's final as done, or
@@ -1571,7 +1638,9 @@ def test_turns_whose_final_raises_during_an_outage_land_once_it_recovers(_outage
     order, and lands when the upstream comes back."""
 
     async def run() -> None:
-        eng = OutageEngine(_outage, recover_after=6)
+        # Recovered decodes beat real time (0.5 s per 0.8 s turn), so the backlog
+        # drains turn by turn rather than merging (XERK-1498).
+        eng = OutageEngine(_outage, recover_after=6, call_s=0.5)
         t = StreamingTranscriber(
             eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
         )

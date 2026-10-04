@@ -103,6 +103,21 @@ _FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
 _PROBE_PCM = bytes(BYTES_PER_SEC)
 _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
+# An engine slower than real time (its last final decode took longer than the turn's
+# audio) only ever grows the final backlog, and once its finals are older than the
+# session's stale cutoff (_STALE_FINAL_S) none is shown live again (XERK-1498). So
+# when such an engine leaves a final waiting longer than _FINAL_BEHIND_S, the worker
+# sheds load: it decodes that final together with every final queued behind it, as
+# one turn, up to _COALESCE_MAX_MS of audio. One call pays the engine's
+# per-request latency once for the whole backlog, so the worker catches up to live
+# speech and no turn's text is lost from the stored transcript. Kept well under
+# _STALE_FINAL_S so a merged final still reaches the glasses. A healthy engine never
+# lets a final wait this long, so turn boundaries are untouched in normal use.
+_FINAL_BEHIND_S = 3.0
+_COALESCE_MAX_MS = 24000
+# Not after an outage: a backlog that queued while the upstream was down drains one
+# turn at a time once a healthy engine answers again, keeping its turn boundaries.
+
 
 def _ms_to_bytes(ms: int) -> int:
     return ms * BYTES_PER_SEC // 1000
@@ -208,16 +223,20 @@ class StreamingTranscriber:
         self._closed = False
 
         # Decode jobs, run strictly in order by one worker task (started on first use):
-        # ("partial", pcm, queued_at, True) or ("final", pcm, segment_start_ms,
-        # has_speech); queued_at is perf_counter() at submit, for _PARTIAL_STALE_S.
-        # Ordering is what keeps a turn's partials ahead of its final and lets the
-        # worker own the per-turn state (_turn_partial, _agreement) without locking.
-        self._jobs: asyncio.Queue[tuple[str, bytes, float, bool]] = asyncio.Queue()
+        # ("partial", pcm, 0, True, queued_at) or ("final", pcm, segment_start_ms,
+        # has_speech, queued_at); queued_at is perf_counter() at submit, for
+        # _PARTIAL_STALE_S and _FINAL_BEHIND_S. Ordering is what keeps a turn's
+        # partials ahead of its final and lets the worker own the per-turn state
+        # (_turn_partial, _agreement) without locking.
+        self._jobs: asyncio.Queue[tuple[str, bytes, int, bool, float]] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
         self._partial_pending = False
         # perf_counter() of the first failed final decode of the current outage, or
         # None while the upstream answers (see _FINAL_RETRY_BUDGET_S).
         self._outage_since: float | None = None
+        # Whether the last answered final decode took longer than its audio lasts
+        # (see _FINAL_BEHIND_S).
+        self._slower_than_real_time = False
 
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
@@ -258,12 +277,12 @@ class StreamingTranscriber:
             if self._agreement is None and self._partial_window_bytes:
                 buf = buf[-self._partial_window_bytes :]
             self._partial_pending = True
-            self._submit("partial", bytes(buf), time.perf_counter(), True)
+            self._submit("partial", bytes(buf), 0, True)
 
-    def _submit(self, kind: str, pcm: bytes, arg: float, has_speech: bool) -> None:
+    def _submit(self, kind: str, pcm: bytes, start: int, has_speech: bool) -> None:
         if self._worker is None:
             self._worker = asyncio.create_task(self._work())
-        self._jobs.put_nowait((kind, pcm, arg, has_speech))
+        self._jobs.put_nowait((kind, pcm, start, has_speech, time.perf_counter()))
 
     def _close_turn(self) -> None:
         """Hand the in-flight segment to the worker for its final decode and reset the
@@ -284,21 +303,28 @@ class StreamingTranscriber:
 
     async def _work(self) -> None:
         while True:
-            kind, pcm, arg, has_speech = await self._jobs.get()
+            kind, pcm, start, has_speech, queued_at = await self._jobs.get()
             try:
                 if kind == "partial":
-                    if time.perf_counter() - arg > _PARTIAL_STALE_S:
+                    if time.perf_counter() - queued_at > _PARTIAL_STALE_S:
                         metrics.incr("stage.stt.partial_skipped_stale")
                     else:
                         await self._emit_partial(pcm)
                 else:
+                    speech_turns = int(has_speech)
                     try:
-                        await self._finalize(pcm, int(arg), has_speech)
+                        if (
+                            self._slower_than_real_time
+                            and time.perf_counter() - queued_at > _FINAL_BEHIND_S
+                        ):
+                            pcm, merged_speech = self._coalesce_backlog(pcm)
+                            speech_turns += merged_speech
+                            has_speech = has_speech or merged_speech > 0
+                        await self._finalize(pcm, start, has_speech)
                     finally:
                         # After _finalize queued its caption.final (counted as
                         # undelivered), so `finalizing` never dips in between.
-                        if has_speech:
-                            self._speech_finals_pending -= 1
+                        self._speech_finals_pending -= speech_turns
             except Exception:
                 # A failed decode must not kill the worker: every later turn would
                 # silently stop captioning. Count it and move on to the next job.
@@ -308,6 +334,31 @@ class StreamingTranscriber:
                 if kind == "partial":
                     self._partial_pending = False
                 self._jobs.task_done()
+
+    def _coalesce_backlog(self, pcm: bytes) -> tuple[bytes, int]:
+        """Append every final queued behind a late one to its audio (_FINAL_BEHIND_S).
+
+        Turns are contiguous on the timeline, so the merged audio is one turn from the
+        first's start to the last's end. A partial queued among them is dropped: it
+        would wait out the merged decode and be stale anyway. Returns the merged audio
+        and how many merged turns had speech, for `finalizing`'s count."""
+        merged = bytearray(pcm)
+        turns = speech_turns = 0
+        while not self._jobs.empty() and len(merged) < _ms_to_bytes(_COALESCE_MAX_MS):
+            kind, more, _, has_speech, _ = self._jobs.get_nowait()
+            # Their job is done here; the head job's own task_done still holds flush().
+            self._jobs.task_done()
+            if kind == "partial":
+                self._partial_pending = False
+                metrics.incr("stage.stt.partial_skipped_stale")
+                continue
+            merged.extend(more)
+            turns += 1
+            speech_turns += int(has_speech)
+        if turns:
+            log.info("STT behind real time: decoding %d queued turns as one", turns + 1)
+            metrics.incr("stage.stt.finals_coalesced", turns)
+        return bytes(merged), speech_turns
 
     def _speech_threshold(self) -> float:
         """The RMS a frame must reach to count as speech.
@@ -361,7 +412,10 @@ class StreamingTranscriber:
             self._engine.transcribe, samples, language=self._language, want_words=want_words
         )
         self._outage_since = None  # the upstream answered: any outage is over
-        metrics.observe(f"stage.stt.{stage}_latency_ms", (time.perf_counter() - t0) * 1000)
+        elapsed = time.perf_counter() - t0
+        if stage == "final":
+            self._slower_than_real_time = elapsed > len(pcm) / BYTES_PER_SEC
+        metrics.observe(f"stage.stt.{stage}_latency_ms", elapsed * 1000)
         if pad_ms:
             # Word times back onto the unpadded turn's timeline (rounded to the ms so
             # float error can't shave a millisecond off when they're truncated later),

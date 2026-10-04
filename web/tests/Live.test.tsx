@@ -21,6 +21,7 @@ const baseState = () => ({
   activeCueEndsAt: null as number | null,
   pastCues: [] as { id: string; title: string; body: string; afterSegmentId?: string | null }[],
   song: null as import("@tenir/client-core").LiveSong | null,
+  captionsDelayed: false,
 });
 
 function fakeController(overrides: Partial<CaptureController["state"]> = {}): CaptureController {
@@ -49,6 +50,15 @@ describe("LiveView", () => {
     expect(screen.getByText(/hello world/)).toBeInTheDocument();
     expect(screen.getByText(/and th/)).toBeInTheDocument();
     expect(screen.getByText("open")).toBeInTheDocument();
+  });
+
+  it("says captions are delayed while STT runs behind real time (XERK-1498)", () => {
+    const { rerender } = renderLive(
+      fakeController({ running: true, connection: "open", captionsDelayed: true }),
+    );
+    expect(screen.getByText("captions delayed")).toBeInTheDocument();
+    rerender(<LiveView controller={fakeController({ running: true, connection: "open" })} />);
+    expect(screen.queryByText("captions delayed")).not.toBeInTheDocument();
   });
 
   it("renders a turn's English translation under the original (XERK-160)", () => {

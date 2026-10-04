@@ -139,6 +139,8 @@ export function LiveScreen(): JSX.Element {
         <Row>
           {/* Connection state as a tinted pill, matching the web Live badge. */}
           <Badge tone={live ? "accent" : "neutral"}>{connectionLabel(state)}</Badge>
+          {/* Speech-to-text is behind real time (XERK-1498), matching the web pill. */}
+          {state.running && state.captionsDelayed && <Badge tone="neutral">captions delayed</Badge>}
           <View style={{ flexGrow: 1 }} />
           <Muted>{mic}</Muted>
         </Row>
