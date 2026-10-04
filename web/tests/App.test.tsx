@@ -534,6 +534,18 @@ describe("boot with the server unreachable", () => {
     expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument();
   });
 
+  it("shows the unreachable state when a re-boot fails after an earlier one succeeded", async () => {
+    // The first boot resolved (logged out); a login then succeeds but the server
+    // drops before /auth/me — the held boot data must not win over the error.
+    me.mockRejectedValueOnce(new Error("401")).mockRejectedValue(new core.NetworkError("down"));
+    (core.login as unknown as Mock).mockResolvedValue(undefined);
+    renderApp();
+    fireEvent.change(await screen.findByLabelText("Username"), { target: { value: "ada" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+    expect(await screen.findByRole("heading", { name: "Can't reach your server" })).toBeInTheDocument();
+  });
+
   it("still shows the login form on a first visit with no stored session", async () => {
     getToken.mockImplementation(() => null);
     me.mockRejectedValue(new core.NetworkError("down"));

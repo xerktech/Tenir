@@ -206,15 +206,15 @@ function Header({
  * server can't check would only fail.
  */
 function Unreachable({ error, onRetry }: { error: unknown; onRetry: () => void }): JSX.Element {
-  const detail = error instanceof Error ? error.message : null;
+  // describeLoginError words both cases for people: unreachable vs database down.
+  const detail = error instanceof NetworkError ? describeLoginError(error) : null;
   return (
     <section>
       <h2>Can&apos;t reach your server</h2>
       <Card>
         <p className="muted">
-          Your Tenir server didn&apos;t answer, so we couldn&apos;t check whether you&apos;re still
-          signed in. If it&apos;s just offline, you don&apos;t need to sign in again — start it and
-          retry.
+          We couldn&apos;t check whether you&apos;re still signed in. If your Tenir server is just
+          offline or restarting, you don&apos;t need to sign in again — retry once it&apos;s back.
         </p>
         {detail && (
           <p className="field-error" role="alert">
