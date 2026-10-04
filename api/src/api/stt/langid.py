@@ -115,8 +115,11 @@ _CHARS: dict[str, str] = {
 # it. French has no á/í/ó/ú/ñ, so "Va a casa de la música." can't be French however
 # many la/de/a it shares with Spanish (XERK-1419). Capitalised words are skipped: a
 # French turn names "María" or "Málaga" (QA).
+# Italian writes only grave accents (à è ì ò ù, é in "perché"): "Tu número." tied fr/it on
+# "tu" and went it once fr was ruled out (QA).
 _FOREIGN_CHARS: dict[str, str] = {
     "fr": "áíóúñ",
+    "it": "áíóúñ",
 }
 
 # One distinctive-word hit is enough only when the turn is this short — "Los
@@ -157,13 +160,14 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
         scores[code] = sum(
             1 for w in words if w in vocab and (code == "en" or w not in _ENGLISH_HOMOGRAPHS)
         )
+    for code, vocab in _WORDS.items():
+        # English homographs only corroborate a language already evidenced by a word: a
+        # letter isn't enough, or "It is a piñata." is es on ñ + "a" (XERK-1419 QA).
+        if code != "en" and scores[code]:
+            scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
     for code, chars in _CHARS.items():
         if any(c in lowered for c in chars):
             scores[code] += 2
-    for code, vocab in _WORDS.items():
-        # English homographs only corroborate a language already evidenced.
-        if code != "en" and scores[code]:
-            scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
     return scores, words
 
 
@@ -262,18 +266,20 @@ def detect_lang(text: str) -> str | None:
         return None
     scores, words = scored
     ruled_out = _ruled_out(text)
-    raw = None
+    # A word-list call the letters rule out ("Tu pelo volverá a crecer." fr on tu/a), or
+    # a tie they break ("Tu canción." fr/it on tu), is still a call for the frequencies
+    # to correct, without the None-turn gate.
+    overturned = False
     if ruled_out:
-        # A word-list call the letters rule out ("Tu pelo volverá a crecer." fr on tu/a)
-        # is still a call for the frequencies to correct, without the None-turn gate.
-        raw = _word_list_lang(text, scores, words)
+        top = max(scores.values())
+        overturned = top > 0 and any(scores[code] == top for code in ruled_out)
         scores = {code: 0 if code in ruled_out else n for code, n in scores.items()}
     by_words = _word_list_lang(text, scores, words)
     if by_words == "en":
         return by_words
-    to_correct = by_words or (raw if raw in ruled_out else None)
-    by_freq = _frequency_lang(scores, words, to_correct)
-    return (by_freq if by_freq not in ruled_out else None) or by_words
+    by_freq = _frequency_lang(scores, words, by_words, correcting=overturned)
+    # A clear frequency call outranks the letters: French borrows "jalapeño", "piñata".
+    return by_freq or by_words
 
 
 def _word_list_lang(text: str, scores: dict[str, int], words: list[str]) -> str | None:
@@ -316,7 +322,9 @@ _FREQ_MARGIN = 3.0
 _FREQ_MIN_DISTINCT = 4
 
 
-def _frequency_lang(scores: dict[str, int], words: list[str], by_words: str | None) -> str | None:
+def _frequency_lang(
+    scores: dict[str, int], words: list[str], by_words: str | None, *, correcting: bool = False
+) -> str | None:
     """The non-English language the turn's word frequencies clearly favour, or None.
 
     Never returns ``en``: closing a live run stays with the word lists' stricter bar,
@@ -339,7 +347,11 @@ def _frequency_lang(scores: dict[str, int], words: list[str], by_words: str | No
     )[:2]
     if best == "en" or best_total - second_total < _FREQ_MARGIN:
         return None
-    if by_words is None and (not scores[best] or len(set(words)) < _FREQ_MIN_DISTINCT):
+    if (
+        by_words is None
+        and not correcting
+        and (not scores[best] or len(set(words)) < _FREQ_MIN_DISTINCT)
+    ):
         return None
     return best
 

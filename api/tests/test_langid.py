@@ -315,7 +315,27 @@ def test_letters_french_never_writes_rule_it_out() -> None:
     # A French word-list call they overturn is still corrected by frequencies.
     assert detect_lang("Tu pelo volverá a crecer.") == "es"
     assert detect_lang("Tu es fou.") is None
+    # ...and a clear French frequency call outranks them: French borrows ñ words.
+    assert detect_lang("Nous avons mangé des jalapeños avec les amis.") == "fr"
+    assert detect_lang("Le jalapeño est très piquant ce soir.") == "fr"
+    assert detect_lang("Je voudrais une piñata pour mon fils.") == "fr"
+    # Italian writes none of them either: "tu" is not an Italian tie-breaker here.
+    assert detect_lang("Tu número.") is None
+    assert detect_lang("Tu habitación.") is None
+    # A fr/it tie they break is a word-list call for the frequencies to correct.
+    assert detect_lang("Tu canción.") == "es"
+    assert detect_lang("Tu corazón.") == "es"
     assert detect_lang("Il a dit que c'est fini.") == "fr"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["It is a piñata.", "This is a piñata.", "That is a jalapeño.", "I'll have a piña colada."],
+)
+def test_a_letter_alone_is_not_evidence_for_english_homographs(text: str) -> None:
+    # ñ is +2 for es, but "a" corroborates only a Spanish word hit (XERK-1419 QA).
+    assert detect_lang(text) != "es"
+
 
 # Public FLEURS es_419 sentences (XERK-1349) the word lists left None or tagged fr: a
 # Spanish turn that starts a conversation that way is never translated.
