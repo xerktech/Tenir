@@ -556,8 +556,11 @@ export async function wireLens(
         // this same session.
         state.sessionId = m.sessionId;
         reauthAttempted = false;
+        // Not delayed until the api says so (a warm resume repeats it after this).
+        state.captionsDelayed = false;
         persist();
         renderStatus();
+        syncPhone();
       },
       onPartial: (m) => {
         state.partial = m.text;

@@ -600,6 +600,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                 type="session.ready", sessionId=session.session_id, resumed=True
                             )
                         )
+                        await session.send_caption_status()
                         metrics.incr("sessions.resumed")
                         continue
                     # A session id that is live under *another* household must never be

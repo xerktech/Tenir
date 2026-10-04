@@ -103,20 +103,27 @@ _FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
 _PROBE_PCM = bytes(BYTES_PER_SEC)
 _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
-# An engine slower than real time (its last final decode took longer than the turn's
-# audio) only ever grows the final backlog, and once its finals are older than the
-# session's stale cutoff (_STALE_FINAL_S) none is shown live again (XERK-1498). So
-# when such an engine leaves a final waiting longer than _FINAL_BEHIND_S, the worker
-# sheds load: it decodes that final together with every final queued behind it, as
-# one turn, up to _COALESCE_MAX_MS of audio. One call pays the engine's
-# per-request latency once for the whole backlog, so the worker catches up to live
-# speech and no turn's text is lost from the stored transcript. Kept well under
-# _STALE_FINAL_S so a merged final still reaches the glasses. A healthy engine never
-# lets a final wait this long, so turn boundaries are untouched in normal use.
+# An engine slower than real time only ever grows the final backlog, and once its
+# finals are older than the session's stale cutoff (_STALE_FINAL_S) none is shown live
+# again (XERK-1498). So when the engine is behind real time (`behind_real_time`) and
+# leaves a final waiting longer than _FINAL_BEHIND_S, the worker sheds load: it
+# decodes that final together with the finals queued behind it, as one turn. One call
+# pays the engine's per-request latency once for the whole backlog, so the worker
+# catches up to live speech and no turn's text is lost from the stored transcript.
+# Kept well under _STALE_FINAL_S so a merged final still reaches the glasses.
 _FINAL_BEHIND_S = 3.0
+# "Behind" takes this many single-turn final decodes in a row that each took longer
+# than their audio: one stalled request on a healthy engine must not merge turns, and
+# a merged decode doesn't count either way (it beats real time by design). Never on
+# wait time alone, so a backlog left by an outage drains turn by turn once a healthy
+# engine answers again, keeping its turn boundaries.
+_SLOW_FINALS_BEHIND = 2
+# A merge is sized so its predicted decode, at the last final's seconds of decode per
+# second of audio, fits this budget: well inside the engine's whole-request timeout
+# (ParakeetEngine, 15 s). An engine whose cost grows with audio would otherwise time
+# out on a big merge and lose every merged turn. _COALESCE_MAX_MS is the hard ceiling.
+_COALESCE_DECODE_BUDGET_S = 8.0
 _COALESCE_MAX_MS = 24000
-# Not after an outage: a backlog that queued while the upstream was down drains one
-# turn at a time once a healthy engine answers again, keeping its turn boundaries.
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -234,9 +241,14 @@ class StreamingTranscriber:
         # perf_counter() of the first failed final decode of the current outage, or
         # None while the upstream answers (see _FINAL_RETRY_BUDGET_S).
         self._outage_since: float | None = None
-        # Whether the last answered final decode took longer than its audio lasts
-        # (see _FINAL_BEHIND_S).
-        self._slower_than_real_time = False
+        # Single-turn final decodes in a row that took longer than their audio (see
+        # _SLOW_FINALS_BEHIND), and the last answered final decode's seconds of decode
+        # per second of audio (sizes a merge, _COALESCE_DECODE_BUDGET_S).
+        self._slow_finals = 0
+        self._final_rate = 0.0
+        # Whether this final's answered decode took longer than its audio; None until
+        # one answers (set by _run_engine, read by _work).
+        self._last_final_slow: bool | None = None
 
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
@@ -245,6 +257,10 @@ class StreamingTranscriber:
         per-session state to prime, so this is a no-op — kept to satisfy the
         `Transcriber` seam, which lets the session warm every backend uniformly."""
         return None
+
+    @property
+    def behind_real_time(self) -> bool:
+        return self._slow_finals >= _SLOW_FINALS_BEHIND
 
     @property
     def finalizing(self) -> bool:
@@ -312,15 +328,21 @@ class StreamingTranscriber:
                         await self._emit_partial(pcm)
                 else:
                     speech_turns = int(has_speech)
+                    merged = 0
                     try:
                         if (
-                            self._slower_than_real_time
+                            self.behind_real_time
                             and time.perf_counter() - queued_at > _FINAL_BEHIND_S
                         ):
-                            pcm, merged_speech = self._coalesce_backlog(pcm)
+                            pcm, merged, merged_speech = self._coalesce_backlog(pcm)
                             speech_turns += merged_speech
                             has_speech = has_speech or merged_speech > 0
+                        self._last_final_slow = None
                         await self._finalize(pcm, start, has_speech)
+                        if not merged and self._last_final_slow is not None:
+                            self._slow_finals = (
+                                self._slow_finals + 1 if self._last_final_slow else 0
+                            )
                     finally:
                         # After _finalize queued its caption.final (counted as
                         # undelivered), so `finalizing` never dips in between.
@@ -335,17 +357,27 @@ class StreamingTranscriber:
                     self._partial_pending = False
                 self._jobs.task_done()
 
-    def _coalesce_backlog(self, pcm: bytes) -> tuple[bytes, int]:
-        """Append every final queued behind a late one to its audio (_FINAL_BEHIND_S).
+    def _coalesce_backlog(self, pcm: bytes) -> tuple[bytes, int, int]:
+        """Append the finals queued behind a late one to its audio (_FINAL_BEHIND_S),
+        as many as fit the merge's size limit (_COALESCE_DECODE_BUDGET_S).
 
         Turns are contiguous on the timeline, so the merged audio is one turn from the
         first's start to the last's end. A partial queued among them is dropped: it
-        would wait out the merged decode and be stale anyway. Returns the merged audio
-        and how many merged turns had speech, for `finalizing`'s count."""
+        would wait out the merged decode and be stale anyway. Returns the merged audio,
+        how many turns were merged in, and how many of those had speech, for
+        `finalizing`'s count."""
+        limit = _ms_to_bytes(_COALESCE_MAX_MS)
+        if self._final_rate > 0:
+            limit = min(limit, int(_COALESCE_DECODE_BUDGET_S / self._final_rate * BYTES_PER_SEC))
         merged = bytearray(pcm)
         turns = speech_turns = 0
-        while not self._jobs.empty() and len(merged) < _ms_to_bytes(_COALESCE_MAX_MS):
-            kind, more, _, has_speech, _ = self._jobs.get_nowait()
+        # Peek before taking: a turn that would push the merge over its limit stays
+        # queued for the next decode.
+        while self._jobs._queue:
+            kind, more, _, has_speech, _ = self._jobs._queue[0]
+            if kind == "final" and len(merged) + len(more) > limit:
+                break
+            self._jobs.get_nowait()
             # Their job is done here; the head job's own task_done still holds flush().
             self._jobs.task_done()
             if kind == "partial":
@@ -358,7 +390,7 @@ class StreamingTranscriber:
         if turns:
             log.info("STT behind real time: decoding %d queued turns as one", turns + 1)
             metrics.incr("stage.stt.finals_coalesced", turns)
-        return bytes(merged), speech_turns
+        return bytes(merged), turns, speech_turns
 
     def _speech_threshold(self) -> float:
         """The RMS a frame must reach to count as speech.
@@ -413,8 +445,9 @@ class StreamingTranscriber:
         )
         self._outage_since = None  # the upstream answered: any outage is over
         elapsed = time.perf_counter() - t0
-        if stage == "final":
-            self._slower_than_real_time = elapsed > len(pcm) / BYTES_PER_SEC
+        if stage == "final" and pcm:
+            self._final_rate = elapsed / (len(pcm) / BYTES_PER_SEC)
+            self._last_final_slow = self._final_rate > 1.0
         metrics.observe(f"stage.stt.{stage}_latency_ms", elapsed * 1000)
         if pad_ms:
             # Word times back onto the unpadded turn's timeline (rounded to the ms so

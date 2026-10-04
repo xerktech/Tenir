@@ -422,6 +422,11 @@ describe("wireLens (XERK-85: explicit session start/stop from the glasses UI)", 
     t.api.handlers().onCaptionStatus?.({ type: "caption.status", delayed: false });
     await settle();
     expect(t.text(C().status)).toMatch(/^listening\.+$/);
+    // A new session.ready (e.g. a cold resume) starts not delayed.
+    t.api.handlers().onCaptionStatus?.({ type: "caption.status", delayed: true });
+    t.api.handlers().onReady?.({ type: "session.ready", sessionId: "s-2", resumed: false });
+    await settle();
+    expect(t.text(C().status)).toMatch(/^listening\.+$/);
   });
 
   it("keeps the clock and listening dots live while the app is backgrounded (XERK-113)", async () => {

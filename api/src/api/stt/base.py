@@ -23,6 +23,13 @@ class Transcriber(Protocol):
         (XERK-1377)."""
         ...
 
+    @property
+    def behind_real_time(self) -> bool:
+        """True while the backend decodes slower than real time, so captions lag behind
+        speech however long it runs (XERK-1498). The session holds its "captions
+        delayed" status until this clears. A backend that can't tell returns False."""
+        ...
+
     async def warmup(self) -> None:
         """Pay any per-session startup cost ahead of the first audio (XERK-128).
 

@@ -257,7 +257,10 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "connection":
       return { ...state, connection: action.state };
     case "ready":
-      return { ...state, sessionId: action.sessionId };
+      // A (re)started session is not delayed until the api says so: a cold resume
+      // or a new pod never sends `delayed: false`, and a warm resume repeats a
+      // still-delayed status right after its session.ready (XERK-1498).
+      return { ...state, sessionId: action.sessionId, captionsDelayed: false };
     case "partial":
       return { ...state, partial: action.text };
     case "final": {

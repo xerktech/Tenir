@@ -53,19 +53,27 @@ paths:
   - Age is dated by audio *arrival* time, not the session timeline, so tests that push audio
     faster than real time never read as stale.
 - An engine slower than real time sheds load by merging the final backlog (XERK-1498).
-  - Trigger: the last answered final decode took longer than its audio, and the next final
-    waited over `_FINAL_BEHIND_S`; it is decoded with every final queued behind it (up to
-    `_COALESCE_MAX_MS`) as one turn. Queued partials among them are dropped.
-  - Never merge on wait time alone: a backlog left by an outage drains turn by turn on a
-    recovered engine, keeping its turn boundaries.
-  - `_speech_finals_pending` is decremented once per merged speech turn, in the same `finally`.
-  - Tests: `test_streaming_stt.py::test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn`.
+  - Trigger: `behind_real_time` (`_SLOW_FINALS_BEHIND` single-turn final decodes in a row
+    slower than their audio) and the next final waited over `_FINAL_BEHIND_S`.
+  - Never merge on wait time alone or on one slow decode: an outage backlog or a single
+    stalled request must drain turn by turn, keeping turn boundaries.
+  - A merged decode doesn't update the slow streak; it beats real time by design.
+  - Size a merge by the last final's decode rate to fit `_COALESCE_DECODE_BUDGET_S`, not by
+    audio length alone: QA showed a 1.3x engine timing out (Parakeet's 15 s deadline) on a
+    big merge and losing every merged turn. Peek before taking, so an over-limit turn stays queued.
+  - Queued partials among the merged turns are dropped; `_speech_finals_pending` is decremented
+    once per merged speech turn, in the same `finally`.
+  - Tests: `test_streaming_stt.py::test_a_merge_is_sized_to_decode_within_the_request_timeout`,
+    `::test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns`.
 - `caption.status` tells the clients when captions are delayed (XERK-1498).
-  - It is set by any final older than `_LATE_FINAL_S`, and cleared only after `_CAUGHT_UP_S` of
-    on-time finals, so a backlog that catches up in bursts doesn't make it flap.
-  - It is sent on change only. It is buffered across a detach and replayed on resume, so
-    clients keep the flag through a reconnect and reset it only at start or stop.
-  - Tests: `test_resilience.py::test_client_is_told_when_captions_fall_behind_and_catch_up`.
+  - It is set by any final older than `_LATE_FINAL_S`. It clears only after `_CAUGHT_UP_S` of
+    on-time finals and once the transcriber is no longer `behind_real_time`. Otherwise it
+    flaps while merged bursts land.
+  - It is sent on change only. Clients reset it on every `session.ready`, because a cold resume
+    starts a new session that never sends `false`. A warm resume repeats a still-delayed status
+    after its ready (`Session.send_caption_status`).
+  - Tests: `test_resilience.py::test_client_is_told_when_captions_fall_behind_and_catch_up`,
+    `test_resume.py::test_ws_warm_resume_repeats_a_delayed_caption_status_after_ready`.
 - Tests: push through the `_push` / `_drain` helpers, which join the job queue. A bare
   `t.push` returns before any decode has run.
 - Repro harness for regressions: real uvicorn (`ws_ping_interval=5`) plus a `websockets`

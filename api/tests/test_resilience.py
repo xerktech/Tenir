@@ -743,6 +743,47 @@ def test_client_is_told_when_captions_fall_behind_and_catch_up(
     asyncio.run(run())
 
 
+def test_captions_stay_delayed_while_the_transcriber_is_behind_real_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow engine's merged backlog lands in bursts, some finals on time; that must
+    not flip the indicator off while the engine is still slower than real time."""
+    import api.session as session_mod
+
+    class Clock:
+        now = 1000.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    clock = Clock()
+    monkeypatch.setattr(session_mod, "time", clock)
+
+    class Behind:
+        behind_real_time = True
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        session._transcriber = Behind()  # type: ignore[assignment]
+        await session._track_caption_lag(5.0)
+        clock.now += 30.0
+        await session._track_caption_lag(1.0)
+        assert [m.delayed for m in sent] == [True]  # still behind: held
+        session._transcriber.behind_real_time = False  # type: ignore[union-attr]
+        await session._track_caption_lag(1.0)
+        assert [m.delayed for m in sent] == [True, False]
+        session._transcriber = None
+        await session.send_caption_status()  # not delayed: nothing to repeat
+        assert len(sent) == 2
+
+    asyncio.run(run())
+
+
 def test_final_with_no_dated_audio_is_not_stale() -> None:
     """A final past the last audio sample (or before any audio) can't be dated; it is
     treated as fresh rather than silently withheld from the caption band."""

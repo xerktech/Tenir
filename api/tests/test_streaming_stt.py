@@ -1500,13 +1500,41 @@ def test_partial_queued_behind_a_slow_final_is_dropped_when_stale(
     asyncio.run(run())
 
 
+class TimedEngine:
+    """Answers every decode at once, advancing the fake clock by ``cost(audio_s)``."""
+
+    def __init__(self, clock: _Clock, cost) -> None:
+        self.clock, self.cost = clock, cost
+        self.audio_s: list[float] = []  # seconds of audio per final decode
+
+    def transcribe(self, samples, *, language, want_words=True):  # type: ignore[no-untyped-def]
+        audio_s = samples.size / 16000
+        if want_words:
+            self.audio_s.append(audio_s)
+        self.clock.now += self.cost(audio_s)
+        return EngineResult(text="one two three", words=[], language="en")
+
+
+async def _turns(t: StreamingTranscriber, n: int) -> None:
+    """n turns of 500 ms (200 ms speech + 300 ms silence), pushed in real time: the
+    fake clock advances with the audio, as a live microphone's would."""
+    import api.stt.streaming as streaming_mod
+
+    for _ in range(n):
+        for chunk in [_pcm(200, amplitude=4000), _pcm(300, amplitude=0)]:
+            await t.push(chunk)
+            streaming_mod.time.now += len(chunk) / 32000
+            await asyncio.sleep(0)
+
+
 def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An engine slower than real time grows the final backlog without bound, and
     every final past the session's stale cutoff was stored but never shown live
-    (XERK-1498). A final that waited past _FINAL_BEHIND_S is decoded together with the
-    finals queued behind it, so the worker catches up and no turn's text is lost."""
+    (XERK-1498). Once it is behind, a final that waited past _FINAL_BEHIND_S is
+    decoded together with the finals queued behind it, so the worker catches up and
+    no turn's text is lost."""
     import api.stt.streaming as streaming_mod
     from api.metrics import metrics
 
@@ -1515,38 +1543,83 @@ def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
     before = metrics.snapshot()["counters"].get("stage.stt.finals_coalesced", 0)
 
     async def run() -> None:
-        eng = GatedEngine()
+        eng = TimedEngine(clock, lambda _s: 2.0)  # 2 s a request, whatever the length
         t = StreamingTranscriber(
             eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
         )
-        turn = [_pcm(200, amplitude=4000), _pcm(300, amplitude=0)]  # 500 ms each
-        for chunk in turn:
-            await t.push(chunk)
-        await asyncio.sleep(0.05)  # turn 1's final is decoding, blocked on the engine
-        for chunk in turn * 2:
-            await t.push(chunk)
-        assert [job[0] for job in t._jobs._queue] == ["final", "final"]
-        clock.now += 5.0  # turn 1 took 5 s: turns 2 and 3 are behind real time
-        eng.gate.set()
+        await _turns(t, 30)
         finals = [r for r in await _drain(t) if isinstance(r, CaptionFinal)]
-        assert eng.calls == [True, True]  # one decode for the whole backlog
-        assert [(f.startMs, f.endMs) for f in finals] == [(0, 500), (500, 1500)]
+        # Every turn's audio is covered once, contiguously, by fewer decodes.
+        assert finals[0].startMs == 0 and finals[-1].endMs == 15000
+        assert all(a.endMs == b.startMs for a, b in zip(finals, finals[1:]))
+        assert len(finals) < 30 and len(eng.audio_s) == len(finals)
+        assert t.behind_real_time
         assert t._speech_finals_pending == 0  # each merged turn counted down once
         await t.close()
 
     asyncio.run(run())
-    assert metrics.snapshot()["counters"]["stage.stt.finals_coalesced"] == before + 1
+    assert metrics.snapshot()["counters"]["stage.stt.finals_coalesced"] > before
 
 
-def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_cap(
+def test_a_merge_is_sized_to_decode_within_the_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine whose cost grows with the audio would time out (ParakeetEngine, 15 s)
+    on a big merge and lose every merged turn. Merges are sized from the last final's
+    decode rate to fit _COALESCE_DECODE_BUDGET_S."""
+    import api.stt.streaming as streaming_mod
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming_mod, "time", clock)
+
+    async def run() -> None:
+        eng = TimedEngine(clock, lambda s: 0.2 + 1.3 * s)  # 1.3x real time, plus overhead
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _turns(t, 60)
+        await _drain(t)
+        assert max(eng.audio_s) > 0.5  # it did merge
+        assert max(0.2 + 1.3 * s for s in eng.audio_s) < 10.0  # but never near 15 s
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single slow request doesn't make an engine slower than real time: the backlog
+    it leaves drains turn by turn, keeping every turn boundary."""
+    import api.stt.streaming as streaming_mod
+
+    clock = _Clock()
+    monkeypatch.setattr(streaming_mod, "time", clock)
+
+    async def run() -> None:
+        stalls = iter([6.0])
+        eng = TimedEngine(clock, lambda _s: next(stalls, 0.1))
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _turns(t, 20)
+        finals = [r for r in await _drain(t) if isinstance(r, CaptionFinal)]
+        assert len(finals) == 20
+        assert not t.behind_real_time
+        await t.close()
+
+    asyncio.run(run())
+
+
+def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A partial queued among the backlog is dropped (it would be stale after the merged
-    decode) and frees the partial cadence; merging stops once the audio reaches
-    _COALESCE_MAX_MS, leaving the rest queued for the next decode."""
+    decode) and frees the partial cadence; a turn that would push the merge past its
+    limit stays queued for the next decode."""
     import api.stt.streaming as streaming_mod
 
-    monkeypatch.setattr(streaming_mod, "_COALESCE_MAX_MS", 1000)
+    monkeypatch.setattr(streaming_mod, "_COALESCE_MAX_MS", 1200)
 
     async def run() -> None:
         t = StreamingTranscriber(FakeEngine(), language="en")
@@ -1558,11 +1631,19 @@ def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_cap(
             ("final", speech, 1000, True, 0.0),
         ]:
             t._jobs.put_nowait(job)
-        merged, speech_turns = t._coalesce_backlog(speech)
-        assert merged == speech + silence  # reached the 1000 ms cap
-        assert speech_turns == 0  # the merged turn was silence
+        merged, turns, speech_turns = t._coalesce_backlog(speech)
+        assert merged == speech + silence  # the next 500 ms would pass 1200 ms
+        assert (turns, speech_turns) == (1, 0)  # the merged turn was silence
         assert not t._partial_pending
         assert [job[2] for job in t._jobs._queue] == [1000]  # left for the next decode
+        # The decode budget limits it too: at 2 s of decode per audio second, 8 s
+        # of budget fits 4 s of audio.
+        monkeypatch.setattr(streaming_mod, "_COALESCE_MAX_MS", 24000)
+        t._final_rate = 2.0
+        for i in range(10):
+            t._jobs.put_nowait(("final", speech, 1500 + 500 * i, True, 0.0))
+        merged, turns, _ = t._coalesce_backlog(speech)
+        assert (len(merged), turns) == (4 * 32000, 7)
 
     asyncio.run(run())
 

@@ -844,6 +844,11 @@ describe("captions delayed status (XERK-1498)", () => {
     // A reconnect keeps it: the api replays status changes made while detached.
     refs.client!.handlers.onConnectionChange?.("closed");
     expect(session.getState().captionsDelayed).toBe(true);
+    // Every session.ready clears it: a cold resume never sends `delayed: false`, and
+    // a warm one repeats a still-delayed status after its ready.
+    refs.client!.handlers.onReady?.({ type: "session.ready", sessionId: "s-2", resumed: false });
+    expect(session.getState().captionsDelayed).toBe(false);
+    refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: true });
     refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: false });
     expect(session.getState().captionsDelayed).toBe(false);
     refs.client!.handlers.onCaptionStatus?.({ type: "caption.status", delayed: true });

@@ -96,9 +96,11 @@ _STALE_FINAL_S = 10.0
 
 # Captions are "delayed" (caption.status, XERK-1498) from the first final that lands
 # more than _LATE_FINAL_S after its audio until finals have landed on time for
-# _CAUGHT_UP_S. Without it, STT slower than real time just left the glasses blank
-# or lagging with nothing saying why. A healthy final lands within ~1-2 s; the
-# hold-off keeps a backlog that is catching up in bursts from flapping the indicator.
+# _CAUGHT_UP_S and the transcriber is no longer behind real time. Without it, STT
+# slower than real time just left the glasses blank or lagging with nothing saying
+# why. A healthy final lands within ~1-2 s. The hold-off, and waiting out the
+# transcriber, keep a slow engine whose merged backlog lands in bursts (some on time)
+# from flapping the indicator.
 _LATE_FINAL_S = 4.0
 _CAUGHT_UP_S = 10.0
 
@@ -690,6 +692,14 @@ class Session:
             for msg in buffered:
                 await send(msg)
 
+    async def send_caption_status(self) -> None:
+        """Repeat a delayed status to a resumed socket, after its session.ready.
+
+        Clients clear the flag on every session.ready, since a cold resume or a new
+        pod starts a session that is not delayed and would never say so."""
+        if self._captions_delayed:
+            await self._send(CaptionStatus(type="caption.status", delayed=True))
+
     def detach(self, *, grace_seconds: float) -> None:
         """Connection dropped without an explicit end: keep the session alive for a
         grace window so a resume can rebind it, instead of finalizing immediately.
@@ -800,7 +810,11 @@ class Session:
         if age > _LATE_FINAL_S:
             self._last_late_final = now
             delayed = True
-        elif self._captions_delayed and now - self._last_late_final >= _CAUGHT_UP_S:
+        elif (
+            self._captions_delayed
+            and now - self._last_late_final >= _CAUGHT_UP_S
+            and not (self._transcriber is not None and self._transcriber.behind_real_time)
+        ):
             delayed = False
         else:
             return
