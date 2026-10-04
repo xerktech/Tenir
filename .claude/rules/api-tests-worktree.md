@@ -15,3 +15,5 @@ paths:
 - Hosts here have no Docker daemon; `pip install pgserver 'psycopg[binary,pool]'` in a scratch venv
   and `pgserver.get_server(<dir>).get_uri()` gives a real Postgres DSN for the `test_pg_*_live` suites.
 - Its socket can vanish mid-run when the starting process exits; re-run `get_server` if it stops answering.
+- Put pgserver's data dir under `/var/tmp`, not the session scratchpad: `/tmp/claude-0` is reset to
+  0700 root, so the `pgserver` user loses access mid-run ("$libdir/plpgsql" permission errors, PANIC).
