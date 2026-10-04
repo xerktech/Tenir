@@ -65,5 +65,7 @@ paths:
   A list call it overturns still reaches `_frequency_lang` as a correction: zeroing fr first
   sent "Tu pelo volverá a crecer." through the stricter None-turn gate and lost it. A clear
   frequency call still wins over the letters ("Le jalapeño est très piquant." stays fr).
+- English homographs corroborate only a distinctive-word hit, never a `_CHARS` bonus alone:
+  ñ (+2) plus "a" beat English on "It is a piñata." (XERK-1419 QA).
 - New es vocab must be ≥10× rarer (wordfreq) in pt/it: pt `vamos`/`estás`, it `tengo`/`ella`
   are Spanish-looking but native there, so they stay out.

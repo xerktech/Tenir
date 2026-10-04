@@ -322,6 +322,18 @@ def test_letters_french_never_writes_rule_it_out() -> None:
     # Italian writes none of them either: "tu" is not an Italian tie-breaker here.
     assert detect_lang("Tu número.") is None
     assert detect_lang("Tu habitación.") is None
+    # A fr/it tie they break is a word-list call for the frequencies to correct.
+    assert detect_lang("Tu canción.") == "es"
+    assert detect_lang("Tu corazón.") == "es"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["It is a piñata.", "This is a piñata.", "That is a jalapeño.", "I'll have a piña colada."],
+)
+def test_a_letter_alone_is_not_evidence_for_english_homographs(text: str) -> None:
+    # ñ is +2 for es, but "a" corroborates only a Spanish word hit (XERK-1419 QA).
+    assert detect_lang(text) != "es"
     assert detect_lang("Il a dit que c'est fini.") == "fr"
 
 
