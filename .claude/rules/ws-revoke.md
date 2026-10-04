@@ -12,8 +12,8 @@ paths:
 - WS auth runs at the handshake only; `DELETE /auth/users/{id}` revokes registry sessions only.
   `session.start` re-checks the account (before start AND after `registry.register`) so a socket
   with no registered session can't record after its account is gone (XERK-1504).
-- A session keeps one disconnect hook per socket bound to it (start + every resume). A resume can
-  take over a session while the displaced socket is still open — both must close on revoke.
+- A session keeps one disconnect hook per socket bound to it (start + every resume). Revoke must
+  close every socket still open, not only the one that bound it last.
 - Hooks must be safe on a dead socket, idempotent per socket, and dropped in the handler's
   `finally`, or a session resumed in a loop pins every dead socket (unbounded memory).
 - `revoke()` iterates a copy of the hook list: a hook may drop itself mid-loop.

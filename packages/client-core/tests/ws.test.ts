@@ -275,6 +275,20 @@ describe("ApiClient", () => {
     expect(instances).toHaveLength(3);
   });
 
+  it("does not reconnect after a 4001 (session resumed on another connection, XERK-1526)", () => {
+    const onError = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onError });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].close(4001); // another tab/device resumed this session id
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "resumed_elsewhere", fatal: true }),
+    );
+    // Reconnecting would resume the id and displace the other connection in turn.
+    vi.runAllTimers();
+    expect(instances).toHaveLength(1);
+  });
+
   it("does not reconnect after a 1008 policy close, and surfaces an auth error", () => {
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });

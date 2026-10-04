@@ -295,7 +295,7 @@
         "type": { "const": "error" },
         "code": {
           "type": "string",
-          "enum": ["bad_request", "unauthorized", "session_not_found", "rate_limited", "internal"]
+          "enum": ["bad_request", "unauthorized", "session_not_found", "rate_limited", "internal", "resumed_elsewhere"]
         },
         "message": { "type": "string" },
         "fatal": { "type": "boolean", "default": false }
