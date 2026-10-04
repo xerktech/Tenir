@@ -46,10 +46,16 @@ _WORDS: dict[str, frozenset[str]] = {
         "guess we my your i'm i'd i'll i've don't didn't can't it's that's what's "
         "there's we're they're you're gonna wanna".split()
     ),
+    # "le" and "a" are as everyday in Spanish as in French ("Le pasé la foto a
+    # Michael."); scored for French alone they tipped such turns to fr (XERK-1419).
+    # The second line is Spanish-only (wordfreq: ≥10× rarer in the other contract
+    # languages); pt "vamos"/"estás" and it "tengo"/"ella" are deliberately absent.
     "es": frozenset(
         "el la los las es son está están y de del que un una uno en por para con "
         "no sí pero como más muy este esta esto ese esa eso porque cuando también "
-        "hace tiene ser estar todo nada algo yo tú usted nosotros ya".split()
+        "hace tiene ser estar todo nada algo yo tú usted nosotros ya le a "
+        "hay pues hola estoy dónde donde qué aquí ahora bueno entonces mucho "
+        "gracias había fue hacer puedo quiero ellos eres".split()
     ),
     "fr": frozenset(
         "le la les est sont et de du des que un une dans pour avec ne pas mais "
@@ -64,7 +70,8 @@ _WORDS: dict[str, frozenset[str]] = {
         "immer".split()
     ),
     "pt": frozenset(
-        "o os as é são e do da dos das que um uma em não mas como mais muito "
+        # "a" is as Portuguese as Spanish ("A comida está boa.") (XERK-1419).
+        "o os as a é são e do da dos das que um uma em não mas como mais muito "
         "este esta isso esse essa porque quando também já faz tem ser estar tudo "
         "nada algo eu você nós vocês ele ela eles elas para com por".split()
     ),
@@ -84,8 +91,11 @@ _WORDS: dict[str, frozenset[str]] = {
 # and "I don't remember." stop being Spanish and Italian. A short turn of nothing
 # but these is undecidable, and inside a live run it still inherits the run's
 # language, so a Spanish "No." mid-conversation is translated as before.
+# Spanish loanwords English speakers use ("a bale of hay", "a big gracias", "Bueno.") are
+# here too: plain evidence, they tagged English turns es (XERK-1419 QA).
 _ENGLISH_HOMOGRAPHS = frozenset(
-    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non ya yo".split()
+    "i a o e ha ma per um em do com no in come as die hat war den son plus pour non ya yo "
+    "hay hola gracias bueno mucho donde aquí".split()
 )
 
 # English vocab that is also an everyday word of another contract language, ASR-spelled
@@ -99,6 +109,14 @@ _CHARS: dict[str, str] = {
     "es": "ñ¿¡",
     "de": "ß",
     "pt": "ãõ",
+}
+
+# Letters a language never writes: a turn holding one in a lowercase word scores 0 for
+# it. French has no á/í/ó/ú/ñ, so "Va a casa de la música." can't be French however
+# many la/de/a it shares with Spanish (XERK-1419). Capitalised words are skipped: a
+# French turn names "María" or "Málaga" (QA).
+_FOREIGN_CHARS: dict[str, str] = {
+    "fr": "áíóúñ",
 }
 
 # One distinctive-word hit is enough only when the turn is this short — "Los
@@ -147,6 +165,12 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
         if code != "en" and scores[code]:
             scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
     return scores, words
+
+
+def _ruled_out(text: str) -> set[str]:
+    """Languages a lowercase word of the turn can't be written in (``_FOREIGN_CHARS``)."""
+    common = "".join(w for w in _TOKEN_RE.findall(text) if not w[0].isupper())
+    return {code for code, chars in _FOREIGN_CHARS.items() if any(c in common for c in chars)}
 
 
 # One English "hit" is not evidence on its own: has/was/in/so are everyday words of the
@@ -237,10 +261,19 @@ def detect_lang(text: str) -> str | None:
     if scored is None:
         return None
     scores, words = scored
+    ruled_out = _ruled_out(text)
+    raw = None
+    if ruled_out:
+        # A word-list call the letters rule out ("Tu pelo volverá a crecer." fr on tu/a)
+        # is still a call for the frequencies to correct, without the None-turn gate.
+        raw = _word_list_lang(text, scores, words)
+        scores = {code: 0 if code in ruled_out else n for code, n in scores.items()}
     by_words = _word_list_lang(text, scores, words)
     if by_words == "en":
         return by_words
-    return _frequency_lang(scores, words, by_words) or by_words
+    to_correct = by_words or (raw if raw in ruled_out else None)
+    by_freq = _frequency_lang(scores, words, to_correct)
+    return (by_freq if by_freq not in ruled_out else None) or by_words
 
 
 def _word_list_lang(text: str, scores: dict[str, int], words: list[str]) -> str | None:
