@@ -325,6 +325,7 @@ def test_letters_french_never_writes_rule_it_out() -> None:
     # A fr/it tie they break is a word-list call for the frequencies to correct.
     assert detect_lang("Tu canción.") == "es"
     assert detect_lang("Tu corazón.") == "es"
+    assert detect_lang("Il a dit que c'est fini.") == "fr"
 
 
 @pytest.mark.parametrize(
@@ -334,7 +335,6 @@ def test_letters_french_never_writes_rule_it_out() -> None:
 def test_a_letter_alone_is_not_evidence_for_english_homographs(text: str) -> None:
     # ñ is +2 for es, but "a" corroborates only a Spanish word hit (XERK-1419 QA).
     assert detect_lang(text) != "es"
-    assert detect_lang("Il a dit que c'est fini.") == "fr"
 
 
 # Public FLEURS es_419 sentences (XERK-1349) the word lists left None or tagged fr: a
