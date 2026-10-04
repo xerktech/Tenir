@@ -20,6 +20,7 @@ from typing import Protocol
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    ConversationSummary,
     Cue,
     Segment,
     Song,
@@ -66,7 +67,7 @@ class ConversationStore(Protocol):
         owner: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Conversation]: ...
+    ) -> list[ConversationSummary]: ...
     def delete(self, household: str, conversation_id: str) -> bool: ...
     def households(self) -> list[str]: ...
     def ready(self) -> None: ...
@@ -212,14 +213,14 @@ class InMemoryConversationStore:
 
     def list(
         self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
-    ) -> list[Conversation]:
+    ) -> list[ConversationSummary]:
         with self._lock:
             convs = sorted(
                 (c for c in self._conversations(household).values() if self._owned(c, owner)),
                 key=lambda c: c.started_at,
                 reverse=True,
             )
-            return convs[offset : offset + limit]
+            return [c.summary() for c in convs[offset : offset + limit]]
 
     def search(
         self,
@@ -229,7 +230,7 @@ class InMemoryConversationStore:
         owner: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Conversation]:
+    ) -> list[ConversationSummary]:
         terms = [t for t in query.lower().split() if t]
         if not terms:
             return self.list(household, owner=owner, limit=limit, offset=offset)
@@ -243,7 +244,7 @@ class InMemoryConversationStore:
                 if score:
                     scored.append((score, conv))
         scored.sort(key=lambda sc: (sc[0], sc[1].started_at), reverse=True)
-        return [conv for _, conv in scored[offset : offset + limit]]
+        return [conv.summary() for _, conv in scored[offset : offset + limit]]
 
     def delete(self, household: str, conversation_id: str) -> bool:
         with self._lock:

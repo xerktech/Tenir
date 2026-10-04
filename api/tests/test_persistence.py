@@ -9,7 +9,13 @@ from pathlib import Path
 from api.persistence import audio_key, pcm16_to_wav, wav_to_pcm16
 from api.persistence.audio import InMemoryAudioStore, LocalDiskAudioStore
 from api.persistence.conversations import InMemoryConversationStore
-from api.persistence.models import Conversation, Segment, coerce_status, utcnow
+from api.persistence.models import (
+    Conversation,
+    ConversationSummary,
+    Segment,
+    coerce_status,
+    utcnow,
+)
 
 
 def _seg(sid: str, text: str, start: int, end: int) -> Segment:
@@ -75,6 +81,26 @@ def test_store_list_is_newest_first_and_paginates() -> None:
     assert [c.id for c in listed] == ["c3", "c2"]
     # Household isolation: another household sees nothing.
     assert store.list("other") == []
+
+
+def test_store_list_and_search_return_summaries_not_transcripts() -> None:
+    """Listing renders only a count and a duration, so the stores hand back that
+    projection instead of every segment, cue and song (XERK-1524)."""
+    store = InMemoryConversationStore()
+    store.create("h", "c1", mic_source="phone-microphone")
+    store.add_segment("h", "c1", _seg("s1", "budget one", 500, 1500))
+    store.add_segment("h", "c1", _seg("s2", "budget two", 1200, 4000))
+    store.create("h", "empty")
+
+    rows = {c.id: c for c in store.list("h")}
+    assert all(isinstance(c, ConversationSummary) for c in rows.values())
+    assert (rows["c1"].segment_count, rows["c1"].duration_ms) == (2, 3500)
+    assert rows["c1"].mic_source == "phone-microphone"
+    assert (rows["empty"].segment_count, rows["empty"].duration_ms) == (0, 0)
+    assert store.get("h", "c1").summary() == rows["c1"]
+
+    (hit,) = store.search("h", "budget")
+    assert isinstance(hit, ConversationSummary) and hit.segment_count == 2
 
 
 def test_store_search_ranks_by_match_count() -> None:

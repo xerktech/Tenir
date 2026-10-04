@@ -89,6 +89,28 @@ class Song:
 
 
 @dataclass
+class ConversationSummary:
+    """A conversation's metadata plus its transcript's size, without the transcript.
+
+    What history listing and search return: the list view renders only a count and a
+    duration, so the stores aggregate those instead of loading every segment, cue and
+    song on the page just to count them (XERK-1524).
+    """
+
+    id: str
+    household: str
+    owner: str | None = None
+    mic_source: str | None = None
+    source_lang: str | None = None
+    started_at: datetime = field(default_factory=utcnow)
+    ended_at: datetime | None = None
+    status: ConversationStatus = "live"
+    audio_key: str | None = None
+    segment_count: int = 0
+    duration_ms: int = 0
+
+
+@dataclass
 class Conversation:
     """A persisted conversation and its transcript."""
 
@@ -121,3 +143,18 @@ class Conversation:
         if not self.segments:
             return 0
         return max(s.end_ms for s in self.segments) - min(s.start_ms for s in self.segments)
+
+    def summary(self) -> ConversationSummary:
+        return ConversationSummary(
+            id=self.id,
+            household=self.household,
+            owner=self.owner,
+            mic_source=self.mic_source,
+            source_lang=self.source_lang,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            status=self.status,
+            audio_key=self.audio_key,
+            segment_count=len(self.segments),
+            duration_ms=self.duration_ms,
+        )
