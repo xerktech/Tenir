@@ -15,8 +15,10 @@ const completeOidcCallback = core.completeOidcCallback as unknown as Mock;
 const oidcLogout = core.oidcLogout as unknown as Mock;
 const logout = core.logout as unknown as Mock;
 
-const { me, captureStats } = vi.hoisted(() => ({
+const { me, getToken, captureStats } = vi.hoisted(() => ({
   me: vi.fn(),
+  // A stored session by default; the boot-unreachable tests flip it to none.
+  getToken: vi.fn((): string | null => "stored-token"),
   // Instrumentation for the capture session so a test can prove the session is
   // created once, above the tab switch, and never stopped on navigation, and can
   // drive it into a "running" state to assert the background affordance (XERK-111).
@@ -29,6 +31,7 @@ vi.mock("@tenir/client-core", () => ({
   configureOidc: vi.fn(),
   browserOidcPrimitives: vi.fn((redirectUri: string) => ({ redirectUri })),
   me,
+  getToken,
   login: vi.fn(),
   logout: vi.fn(),
   describeLoginError: (err: unknown) => (err instanceof Error ? err.message : String(err)),
@@ -493,5 +496,49 @@ describe("OIDC login (docs/auth-oidc.md §10)", () => {
     renderApp();
     await waitFor(() => expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /Authentik/ })).not.toBeInTheDocument();
+  });
+});
+
+// XERK-1528: a transport failure on boot is not "logged out" (Android parity, XERK-236).
+describe("boot with the server unreachable", () => {
+  afterEach(() => getToken.mockImplementation(() => "stored-token"));
+
+  it("shows an unreachable/retry state, not the login form, when the server can't be reached", async () => {
+    me.mockRejectedValue(new core.NetworkError("Can't reach the Tenir server."));
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "Can't reach your server" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Can't reach the Tenir server.");
+    expect(screen.queryByRole("heading", { name: "Log in" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+  });
+
+  it("treats a 503 (the api can't reach its database) the same way", async () => {
+    // ServerUnavailableError is a NetworkError subclass in client-core.
+    class ServerUnavailableError extends core.NetworkError {}
+    me.mockRejectedValue(new ServerUnavailableError("The server can't reach its database."));
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "Can't reach your server" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("can't reach its database");
+  });
+
+  it("signs straight back in on Retry once the server is back — the token was fine", async () => {
+    me.mockRejectedValueOnce(new core.NetworkError("down")).mockResolvedValue({
+      userId: "u",
+      username: "ada",
+      household: "h",
+      role: "member",
+    });
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: "Log out" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument();
+  });
+
+  it("still shows the login form on a first visit with no stored session", async () => {
+    getToken.mockImplementation(() => null);
+    me.mockRejectedValue(new core.NetworkError("down"));
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument();
   });
 });

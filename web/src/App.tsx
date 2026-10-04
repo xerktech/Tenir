@@ -13,6 +13,7 @@ import {
   describeLoginError,
   getAuthConfig,
   getSessionKind,
+  getToken,
   login,
   logout,
   me,
@@ -34,7 +35,7 @@ import { HistoryPanel } from "./panels/History";
 import { LivePanel } from "./panels/Live";
 import { StatusPanel } from "./panels/Status";
 import { UsersPanel } from "./panels/Users";
-import { Button, Field, Input, NavIcon, ThemeToggle } from "./ui";
+import { Button, Card, Field, Input, NavIcon, ThemeToggle } from "./ui";
 
 const BASE_TABS = ["Live", "History", "Status"] as const;
 // User management is an admin-only surface (the server 403s members), so the
@@ -116,17 +117,37 @@ async function boot(): Promise<BootState> {
   // code — clear it so the login screen isn't stuck on that URL.
   if (onOidcCallbackPath()) clearOidcCallbackUrl();
 
-  const principal = await me().catch(() => null);
+  // Only an AUTH failure means "logged out". A NetworkError — the server is
+  // unreachable, or it answered 503 because it can't reach its database
+  // (ServerUnavailableError, XERK-1510) — says nothing about the stored token,
+  // so rethrow it and let App show an unreachable/retry state instead of a login
+  // form asking for a password the server can't check (XERK-1528, mirroring
+  // Android's XERK-236). With no stored token there is no session to have lost,
+  // so a first visit still gets the login form.
+  const principal = await me().catch((err) => {
+    if (err instanceof NetworkError && getToken() != null) throw err;
+    return null;
+  });
   return { principal, authConfig, oidcError: null };
 }
 
 export function App(): JSX.Element {
-  const { data, loading, reload } = useAsync<BootState>(boot);
+  const { data, error, loading, reload } = useAsync<BootState>(boot);
 
-  if (loading || !data) {
+  if (loading) {
     return (
       <main className="container">
         <p className="muted">Connecting…</p>
+      </main>
+    );
+  }
+
+  // Boot only rejects for a transport failure with a stored session (see boot()).
+  if (error != null || !data) {
+    return (
+      <main className="container">
+        <Header principal={null} onAuthChange={reload} />
+        <Unreachable error={error} onRetry={reload} />
       </main>
     );
   }
@@ -174,6 +195,37 @@ function Header({
         </Button>
       )}
     </header>
+  );
+}
+
+/**
+ * The server didn't answer (or can't reach its database), so the stored session
+ * couldn't be checked. Parity with Android's "Can't reach your server" setup
+ * state (XERK-236). Deliberate difference: web omits the login form here — it is
+ * same-origin, so there is no server address to change, and a password the
+ * server can't check would only fail.
+ */
+function Unreachable({ error, onRetry }: { error: unknown; onRetry: () => void }): JSX.Element {
+  const detail = error instanceof Error ? error.message : null;
+  return (
+    <section>
+      <h2>Can&apos;t reach your server</h2>
+      <Card>
+        <p className="muted">
+          Your Tenir server didn&apos;t answer, so we couldn&apos;t check whether you&apos;re still
+          signed in. If it&apos;s just offline, you don&apos;t need to sign in again — start it and
+          retry.
+        </p>
+        {detail && (
+          <p className="field-error" role="alert">
+            {detail}
+          </p>
+        )}
+        <Button variant="primary" onClick={onRetry}>
+          Retry
+        </Button>
+      </Card>
+    </section>
   );
 }
 
