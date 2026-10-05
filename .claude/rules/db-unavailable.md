@@ -44,9 +44,14 @@ paths:
   A SIGSTOPped server ACKs at TCP, so connect_timeout, keepalives and statement_timeout never fire.
 - The watchdog severs with `shutdown()` on a dup of libpq's fd; never close libpq's own fd.
 - The borrow watchdog is armed only after the boot schema applied: DDL may run for minutes.
+- Every pooled connection gets `statement_timeout` (STATEMENT_TIMEOUT < QUERY_TIMEOUT): severing
+  only the client left lock-blocked backends running, and the pool grew ~4 conns/15s (QA).
+  `apply_boot_schema` lifts it with `SET LOCAL` before taking the advisory lock.
+- 57014 (statement timeout) is an outage (503), like a severed connection.
 - `reconnect_timeout` stays short: psycopg's 5-min default backs off to 64s, so the first request
   after an outage succeeded up to a minute late. Giving up also opens the outage breaker.
-- The breaker opens only on a failed reconnect, never on a `PoolTimeout`: load must not trip it.
+- The breaker opens only on a failed reconnect with no successful borrow for OPEN_TIMEOUT, never
+  on a `PoolTimeout`: load must not trip it, nor one unrefillable slot at max_connections.
   It shortens the wait rather than skipping `getconn`, which is what starts the next reconnect.
 - Don't cap the pool's `max_waiting`: min=max=4, so 40 healthy concurrent requests hit any cap.
 - Tests: `api/tests/test_finalize_outage.py`.

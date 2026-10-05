@@ -62,12 +62,16 @@ class _Proxy:
         self._listener = lsock
         threading.Thread(target=self._accept, args=(lsock,), daemon=True).start()
 
-    def down(self) -> None:
+    def refuse_new(self) -> None:
+        """Refuse new connections; established ones keep working."""
         if self._listener is not None:
             # shutdown, not just close: a close leaves the accept() blocked in
             # _accept still listening on Linux.
             _close(self._listener)
             self._listener = None
+
+    def down(self) -> None:
+        self.refuse_new()
         for s in self._conns:
             _close(s)
         self._conns.clear()
@@ -114,7 +118,7 @@ def _close(s: socket.socket) -> None:
 
 
 @pytest.fixture
-def rig():
+def rig(monkeypatch):
     """(store, proxy): a conversation store in a throwaway schema, reached via the proxy."""
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
@@ -125,6 +129,8 @@ def rig():
     port = int(info.get("port") or 5432)
     target = f"{host}/.s.PGSQL.{port}" if host.startswith("/") else (host, port)
     proxy = _Proxy(target)
+    # Short enough for a lock-wait test; still far above any query the store runs here.
+    monkeypatch.setattr(postgres, "STATEMENT_TIMEOUT_SECONDS", 1.0)
     schema = f"t_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(DSN, autocommit=True) as admin:
         admin.execute(f"CREATE SCHEMA {schema}")
@@ -156,6 +162,26 @@ def _timed(fn) -> tuple[str, float]:
     return outcome, time.monotonic() - t0
 
 
+def _bounded(fn, seconds: float):
+    """Run ``fn`` in a daemon thread and fail — rather than hang the suite — if it is
+    still running after ``seconds``: an unbounded wait is the very defect under test."""
+    box: list = []
+    t = threading.Thread(target=lambda: box.append(fn()), daemon=True)
+    t.start()
+    t.join(seconds)
+    assert box, f"still blocked after {seconds}s"
+    return box[0]
+
+
+def _concurrently(fn, n: int, seconds: float) -> list:
+    ex = ThreadPoolExecutor(n)
+    try:
+        futures = [ex.submit(fn) for _ in range(n)]
+        return _bounded(lambda: [f.result() for f in futures], seconds)
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
 def _wait_for(cond, seconds: float) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -171,9 +197,7 @@ def test_hung_server_bounds_every_request(rig) -> None:
     store, proxy = rig
     proxy.freeze()
     bound = postgres.OPEN_TIMEOUT_SECONDS + postgres.CHECK_TIMEOUT_SECONDS + 2
-    with ThreadPoolExecutor(10) as ex:
-        futures = [ex.submit(_timed, lambda: store.list("h")) for _ in range(10)]
-        results = [f.result(timeout=bound + 5) for f in futures]
+    results = _concurrently(lambda: _timed(lambda: store.list("h")), 10, bound + 5)
     assert {r for r, _ in results} == {"outage"}, results
     assert max(d for _, d in results) < bound, results
 
@@ -181,21 +205,21 @@ def test_hung_server_bounds_every_request(rig) -> None:
     assert _wait_for(lambda: _timed(lambda: store.list("h"))[0] == "ok", 10)
 
 
-def test_in_flight_query_on_a_hung_server_is_severed(rig, monkeypatch) -> None:
+def test_in_flight_query_on_a_hung_server_is_severed(rig) -> None:
     """A query already running when the server stops answering fails after the borrow
-    bound as an outage (503), instead of waiting for TCP to give up."""
+    bound (armed by the store itself) as an outage (503), not when TCP gives up."""
     store, proxy = rig
     pool = store._pool
-    monkeypatch.setattr(pool, "borrow_timeout", 1.0)
+    assert pool.borrow_timeout == postgres.QUERY_TIMEOUT_SECONDS
 
     def query() -> None:
         with pool.connection() as conn:
             proxy.freeze()
             conn.execute("SELECT 1")
 
-    outcome, took = _timed(query)
+    outcome, took = _bounded(lambda: _timed(query), postgres.QUERY_TIMEOUT_SECONDS + 10)
     assert outcome == "outage"
-    assert took < 3
+    assert took < postgres.QUERY_TIMEOUT_SECONDS + 2
 
     proxy.thaw()
     assert _wait_for(lambda: _timed(lambda: store.list("h"))[0] == "ok", 10)
@@ -212,8 +236,7 @@ def test_outage_fails_fast_then_recovers_promptly(rig) -> None:
         postgres.OPEN_TIMEOUT_SECONDS * 4,
     )
 
-    with ThreadPoolExecutor(10) as ex:
-        results = list(ex.map(lambda _: _timed(lambda: store.list("h")), range(30)))
+    results = _concurrently(lambda: _timed(lambda: store.list("h")), 30, 30)
     assert {r for r, _ in results} == {"outage"}, results
     assert max(d for _, d in results) < postgres.OUTAGE_WAIT_SECONDS + 1, results
 
@@ -224,3 +247,38 @@ def test_outage_fails_fast_then_recovers_promptly(rig) -> None:
     assert _wait_for(lambda: _timed(lambda: store.list("h"))[0] == "ok", 5)
     assert time.monotonic() - t0 < 5
     assert not store._pool.unreachable
+
+
+def test_one_unrefillable_slot_does_not_trip_the_breaker(rig) -> None:
+    """At max_connections a dropped connection's replacement fails while the rest still
+    serve. That is not an outage: requests keep their full wait and succeed."""
+    store, proxy = rig
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        proxy.refuse_new()
+        with store._pool.connection() as conn:
+            (pid,) = conn.execute("SELECT pg_backend_pid()").fetchone()
+        admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+    deadline = time.monotonic() + postgres.OPEN_TIMEOUT_SECONDS * 2
+    while time.monotonic() < deadline:
+        results = _concurrently(lambda: _timed(lambda: store.list("h")), 20, 30)
+        assert {r for r, _ in results} == {"ok"}, results
+    assert not store._pool.unreachable
+
+
+def test_a_lock_wait_ends_server_side_without_orphaning_backends(rig) -> None:
+    """A statement blocked on a lock ends at the server's statement_timeout as an
+    outage, and its backend is free again. Severing only the client side left the
+    backend waiting and the pool opened a replacement each time (XERK-1513 QA)."""
+    store, _ = rig
+    schema = store._dsn.split("search_path=")[1].split()[0].strip("'")
+    with psycopg.connect(DSN) as locker:
+        locker.execute(f"LOCK TABLE {schema}.conversations IN ACCESS EXCLUSIVE MODE")
+        results = _concurrently(lambda: _timed(lambda: store.list("h")), 4, 10)
+        assert {r for r, _ in results} == {"outage"}, results
+        assert max(d for _, d in results) < postgres.QUERY_TIMEOUT_SECONDS
+        (waiting,) = locker.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+        ).fetchone()
+        assert waiting == 0
+        locker.rollback()
+    assert _timed(lambda: store.list("h"))[0] == "ok"

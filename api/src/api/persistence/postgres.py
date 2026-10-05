@@ -54,6 +54,14 @@ OPEN_TIMEOUT_SECONDS = 5.0
 CHECK_TIMEOUT_SECONDS = 2.0
 QUERY_TIMEOUT_SECONDS = 15.0
 
+# Server-side bound on every request-path statement, below QUERY_TIMEOUT_SECONDS so
+# a live but slow or lock-blocked database ends the statement itself. Severing only
+# the client side left the backend waiting: with steady traffic through a lock wait
+# each severed borrow orphaned one backend and the pool opened a replacement, so the
+# connection count grew by ~4 per pool every 15s (XERK-1513 QA). The boot schema
+# apply lifts it for its own transaction.
+STATEMENT_TIMEOUT_SECONDS = 10.0
+
 # How long a request waits for a connection once the pool has given up reconnecting
 # (XERK-1513). Every request waited the full OPEN_TIMEOUT_SECONDS during an outage,
 # so a burst queued behind the 40-thread worker limiter for ceil(N/40) x 5s and
@@ -217,27 +225,39 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
             # None until the boot schema applied: DDL on a large table can
             # legitimately outlast QUERY_TIMEOUT_SECONDS.
             self.borrow_timeout: float | None = None
-            # Set when a connect attempt gave up after reconnect_timeout, cleared
-            # by the next connection that opens: a dead database, never load.
+            # Set when a connect attempt gave up after reconnect_timeout while no
+            # borrow had succeeded for OPEN_TIMEOUT_SECONDS; cleared by the next
+            # connection that opens or borrow that passes its check. One failed
+            # reconnect is not an outage: at max_connections the replacement for a
+            # dropped connection fails while the others still serve (XERK-1513 QA).
             self.unreachable = False
+            self._last_ok = time.monotonic()
             self._watchdogs: dict[int, _Watchdog] = {}
             super().__init__(*args, configure=self._connected, **kwargs)
 
-        def _connected(self, conn) -> None:
+        def _reachable(self) -> None:
+            self._last_ok = time.monotonic()
             if self.unreachable:
                 log.info("database reachable again (pool %s)", self.name)
-            self.unreachable = False
+                self.unreachable = False
+
+        def _connected(self, conn) -> None:
+            conn.execute(f"SET statement_timeout = {int(STATEMENT_TIMEOUT_SECONDS * 1000)}")
+            if not conn.autocommit:
+                conn.commit()
+            self._reachable()
 
         def reconnect_failed(self) -> None:
-            if not self.unreachable:
+            if time.monotonic() - self._last_ok >= OPEN_TIMEOUT_SECONDS and not self.unreachable:
                 log.warning("database unreachable (pool %s); failing requests fast", self.name)
-            self.unreachable = True
+                self.unreachable = True
             super().reconnect_failed()
 
         def getconn(self, timeout: float | None = None):
             if self.unreachable:
                 timeout = min(self.timeout if timeout is None else timeout, OUTAGE_WAIT_SECONDS)
             conn = super().getconn(timeout)
+            self._reachable()
             if self.borrow_timeout is not None:
                 self._watchdogs[id(conn)] = _Watchdog(conn, self.borrow_timeout, "query")
             return conn
@@ -274,6 +294,7 @@ class PoolOpener:
         log.info("opening Postgres connection pool (%s)", self._name)
         pool = _guarded_pool_class()(
             self._dsn,
+            name=self._name,
             open=False,
             kwargs=dict(CONNECT_KWARGS),
             # Every request's wait for a connection, too: with the database gone
@@ -351,7 +372,9 @@ def is_database_unavailable(exc: BaseException) -> bool:
         return True
     if isinstance(exc, psycopg.OperationalError):
         sqlstate = exc.sqlstate
-        return sqlstate is None or _is_connection_sqlstate(sqlstate)
+        # 57014: STATEMENT_TIMEOUT_SECONDS ended a statement on a slow or
+        # lock-blocked database — retryable, as when the watchdog severs one.
+        return sqlstate is None or sqlstate == "57014" or _is_connection_sqlstate(sqlstate)
     return False
 
 
@@ -417,6 +440,9 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
 def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
     with pool.connection() as conn:
         try:
+            # DDL on a large table, or waiting out another replica's apply, may
+            # legitimately outlast the request-path STATEMENT_TIMEOUT_SECONDS.
+            conn.execute("SET LOCAL statement_timeout = 0")
             lock_schema(conn)
             # After the advisory lock, not before: waiting on another replica's apply
             # is bounded already, since every statement it runs is bounded by this.

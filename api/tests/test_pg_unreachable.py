@@ -221,7 +221,7 @@ def _install_base_pool(monkeypatch) -> type:
     class _BasePool:
         def __init__(self, *a: object, configure=None, **kw: object) -> None:
             self.timeout = kw.get("timeout", 30.0)
-            self.name = "fake"
+            self.name = kw.get("name", "fake")
             self.configure = configure
             self.lent: list = []
             self.waits: list = []
@@ -236,7 +236,16 @@ def _install_base_pool(monkeypatch) -> type:
             return self.lent.pop()
 
         def putconn(self, conn) -> None:
+            # The watchdog must be disarmed before the pool can lend the
+            # connection again, or it may sever the next borrower's query.
+            assert id(conn) not in self._watchdogs
             self.returned.append(conn)
+
+        def open(self, wait: bool = False, timeout: float = 30.0) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
 
         def reconnect_failed(self) -> None:
             pass
@@ -307,11 +316,51 @@ def test_breaker_shortens_the_wait_only_while_the_database_is_unreachable(monkey
 
     pool.getconn()
     pool.getconn(timeout=OPEN_TIMEOUT_SECONDS)
+    # A borrow just succeeded: a failed reconnect now means one slot can't be
+    # refilled (max_connections), not an outage — the breaker stays closed.
     pool.reconnect_failed()
-    pool.getconn()
-    pool.getconn(timeout=OPEN_TIMEOUT_SECONDS)
-    assert pool.waits[:2] == [None, OPEN_TIMEOUT_SECONDS]
-    assert pool.waits[2:] == [postgres.OUTAGE_WAIT_SECONDS] * 2
-
-    pool.configure(object())  # a connection opened: the database is back
     assert not pool.unreachable
+
+    now = time.monotonic()
+    monkeypatch.setattr(postgres.time, "monotonic", lambda: now + OPEN_TIMEOUT_SECONDS + 1)
+    pool.reconnect_failed()
+    assert pool.unreachable
+    pool.waits.clear()
+    pool.lent += [object()]
+    pool.getconn()  # a lent connection passed its check: the breaker closes
+    assert pool.waits == [postgres.OUTAGE_WAIT_SECONDS]
+    assert not pool.unreachable
+
+
+def test_new_connections_get_the_statement_timeout_and_close_the_breaker(monkeypatch) -> None:
+    pool_cls = _install_base_pool(monkeypatch)
+    pool = pool_cls(timeout=5.0)
+    pool.unreachable = True
+    executed: list = []
+    conn = types.SimpleNamespace(
+        autocommit=False, execute=executed.append, commit=lambda: executed.append("COMMIT")
+    )
+    pool.configure(conn)
+    assert executed == [
+        f"SET statement_timeout = {int(postgres.STATEMENT_TIMEOUT_SECONDS * 1000)}",
+        "COMMIT",
+    ]
+    assert postgres.STATEMENT_TIMEOUT_SECONDS < postgres.QUERY_TIMEOUT_SECONDS
+    assert not pool.unreachable
+
+
+def test_borrow_watchdog_is_armed_after_the_boot_schema_only(monkeypatch) -> None:
+    """Boot DDL may run for minutes; every request-path borrow is bounded."""
+    _install_base_pool(monkeypatch)
+    seen: list = []
+    pool = postgres.PoolOpener("postgresql://unused", "conversations").open(
+        lambda p: seen.append(p.borrow_timeout)
+    )
+    assert seen == [None]
+    assert pool.borrow_timeout == postgres.QUERY_TIMEOUT_SECONDS
+    assert pool.name == "conversations"
+
+
+def test_statement_timeout_is_an_outage() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    assert postgres.is_database_unavailable(psycopg.errors.QueryCanceled("canceling statement"))

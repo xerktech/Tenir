@@ -370,8 +370,11 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
     _install_fake_pool(monkeypatch, _Conn())
     store_cls("postgresql://unused")._ensure_pool()
 
-    assert calls[0] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
-    assert len(calls) > 1, "the DDL runs after the lock"
+    # The request-path statement_timeout is lifted first: waiting out another
+    # replica's apply, or DDL on a large table, may outlast it (XERK-1513).
+    assert calls[0] == ("SET LOCAL statement_timeout = 0", None)
+    assert calls[1] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+    assert len(calls) > 2, "the DDL runs after the lock"
 
 
 def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:
