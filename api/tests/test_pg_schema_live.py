@@ -240,6 +240,7 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
 
     monkeypatch.setattr(pg, "SCHEMA_LOCK_TIMEOUT_MS", 300)
     monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0.2)
+    monkeypatch.setattr(pg, "OPEN_TIMEOUT_SECONDS", 1.0)
     schema = f"t_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(DSN, autocommit=True) as admin:
         admin.execute(f"CREATE SCHEMA {schema}")
@@ -274,8 +275,12 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
             assert len(errors) == 1 and isinstance(errors[0], pg.SchemaLockTimeout)
             assert store._pool is None
 
-            # The reader ending lets the next attempt through.
+            # Within the window a re-open shares that verdict instead of re-running the
+            # apply (XERK-1607); after it, the reader having ended lets the attempt through.
             idle.rollback()
+            with pytest.raises(pg.SchemaLockTimeout, match="shared"):
+                store.open()
+            time.sleep(pg.OPEN_TIMEOUT_SECONDS + 0.1)
             store.open()
             assert store._pool is not None
 
