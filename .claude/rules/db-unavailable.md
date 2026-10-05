@@ -48,7 +48,8 @@ paths:
 - The borrow watchdog is armed only after the boot schema applied: DDL may run for minutes.
 - Every pooled connection gets `statement_timeout` (STATEMENT_TIMEOUT < QUERY_TIMEOUT): severing
   only the client left lock-blocked backends running, and the pool grew ~4 conns/15s (QA).
-  `apply_boot_schema` lifts it with `SET LOCAL` before taking the advisory lock.
+  `apply_boot_schema` lifts it (session-level, not `SET LOCAL`: its DDL commits per statement)
+  before taking the advisory lock, and restores it on success; a failed apply closes the conn.
 - Its 57014 is not an outage (stays a 500): the stale sweep and admin seed would retry a statement
   slow every time forever. `test_reconcile_is_retryable_classification`.
 - Session-held writes (`_flush_writes`, `_finalize`, `_retain_audio`) use `is_retryable_write`

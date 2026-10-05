@@ -49,6 +49,12 @@ class _RecordingConn:
         self.statements.append(" ".join(sql.split()))
         return _NoRows()
 
+    def commit(self) -> None:
+        self.statements.append("COMMIT")
+
+    def close(self) -> None:
+        pass
+
 
 def _creates_cues(statements: list[str]) -> bool:
     # Statements carry their leading comment block, so match the DDL as a substring
@@ -117,6 +123,7 @@ def test_apply_schema_creates_the_cues_table() -> None:
         or "DROP NOT NULL" in s.upper()
         or (s.upper().startswith("UPDATE") and "WHERE" in s.upper())
         for s in conn.statements
+        if s != "COMMIT"
     )
 
 
@@ -165,6 +172,9 @@ class _FailingConn:
     def execute(self, sql: str, params: object = None) -> None:
         self.calls += 1
         raise RuntimeError("cannot add foreign key")
+
+    def close(self) -> None:
+        pass
 
 
 def _install_fake_pool(monkeypatch, conn) -> list:
@@ -329,6 +339,9 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
                 in_apply -= 1
             return _NoRows()
 
+        def commit(self) -> None:
+            pass
+
     pools = _install_fake_pool(monkeypatch, _SlowConn())
     store = store_cls("postgresql://unused")
     start = threading.Barrier(8)
@@ -367,14 +380,41 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
             calls.append((" ".join(sql.split()), params))
             return _NoRows()
 
+        def commit(self) -> None:
+            pass
+
     _install_fake_pool(monkeypatch, _Conn())
     store_cls("postgresql://unused")._ensure_pool()
 
     # The request-path statement_timeout is lifted first: waiting out another
-    # replica's apply, or DDL on a large table, may outlast it (XERK-1513).
-    assert calls[0] == ("SET LOCAL statement_timeout = 0", None)
-    assert calls[1] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
-    assert len(calls) > 2, "the DDL runs after the lock"
+    # replica's apply, or DDL on a large table, may outlast it (XERK-1513). Both it and
+    # the lock are session-level: they must outlive the per-statement commits (XERK-1533).
+    assert calls[0] == ("SET statement_timeout = 0", None)
+    assert calls[1] == ("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+    unlock = calls.index(("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,)))
+    assert unlock > 2, "the DDL runs after the lock and before the unlock"
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_schema_apply_commits_every_statement(monkeypatch, store_path) -> None:
+    """One apply-wide transaction held conversations' AccessExclusive (ALTER) while
+    waiting on segments (CREATE INDEX); a live INSERT INTO segments closed the cycle and
+    Postgres killed one side with 40P01 (XERK-1533). Every DDL statement must commit
+    before the next one runs."""
+    import importlib
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+    store_cls("postgresql://unused")._ensure_pool()
+
+    ddl = [i for i, s in enumerate(conn.statements) if s.upper().startswith(("CREATE", "ALTER"))]
+    assert ddl
+    for i in ddl:
+        assert conn.statements[i + 1] == "COMMIT", conn.statements[i]
 
 
 def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:
@@ -414,6 +454,9 @@ class _RaisingConn:
 
     def execute(self, sql: str, params: object = None) -> None:
         raise self.exc
+
+    def close(self) -> None:
+        pass
 
 
 @pytest.mark.parametrize(
@@ -479,12 +522,19 @@ class _LockTimeoutConn:
             raise _SqlStateError("55P03")
         return _NoRows()
 
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
 
 def test_boot_ddl_runs_under_a_lock_timeout_after_the_schema_lock(monkeypatch) -> None:
     """Unbounded, the boot ALTERs (ACCESS EXCLUSIVE even when the column exists) waited
     forever behind one idle-in-transaction reader, and every request on the table
-    queued behind them (XERK-1603). The timeout is LOCAL, and set after the advisory
-    lock so waiting on another replica's (bounded) apply isn't what times out."""
+    queued behind them (XERK-1603). Set after the advisory lock so waiting on another
+    replica's (bounded) apply isn't what times out; session-level, since every DDL
+    statement commits on its own (XERK-1533), and RESET before the connection is pooled."""
     from api.persistence.postgres import SCHEMA_LOCK_TIMEOUT_MS, SqlConversationStore
 
     conn = _LockTimeoutConn(failures=0)
@@ -493,9 +543,9 @@ def test_boot_ddl_runs_under_a_lock_timeout_after_the_schema_lock(monkeypatch) -
 
     # The request-path statement_timeout is lifted first (XERK-1513); the lock
     # timeout bounds each table lock instead.
-    assert conn.statements[0] == "SET LOCAL statement_timeout = 0"
-    assert conn.statements[1].startswith("SELECT pg_advisory_xact_lock")
-    assert conn.statements[2] == "SELECT set_config('lock_timeout', %s, true)"
+    assert conn.statements[0] == "SET statement_timeout = 0"
+    assert conn.statements[1].startswith("SELECT pg_advisory_lock")
+    assert conn.statements[2] == "SELECT set_config('lock_timeout', %s, false)"
     assert conn.params[2] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
 
 
@@ -513,7 +563,7 @@ def test_boot_lock_timeout_is_retried(monkeypatch) -> None:
     store.open()
 
     assert store._pool is pools[0]
-    assert sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements) == 2
+    assert sum(s.startswith("SELECT pg_advisory_lock") for s in conn.statements) == 2
     assert _creates_cues(conn.statements)
 
 
@@ -530,5 +580,5 @@ def test_boot_fails_when_a_table_lock_never_frees(monkeypatch) -> None:
     with pytest.raises(pg.SchemaLockTimeout, match="could not take a table lock"):
         store.open()
     assert store._pool is None and pools[0].closed
-    attempts = sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements)
+    attempts = sum(s.startswith("SELECT pg_advisory_lock") for s in conn.statements)
     assert attempts == pg.SCHEMA_LOCK_ATTEMPTS

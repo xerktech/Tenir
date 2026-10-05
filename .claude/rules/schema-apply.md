@@ -25,17 +25,25 @@ paths:
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
 - Across processes, every DDL apply (both stores) first takes `lock_schema()`
-  (`pg_advisory_xact_lock(SCHEMA_LOCK_KEY)`) in the same, non-autocommit transaction.
+  (session-level `pg_advisory_lock(SCHEMA_LOCK_KEY)`), released by `unlock_schema()`; a failed
+  attempt closes its connection, so a retry never meets its own leftover lock.
   - Without it two api processes booting together (rolling update, >1 replica) fail one with 40P01
     or a `pg_type` unique violation, which aborts startup as a rejected schema (XERK-1509).
-  - It does not cover apply-vs-request-traffic: a boot apply can still hit 40P01 against live
-    writes, so 40P01 at boot is not proof the schema itself is bad.
   - Tests: `test_schema_apply_takes_the_cross_process_lock_first`,
     `test_concurrent_boot_applies_do_not_collide` (live).
-- Boot DDL runs under `SET LOCAL lock_timeout` (`SCHEMA_LOCK_TIMEOUT_MS`), set *after* the advisory
+- Every boot DDL statement commits on its own (`run_ddl`); never apply them in one transaction.
+  - Even converged, `ALTER ... IF NOT EXISTS` takes AccessExclusive and `CREATE INDEX IF NOT
+    EXISTS` a ShareLock. Held together, the apply deadlocked (40P01) with a live `INSERT INTO
+    segments` on another replica: a lost transcript write, or a crashlooping pod (XERK-1533).
+  - The advisory lock can't help there: request traffic doesn't take it.
+  - Tests: `test_schema_apply_commits_every_statement`,
+    `test_boot_apply_does_not_deadlock_with_live_traffic` (live).
+- Boot DDL runs under a session `lock_timeout` (`SCHEMA_LOCK_TIMEOUT_MS`), set *after* the advisory
   lock; a 55P03 retries the whole apply with backoff, and exhausting the attempts is a
   `SchemaLockTimeout` (a `SchemaApplyError`: fatal at boot, not "unreachable", which would serve
   on an unapplied schema). On a lazy request-path re-open it is a transient outage → 503.
+  - Not `SET LOCAL`: it ends at the first per-statement commit. RESET on success; a failed attempt
+    closes its connection, so no pooled connection carries the timeout into requests.
   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE before checking the column:
     unbounded, one idle-in-transaction reader stalled it forever and every request on that table
     queued behind it (XERK-1603). Skipping DDL on a converged schema wouldn't remove this — the
