@@ -410,3 +410,102 @@ def test_the_shutdown_cancel_message_is_uvicorns() -> None:
     from api.main import _UVICORN_SHUTDOWN_CANCEL
 
     assert f'msg="{_UVICORN_SHUTDOWN_CANCEL}"' in inspect.getsource(uvicorn.server)
+
+
+def _http_scope(path: str = "/slow") -> dict[str, object]:
+    return {"type": "http", "method": "GET", "path": path, "headers": []}
+
+
+async def _never() -> dict[str, object]:
+    await asyncio.Event().wait()
+    return {}
+
+
+def _run_cancelled_http(
+    respond_first: bool, msg: str | None, path: str = "/slow"
+) -> tuple[list[dict[str, object]], asyncio.Task[None]]:
+    """Run an http request through ShutdownCancelMiddleware, hang it, cancel it with msg."""
+    from api.main import ShutdownCancelMiddleware
+
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    async def slow_route(scope: object, receive: object, send: object) -> None:
+        if respond_first:
+            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+        await asyncio.Event().wait()
+
+    async def run() -> asyncio.Task[None]:
+        task = asyncio.create_task(
+            ShutdownCancelMiddleware(slow_route)(_http_scope(path), _never, send)
+        )
+        await asyncio.sleep(0)
+        task.cancel(msg=msg)
+        await asyncio.wait([task], timeout=2)
+        return task
+
+    return sent, asyncio.run(run())
+
+
+def test_graceful_shutdown_cancel_answers_a_hung_http_request_503(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """XERK-1602: uvicorn logs the shutdown cancel of a hung HTTP request as "Exception in
+    ASGI application" with a traceback, then sends a 500. The middleware swallows that one
+    cancel and answers a retryable 503 instead."""
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    with caplog.at_level("INFO", logger="api"):
+        sent, task = _run_cancelled_http(respond_first=False, msg=_UVICORN_SHUTDOWN_CANCEL)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
+    assert sent[0]["status"] == 503
+    assert "http '/slow' cancelled at the graceful-shutdown deadline" in caplog.text
+
+
+def test_graceful_shutdown_cancel_after_the_response_started_sends_nothing_more() -> None:
+    # A second http.response.start would be a protocol error; uvicorn closes the connection.
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    sent, task = _run_cancelled_http(respond_first=True, msg=_UVICORN_SHUTDOWN_CANCEL)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert [m["type"] for m in sent] == ["http.response.start"]
+
+
+def test_any_other_cancel_still_propagates_out_of_an_http_request() -> None:
+    sent, task = _run_cancelled_http(respond_first=False, msg=None)
+    assert task.cancelled()
+    assert sent == []
+
+
+def test_shutdown_cancel_middleware_wraps_every_other_middleware() -> None:
+    """Inside BaseHTTPMiddleware it would miss what that re-raises; starlette builds the
+    stack from user_middleware in order, so index 0 is the outermost."""
+    from api import main
+
+    assert main.app.user_middleware[0].cls is main.ShutdownCancelMiddleware
+
+
+def test_shutdown_cancel_middleware_passes_lifespan_through() -> None:
+    from api.main import ShutdownCancelMiddleware
+
+    seen: list[str] = []
+
+    async def inner(scope: dict[str, object], receive: object, send: object) -> None:
+        seen.append(str(scope["type"]))
+
+    asyncio.run(ShutdownCancelMiddleware(inner)({"type": "lifespan"}, _never, _never))  # type: ignore[arg-type]
+    assert seen == ["lifespan"]
+
+
+def test_shutdown_cancel_log_line_cannot_be_forged_through_the_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # scope["path"] is percent-decoded: a %0a in the URL is a real newline by now.
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    with caplog.at_level("INFO", logger="api"):
+        _run_cancelled_http(False, _UVICORN_SHUTDOWN_CANCEL, path="/a\nINFO api FORGED")
+    assert "\n" not in caplog.records[-1].getMessage()
