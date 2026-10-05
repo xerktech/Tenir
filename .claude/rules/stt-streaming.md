@@ -53,10 +53,13 @@ paths:
   - Age is dated by audio *arrival* time, not the session timeline, so tests that push audio
     faster than real time never read as stale.
 - An engine slower than real time sheds load by merging the final backlog (XERK-1498).
-  - Trigger: `behind_real_time` (`_SLOW_FINALS_BEHIND` single-turn final decodes in a row
-    slower than their audio) and the next final waited over `_FINAL_BEHIND_S`.
-  - Never merge on wait time alone or on one slow decode: an outage backlog or a single
-    stalled request must drain turn by turn, keeping turn boundaries.
+  - Trigger: `behind_real_time` and the next final waited over `_FINAL_BEHIND_S`.
+  - `behind_real_time`: over the last `_BEHIND_WINDOW` single-turn final decodes, with the
+    slowest set aside, decode time summed exceeds audio summed.
+    - Summed, not "N slow in a row": with a fixed request cost a long turn beats its own audio,
+      and a streak reset on it switched the shed off entirely for mixed turn lengths (QA).
+    - The slowest is set aside so one stalled request on a healthy engine doesn't merge.
+  - Never merge on wait time alone: an outage backlog drains turn by turn, keeping boundaries.
   - A merged decode doesn't update the slow streak; it beats real time by design.
   - Size a merge by the last final's decode rate to fit `_COALESCE_DECODE_BUDGET_S`, not by
     audio length alone: QA showed a 1.3x engine timing out (Parakeet's 15 s deadline) on a
@@ -64,7 +67,10 @@ paths:
   - Queued partials among the merged turns are dropped; `_speech_finals_pending` is decremented
     once per merged speech turn, in the same `finally`.
   - Tests: `test_streaming_stt.py::test_a_merge_is_sized_to_decode_within_the_request_timeout`,
+    `::test_a_slow_engine_is_shed_with_turns_of_varying_length`,
     `::test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns`.
+  - Timing tests use `VirtualEngine` (decodes wait on the fake clock in the loop). A threaded
+    fake engine races a test that advances the clock, so measured latencies flake.
 - `caption.status` tells the clients when captions are delayed (XERK-1498).
   - It is set by any final older than `_LATE_FINAL_S`. It clears only after `_CAUGHT_UP_S` of
     on-time finals and once the transcriber is no longer `behind_real_time`. Otherwise it

@@ -1500,31 +1500,60 @@ def test_partial_queued_behind_a_slow_final_is_dropped_when_stale(
     asyncio.run(run())
 
 
-class TimedEngine:
-    """Answers every decode at once, advancing the fake clock by ``cost(audio_s)``."""
+class VirtualEngine:
+    """An engine whose decodes take ``cost(audio_s)`` of fake-clock time, running
+    concurrently with the audio a live microphone keeps sending. Decodes wait on the
+    fake clock in the event loop instead of a thread, so measured latencies are exact
+    whatever the host's load (a thread raced the clock and flaked)."""
 
-    def __init__(self, clock: _Clock, cost) -> None:
-        self.clock, self.cost = clock, cost
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, cost) -> None:  # type: ignore[no-untyped-def]
+        import api.stt.streaming as streaming_mod
+
+        self.clock: _Clock = streaming_mod.time
+        self.cost = cost
         self.audio_s: list[float] = []  # seconds of audio per final decode
+        self._pending = 0.0
+
+        async def to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            result = fn(*args, **kwargs)
+            done_at = self.clock.now + self._pending
+            while self.clock.now < done_at - 1e-9:
+                await asyncio.sleep(0)
+            return result
+
+        monkeypatch.setattr(streaming_mod.asyncio, "to_thread", to_thread)
 
     def transcribe(self, samples, *, language, want_words=True):  # type: ignore[no-untyped-def]
         audio_s = samples.size / 16000
         if want_words:
             self.audio_s.append(audio_s)
-        self.clock.now += self.cost(audio_s)
+        self._pending = self.cost(audio_s)
         return EngineResult(text="one two three", words=[], language="en")
 
 
-async def _turns(t: StreamingTranscriber, n: int) -> None:
-    """n turns of 500 ms (200 ms speech + 300 ms silence), pushed in real time: the
-    fake clock advances with the audio, as a live microphone's would."""
-    import api.stt.streaming as streaming_mod
-
-    for _ in range(n):
-        for chunk in [_pcm(200, amplitude=4000), _pcm(300, amplitude=0)]:
-            await t.push(chunk)
-            streaming_mod.time.now += len(chunk) / 32000
+async def _tick(clock: _Clock, seconds: float) -> None:
+    """Let `seconds` of fake time pass in 0.1 s steps, letting the worker run each."""
+    for _ in range(round(seconds / 0.1)):
+        clock.now += 0.1
+        for _ in range(5):
             await asyncio.sleep(0)
+
+
+async def _live(t: StreamingTranscriber, clock: _Clock, speech_ms: list[int]) -> None:
+    """Speak one turn per entry (that much speech, then 300 ms of silence) in real
+    time, then let the decode backlog drain."""
+    for ms in speech_ms:
+        for chunk in [_pcm(ms, amplitude=4000), _pcm(300, amplitude=0)]:
+            await t.push(chunk)
+            await _tick(clock, len(chunk) / 32000)
+    while t._jobs._unfinished_tasks:
+        await _tick(clock, 0.1)
+
+
+def _live_transcriber(eng: VirtualEngine) -> StreamingTranscriber:
+    return StreamingTranscriber(
+        eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+    )
 
 
 def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
@@ -1535,22 +1564,17 @@ def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
     (XERK-1498). Once it is behind, a final that waited past _FINAL_BEHIND_S is
     decoded together with the finals queued behind it, so the worker catches up and
     no turn's text is lost."""
-    import api.stt.streaming as streaming_mod
     from api.metrics import metrics
 
-    clock = _Clock()
-    monkeypatch.setattr(streaming_mod, "time", clock)
     before = metrics.snapshot()["counters"].get("stage.stt.finals_coalesced", 0)
 
     async def run() -> None:
-        eng = TimedEngine(clock, lambda _s: 2.0)  # 2 s a request, whatever the length
-        t = StreamingTranscriber(
-            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
-        )
-        await _turns(t, 30)
-        finals = [r for r in await _drain(t) if isinstance(r, CaptionFinal)]
+        eng = VirtualEngine(monkeypatch, lambda _s: 2.0)  # 2 s a request, any length
+        t = _live_transcriber(eng)
+        await _live(t, eng.clock, [1300] * 30)  # 1.6 s turns
+        finals = [r for r in _queued(t) if isinstance(r, CaptionFinal)]
         # Every turn's audio is covered once, contiguously, by fewer decodes.
-        assert finals[0].startMs == 0 and finals[-1].endMs == 15000
+        assert finals[0].startMs == 0 and finals[-1].endMs == 30 * 1600
         assert all(a.endMs == b.startMs for a, b in zip(finals, finals[1:]))
         assert len(finals) < 30 and len(eng.audio_s) == len(finals)
         assert t.behind_real_time
@@ -1561,25 +1585,38 @@ def test_finals_backlogged_behind_a_slow_engine_decode_as_one_turn(
     assert metrics.snapshot()["counters"]["stage.stt.finals_coalesced"] > before
 
 
+def test_a_slow_engine_is_shed_with_turns_of_varying_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a fixed per-request cost a long turn decodes faster than its own audio
+    while the engine still falls behind across turns. That must not switch the shed
+    off (it did when one fast turn reset a run of slow ones)."""
+
+    async def run() -> None:
+        eng = VirtualEngine(monkeypatch, lambda _s: 2.5)
+        t = _live_transcriber(eng)
+        await _live(t, eng.clock, [1300, 2700] * 15)  # 1.6 s and 3.0 s turns
+        finals = [r for r in _queued(t) if isinstance(r, CaptionFinal)]
+        assert len(finals) < 30
+        assert t.behind_real_time
+        await t.close()
+
+    asyncio.run(run())
+
+
 def test_a_merge_is_sized_to_decode_within_the_request_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An engine whose cost grows with the audio would time out (ParakeetEngine, 15 s)
     on a big merge and lose every merged turn. Merges are sized from the last final's
     decode rate to fit _COALESCE_DECODE_BUDGET_S."""
-    import api.stt.streaming as streaming_mod
-
-    clock = _Clock()
-    monkeypatch.setattr(streaming_mod, "time", clock)
 
     async def run() -> None:
-        eng = TimedEngine(clock, lambda s: 0.2 + 1.3 * s)  # 1.3x real time, plus overhead
-        t = StreamingTranscriber(
-            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
-        )
-        await _turns(t, 60)
+        eng = VirtualEngine(monkeypatch, lambda s: 0.2 + 1.3 * s)  # 1.3x real time
+        t = _live_transcriber(eng)
+        await _live(t, eng.clock, [1300, 2700] * 20)
         await _drain(t)
-        assert max(eng.audio_s) > 0.5  # it did merge
+        assert max(eng.audio_s) > 3.0  # it did merge
         assert max(0.2 + 1.3 * s for s in eng.audio_s) < 10.0  # but never near 15 s
         await t.close()
 
@@ -1591,24 +1628,36 @@ def test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns(
 ) -> None:
     """A single slow request doesn't make an engine slower than real time: the backlog
     it leaves drains turn by turn, keeping every turn boundary."""
-    import api.stt.streaming as streaming_mod
-
-    clock = _Clock()
-    monkeypatch.setattr(streaming_mod, "time", clock)
 
     async def run() -> None:
-        stalls = iter([6.0])
-        eng = TimedEngine(clock, lambda _s: next(stalls, 0.1))
-        t = StreamingTranscriber(
-            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
-        )
-        await _turns(t, 20)
-        finals = [r for r in await _drain(t) if isinstance(r, CaptionFinal)]
+        costs = iter([0.1, 0.1, 0.1, 6.0])
+        eng = VirtualEngine(monkeypatch, lambda _s: next(costs, 0.1))
+        t = _live_transcriber(eng)
+        await _live(t, eng.clock, [200] * 20)
+        finals = [r for r in _queued(t) if isinstance(r, CaptionFinal)]
         assert len(finals) == 20
         assert not t.behind_real_time
         await t.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("decodes", "behind"),
+    [
+        ([(2.0, 1.6), (2.0, 1.6), (2.0, 1.6)], True),  # steadily slow
+        ([(2.5, 1.6), (2.5, 3.0), (2.5, 1.6)], True),  # fixed cost, mixed turns
+        ([(0.1, 0.5), (6.0, 0.5), (0.1, 0.5)], False),  # one stall on a healthy engine
+        ([(0.3, 1.6), (0.3, 3.0), (0.3, 1.6)], False),  # healthy
+        ([(2.0, 1.6), (2.0, 1.6)], False),  # too few to judge
+    ],
+)
+def test_behind_real_time_judges_recent_decodes_setting_the_slowest_aside(
+    decodes: list[tuple[float, float]], behind: bool
+) -> None:
+    t = StreamingTranscriber(FakeEngine(), language="en")
+    t._final_decodes.extend(decodes)
+    assert t.behind_real_time is behind
 
 
 def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_limit(
