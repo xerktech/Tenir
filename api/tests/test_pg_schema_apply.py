@@ -597,7 +597,7 @@ def test_lazy_lock_timeout_verdict_is_shared(monkeypatch) -> None:
     store = pg.SqlConversationStore("postgresql://unused")
 
     def attempts() -> int:
-        return sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements)
+        return sum(s.startswith("SELECT pg_advisory_lock") for s in conn.statements)
 
     with pytest.raises(pg.SchemaLockTimeout, match="could not take a table lock"):
         store._ensure_pool()
