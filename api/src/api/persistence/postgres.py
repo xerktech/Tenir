@@ -297,8 +297,10 @@ class PoolOpener:
 
     A pool that can't open within OPEN_TIMEOUT_SECONDS is closed and its error is
     shared with every caller for that long, instead of each one queueing another
-    full wait behind the store's lock. The caller holds its own lock and caches
-    the returned pool."""
+    full wait behind the store's lock. So is an ``init`` that timed out on a table
+    lock (``SchemaLockTimeout``): on a lazy re-open each queued request otherwise
+    re-ran the whole bounded apply, ~10s apiece, re-stalling the table each time
+    (XERK-1607). The caller holds its own lock and caches the returned pool."""
 
     def __init__(self, dsn: str, name: str) -> None:
         self._dsn = dsn
@@ -307,10 +309,14 @@ class PoolOpener:
 
     def open(self, init: Callable[[Any], None]):
         """A ready pool with ``init(pool)`` applied; closed again if either fails.
-        Only a failure to open is remembered: an ``init`` error (a rejected schema)
-        is retried on the very next call."""
+        Only a failure to open or a lock timeout is remembered: any other ``init``
+        error (a rejected schema) is retried on the very next call."""
         failure = self._failure
         if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
+            if isinstance(failure[1], SchemaLockTimeout):
+                raise SchemaLockTimeout(
+                    f"shared verdict of a recent apply: {failure[1]}"
+                ) from failure[1]
             raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
         log.info("opening Postgres connection pool (%s)", self._name)
         pool = _guarded_pool_class()(
@@ -338,7 +344,11 @@ class PoolOpener:
             except Exception as exc:
                 self._failure = (time.monotonic(), exc)
                 raise
-            init(pool)
+            try:
+                init(pool)
+            except SchemaLockTimeout as exc:
+                self._failure = (time.monotonic(), exc)
+                raise
         except BaseException:
             pool.close()
             raise

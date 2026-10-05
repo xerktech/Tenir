@@ -582,3 +582,35 @@ def test_boot_fails_when_a_table_lock_never_frees(monkeypatch) -> None:
     assert store._pool is None and pools[0].closed
     attempts = sum(s.startswith("SELECT pg_advisory_lock") for s in conn.statements)
     assert attempts == pg.SCHEMA_LOCK_ATTEMPTS
+
+
+def test_lazy_lock_timeout_verdict_is_shared(monkeypatch) -> None:
+    """After a DB-unreachable boot the stores open lazily; behind a held table lock each
+    queued request re-ran the whole bounded apply (~10s, three more 2s table stalls),
+    so 4 logins returned at 10, 22, 34 and 46s (XERK-1607). Callers within
+    OPEN_TIMEOUT_SECONDS of a lock timeout now get it at once; after that, it retries."""
+    import api.persistence.postgres as pg
+
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0)
+    conn = _LockTimeoutConn(failures=10**6)
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = pg.SqlConversationStore("postgresql://unused")
+
+    def attempts() -> int:
+        return sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements)
+
+    with pytest.raises(pg.SchemaLockTimeout, match="could not take a table lock"):
+        store._ensure_pool()
+    assert attempts() == pg.SCHEMA_LOCK_ATTEMPTS
+
+    with pytest.raises(pg.SchemaLockTimeout, match="shared verdict") as shared:
+        store._ensure_pool()
+    assert pg.is_database_unavailable(shared.value), "still a 503 on the request path"
+    assert attempts() == pg.SCHEMA_LOCK_ATTEMPTS and len(pools) == 1
+
+    # Once the window passes the lock is tried again, so a released lock is picked up.
+    conn.failures = 0
+    now = time.monotonic()
+    monkeypatch.setattr(pg.time, "monotonic", lambda: now + pg.OPEN_TIMEOUT_SECONDS + 1)
+    assert store._ensure_pool() is pools[-1]
+    assert attempts() == pg.SCHEMA_LOCK_ATTEMPTS + 1

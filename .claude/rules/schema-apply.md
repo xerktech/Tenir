@@ -48,6 +48,9 @@ paths:
     unbounded, one idle-in-transaction reader stalled it forever and every request on that table
     queued behind it (XERK-1603). Skipping DDL on a converged schema wouldn't remove this — the
     first boot after any schema change still runs it.
+  - `PoolOpener` shares a `SchemaLockTimeout` for `OPEN_TIMEOUT_SECONDS` like an open failure:
+    otherwise every request queued behind `_pool_lock` re-ran the ~10s apply (XERK-1607).
+    Test: `test_lazy_lock_timeout_verdict_is_shared`.
   - Tests: `test_boot_lock_timeout_is_retried`, `test_boot_fails_when_a_table_lock_never_frees`;
     live `test_boot_apply_does_not_stall_requests_behind_an_idle_reader` (also checks no pooled
     connection keeps the timeout).
