@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
 
 import pytest
@@ -127,6 +128,63 @@ def test_concurrent_boot_applies_do_not_collide(conn) -> None:
     assert not any(t.is_alive() for t in threads), "a schema apply never finished"
     assert errors == []
     assert _columns(conn, "conversations")["owner"] == "text"
+
+
+def test_boot_apply_does_not_deadlock_with_live_traffic(conn) -> None:
+    """A replica booting (or re-opening its pool) re-applies the schema while another
+    serves requests. Applied in one transaction, the apply's ALTER on conversations and
+    CREATE INDEX on segments formed a cycle with a live INSERT INTO segments (FK lock on
+    conversations): Postgres killed one with 40P01 — a lost transcript segment, or a
+    rejected schema that crashloops the pod (XERK-1533)."""
+    from psycopg.conninfo import make_conninfo
+    from psycopg_pool import ConnectionPool
+
+    from api.persistence.models import Segment
+    from api.persistence.postgres import SqlConversationStore, apply_boot_schema
+
+    schema = conn.execute("SELECT current_schema()").fetchone()[0]
+    dsn = make_conninfo(DSN, options=f"-c search_path={schema},public")
+    store = SqlConversationStore(dsn)
+    store._ensure_pool()
+    deadline = time.monotonic() + 8
+    errors: list[BaseException] = []
+    applies = 0
+
+    def traffic() -> None:
+        while time.monotonic() < deadline:
+            cid = uuid.uuid4().hex
+            try:
+                store.create("default", cid)
+                for i in range(3):
+                    store.add_segment("default", cid, Segment(uuid.uuid4().hex, "hi", i, i + 1))
+                store.get("default", cid)
+                store.delete("default", cid)
+            except BaseException as exc:  # noqa: BLE001 - reported by the assert below
+                errors.append(exc)
+
+    def boot() -> None:
+        nonlocal applies
+        with ConnectionPool(dsn, min_size=1, max_size=1) as pool:
+            while time.monotonic() < deadline:
+                try:
+                    apply_boot_schema(pool)
+                    applies += 1
+                except BaseException as exc:  # noqa: BLE001 - reported by the assert below
+                    errors.append(exc)
+
+    threads = [threading.Thread(target=traffic, daemon=True) for _ in range(4)]
+    threads += [threading.Thread(target=boot, daemon=True) for _ in range(2)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+    finally:
+        store._pool.close()
+
+    assert not any(t.is_alive() for t in threads), "a schema apply or request never finished"
+    assert errors == []
+    assert applies > 0
 
 
 def test_concurrent_first_use_of_both_stores_on_an_empty_database() -> None:

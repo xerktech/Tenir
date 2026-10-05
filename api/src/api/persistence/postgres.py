@@ -73,14 +73,27 @@ def iter_statements(sql: str) -> Iterator[str]:
 
 
 def apply_schema(conn, sql: str) -> None:
-    """Run every statement of an idempotent schema on ``conn``. Each is a
-    ``CREATE ... IF NOT EXISTS`` / ``INSERT ... ON CONFLICT DO NOTHING``, so this is
+    """Run every statement of an idempotent schema on ``conn``, committing each. Each is
+    a ``CREATE ... IF NOT EXISTS`` / ``INSERT ... ON CONFLICT DO NOTHING``, so this is
     a no-op once the database has converged."""
     for statement in iter_statements(sql):
-        conn.execute(statement)
+        run_ddl(conn, statement)
 
 
-# pg_advisory_xact_lock key every boot-time DDL apply takes first ("Tenir" in ASCII).
+def run_ddl(conn, statement: str) -> None:
+    """Run one boot DDL statement in its own transaction.
+
+    Even a converged ``ALTER TABLE ... IF NOT EXISTS`` takes AccessExclusive, and
+    ``CREATE INDEX IF NOT EXISTS`` a ShareLock. Held to the end of one apply-wide
+    transaction, the apply waited on segments while holding conversations, and a live
+    ``INSERT INTO segments`` (FK lock on conversations) closed the cycle: Postgres
+    killed one with 40P01, a lost transcript write or a crashlooping pod (XERK-1533).
+    Committing each statement means the apply never waits while holding a table lock."""
+    conn.execute(statement)
+    conn.commit()
+
+
+# pg_advisory_lock key every boot-time DDL apply takes first ("Tenir" in ASCII).
 # The stores' ``_pool_lock`` only serializes within one process: two api processes
 # booting at once (a rolling update, >1 replica) raced the same CREATE ... IF NOT
 # EXISTS and Postgres failed one with 40P01 or a pg_type unique violation, which
@@ -89,9 +102,14 @@ SCHEMA_LOCK_KEY = 0x54656E6972
 
 
 def lock_schema(conn) -> None:
-    """Block until no other connection is applying DDL, holding the lock until this
-    transaction ends. ``conn`` must not be autocommit, or it is released at once."""
-    conn.execute("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
+    """Block until no other connection is applying DDL. Session-level, so it outlives
+    the per-statement commits: held until ``unlock_schema`` or the connection closes."""
+    conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+
+
+def unlock_schema(conn) -> None:
+    conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
+    conn.commit()
 
 
 class SchemaApplyError(RuntimeError):
@@ -210,15 +228,16 @@ def is_database_unavailable(exc: BaseException) -> bool:
 
 
 def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
-    """Apply schema.sql, then a store's ``extra`` DDL, in one transaction under the
-    cross-process schema lock.
+    """Apply schema.sql, then a store's ``extra`` DDL, one committed statement at a
+    time (``run_ddl``) under the cross-process schema lock.
 
     Both stores apply through here (XERK-1430): the users DDL references households,
     which on an empty database only exists once schema.sql ran, so the user store
     applying its own DDL alone failed (UndefinedTable) whenever it opened first —
     and its env-admin seed with it. A statement the database rejects raises
     ``SchemaApplyError``; failing to get a connection, or losing it mid-apply,
-    propagates as-is (database unreachable)."""
+    propagates as-is (database unreachable). On failure the lock is left to the
+    caller's ``PoolOpener``, which closes the pool and with it the session."""
     path = find_schema_file()
     if path is None:
         log.warning("schema.sql not found; skipping it in the boot schema apply")
@@ -228,7 +247,8 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
             lock_schema(conn)
             apply_schema(conn, sql)
             for statement in extra:
-                conn.execute(statement)
+                run_ddl(conn, statement)
+            unlock_schema(conn)
         except Exception as exc:
             if _is_connection_lost(conn, exc):
                 raise

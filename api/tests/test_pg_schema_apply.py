@@ -49,6 +49,9 @@ class _RecordingConn:
         self.statements.append(" ".join(sql.split()))
         return _NoRows()
 
+    def commit(self) -> None:
+        self.statements.append("COMMIT")
+
 
 def _creates_cues(statements: list[str]) -> bool:
     # Statements carry their leading comment block, so match the DDL as a substring
@@ -117,6 +120,7 @@ def test_apply_schema_creates_the_cues_table() -> None:
         or "DROP NOT NULL" in s.upper()
         or (s.upper().startswith("UPDATE") and "WHERE" in s.upper())
         for s in conn.statements
+        if s != "COMMIT"
     )
 
 
@@ -329,6 +333,9 @@ def test_concurrent_first_use_applies_the_schema_once(monkeypatch, store_path) -
                 in_apply -= 1
             return _NoRows()
 
+        def commit(self) -> None:
+            pass
+
     pools = _install_fake_pool(monkeypatch, _SlowConn())
     store = store_cls("postgresql://unused")
     start = threading.Barrier(8)
@@ -367,11 +374,38 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
             calls.append((" ".join(sql.split()), params))
             return _NoRows()
 
+        def commit(self) -> None:
+            pass
+
     _install_fake_pool(monkeypatch, _Conn())
     store_cls("postgresql://unused")._ensure_pool()
 
-    assert calls[0] == ("SELECT pg_advisory_xact_lock(%s)", (SCHEMA_LOCK_KEY,))
-    assert len(calls) > 1, "the DDL runs after the lock"
+    # Session-level, not xact: it must outlive the per-statement commits (XERK-1533).
+    assert calls[0] == ("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+    unlock = calls.index(("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,)))
+    assert unlock > 1, "the DDL runs after the lock and before the unlock"
+
+
+@pytest.mark.parametrize(
+    "store_path", ["persistence.postgres:SqlConversationStore", "auth.sql_users:SqlUserStore"]
+)
+def test_schema_apply_commits_every_statement(monkeypatch, store_path) -> None:
+    """One apply-wide transaction held conversations' AccessExclusive (ALTER) while
+    waiting on segments (CREATE INDEX); a live INSERT INTO segments closed the cycle and
+    Postgres killed one side with 40P01 (XERK-1533). Every DDL statement must commit
+    before the next one runs."""
+    import importlib
+
+    module, cls = store_path.split(":")
+    store_cls = getattr(importlib.import_module(f"api.{module}"), cls)
+    conn = _RecordingConn()
+    _install_fake_pool(monkeypatch, conn)
+    store_cls("postgresql://unused")._ensure_pool()
+
+    ddl = [i for i, s in enumerate(conn.statements) if s.upper().startswith(("CREATE", "ALTER"))]
+    assert ddl
+    for i in ddl:
+        assert conn.statements[i + 1] == "COMMIT", conn.statements[i]
 
 
 def test_user_store_applies_schema_sql_before_its_own_ddl(monkeypatch) -> None:

@@ -25,13 +25,19 @@ paths:
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
 - Across processes, every DDL apply (both stores) first takes `lock_schema()`
-  (`pg_advisory_xact_lock(SCHEMA_LOCK_KEY)`) in the same, non-autocommit transaction.
+  (session-level `pg_advisory_lock(SCHEMA_LOCK_KEY)`), released by `unlock_schema()` or the
+  connection closing (a failed apply closes its pool).
   - Without it two api processes booting together (rolling update, >1 replica) fail one with 40P01
     or a `pg_type` unique violation, which aborts startup as a rejected schema (XERK-1509).
-  - It does not cover apply-vs-request-traffic: a boot apply can still hit 40P01 against live
-    writes, so 40P01 at boot is not proof the schema itself is bad.
   - Tests: `test_schema_apply_takes_the_cross_process_lock_first`,
     `test_concurrent_boot_applies_do_not_collide` (live).
+- Every boot DDL statement commits on its own (`run_ddl`); never apply them in one transaction.
+  - Even converged, `ALTER ... IF NOT EXISTS` takes AccessExclusive and `CREATE INDEX IF NOT
+    EXISTS` a ShareLock. Held together, the apply deadlocked (40P01) with a live `INSERT INTO
+    segments` on another replica: a lost transcript write, or a crashlooping pod (XERK-1533).
+  - The advisory lock can't help there: request traffic doesn't take it.
+  - Tests: `test_schema_apply_commits_every_statement`,
+    `test_boot_apply_does_not_deadlock_with_live_traffic` (live).
 - Both stores apply through `apply_boot_schema`: the user store runs schema.sql before its own
   DDL, since the users DDL references households (empty DB → UndefinedTable, XERK-1430).
 - `get_user_store` retries `reconcile_admin` only while `_reconcile_is_retryable` (DB unavailable,
