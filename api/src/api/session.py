@@ -1919,10 +1919,13 @@ class Session:
             self._audio_key_pending = True
         if self._audio_store is not None and self._audio_key_pending:
             # Retried on the next retain if it fails (the audio itself is stored).
-            await asyncio.to_thread(
-                self._conversations.set_audio_key,
-                self._household,
-                self.session_id,
-                audio_key(self._household, self.session_id),
+            key = audio_key(self._household, self.session_id)
+            linked = await asyncio.to_thread(
+                self._conversations.set_audio_key, self._household, self.session_id, key
             )
             self._audio_key_pending = False
+            if not linked and self._create is not None and self._create.done():
+                # Our row existed and is gone: the recording was deleted while live.
+                # The delete already removed any WAV it saw; this one was stored
+                # after, and must not outlive the recording (XERK-1608).
+                await asyncio.to_thread(self._audio_store.delete, key)

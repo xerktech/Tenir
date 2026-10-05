@@ -206,12 +206,12 @@ def test_a_failed_set_audio_key_does_not_duplicate_audio(monkeypatch: pytest.Mon
     real = conversations.set_audio_key
     calls = 0
 
-    def flaky(*args) -> None:
+    def flaky(*args) -> bool:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("db blip")
-        real(*args)
+        return real(*args)
 
     monkeypatch.setattr(conversations, "set_audio_key", flaky)
 

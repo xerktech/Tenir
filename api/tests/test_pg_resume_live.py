@@ -78,3 +78,15 @@ def test_create_never_reopens_another_households_row(store) -> None:
     other = store.get("hh-a", cid)
     assert other.status == "ready" and other.ended_at is not None
     assert other.owner == "alice"
+
+
+def test_set_audio_key_reports_whether_the_row_exists(store) -> None:
+    """A live session drops its WAV when this finds no row: its recording was
+    deleted while it was still recording (XERK-1608)."""
+    cid = str(uuid.uuid4())
+    assert store.set_audio_key("default", cid, f"default/{cid}.wav") is False
+    store.create("default", cid)
+    assert store.set_audio_key("default", cid, f"default/{cid}.wav") is True
+    assert store.get("default", cid).audio_key == f"default/{cid}.wav"
+    store.delete("default", cid)
+    assert store.set_audio_key("default", cid, f"default/{cid}.wav") is False

@@ -51,7 +51,9 @@ class ConversationStore(Protocol):
         *,
         status: ConversationStatus = "ready",
     ) -> Conversation | None: ...
-    def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> None: ...
+    def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> bool:
+        """Point the row at its WAV; returns False when there is no such row."""
+        ...
     def clear_audio_key(self, household: str, conversation_id: str) -> None: ...
     def get(
         self, household: str, conversation_id: str, *, owner: str | None = None
@@ -184,11 +186,13 @@ class InMemoryConversationStore:
             conv.status = status
             return conv
 
-    def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> None:
+    def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> bool:
         with self._lock:
             conv = self._conversations(household).get(conversation_id)
-            if conv is not None:
-                conv.audio_key = audio_key
+            if conv is None:
+                return False
+            conv.audio_key = audio_key
+            return True
 
     def clear_audio_key(self, household: str, conversation_id: str) -> None:
         with self._lock:
