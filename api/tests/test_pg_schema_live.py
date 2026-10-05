@@ -288,7 +288,11 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
                     for _ in range(store._pool.max_size)
                 ]
                 timeouts = {c.execute("SHOW lock_timeout").fetchone()[0] for c in pooled}
+                # The apply lifts statement_timeout session-wide (its DDL commits per
+                # statement, XERK-1533); requests must get the request-path bound back.
+                statement = {c.execute("SHOW statement_timeout").fetchone()[0] for c in pooled}
             assert timeouts == {"0"}
+            assert statement == {f"{int(pg.STATEMENT_TIMEOUT_SECONDS)}s"}
     finally:
         if store._pool is not None:
             store._pool.close()

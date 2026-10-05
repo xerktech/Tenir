@@ -46,7 +46,7 @@ from api.contract import (
 from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
-from api.persistence import get_conversation_store, stale
+from api.persistence import get_audio_store, get_conversation_store, stale
 from api.persistence.postgres import (
     OPEN_TIMEOUT_SECONDS,
     SqlConversationStore,
@@ -113,11 +113,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     stale_task: asyncio.Task[None] | None = None
     if conversations is not None:
         stale.arm(conversations)
+        audio = get_audio_store()
         try:
-            await asyncio.to_thread(stale.sweep_if_pending, conversations)
+            await asyncio.to_thread(stale.sweep_if_pending, conversations, audio)
         except Exception:
             log.exception("could not finalize stale conversations at startup; will retry")
-            stale_task = asyncio.create_task(stale.retry_loop(conversations))
+            stale_task = asyncio.create_task(stale.retry_loop(conversations, audio))
     # Seed the component-status cache once at boot (so GET /status answers
     # immediately) and keep it fresh on a background loop.
     status_task: asyncio.Task[None] | None = None
@@ -580,34 +581,42 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         if session is not None and session is not resumable:
                             registry.unregister(session)
                             await session.close()
-                        session = resumable
-                        # The socket it is bound to now, if any (a dropped one left a
-                        # buffer, not a socket), loses it: displace it first, so it
-                        # stops touching the session before this one takes over.
-                        previous = session.current_send
-                        if previous is not send and (displace := _displacers.get(previous)):
-                            try:
-                                await displace()
-                            except Exception:
-                                log.warning("could not close the displaced socket")
-                        await session.rebind(send)
-                        # A revoke must drop THIS socket too, not only the one the session
-                        # was started on, or a resumed socket outlives its account (XERK-1504).
-                        session.on_disconnect(close_removed)
-                        if session.is_closed:
-                            # A revoke landed while rebind() was replaying, before the hook
-                            # above existed, so it could not close this socket itself.
                             session = None
-                            await close_removed()
-                            break
-                        await send(
-                            SessionReady(
-                                type="session.ready", sessionId=session.session_id, resumed=True
+                        # Closing the old session awaits, and the target can end meanwhile
+                        # (a session.end on the socket it is bound to, or its grace close).
+                        # Rebinding onto it then reads as a revoke below and drops a valid
+                        # user with 1008, so fall through to a cold resume instead: it
+                        # reopens the recording, and a real revoke is still caught by the
+                        # account re-check after it (XERK-1597).
+                        if not resumable.is_closed:
+                            session = resumable
+                            # The socket it is bound to now, if any (a dropped one left a
+                            # buffer, not a socket), loses it: displace it first, so it
+                            # stops touching the session before this one takes over.
+                            previous = session.current_send
+                            if previous is not send and (displace := _displacers.get(previous)):
+                                try:
+                                    await displace()
+                                except Exception:
+                                    log.warning("could not close the displaced socket")
+                            await session.rebind(send)
+                            # A revoke must drop THIS socket too, not only the one the session
+                            # was started on, or a resumed socket outlives its account (XERK-1504).
+                            session.on_disconnect(close_removed)
+                            if session.is_closed:
+                                # A revoke landed while rebind() was replaying, before the hook
+                                # above existed, so it could not close this socket itself.
+                                session = None
+                                await close_removed()
+                                break
+                            await send(
+                                SessionReady(
+                                    type="session.ready", sessionId=session.session_id, resumed=True
+                                )
                             )
-                        )
-                        await session.send_caption_status()
-                        metrics.incr("sessions.resumed")
-                        continue
+                            await session.send_caption_status()
+                            metrics.incr("sessions.resumed")
+                            continue
                     # A session id that is live under *another* household must never be
                     # honored: the registry is keyed by id alone, so registering under it
                     # would evict that household's running session (cross-household data

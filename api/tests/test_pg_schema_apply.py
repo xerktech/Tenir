@@ -386,10 +386,13 @@ def test_schema_apply_takes_the_cross_process_lock_first(monkeypatch, store_path
     _install_fake_pool(monkeypatch, _Conn())
     store_cls("postgresql://unused")._ensure_pool()
 
-    # Session-level, not xact: it must outlive the per-statement commits (XERK-1533).
-    assert calls[0] == ("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+    # The request-path statement_timeout is lifted first: waiting out another
+    # replica's apply, or DDL on a large table, may outlast it (XERK-1513). Both it and
+    # the lock are session-level: they must outlive the per-statement commits (XERK-1533).
+    assert calls[0] == ("SET statement_timeout = 0", None)
+    assert calls[1] == ("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
     unlock = calls.index(("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,)))
-    assert unlock > 1, "the DDL runs after the lock and before the unlock"
+    assert unlock > 2, "the DDL runs after the lock and before the unlock"
 
 
 @pytest.mark.parametrize(
@@ -538,9 +541,12 @@ def test_boot_ddl_runs_under_a_lock_timeout_after_the_schema_lock(monkeypatch) -
     _install_fake_pool(monkeypatch, conn)
     SqlConversationStore("postgresql://unused")._ensure_pool()
 
-    assert conn.statements[0].startswith("SELECT pg_advisory_lock")
-    assert conn.statements[1] == "SELECT set_config('lock_timeout', %s, false)"
-    assert conn.params[1] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
+    # The request-path statement_timeout is lifted first (XERK-1513); the lock
+    # timeout bounds each table lock instead.
+    assert conn.statements[0] == "SET statement_timeout = 0"
+    assert conn.statements[1].startswith("SELECT pg_advisory_lock")
+    assert conn.statements[2] == "SELECT set_config('lock_timeout', %s, false)"
+    assert conn.params[2] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
 
 
 def test_boot_lock_timeout_is_retried(monkeypatch) -> None:

@@ -72,7 +72,7 @@ paths:
     each held a worker thread 30s and stalled every sync endpoint (XERK-1434).
   - Without `connect_timeout`, `pool.close()` after a timed-out open waits on connects to a
     blackholed host that never return.
-- Pools are created with `check=ConnectionPool.check_connection`: without it every connection
+- Pools are created with `check=check_connection` (postgres.py; bounded, XERK-1513): without it every connection
   pooled before a Postgres restart failed one request (AdminShutdown) before being dropped.
 - Token resolution reads the user store: never call it on the event loop (WS auth runs in
   `to_thread`) — a blocking read there froze the whole server while the DB was down.

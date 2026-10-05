@@ -98,12 +98,12 @@ def test_finish_stale_closes_rows_left_live_by_a_previous_run() -> None:
     done = store.create("hh", "clean")
     store.finish("hh", "clean")
 
-    assert store.finish_stale() == 2
+    assert sorted(store.finish_stale()) == [("hh", "also-crashed"), ("hh", "crashed")]
     assert store.get("hh", "crashed").status == "ready"
     assert store.get("hh", "crashed").ended_at is not None
     # An already-finished row is untouched, including its original end time.
     assert store.get("hh", "clean").ended_at == done.ended_at
-    assert store.finish_stale() == 0  # idempotent
+    assert store.finish_stale() == []  # idempotent
 
 
 # --- tokens must not reach the logs ------------------------------------------
@@ -295,6 +295,54 @@ def test_lifespan_sweeps_stale_rows_and_installs_redaction() -> None:
         )
 
 
+def test_lifespan_sweep_links_a_stored_wav_whose_key_never_landed() -> None:
+    """XERK-1553: a session that stored its WAV but died before recording the key
+    (it ended during a database outage) was swept to `ready` with no audio_key, so
+    History could never play audio that was on disk."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    store = get_conversation_store()
+    store.create("hh", "wav-stored")
+    store.create("hh", "no-wav")
+    get_audio_store().put(audio_key("hh", "wav-stored"), b"RIFF")
+
+    with TestClient(app):
+        linked = store.get("hh", "wav-stored")
+        assert linked.status == "ready"
+        assert linked.audio_key == audio_key("hh", "wav-stored")
+        assert store.get("hh", "no-wav").audio_key is None
+
+
+def test_sweep_links_the_other_rows_when_one_audio_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.persistence import stale
+
+    monkeypatch.setattr(stale, "_pending", None)
+    store = get_conversation_store()
+    audio = get_audio_store()
+    for cid in ("bad", "good"):
+        store.create("hh", cid)
+        audio.put(audio_key("hh", cid), b"RIFF")
+    real_exists = audio.exists
+
+    def exists(key: str) -> bool:
+        if key == audio_key("hh", "bad"):
+            raise OSError("disk unreadable")
+        return real_exists(key)
+
+    monkeypatch.setattr(audio, "exists", exists)
+    stale.arm(store)
+    stale.sweep_if_pending(store, audio)
+
+    assert not stale.is_pending(store)  # the sweep itself succeeded
+    assert store.get("hh", "bad").status == "ready"
+    assert store.get("hh", "bad").audio_key is None
+    assert store.get("hh", "good").audio_key == audio_key("hh", "good")
+
+
 # --- a boot sweep that fails must be retried, never dropped (XERK-1428) ------
 
 
@@ -304,7 +352,7 @@ def _flaky_finish_stale(monkeypatch: pytest.MonkeyPatch, store, failures: int) -
     real = store.finish_stale
     calls = [0]
 
-    def finish_stale() -> int:
+    def finish_stale() -> list[tuple[str, str]]:
         calls[0] += 1
         if calls[0] <= failures:
             raise ConnectionError("database unreachable")
@@ -330,13 +378,16 @@ def test_failed_boot_sweep_is_retried_once_the_database_is_back(
     monkeypatch.setattr(stale, "RETRY_INTERVAL_SECONDS", 0.02)
     store = get_conversation_store()
     store.create("hh", "orphan")
+    get_audio_store().put(audio_key("hh", "orphan"), b"RIFF")
     calls = _flaky_finish_stale(monkeypatch, store, failures=3)
 
     with TestClient(app):
         deadline = time.monotonic() + 5
-        while store.get("hh", "orphan").status == "live" and time.monotonic() < deadline:
+        while store.get("hh", "orphan").audio_key is None and time.monotonic() < deadline:
             time.sleep(0.02)
         assert store.get("hh", "orphan").status == "ready"
+        # The retry links the stored WAV too, not just the boot attempt (XERK-1553).
+        assert store.get("hh", "orphan").audio_key == audio_key("hh", "orphan")
         assert not stale.is_pending(store)
         swept_after = calls[0]
         time.sleep(0.1)
@@ -374,6 +425,7 @@ def test_session_start_sweeps_first_so_its_own_row_survives(
     monkeypatch.setattr(stale, "_pending", None)
     store = get_conversation_store()
     store.create("hh", "orphan")
+    get_audio_store().put(audio_key("hh", "orphan"), b"RIFF")
     stale.arm(store)
 
     async def run() -> None:
@@ -383,6 +435,7 @@ def test_session_start_sweeps_first_so_its_own_row_survives(
         session = Session(send, household="hh", user_id="u-1")
         await session.start(mic_source="phone-microphone", source_lang=None)
         assert store.get("hh", "orphan").status == "ready"
+        assert store.get("hh", "orphan").audio_key == audio_key("hh", "orphan")
         assert store.get("hh", session.session_id).status == "live"
         assert not stale.is_pending(store)
         # A late retry is a no-op: the sweep is owed at most once.

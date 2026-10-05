@@ -61,7 +61,7 @@ def test_create_on_a_finished_row_reopens_it_keeping_owner_and_start(store) -> N
 def test_create_reopens_a_row_the_stale_sweep_finalized(store) -> None:
     cid = str(uuid.uuid4())
     store.create("default", cid)
-    assert store.finish_stale() == 1
+    assert store.finish_stale() == [("default", cid)]
     assert store.get("default", cid).status == "ready"
     assert store.create("default", cid).status == "live"
 
