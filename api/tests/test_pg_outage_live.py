@@ -266,15 +266,15 @@ def test_one_unrefillable_slot_does_not_trip_the_breaker(rig) -> None:
 
 
 def test_a_lock_wait_ends_server_side_without_orphaning_backends(rig) -> None:
-    """A statement blocked on a lock ends at the server's statement_timeout as an
-    outage, and its backend is free again. Severing only the client side left the
+    """A statement blocked on a lock ends at the server's statement_timeout (a 500:
+    57014 is not an outage, see STATEMENT_TIMEOUT_SECONDS), and its backend is free. Severing only the client side left the
     backend waiting and the pool opened a replacement each time (XERK-1513 QA)."""
     store, _ = rig
     schema = store._dsn.split("search_path=")[1].split()[0].strip("'")
     with psycopg.connect(DSN) as locker:
         locker.execute(f"LOCK TABLE {schema}.conversations IN ACCESS EXCLUSIVE MODE")
         results = _concurrently(lambda: _timed(lambda: store.list("h")), 4, 10)
-        assert {r for r, _ in results} == {"outage"}, results
+        assert all("QueryCanceled" in r for r, _ in results), results
         assert max(d for _, d in results) < postgres.QUERY_TIMEOUT_SECONDS
         (waiting,) = locker.execute(
             "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"

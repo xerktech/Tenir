@@ -217,6 +217,27 @@ class _SocketConn:
             raise OSError("server closed the connection unexpectedly")
 
 
+def _bounded(fn, seconds: float = 5.0):
+    """Run ``fn`` in a daemon thread and fail — rather than hang the suite — if it is
+    still blocked after ``seconds``: an unbounded wait is the very defect under test."""
+    box: list = []
+
+    def run() -> None:
+        try:
+            box.append(("ok", fn()))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            box.append(("raised", exc))
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    assert box, f"still blocked after {seconds}s"
+    kind, value = box[0]
+    if kind == "raised":
+        raise value
+    return value
+
+
 def _install_base_pool(monkeypatch) -> type:
     class _BasePool:
         def __init__(self, *a: object, configure=None, **kw: object) -> None:
@@ -264,7 +285,7 @@ def test_check_on_a_hung_server_is_bounded(monkeypatch) -> None:
     conn = _SocketConn()
     t0 = time.monotonic()
     with pytest.raises(OSError, match="closed"):
-        postgres.check_connection(conn)
+        _bounded(lambda: postgres.check_connection(conn))
     assert time.monotonic() - t0 < 2
 
 
@@ -279,7 +300,20 @@ def test_healthy_check_and_borrow_leave_the_connection_alone(monkeypatch) -> Non
     pool.borrow_timeout = 0.1
     pool.lent.append(conn)
     assert pool.getconn() is conn
+    dog = pool._watchdogs[id(conn)]
+    base = pool_cls.__bases__[0]
+    original = base.putconn
+    disarmed_first: list = []
+
+    def putconn(self, c) -> None:
+        # Disarmed before the pool can lend it again, or the timer may sever the
+        # next borrower's query.
+        disarmed_first.append(dog._done)
+        original(self, c)
+
+    monkeypatch.setattr(base, "putconn", putconn)
     pool.putconn(conn)
+    assert disarmed_first == [True]
     time.sleep(0.3)  # past both bounds: neither watchdog may fire after its disarm
     conn.peer.sendall(b"y")
     assert conn.sock.recv(1) == b"y"
@@ -301,7 +335,7 @@ def test_a_borrow_on_a_hung_server_is_severed(monkeypatch) -> None:
     borrowed = pool.getconn()
     t0 = time.monotonic()
     with pytest.raises(OSError):
-        borrowed.execute("SELECT 1")
+        _bounded(lambda: borrowed.execute("SELECT 1"))
     assert time.monotonic() - t0 < 2
     pool.putconn(borrowed)
 
@@ -359,8 +393,3 @@ def test_borrow_watchdog_is_armed_after_the_boot_schema_only(monkeypatch) -> Non
     assert seen == [None]
     assert pool.borrow_timeout == postgres.QUERY_TIMEOUT_SECONDS
     assert pool.name == "conversations"
-
-
-def test_statement_timeout_is_an_outage() -> None:
-    psycopg = pytest.importorskip("psycopg")
-    assert postgres.is_database_unavailable(psycopg.errors.QueryCanceled("canceling statement"))
