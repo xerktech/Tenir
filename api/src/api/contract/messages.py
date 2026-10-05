@@ -197,6 +197,18 @@ class TranslationDone(BaseModel):
     type: Literal['translation.done']
 
 
+class CaptionStatus(BaseModel):
+    """
+    Server -> client. Whether live captions are keeping up with speech. `delayed: true` is sent when speech-to-text falls seconds behind (it is decoding slower than real time, or catching up after an outage): captions may arrive late, several turns may land merged into one, and turns too old to be useful live are kept in the stored transcript but not shown. `delayed: false` is sent once captions have kept up again for a while. Sent only on a change; a session starts not delayed. Clients show it as a status indicator, never as an error.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['caption.status']
+    delayed: bool
+
+
 class LyricLine(BaseModel):
     """
     One time-synced lyric line: the text and the timestamp (ms) it is sung at, measured from the START of the song (not the session).
@@ -325,6 +337,7 @@ class ServerMessage(
         | Cue
         | Translation
         | TranslationDone
+        | CaptionStatus
         | Song
         | SongSync
         | SongDone
@@ -339,6 +352,7 @@ class ServerMessage(
         | Cue
         | Translation
         | TranslationDone
+        | CaptionStatus
         | Song
         | SongSync
         | SongDone

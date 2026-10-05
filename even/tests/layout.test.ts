@@ -262,6 +262,13 @@ describe("statusLine (XERK-82: the lens must not pretend to be running)", () => 
     expect(statusLine({ recording: true, connection: "open" }, 2)).toBe("listening...");
     expect(statusLine({ recording: true, connection: "open" }, 3)).toBe("listening.");
   });
+
+  it("says captions are delayed while STT runs behind real time (XERK-1498)", () => {
+    const delayed = { recording: true, connection: "open" as const, captionsDelayed: true };
+    expect(statusLine(delayed, 0)).toBe("captions delayed.");
+    // A dropped socket is the bigger news.
+    expect(statusLine({ ...delayed, connection: "closed" })).toBe("server unreachable — retrying");
+  });
 });
 
 describe("dots (XERK-85: the three dots move to signify activity)", () => {

@@ -25,6 +25,7 @@ export type ServerMessage =
   | Cue
   | Translation
   | TranslationDone
+  | CaptionStatus
   | Song
   | SongSync
   | SongDone
@@ -146,6 +147,13 @@ export interface Translation {
  */
 export interface TranslationDone {
   type: "translation.done";
+}
+/**
+ * Server -> client. Whether live captions are keeping up with speech. `delayed: true` is sent when speech-to-text falls seconds behind (it is decoding slower than real time, or catching up after an outage): captions may arrive late, several turns may land merged into one, and turns too old to be useful live are kept in the stored transcript but not shown. `delayed: false` is sent once captions have kept up again for a while. Sent only on a change; a session starts not delayed. Clients show it as a status indicator, never as an error.
+ */
+export interface CaptionStatus {
+  type: "caption.status";
+  delayed: boolean;
 }
 /**
  * Server -> client. A song was recognized playing in the room (XERK-184). Clients show its time-synced lyrics in the same box a cue uses — title 'SONG NAME - ARTIST' over a body that auto-scrolls as the song plays. The scroll is driven client-side from an anchor: at session-timeline `atMs` the song was at `offsetMs` into the track, so the current line at wall-time t is the last line whose (song) atMs <= offsetMs + (t - atMs). A run of the same song is refreshed by `song.sync` and ended by `song.done`. While a song run is live the api suppresses cues, exactly as a translation run does.

@@ -24,6 +24,8 @@ from api.auth import Principal, get_user_store, issue_token, reset_user_store
 from api.main import DB_UNAVAILABLE_DETAIL, app
 from api.persistence.postgres import (
     DatabaseUnavailable,
+    SchemaApplyError,
+    SchemaLockTimeout,
     database_error_types,
     is_database_unavailable,
 )
@@ -251,9 +253,17 @@ def test_is_database_unavailable(fake_psycopg, make, expected: bool) -> None:
 def test_database_error_types_with_psycopg(fake_psycopg) -> None:
     assert database_error_types() == (
         DatabaseUnavailable,
+        SchemaLockTimeout,
         fake_psycopg.PoolTimeout,
         fake_psycopg.OperationalError,
     )
+
+
+def test_boot_lock_timeout_is_an_outage_but_a_rejected_schema_is_not(fake_psycopg) -> None:
+    """A lazy re-open that can't take a table lock is transient: 503 + Retry-After,
+    not a 500 with a traceback (XERK-1603). A schema the database rejects stays a 500."""
+    assert is_database_unavailable(SchemaLockTimeout("x"))
+    assert not is_database_unavailable(SchemaApplyError("x"))
 
 
 def test_without_psycopg_only_database_unavailable_counts(monkeypatch: pytest.MonkeyPatch) -> None:

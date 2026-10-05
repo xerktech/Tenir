@@ -203,6 +203,15 @@ describe("ApiClient", () => {
     expect(onSongDone).toHaveBeenCalledWith(expect.objectContaining({ songId: "sng-1" }));
   });
 
+  it("routes caption.status frames to onCaptionStatus (XERK-1498)", () => {
+    const onCaptionStatus = vi.fn();
+    const client = new ApiClient("ws://h/ws", { onCaptionStatus });
+    client.start({ micSource: "g2-microphone" });
+    instances[0].open();
+    instances[0].emit({ type: "caption.status", delayed: true });
+    expect(onCaptionStatus).toHaveBeenCalledWith({ type: "caption.status", delayed: true });
+  });
+
   it("does not send a cueLevel in session.start (XERK-114: toggle removed)", () => {
     const client = new ApiClient("ws://h/ws");
     client.start({ micSource: "g2-microphone" });

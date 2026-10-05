@@ -539,4 +539,9 @@ describe("sessionStatus", () => {
     expect(sessionStatus({ connection: "connecting" })).toBe("connecting…");
     expect(sessionStatus({ connection: "closed" })).toBe("reconnecting…");
   });
+
+  it("says captions are delayed while STT runs behind real time (XERK-1498)", () => {
+    expect(sessionStatus({ connection: "open", captionsDelayed: true })).toBe("captions delayed");
+    expect(sessionStatus({ connection: "closed", captionsDelayed: true })).toBe("reconnecting…");
+  });
 });

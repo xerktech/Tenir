@@ -67,6 +67,7 @@ export interface LiveSessionView {
   cueSecondsLeft?: number; // seconds until that cue auto-dismisses (XERK-110)
   pastCues: PastCue[]; // released cues embedded in the transcript for review (XERK-108)
   song?: LiveSong | null; // the song recognized playing, whose lyrics scroll (XERK-184)
+  captionsDelayed?: boolean; // speech-to-text is behind real time (XERK-1498)
 }
 
 /** One row of the rendered transcript: a finalized turn or a reviewed cue. */
@@ -151,10 +152,12 @@ export function querySessionPageElements(doc: Document = document): SessionPageE
 }
 
 /** The in-session one-word state, honest about connectivity like the lens (XERK-82). */
-export function sessionStatus(view: Pick<LiveSessionView, "connection">): string {
+export function sessionStatus(
+  view: Pick<LiveSessionView, "connection" | "captionsDelayed">,
+): string {
   if (view.connection === "connecting") return "connecting…";
   if (view.connection === "closed") return "reconnecting…";
-  return "listening";
+  return view.captionsDelayed ? "captions delayed" : "listening";
 }
 
 export interface SessionPageCallbacks {

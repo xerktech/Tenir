@@ -29,6 +29,7 @@ class StubTranscriber:
         self._closed = False
         # Finals are emitted synchronously; there is never a decode in flight.
         self.finalizing = False
+        self.behind_real_time = False
 
     async def warmup(self) -> None:
         # No model, no socket — nothing to warm.

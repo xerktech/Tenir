@@ -199,6 +199,9 @@ type Mutable = {
   // plays), yielding only to the interactive menu (see the precedence in
   // `rebuildPage`). `null` when nothing is playing.
   song: LiveSong | null;
+  // Speech-to-text is behind real time (caption.status, XERK-1498): the status
+  // line says "captions delayed" instead of "listening" until it catches up.
+  captionsDelayed: boolean;
 };
 
 /** The slice of ApiClient the controller drives — structural, so tests pass a fake. */
@@ -259,6 +262,7 @@ export async function wireLens(
     pastCues: [],
     translation: null,
     song: null,
+    captionsDelayed: false,
   };
   let cueTimer: ReturnType<typeof setTimeout> | null = null;
   // When the cue currently in the box went up, so its countdown (XERK-110) can
@@ -421,6 +425,7 @@ export async function wireLens(
       cueSecondsLeft: cueCountdown(),
       pastCues: state.pastCues,
       song: state.song,
+      captionsDelayed: state.captionsDelayed,
     });
 
   /**
@@ -551,8 +556,11 @@ export async function wireLens(
         // this same session.
         state.sessionId = m.sessionId;
         reauthAttempted = false;
+        // Not delayed until the api says so (a warm resume repeats it after this).
+        state.captionsDelayed = false;
         persist();
         renderStatus();
+        syncPhone();
       },
       onPartial: (m) => {
         state.partial = m.text;
@@ -579,6 +587,11 @@ export async function wireLens(
       onSong: (m) => showSong(m),
       onSongSync: (m) => syncSong(m),
       onSongDone: (m) => finishSong(m),
+      onCaptionStatus: (m) => {
+        state.captionsDelayed = m.delayed;
+        renderStatus();
+        syncPhone();
+      },
       onError: (m) => {
         console.warn("api error", m.code, m.message);
         // Anything that is not a recoverable auth failure has to stop the
@@ -644,6 +657,7 @@ export async function wireLens(
     state.pastCues = []; // the transcript is cleared on stop, so the review cues go with it
     state.translation = null;
     state.song = null;
+    state.captionsDelayed = false;
     clearCueTimer();
     menuFallback = false;
     asideDroppedOnLens = false; // no aside survives a stop (XERK-660)

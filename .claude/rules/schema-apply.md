@@ -25,8 +25,8 @@ paths:
 - Pool open + apply runs under a per-store lock: without it concurrent first callers run the DDL
   in parallel and Postgres deadlocks (reported as a schema rejection).
 - Across processes, every DDL apply (both stores) first takes `lock_schema()`
-  (session-level `pg_advisory_lock(SCHEMA_LOCK_KEY)`), released by `unlock_schema()` or the
-  connection closing (a failed apply closes its pool).
+  (session-level `pg_advisory_lock(SCHEMA_LOCK_KEY)`), released by `unlock_schema()`; a failed
+  attempt closes its connection, so a retry never meets its own leftover lock.
   - Without it two api processes booting together (rolling update, >1 replica) fail one with 40P01
     or a `pg_type` unique violation, which aborts startup as a rejected schema (XERK-1509).
   - Tests: `test_schema_apply_takes_the_cross_process_lock_first`,
@@ -38,6 +38,19 @@ paths:
   - The advisory lock can't help there: request traffic doesn't take it.
   - Tests: `test_schema_apply_commits_every_statement`,
     `test_boot_apply_does_not_deadlock_with_live_traffic` (live).
+- Boot DDL runs under a session `lock_timeout` (`SCHEMA_LOCK_TIMEOUT_MS`), set *after* the advisory
+  lock; a 55P03 retries the whole apply with backoff, and exhausting the attempts is a
+  `SchemaLockTimeout` (a `SchemaApplyError`: fatal at boot, not "unreachable", which would serve
+  on an unapplied schema). On a lazy request-path re-open it is a transient outage → 503.
+  - Not `SET LOCAL`: it ends at the first per-statement commit. RESET on success; a failed attempt
+    closes its connection, so no pooled connection carries the timeout into requests.
+  - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE before checking the column:
+    unbounded, one idle-in-transaction reader stalled it forever and every request on that table
+    queued behind it (XERK-1603). Skipping DDL on a converged schema wouldn't remove this — the
+    first boot after any schema change still runs it.
+  - Tests: `test_boot_lock_timeout_is_retried`, `test_boot_fails_when_a_table_lock_never_frees`;
+    live `test_boot_apply_does_not_stall_requests_behind_an_idle_reader` (also checks no pooled
+    connection keeps the timeout).
 - Both stores apply through `apply_boot_schema`: the user store runs schema.sql before its own
   DDL, since the users DDL references households (empty DB → UndefinedTable, XERK-1430).
 - `get_user_store` retries `reconcile_admin` only while `_reconcile_is_retryable` (DB unavailable,

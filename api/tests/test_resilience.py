@@ -685,6 +685,101 @@ def test_finals_backlogged_by_an_stt_outage_are_stored_not_pushed_live(
         # Only the fresh turn reached translation and cue consideration.
         assert considered == ["tr:seg-4000", "cue:seg-4000"]
         assert metrics.snapshot()["counters"]["caption.final_stale"] == 1
+        # The client is told why the stale turn never showed (XERK-1498).
+        assert [m.delayed for m in sent if m.type == "caption.status"] == [True]
+
+    asyncio.run(run())
+
+
+def test_client_is_told_when_captions_fall_behind_and_catch_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STT slower than real time made captions lag, then vanish once past the stale
+    cutoff, with nothing telling the user why (XERK-1498). A late final flags captions
+    delayed; they clear only after finals have landed on time for _CAUGHT_UP_S, so a
+    backlog catching up in bursts doesn't flap the indicator. Sent on change only."""
+    import api.session as session_mod
+
+    class Clock:
+        now = 1000.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    clock = Clock()
+    monkeypatch.setattr(session_mod, "time", clock)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        lag = session._track_caption_lag
+        await lag(1.0)  # on time while never delayed: nothing to say
+        await lag(5.0)  # late: delayed
+        await lag(6.0)  # still late: no repeat
+        clock.now += 5.0
+        await lag(1.0)  # on time, but not for long enough yet
+        clock.now += 5.0
+        await lag(4.5)  # late again restarts the hold-off
+        clock.now += 9.0
+        await lag(1.0)
+        clock.now += 1.0
+        await lag(1.0)  # 10 s of on-time finals: caught up
+        assert [(m.type, m.delayed) for m in sent] == [
+            ("caption.status", True),
+            ("caption.status", False),
+        ]
+
+        async def gone(m: ServerMessage) -> None:
+            raise RuntimeError("socket gone")
+
+        session._send = gone
+        await lag(9.0)  # a send failure is swallowed, the state still moves
+        assert session._captions_delayed
+
+    asyncio.run(run())
+
+
+def test_captions_stay_delayed_while_the_transcriber_is_behind_real_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow engine's merged backlog lands in bursts, some finals on time; that must
+    not flip the indicator off while the engine is still slower than real time."""
+    import api.session as session_mod
+
+    class Clock:
+        now = 1000.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    clock = Clock()
+    monkeypatch.setattr(session_mod, "time", clock)
+
+    class Behind:
+        behind_real_time = True
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def sender(m: ServerMessage) -> None:
+            sent.append(m)
+
+        session = Session(sender, household="default")
+        session._transcriber = Behind()  # type: ignore[assignment]
+        await session._track_caption_lag(5.0)
+        clock.now += 30.0
+        await session._track_caption_lag(1.0)
+        assert [m.delayed for m in sent] == [True]  # still behind: held
+        session._transcriber.behind_real_time = False  # type: ignore[union-attr]
+        await session._track_caption_lag(1.0)
+        assert [m.delayed for m in sent] == [True, False]
+        session._transcriber = None
+        await session.send_caption_status()  # not delayed: nothing to repeat
+        assert len(sent) == 2
 
     asyncio.run(run())
 
