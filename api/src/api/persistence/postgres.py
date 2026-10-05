@@ -336,14 +336,18 @@ class SqlConversationStore:
         source_lang: str | None = None,
     ) -> Conversation:
         with self._ensure_pool().connection() as conn:
-            # ON CONFLICT DO NOTHING keeps a resumed row's original owner (a resume
-            # never re-owns a recording), mirroring the in-memory store.
+            # A resume keeps the row's original owner and start (a resume never
+            # re-owns a recording) but reopens it: a finished recording being
+            # recorded again reads live, not 'ready' with its old ended_at
+            # (XERK-1502). Mirrors the in-memory store. The household guard keeps
+            # an id collision from touching another household's row.
             conn.execute(
                 """
                 INSERT INTO conversations
                     (id, household, owner, mic_source, source_lang, started_at, status)
                 VALUES (%s, %s, %s, %s, %s, %s, 'live')
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE SET status = 'live', ended_at = NULL
+                 WHERE conversations.household = EXCLUDED.household
                 """,
                 (conversation_id, household, owner, mic_source, source_lang, utcnow()),
             )

@@ -340,6 +340,115 @@ def test_resume_during_prior_teardown_continues_its_timeline() -> None:
     asyncio.run(run())
 
 
+def test_prior_sitting_finishing_late_leaves_the_resumed_row_live() -> None:
+    """Regression (XERK-1502): a resume landing while the old sitting is still
+    closing reopens the row, and that sitting's finish() — which lands later —
+    must not close it again: the row stays live for the whole new sitting, then
+    finishes when it ends."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_conversation_store()
+        leg1 = Session(send, session_id="conv-late-finish")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(25):
+            await leg1.on_audio(_voice_chunk())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        release = _hold_flush(leg1)
+        closing = asyncio.create_task(leg1.close())
+        await asyncio.sleep(0)
+
+        leg2 = Session(send, session_id="conv-late-finish")
+        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        assert store.get("default", "conv-late-finish").status == "live"
+
+        release.set()
+        await closing  # the old sitting's teardown, finish() included, is done
+        conv = store.get("default", "conv-late-finish")
+        assert conv.status == "live" and conv.ended_at is None
+
+        await leg2.close()
+        conv = store.get("default", "conv-late-finish")
+        assert conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
+def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
+    """A later sitting that closed before the old one finishes (e.g. a start that
+    failed after opening the row) leaves the conversation ready, not live."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_conversation_store()
+        leg1 = Session(send, session_id="conv-successor-closed")
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(5):
+            await leg1.on_audio(_voice_chunk())
+        release = _hold_flush(leg1)
+        closing = asyncio.create_task(leg1.close())
+        await asyncio.sleep(0)
+
+        leg2 = Session(send, session_id="conv-successor-closed")
+        leg2._prior_retain = leg2._prior_teardown = None
+        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        leg2._prior_retain = leg2._prior_teardown = None  # don't order behind leg1
+        await leg2.close()
+
+        release.set()
+        await closing
+        conv = store.get("default", "conv-successor-closed")
+        assert conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
+def test_a_closed_successor_in_the_chain_does_not_unblock_the_first_sittings_finish() -> None:
+    """A closes, B resumes and closes, C resumes — all while A is still tearing
+    down. A's late finish() must follow the chain to C, still live (XERK-1502)."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_conversation_store()
+        sid = "conv-chain"
+        a = Session(send, session_id=sid)
+        await a.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(5):
+            await a.on_audio(_voice_chunk())
+        release_a = _hold_flush(a)
+        closing_a = asyncio.create_task(a.close())
+        await asyncio.sleep(0)
+
+        b = Session(send, session_id=sid)
+        await asyncio.wait_for(b.start(mic_source="g2-microphone", source_lang=None), 1)
+        release_b = _hold_flush(b)
+        closing_b = asyncio.create_task(b.close())
+        await asyncio.sleep(0)
+
+        c = Session(send, session_id=sid)
+        await asyncio.wait_for(c.start(mic_source="g2-microphone", source_lang=None), 1)
+        assert a._successor is b and b._successor is c
+
+        release_a.set()
+        await closing_a
+        release_b.set()
+        await closing_b
+        conv = store.get("default", sid)
+        assert conv.status == "live" and conv.ended_at is None
+
+        await c.close()
+        assert store.get("default", sid).status == "ready"
+
+    asyncio.run(run())
+
+
 def test_resume_during_prior_teardown_keeps_audio_in_order() -> None:
     """The resumed sitting's audio is appended after the closing sitting's, even
     if it closes before that sitting's retain has run, and its segments line up
