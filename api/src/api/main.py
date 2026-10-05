@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketState
 
 from api import registry
@@ -72,9 +73,58 @@ WS_CLOSE_RESUMED_ELSEWHERE = 4001
 _displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
 
 # The message uvicorn cancels in-flight handlers with once --timeout-graceful-shutdown
-# lapses (uvicorn/server.py). If a uvicorn upgrade changes it, the handler just logs
-# the shutdown traceback again; nothing else depends on it.
+# lapses (uvicorn/server.py). If a uvicorn upgrade changes it, the middleware just
+# lets the shutdown traceback through again; nothing else depends on it.
 _UVICORN_SHUTDOWN_CANCEL = "Task cancelled, timeout graceful shutdown exceeded"
+
+
+class ShutdownCancelMiddleware:
+    """End a request or socket quietly when uvicorn cancels it at shutdown.
+
+    uvicorn cancels whatever is still running at --timeout-graceful-shutdown and logs
+    anything the app raises, that cancel included, as "Exception in ASGI application"
+    with a traceback (XERK-1530 for /ws, XERK-1602 for HTTP). The cancel is expected:
+    log one line and return. Its message is the only shutdown signal uvicorn gives —
+    no lifespan flag can mark it, since the lifespan shutdown runs only after the
+    cancel — so any other cancel propagates. Pure ASGI, outermost, so it sees what
+    BaseHTTPMiddleware and the routes re-raise.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except asyncio.CancelledError as exc:
+            if exc.args != (_UVICORN_SHUTDOWN_CANCEL,):
+                raise
+            log.info(
+                "%s %r cancelled at the graceful-shutdown deadline", scope["type"], scope["path"]
+            )
+            if scope["type"] == "http" and not started:
+                # Unanswered, uvicorn sends a 500. 503 tells the client to retry, which
+                # reaches a pod that isn't shutting down. A response already under way
+                # can't be fixed: uvicorn closes the connection on it, as it should.
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 503,
+                        "headers": [(b"content-length", b"0"), (b"connection", b"close")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
 
 
 @asynccontextmanager
@@ -304,6 +354,10 @@ async def sliding_token_renewal(request: Request, call_next):  # type: ignore[no
         return response
     response.headers[RENEWED_TOKEN_HEADER] = fresh
     return response
+
+
+# Added last, so it wraps every other middleware (XERK-1602).
+app.add_middleware(ShutdownCancelMiddleware)
 
 app.include_router(auth_router)
 app.include_router(history_router)
@@ -730,15 +784,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
         if WebSocketState.DISCONNECTED not in (ws.client_state, ws.application_state):
             raise
         log.info("client disconnected: %s", exc)
-    except asyncio.CancelledError as exc:
-        # uvicorn cancels a handler still running at --timeout-graceful-shutdown and
-        # logs anything it raises, a re-raised cancel included, as "Exception in ASGI
-        # application" with a traceback (XERK-1530). That cancel is expected: end the
-        # handler quietly and let the lifespan drain finalize the session. Its message
-        # is the only shutdown signal uvicorn gives; any other cancel propagates.
-        if exc.args != (_UVICORN_SHUTDOWN_CANCEL,):
-            raise
-        log.info("ws handler cancelled at the graceful-shutdown deadline")
     finally:
         # Socket dropped without an explicit session.end: keep the session alive for
         # a grace window so a reconnect can resume it. Only detach if this handler
