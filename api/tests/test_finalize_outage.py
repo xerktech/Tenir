@@ -334,3 +334,36 @@ def test_a_deferred_finalize_does_not_close_a_cold_resumed_row(
         assert conv.ended_at is not None
 
     asyncio.run(run())
+
+
+def test_a_resume_in_another_household_does_not_hold_a_deferred_finalize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deferred-finalize link is per (household, id): a colliding id in another
+    household must not leave this household's row live until the next boot."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.05)
+    db = _outage(monkeypatch, "finish")
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-shared-id", household="h1")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        db["down"] = True
+        await first.close()
+        db["down"] = False
+
+        other = Session(send, session_id="conv-shared-id", household="h2")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        assert first._successor is None
+        for _ in range(100):
+            conv = get_conversation_store().get("h1", "conv-shared-id")
+            if conv is not None and conv.status == "ready":
+                break
+            await asyncio.sleep(0.01)
+        assert get_conversation_store().get("h1", "conv-shared-id").status == "ready"
+        assert get_conversation_store().get("h2", "conv-shared-id").status == "live"
+        await other.close()
+
+    asyncio.run(run())
