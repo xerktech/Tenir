@@ -166,6 +166,24 @@ def test_delete_removes_transcript_and_audio() -> None:
         assert client.delete("/conversations/11111111-1111-4111-8111-111111111111").status_code == 404
 
 
+def test_delete_removes_audio_whose_key_was_never_recorded() -> None:
+    """A WAV stored by a session whose key write failed (database outage) is still
+    the recording's audio: deleting the recording must delete it too."""
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        _make_conversation(cid, "key never landed")
+        key = f"default/{cid}.wav"
+        get_audio_store().put(key, pcm16_to_wav(b"\x00\x00" * 160))
+        # Another household's WAV under the same id must survive.
+        other = f"other/{cid}.wav"
+        get_audio_store().put(other, pcm16_to_wav(b"\x00\x00" * 160))
+        assert get_conversation_store().get("default", cid).audio_key is None
+
+        assert client.delete(f"/conversations/{cid}").status_code == 204
+        assert not get_audio_store().exists(key)
+        assert get_audio_store().exists(other)
+
+
 def test_legacy_status_row_does_not_break_the_listing() -> None:
     """A conversation stored by an older build (status 'processing', from the
     re-process pipeline that no longer exists) used to fail response validation and

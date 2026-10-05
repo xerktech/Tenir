@@ -21,6 +21,7 @@ from api.persistence import (
     Cue,
     Segment,
     Song,
+    audio_key,
     coerce_status,
     get_audio_store,
     get_conversation_store,
@@ -294,6 +295,15 @@ def delete_conversation(
     hh = principal.household
     conv = _require(hh, conversation_id, owner=_owner_scope(principal))
     audio = get_audio_store()
-    if audio is not None and conv.audio_key:
-        audio.delete(conv.audio_key)
+    if audio is not None:
+        # Also the deterministic key: a session can store its WAV yet never record
+        # the key (it ended during a database outage), and that audio must not
+        # outlive the "deleted" recording.
+        keys = {conv.audio_key}
+        try:
+            keys.add(audio_key(hh, conversation_id))
+        except ValueError:
+            pass  # not a key-safe id, so no WAV can have been stored under it
+        for key in keys - {None}:
+            audio.delete(key)
     _store().delete(hh, conversation_id)
