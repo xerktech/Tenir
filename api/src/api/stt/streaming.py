@@ -551,6 +551,10 @@ class StreamingTranscriber:
                 now = time.perf_counter()
                 if self._outage_since is None:
                     self._outage_since = now
+                    # Decode times from before the outage say nothing about the engine
+                    # that comes back: judged on them, a recovered fast engine read as
+                    # behind and merged the outage backlog (XERK-1498).
+                    self._final_decodes.clear()
                 metrics.incr("stage.stt.errors")
                 delay = _FINAL_RETRY_BACKOFF_S[min(attempt, len(_FINAL_RETRY_BACKOFF_S) - 1)]
                 if now + delay - self._outage_since > _FINAL_RETRY_BUDGET_S:

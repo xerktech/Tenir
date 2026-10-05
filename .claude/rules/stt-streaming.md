@@ -62,6 +62,8 @@ paths:
       slowest, and with mixed turn lengths that flipped the verdict and flapped the status (QA).
   - Never merge on wait time alone: an outage backlog drains turn by turn, keeping boundaries.
   - Merged decodes and finals that got no answer add no sample to the window.
+  - An outage clears the window: pre-outage samples made a recovered fast engine read as
+    behind and merge the outage backlog (QA).
   - Size a merge by the last final's decode rate to fit `_COALESCE_DECODE_BUDGET_S`, not by
     audio length alone: QA showed a 1.3x engine timing out (Parakeet's 15 s deadline) on a
     big merge and losing every merged turn. Peek before taking, so an over-limit turn stays queued.

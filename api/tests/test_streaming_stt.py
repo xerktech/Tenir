@@ -1653,15 +1653,37 @@ def test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns(
         ([(0.1, 0.5), (6.0, 0.5), (0.1, 0.5)], False),  # one stall on a healthy engine
         ([(0.1, 0.5), (6.0, 0.5), (0.1, 0.5), (9.0, 0.5), (0.1, 0.5)], False),  # two
         ([(0.3, 1.6), (0.3, 3.0), (0.3, 1.6)], False),  # healthy
+        # Just past 2x the median is a stall; the rest exactly keep up: not behind.
+        ([(1.0, 1.0), (1.0, 1.0), (2.5, 1.0)], False),
         ([(2.0, 1.6), (2.0, 1.6)], False),  # too few to judge
     ],
 )
-def test_behind_real_time_judges_recent_decodes_setting_the_slowest_aside(
+def test_behind_real_time_judges_recent_decodes_leaving_out_stalls(
     decodes: list[tuple[float, float]], behind: bool
 ) -> None:
     t = StreamingTranscriber(FakeEngine(), language="en")
     t._final_decodes.extend(decodes)
     assert t.behind_real_time is behind
+
+
+def test_an_outage_forgets_decode_times_from_before_it(_outage) -> None:
+    """A slow engine's pre-outage decodes must not make the engine that recovers read
+    as behind: its backlog would be merged instead of draining turn by turn."""
+
+    async def run() -> None:
+        # Two failures: the final and its probe, so it is an outage, not a bad input.
+        eng = OutageEngine(_outage, recover_after=2, call_s=0.1)
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        t._final_decodes.extend([(2.0, 1.6)] * 5)
+        assert t.behind_real_time
+        await _outage_turns(t, 1)
+        await _drain(t)
+        assert len(t._final_decodes) == 1 and not t.behind_real_time
+        await t.close()
+
+    asyncio.run(run())
 
 
 def test_a_final_whose_decode_fails_adds_no_sample_to_the_behind_window() -> None:
