@@ -704,8 +704,9 @@ class SqlConversationStore:
             rows = conn.execute("SELECT DISTINCT household FROM conversations").fetchall()
         return [r[0] for r in rows]
 
-    def finish_stale(self) -> int:  # pragma: no cover - requires a live database
-        """Close out conversations left ``live`` by a previous process (XERK-236).
+    def finish_stale(self) -> list[tuple[str, str]]:  # pragma: no cover - requires a live database
+        """Close out conversations left ``live`` by a previous process (XERK-236);
+        returns the ``(household, id)`` of each row it closed.
 
         Only a graceful shutdown finalizes live sessions; an OOM kill, a host
         reboot or an overrun stop leaves the row `live` with no `ended_at`, and
@@ -729,7 +730,7 @@ class SqlConversationStore:
                            started_at
                        )
                  WHERE status = 'live'
-             RETURNING id
+             RETURNING household, id
                 """
             ).fetchall()
-        return len(rows)
+        return [(r[0], r[1]) for r in rows]

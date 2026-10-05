@@ -46,7 +46,7 @@ from api.contract import (
 from api.history import router as history_router
 from api.logging_filters import install as install_log_redaction
 from api.metrics import metrics
-from api.persistence import get_conversation_store, stale
+from api.persistence import get_audio_store, get_conversation_store, stale
 from api.persistence.postgres import (
     OPEN_TIMEOUT_SECONDS,
     SqlConversationStore,
@@ -113,11 +113,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     stale_task: asyncio.Task[None] | None = None
     if conversations is not None:
         stale.arm(conversations)
+        audio = get_audio_store()
         try:
-            await asyncio.to_thread(stale.sweep_if_pending, conversations)
+            await asyncio.to_thread(stale.sweep_if_pending, conversations, audio)
         except Exception:
             log.exception("could not finalize stale conversations at startup; will retry")
-            stale_task = asyncio.create_task(stale.retry_loop(conversations))
+            stale_task = asyncio.create_task(stale.retry_loop(conversations, audio))
     # Seed the component-status cache once at boot (so GET /status answers
     # immediately) and keep it fresh on a background loop.
     status_task: asyncio.Task[None] | None = None
