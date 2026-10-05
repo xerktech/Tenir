@@ -1762,7 +1762,11 @@ class Session:
             # The database is down: session.end must not raise out of the socket
             # handler, and the client won't resume an ended session, so nothing
             # else would ever finish this row (XERK-1531). Retry until it's back.
-            log.warning("session %s ended during a database outage; will finalize", self.session_id)
+            log.warning(
+                "session %s ended while its write %s; will finalize",
+                self.session_id,
+                "found the database unavailable" if self._held_by_outage else "timed out",
+            )
             metrics.incr("conversation.finalize_deferred")
             _defer_finalize(self)
         if cancelled:
