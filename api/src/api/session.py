@@ -563,7 +563,7 @@ class Session:
             # The boot sweep of a previous process's live rows hasn't succeeded
             # yet: run it before this session's row exists, so it can never
             # finalize a recording this process started (XERK-1428).
-            await asyncio.to_thread(stale.sweep_if_pending, self._conversations)
+            await asyncio.to_thread(stale.sweep_if_pending, self._conversations, self._audio_store)
         if self._conversations is not None:
             # Set before the call: a create that raises may still have written the
             # live row, which close() then finishes.
