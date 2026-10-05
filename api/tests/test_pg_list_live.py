@@ -1,9 +1,10 @@
-"""SqlConversationStore.list/search against a REAL Postgres (XERK-1518).
+"""SqlConversationStore.list/search against a REAL Postgres (XERK-1518, XERK-1524).
 
 Both used to read the page's ids and then call get() per row — its own pool borrow
 plus three child reads each — so one GET /conversations queued 1+N times for the
 4-connection pool. They now read the page and every child table in one borrow; these
-tests pin that, and that batching never hands one conversation another's children.
+tests pin that, and that the per-conversation segment count and duration they aggregate
+in SQL match the fully loaded conversation (XERK-1524).
 
 Skipped unless ``TENIR_TEST_PG_DSN`` points at a disposable Postgres (CI provides one,
 see test_pg_schema_live.py). Each test works in its own throwaway schema.
@@ -87,11 +88,15 @@ def _seed(store, n: int, *, owner: str | None = None) -> list[str]:
 
 def _assert_matches_get(store, convs) -> None:
     for c in convs:
-        assert c == store.get(HH, c.id)
-        assert [s.segment_id[len(c.id) :] for s in c.segments] == ["-s0", "-s1", "-s1a", "-s2"]
-        assert all(s.segment_id.startswith(c.id) for s in c.segments)
-        assert [x.cue_id for x in c.cues] == [f"{c.id}-ca", f"{c.id}-cb"]
-        assert [x.song_id for x in c.songs] == [f"{c.id}-ga", f"{c.id}-gb"]
+        # The SQL aggregate must agree with the summary of the fully loaded conversation
+        # (XERK-1524): 4 segments, spanning 0 → 2500+i ms, counted only for this id.
+        full = store.get(HH, c.id)
+        assert c == full.summary()
+        assert c.segment_count == 4
+        assert c.duration_ms == full.duration_ms >= 2500
+        assert [s.segment_id[len(c.id) :] for s in full.segments] == ["-s0", "-s1", "-s1a", "-s2"]
+        assert [x.cue_id for x in full.cues] == [f"{c.id}-ca", f"{c.id}-cb"]
+        assert [x.song_id for x in full.songs] == [f"{c.id}-ga", f"{c.id}-gb"]
 
 
 def test_list_reads_the_page_in_one_borrow(store) -> None:
@@ -126,11 +131,39 @@ def test_search_reads_the_page_in_one_borrow(store) -> None:
     assert store.borrows == 1
 
 
+def test_tied_start_times_page_without_repeats_or_gaps(store) -> None:
+    ids = _seed(store, 9)
+    with store._pool.connection() as conn:
+        conn.execute("UPDATE conversations SET started_at = '2026-01-01T00:00:00Z'")
+    for listing in (
+        lambda o: store.list(HH, limit=2, offset=o),
+        lambda o: store.search(HH, "needle", limit=2, offset=o),
+    ):
+        paged = [c.id for o in range(0, 10, 2) for c in listing(o)]
+        assert paged == sorted(ids)
+
+
 def test_empty_page_and_owner_scope(store) -> None:
     store.borrows = 0
     assert store.list(HH) == []
     assert store.search(HH, "needle") == []
     assert store.borrows == 2
+
+    # A conversation with no segments lists with a zero count and duration, not NULLs.
+    empty = str(uuid.uuid4())
+    store.create(HH, empty)
+    (row,) = store.list(HH)
+    assert (row.id, row.segment_count, row.duration_ms) == (empty, 0, 0)
+    store.delete(HH, empty)
+
+    # A span past 2^31 ms is summed in bigint, not overflowed into a 500 (XERK-1524).
+    store.create(HH, empty)
+    store.add_segment(
+        HH, empty, Segment(segment_id="wide", text="w", start_ms=-10, end_ms=2_147_483_640)
+    )
+    (row,) = store.list(HH)
+    assert row.duration_ms == 2_147_483_650
+    store.delete(HH, empty)
 
     with store._pool.connection() as conn:
         owner = str(

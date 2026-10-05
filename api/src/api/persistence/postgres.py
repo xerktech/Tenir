@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterator, Sequence
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    ConversationSummary,
     Cue,
     Segment,
     Song,
@@ -236,6 +237,25 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
             ) from exc
     if path is not None:
         log.info("applied idempotent schema from %s on pool open", path)
+
+
+# Listing and search render a count and a duration per conversation, so they aggregate
+# the page's segments in SQL rather than loading every segment, cue and song row just to
+# count them (XERK-1524). The page is cut first and only its rows are aggregated: a
+# lateral join outside the LIMIT would run for every skipped or sorted row. Duration
+# matches Conversation.duration_ms (0 when empty), in bigint so a span past 2^31 ms can't
+# 500 the listing. id breaks started_at ties so paging never repeats or drops a row.
+def _summary_page(page_sql: str) -> str:
+    return f"""
+        SELECT c.*, agg.segment_count, agg.duration_ms
+        FROM ({page_sql}) c
+        CROSS JOIN LATERAL (
+            SELECT count(*)::int AS segment_count,
+                   COALESCE(max(s.end_ms)::bigint - min(s.start_ms), 0) AS duration_ms
+            FROM segments s WHERE s.conversation_id = c.id
+        ) agg
+        ORDER BY c.started_at DESC, c.id
+    """
 
 
 class SqlConversationStore:
@@ -494,6 +514,22 @@ class SqlConversationStore:
         ]
 
     @staticmethod
+    def _row_to_summary(row) -> ConversationSummary:  # pragma: no cover - live database
+        return ConversationSummary(
+            id=row["id"],
+            household=row["household"],
+            owner=row.get("owner"),
+            mic_source=row["mic_source"],
+            source_lang=row["source_lang"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            status=coerce_status(row["status"], ended=row["ended_at"] is not None),
+            audio_key=row["audio_key"],
+            segment_count=row["segment_count"],
+            duration_ms=row["duration_ms"],
+        )
+
+    @staticmethod
     def _row_to_segment(row) -> Segment:  # pragma: no cover - requires a live database
         return Segment(
             segment_id=row["segment_id"],
@@ -526,23 +562,25 @@ class SqlConversationStore:
 
     def list(  # pragma: no cover - requires a live database
         self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
-    ) -> list[Conversation]:
+    ) -> list[ConversationSummary]:
         from psycopg.rows import dict_row
 
         # Owner scope (XERK-651): owner=None is the admin view (whole household); a member
         # id restricts to their own rows. The owner index carries (household, owner, ...).
-        where = "household = %s" if owner is None else "household = %s AND owner = %s"
+        where = "c.household = %s" if owner is None else "c.household = %s AND c.owner = %s"
         params: tuple = (household,) if owner is None else (household, owner)
         with self._ensure_pool().connection() as conn:
             cur = conn.cursor(row_factory=dict_row)
             rows = cur.execute(
-                f"""
-                SELECT * FROM conversations WHERE {where}
-                ORDER BY started_at DESC LIMIT %s OFFSET %s
-                """,
+                _summary_page(
+                    f"""
+                    SELECT * FROM conversations c WHERE {where}
+                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                    """
+                ),
                 (*params, limit, offset),
             ).fetchall()
-            return self._assemble(cur, rows)
+            return [self._row_to_summary(r) for r in rows]
 
     def search(  # pragma: no cover - requires a live database
         self,
@@ -552,7 +590,7 @@ class SqlConversationStore:
         owner: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Conversation]:
+    ) -> list[ConversationSummary]:
         from psycopg.rows import dict_row
 
         # Owner scope (XERK-651): owner=None searches the whole household (admin); a member
@@ -567,20 +605,22 @@ class SqlConversationStore:
             # matching conversation; relevance ranking can layer on later if needed.
             cur = conn.cursor(row_factory=dict_row)
             rows = cur.execute(
-                f"""
-                SELECT c.* FROM conversations c
-                WHERE c.household = %s {owner_clause}
-                  AND EXISTS (
-                      SELECT 1 FROM segments s
-                      WHERE s.conversation_id = c.id
-                        AND to_tsvector('simple', s.text)
-                            @@ websearch_to_tsquery('simple', %s)
-                  )
-                ORDER BY c.started_at DESC LIMIT %s OFFSET %s
-                """,
+                _summary_page(
+                    f"""
+                    SELECT c.* FROM conversations c
+                    WHERE c.household = %s {owner_clause}
+                      AND EXISTS (
+                          SELECT 1 FROM segments s
+                          WHERE s.conversation_id = c.id
+                            AND to_tsvector('simple', s.text)
+                                @@ websearch_to_tsquery('simple', %s)
+                      )
+                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                    """
+                ),
                 (household, *owner_param, query, limit, offset),
             ).fetchall()
-            return self._assemble(cur, rows)
+            return [self._row_to_summary(r) for r in rows]
 
     def delete(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str

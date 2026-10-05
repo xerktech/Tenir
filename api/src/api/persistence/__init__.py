@@ -21,6 +21,7 @@ from api.persistence.conversations import ConversationStore, InMemoryConversatio
 from api.persistence.models import (
     Conversation,
     ConversationStatus,
+    ConversationSummary,
     Cue,
     Segment,
     Song,
@@ -33,6 +34,7 @@ __all__ = [
     "Conversation",
     "ConversationStatus",
     "ConversationStore",
+    "ConversationSummary",
     "Cue",
     "LocalDiskAudioStore",
     "Segment",

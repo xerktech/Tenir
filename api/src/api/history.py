@@ -17,6 +17,7 @@ from api.session import is_valid_session_id
 from api.persistence import (
     Conversation,
     ConversationStatus,
+    ConversationSummary,
     Cue,
     Segment,
     Song,
@@ -101,7 +102,7 @@ class ConversationSummaryOut(BaseModel):
     hasAudio: bool
 
     @classmethod
-    def of(cls, conv: Conversation) -> "ConversationSummaryOut":
+    def of(cls, conv: ConversationSummary) -> "ConversationSummaryOut":
         return cls(
             id=conv.id,
             # A status from an older schema would otherwise fail response validation
@@ -113,7 +114,7 @@ class ConversationSummaryOut(BaseModel):
             startedAt=conv.started_at.isoformat(),
             endedAt=conv.ended_at.isoformat() if conv.ended_at else None,
             durationMs=conv.duration_ms,
-            segmentCount=len(conv.segments),
+            segmentCount=conv.segment_count,
             hasAudio=conv.audio_key is not None,
         )
 
@@ -128,7 +129,7 @@ class ConversationOut(ConversationSummaryOut):
 
     @classmethod
     def of(cls, conv: Conversation) -> "ConversationOut":
-        base = ConversationSummaryOut.of(conv).model_dump()
+        base = ConversationSummaryOut.of(conv.summary()).model_dump()
         return cls(
             **base,
             segments=[SegmentOut.of(s) for s in conv.segments],
