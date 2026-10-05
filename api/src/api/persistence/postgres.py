@@ -14,7 +14,11 @@ is exercised by the compose stack.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import logging
+import os
+import socket
 import threading
 import time
 from pathlib import Path
@@ -39,6 +43,49 @@ log = logging.getLogger("api.persistence.postgres")
 # each one building a fresh pool behind ``_pool_lock``: boot blocked ~2 minutes and
 # every /ready held a worker thread 30-60s (XERK-1434).
 OPEN_TIMEOUT_SECONDS = 5.0
+
+# Client-side bounds for a database that stops answering after the pool opened
+# (XERK-1513). A hung-but-ACKing server (SIGSTOP, a wedged host) never errors, so
+# neither connect_timeout nor a server-side statement_timeout ends the wait: the
+# pool's connection check and every borrow held a worker thread until TCP gave up.
+# A watchdog shuts the connection's socket down instead, failing the blocked call.
+# The check is an empty query, so its bound can be tight; a borrow spans every
+# statement a request runs on its connection.
+CHECK_TIMEOUT_SECONDS = 2.0
+QUERY_TIMEOUT_SECONDS = 15.0
+
+# Server-side bound on every request-path statement, below QUERY_TIMEOUT_SECONDS so
+# a live but slow or lock-blocked database ends the statement itself. Severing only
+# the client side left the backend waiting: with steady traffic through a lock wait
+# each severed borrow orphaned one backend and the pool opened a replacement, so the
+# connection count grew by ~4 per pool every 15s (XERK-1513 QA). The boot schema
+# apply lifts it for its own transaction. Its 57014 is deliberately not an outage:
+# the stale sweep and the admin seed would retry a statement that is slow every time
+# forever (see _reconcile_is_retryable). Only the session's held writes retry it
+# (``is_retryable_write``), since dropping them loses the recording.
+STATEMENT_TIMEOUT_SECONDS = 10.0
+
+# How long a request waits for a connection once the pool has given up reconnecting
+# (XERK-1513). Every request waited the full OPEN_TIMEOUT_SECONDS during an outage,
+# so a burst queued behind the 40-thread worker limiter for ceil(N/40) x 5s and
+# stalled unrelated endpoints. The short wait still lets a request kick off the
+# pool's next connect attempt, so the first one after the database is back
+# succeeds and closes the breaker.
+OUTAGE_WAIT_SECONDS = 0.5
+
+# libpq kwargs every pooled connection gets. Keepalives and tcp_user_timeout bound a
+# blackholed network at ~QUERY_TIMEOUT_SECONDS instead of the kernel's ~15 minute
+# retransmission limit; libpq ignores them on a Unix socket.
+CONNECT_KWARGS: dict[str, int] = {
+    # Closing a pool that timed out waits for its in-flight connects, which
+    # against a blackholed host never return.
+    "connect_timeout": int(OPEN_TIMEOUT_SECONDS),
+    "keepalives": 1,
+    "keepalives_idle": 10,
+    "keepalives_interval": 5,
+    "keepalives_count": 3,
+    "tcp_user_timeout": int(QUERY_TIMEOUT_SECONDS * 1000),
+}
 
 
 def find_schema_file() -> Path | None:
@@ -114,6 +161,119 @@ class DatabaseUnavailable(RuntimeError):
     ago, found the database unreachable (XERK-1434)."""
 
 
+def _sever(conn) -> None:
+    """Shut ``conn``'s socket down so a call blocked reading it fails at once with an
+    OperationalError (no SQLSTATE: an outage). shutdown() acts on the socket, not the
+    descriptor, so a dup is enough and libpq keeps owning (and later closing) its fd."""
+    with contextlib.suppress(Exception):
+        sock = socket.socket(fileno=os.dup(conn.fileno()))
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        finally:
+            sock.close()
+
+
+class _Watchdog:
+    """Severs ``conn`` unless disarmed within ``seconds`` (XERK-1513)."""
+
+    def __init__(self, conn, seconds: float, what: str) -> None:
+        self._lock = threading.Lock()
+        self._done = False
+        self._timer = threading.Timer(seconds, self._fire, (conn, seconds, what))
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _fire(self, conn, seconds: float, what: str) -> None:
+        # Under the lock so a disarm racing the timer can't hand the pool back a
+        # connection that is severed after it was lent to someone else.
+        with self._lock:
+            if self._done:
+                return
+            self._done = True
+            log.warning("database %s exceeded %.1fs; closing its connection", what, seconds)
+            _sever(conn)
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._done = True
+        self._timer.cancel()
+
+
+def check_connection(conn) -> None:
+    """The pool's check before lending a connection, bounded by CHECK_TIMEOUT_SECONDS:
+    psycopg's own runs ``execute("")`` with no limit, and against a hung server each
+    pooled connection trapped its borrower's thread indefinitely (XERK-1513)."""
+    from psycopg_pool import ConnectionPool
+
+    dog = _Watchdog(conn, CHECK_TIMEOUT_SECONDS, "connection check")
+    try:
+        ConnectionPool.check_connection(conn)
+    finally:
+        dog.disarm()
+
+
+def _guarded_pool_class():
+    """psycopg's ConnectionPool with a watchdog on every borrow and a breaker that
+    shortens the connection wait while the database is unreachable (XERK-1513).
+    Built lazily: psycopg_pool is the optional persistence extra."""
+    from psycopg_pool import ConnectionPool
+
+    return _guard(ConnectionPool)
+
+
+@functools.cache
+def _guard(ConnectionPool):  # noqa: N803 - the class being extended
+    class GuardedPool(ConnectionPool):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # None until the boot schema applied: DDL on a large table can
+            # legitimately outlast QUERY_TIMEOUT_SECONDS.
+            self.borrow_timeout: float | None = None
+            # Set when a connect attempt gave up after reconnect_timeout while no
+            # borrow had succeeded for OPEN_TIMEOUT_SECONDS; cleared by the next
+            # connection that opens or borrow that passes its check. One failed
+            # reconnect is not an outage: at max_connections the replacement for a
+            # dropped connection fails while the others still serve (XERK-1513 QA).
+            self.unreachable = False
+            self._last_ok = time.monotonic()
+            self._watchdogs: dict[int, _Watchdog] = {}
+            super().__init__(*args, configure=self._connected, **kwargs)
+
+        def _reachable(self) -> None:
+            self._last_ok = time.monotonic()
+            if self.unreachable:
+                log.info("database reachable again (pool %s)", self.name)
+                self.unreachable = False
+
+        def _connected(self, conn) -> None:
+            conn.execute(f"SET statement_timeout = {int(STATEMENT_TIMEOUT_SECONDS * 1000)}")
+            if not conn.autocommit:
+                conn.commit()
+            self._reachable()
+
+        def reconnect_failed(self) -> None:
+            if time.monotonic() - self._last_ok >= OPEN_TIMEOUT_SECONDS and not self.unreachable:
+                log.warning("database unreachable (pool %s); failing requests fast", self.name)
+                self.unreachable = True
+            super().reconnect_failed()
+
+        def getconn(self, timeout: float | None = None):
+            if self.unreachable:
+                timeout = min(self.timeout if timeout is None else timeout, OUTAGE_WAIT_SECONDS)
+            conn = super().getconn(timeout)
+            self._reachable()
+            if self.borrow_timeout is not None:
+                self._watchdogs[id(conn)] = _Watchdog(conn, self.borrow_timeout, "query")
+            return conn
+
+        def putconn(self, conn) -> None:
+            dog = self._watchdogs.pop(id(conn), None)
+            if dog is not None:
+                dog.disarm()
+            super().putconn(conn)
+
+    return GuardedPool
+
+
 class PoolOpener:
     """Opens a store's connection pool with bounded waits (XERK-1434).
 
@@ -134,22 +294,25 @@ class PoolOpener:
         failure = self._failure
         if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
             raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
-        from psycopg_pool import ConnectionPool
-
         log.info("opening Postgres connection pool (%s)", self._name)
-        pool = ConnectionPool(
+        pool = _guarded_pool_class()(
             self._dsn,
+            name=self._name,
             open=False,
-            # libpq's connect_timeout too: closing a pool that timed out waits for
-            # its in-flight connects, which against a blackholed host never return.
-            kwargs={"connect_timeout": int(OPEN_TIMEOUT_SECONDS)},
+            kwargs=dict(CONNECT_KWARGS),
             # Every request's wait for a connection, too: with the database gone
             # after the pool opened, psycopg's 30s default held a worker thread per
             # request, and 50 of them stalled every sync endpoint for 30-60s.
             timeout=OPEN_TIMEOUT_SECONDS,
             # Pooled connections outlive a Postgres restart; without a check each
             # one fails its next borrower once (AdminShutdown) before it is dropped.
-            check=ConnectionPool.check_connection,
+            check=check_connection,
+            # Give up a failed reconnect after this long, so the next request's
+            # connect attempt starts fresh. psycopg's 5-minute default kept each
+            # broken connection on exponential backoff (1, 2, 4 ... 64s), and the
+            # first request succeeded up to a minute after the database was back
+            # (XERK-1513). Giving up also trips the pool's outage breaker.
+            reconnect_timeout=OPEN_TIMEOUT_SECONDS,
         )
         try:
             try:
@@ -161,6 +324,7 @@ class PoolOpener:
         except BaseException:
             pool.close()
             raise
+        pool.borrow_timeout = QUERY_TIMEOUT_SECONDS
         return pool
 
 
@@ -213,6 +377,15 @@ def is_database_unavailable(exc: BaseException) -> bool:
         sqlstate = exc.sqlstate
         return sqlstate is None or _is_connection_sqlstate(sqlstate)
     return False
+
+
+def is_retryable_write(exc: BaseException) -> bool:
+    """True when a write the session holds for retry should stay held: an outage
+    (``is_database_unavailable``), or a statement the server ended at
+    STATEMENT_TIMEOUT_SECONDS (57014) — a lock held past it, e.g. another replica's
+    boot DDL, dropped live transcript segments and the recording's audio key
+    (XERK-1513 QA). Only for writes that must land; elsewhere 57014 stays a fault."""
+    return is_database_unavailable(exc) or getattr(exc, "sqlstate", None) == "57014"
 
 
 # Boot DDL waits at most this long for each table lock (XERK-1603). Even
@@ -277,6 +450,9 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
 def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
     with pool.connection() as conn:
         try:
+            # DDL on a large table, or waiting out another replica's apply, may
+            # legitimately outlast the request-path STATEMENT_TIMEOUT_SECONDS.
+            conn.execute("SET LOCAL statement_timeout = 0")
             lock_schema(conn)
             # After the advisory lock, not before: waiting on another replica's apply
             # is bounded already, since every statement it runs is bounded by this.

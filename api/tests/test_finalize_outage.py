@@ -39,9 +39,30 @@ def _voice_chunk(*, ms: int = 100, freq: int = 200) -> bytes:
 _WRITES = ("add_segment", "set_segment_translation", "finish", "set_audio_key")
 
 
-def _outage(monkeypatch: pytest.MonkeyPatch, *names: str, wait_s: float = 0.0) -> dict[str, bool]:
-    """Make conversation writes (default: all of them) raise like a Postgres outage
-    while ``down``, after ``wait_s`` (the pool timeout). ``calls`` counts attempts."""
+class _StatementTimeout(Exception):
+    """psycopg's QueryCanceled as the server's statement_timeout raises it: a write
+    blocked on a lock past STATEMENT_TIMEOUT_SECONDS (XERK-1513)."""
+
+    sqlstate = "57014"
+
+
+# Both must hold the write for retry rather than drop it.
+_HELD = pytest.mark.parametrize(
+    "error",
+    [lambda: DatabaseUnavailable("database unavailable"), lambda: _StatementTimeout("canceled")],
+    ids=["outage", "statement-timeout"],
+)
+
+
+def _outage(
+    monkeypatch: pytest.MonkeyPatch,
+    *names: str,
+    wait_s: float = 0.0,
+    error=lambda: DatabaseUnavailable("database unavailable"),
+) -> dict[str, bool]:
+    """Make conversation writes (default: all of them) raise ``error()`` (a Postgres
+    outage) while ``down``, after ``wait_s`` (the pool timeout). ``calls`` counts
+    attempts."""
     state = {"down": False, "calls": 0}
     store = get_conversation_store()
     for name in names or _WRITES:
@@ -51,7 +72,7 @@ def _outage(monkeypatch: pytest.MonkeyPatch, *names: str, wait_s: float = 0.0) -
             if state["down"]:
                 state["calls"] += 1
                 time.sleep(wait_s)
-                raise DatabaseUnavailable("database unavailable")
+                raise error()
             return _real(*args, **kwargs)
 
         monkeypatch.setattr(store, name, call)
@@ -67,11 +88,12 @@ async def _until_ready(conversation_id: str):
     raise AssertionError(f"{conversation_id} never finalized")
 
 
+@_HELD
 def test_end_during_outage_finalizes_once_the_database_is_back(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
-    db = _outage(monkeypatch)
+    db = _outage(monkeypatch, error=error)
 
     async def run() -> None:
         async def send(_msg) -> None:
@@ -103,13 +125,14 @@ def test_end_during_outage_finalizes_once_the_database_is_back(
     asyncio.run(run())
 
 
+@_HELD
 def test_outage_mid_session_keeps_captions_and_stores_held_turns_later(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     """A failed segment write used to kill the result pump: captions stopped for the
     rest of the session and every later turn was lost. Now the turn is held and
     stored with the next one once the database is back."""
-    db = _outage(monkeypatch)
+    db = _outage(monkeypatch, error=error)
 
     async def run() -> None:
         captions: list[str] = []
@@ -142,13 +165,14 @@ def test_outage_mid_session_keeps_captions_and_stores_held_turns_later(
     asyncio.run(run())
 
 
+@_HELD
 def test_finalize_waits_for_an_audio_key_the_outage_dropped(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     """Only set_audio_key fails: finish() must not mark the row ready without the key
     to its stored WAV, or History can't play it."""
     monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
-    db = _outage(monkeypatch, "set_audio_key")
+    db = _outage(monkeypatch, "set_audio_key", error=error)
 
     async def run() -> None:
         async def send(_msg) -> None:
@@ -365,5 +389,139 @@ def test_a_resume_in_another_household_does_not_hold_a_deferred_finalize(
         assert get_conversation_store().get("h1", "conv-shared-id").status == "ready"
         assert get_conversation_store().get("h2", "conv-shared-id").status == "live"
         await other.close()
+
+    asyncio.run(run())
+
+
+def test_a_finish_blocked_on_its_own_row_does_not_stall_other_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only one session's finish() times out (57014: a lock on its row). It stays
+    held for retry, not dropped, and the sessions queued behind it still finalize —
+    an outage blocks them all alike, but a row lock does not (XERK-1513 QA)."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_finish = store.finish
+    locked = {"conv-locked"}
+
+    def finish(household, conversation_id, **kwargs):
+        if conversation_id in locked:
+            raise _StatementTimeout("canceling statement due to statement timeout")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-locked")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        await first.on_audio(_voice_chunk())
+        await first.close()  # must not raise; finish deferred
+        other = Session(send, session_id="conv-free")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        db = _outage(monkeypatch, "finish")
+        db["down"] = True
+        await other.close()  # queued behind the locked one
+        db["down"] = False
+        monkeypatch.setattr(store, "finish", finish)
+
+        assert (await _until_ready("conv-free")).status == "ready"
+        conv = store.get("default", "conv-locked")
+        assert conv is not None and conv.status == "live"
+        assert first in session_mod._unfinalized
+
+        locked.clear()  # the lock is released
+        assert (await _until_ready("conv-locked")).audio_key is not None
+
+    asyncio.run(run())
+
+
+def test_an_audio_key_blocked_on_its_own_row_does_not_stall_other_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retain path: one session's set_audio_key times out on its row lock (57014).
+    Its finalize waits for the key; the sessions behind it still finalize."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_key = store.set_audio_key
+    locked = {"conv-keylocked"}
+
+    def key(household, conversation_id, audio_key):
+        if conversation_id in locked:
+            raise _StatementTimeout("canceling statement due to statement timeout")
+        return real_key(household, conversation_id, audio_key)
+
+    monkeypatch.setattr(store, "set_audio_key", key)
+    real_finish = store.finish
+    down = {"finish": True}
+
+    def finish(household, conversation_id, **kwargs):
+        if down["finish"]:
+            raise DatabaseUnavailable("database unavailable")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-keylocked")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        await first.on_audio(_voice_chunk())
+        await first.close()
+        other = Session(send, session_id="conv-keyfree")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        await other.on_audio(_voice_chunk())
+        await other.close()  # deferred by the outage, behind the locked one
+        down["finish"] = False
+
+        assert (await _until_ready("conv-keyfree")).audio_key is not None
+        conv = store.get("default", "conv-keylocked")
+        assert conv is not None and conv.status == "live"
+
+        locked.clear()
+        assert (await _until_ready("conv-keylocked")).audio_key is not None
+
+    asyncio.run(run())
+
+
+def test_an_outage_costs_one_attempt_per_pass_not_one_per_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """During a whole-database outage the retry pass stops at the head session: each
+    attempt waits out the pool, so walking the queue would tie up the one executor
+    thread for N waits per pass."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_finish = store.finish
+    state = {"down": True}
+    attempts: list[str] = []
+
+    def finish(household, conversation_id, **kwargs):
+        if state["down"]:
+            attempts.append(conversation_id)
+            raise DatabaseUnavailable("database unavailable")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        for name in ("conv-o1", "conv-o2", "conv-o3"):
+            s = Session(send, session_id=name)
+            await s.start(mic_source="phone-microphone", source_lang=None)
+            await s.close()
+        attempts.clear()
+        await asyncio.sleep(0.1)  # several passes, still down
+        assert attempts and set(attempts) == {"conv-o1"}, attempts
+
+        state["down"] = False
+        for name in ("conv-o1", "conv-o2", "conv-o3"):
+            await _until_ready(name)
 
     asyncio.run(run())
