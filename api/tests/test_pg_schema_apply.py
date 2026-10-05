@@ -491,9 +491,12 @@ def test_boot_ddl_runs_under_a_lock_timeout_after_the_schema_lock(monkeypatch) -
     _install_fake_pool(monkeypatch, conn)
     SqlConversationStore("postgresql://unused")._ensure_pool()
 
-    assert conn.statements[0].startswith("SELECT pg_advisory_xact_lock")
-    assert conn.statements[1] == "SELECT set_config('lock_timeout', %s, true)"
-    assert conn.params[1] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
+    # The request-path statement_timeout is lifted first (XERK-1513); the lock
+    # timeout bounds each table lock instead.
+    assert conn.statements[0] == "SET LOCAL statement_timeout = 0"
+    assert conn.statements[1].startswith("SELECT pg_advisory_xact_lock")
+    assert conn.statements[2] == "SELECT set_config('lock_timeout', %s, true)"
+    assert conn.params[2] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
 
 
 def test_boot_lock_timeout_is_retried(monkeypatch) -> None:
