@@ -47,8 +47,10 @@ paths:
 - Every pooled connection gets `statement_timeout` (STATEMENT_TIMEOUT < QUERY_TIMEOUT): severing
   only the client left lock-blocked backends running, and the pool grew ~4 conns/15s (QA).
   `apply_boot_schema` lifts it with `SET LOCAL` before taking the advisory lock.
-- Its 57014 is not an outage (stays a 500): a statement slow every time would otherwise retry
-  forever (held writes, stale sweep, admin seed). `test_reconcile_is_retryable_classification`.
+- Its 57014 is not an outage (stays a 500): the stale sweep and admin seed would retry a statement
+  slow every time forever. `test_reconcile_is_retryable_classification`.
+- Session-held writes (`_flush_writes`, `_finalize`, `_retain_audio`) use `is_retryable_write`
+  (outage or 57014): dropping on 57014 lost segments and the audio key behind a >10s lock.
 - `reconnect_timeout` stays short: psycopg's 5-min default backs off to 64s, so the first request
   after an outage succeeded up to a minute late. Giving up also opens the outage breaker.
 - The breaker opens only on a failed reconnect with no successful borrow for OPEN_TIMEOUT, never

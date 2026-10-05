@@ -39,9 +39,30 @@ def _voice_chunk(*, ms: int = 100, freq: int = 200) -> bytes:
 _WRITES = ("add_segment", "set_segment_translation", "finish", "set_audio_key")
 
 
-def _outage(monkeypatch: pytest.MonkeyPatch, *names: str, wait_s: float = 0.0) -> dict[str, bool]:
-    """Make conversation writes (default: all of them) raise like a Postgres outage
-    while ``down``, after ``wait_s`` (the pool timeout). ``calls`` counts attempts."""
+class _StatementTimeout(Exception):
+    """psycopg's QueryCanceled as the server's statement_timeout raises it: a write
+    blocked on a lock past STATEMENT_TIMEOUT_SECONDS (XERK-1513)."""
+
+    sqlstate = "57014"
+
+
+# Both must hold the write for retry rather than drop it.
+_HELD = pytest.mark.parametrize(
+    "error",
+    [lambda: DatabaseUnavailable("database unavailable"), lambda: _StatementTimeout("canceled")],
+    ids=["outage", "statement-timeout"],
+)
+
+
+def _outage(
+    monkeypatch: pytest.MonkeyPatch,
+    *names: str,
+    wait_s: float = 0.0,
+    error=lambda: DatabaseUnavailable("database unavailable"),
+) -> dict[str, bool]:
+    """Make conversation writes (default: all of them) raise ``error()`` (a Postgres
+    outage) while ``down``, after ``wait_s`` (the pool timeout). ``calls`` counts
+    attempts."""
     state = {"down": False, "calls": 0}
     store = get_conversation_store()
     for name in names or _WRITES:
@@ -51,7 +72,7 @@ def _outage(monkeypatch: pytest.MonkeyPatch, *names: str, wait_s: float = 0.0) -
             if state["down"]:
                 state["calls"] += 1
                 time.sleep(wait_s)
-                raise DatabaseUnavailable("database unavailable")
+                raise error()
             return _real(*args, **kwargs)
 
         monkeypatch.setattr(store, name, call)
@@ -67,11 +88,12 @@ async def _until_ready(conversation_id: str):
     raise AssertionError(f"{conversation_id} never finalized")
 
 
+@_HELD
 def test_end_during_outage_finalizes_once_the_database_is_back(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
-    db = _outage(monkeypatch)
+    db = _outage(monkeypatch, error=error)
 
     async def run() -> None:
         async def send(_msg) -> None:
@@ -103,13 +125,14 @@ def test_end_during_outage_finalizes_once_the_database_is_back(
     asyncio.run(run())
 
 
+@_HELD
 def test_outage_mid_session_keeps_captions_and_stores_held_turns_later(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     """A failed segment write used to kill the result pump: captions stopped for the
     rest of the session and every later turn was lost. Now the turn is held and
     stored with the next one once the database is back."""
-    db = _outage(monkeypatch)
+    db = _outage(monkeypatch, error=error)
 
     async def run() -> None:
         captions: list[str] = []
@@ -142,13 +165,14 @@ def test_outage_mid_session_keeps_captions_and_stores_held_turns_later(
     asyncio.run(run())
 
 
+@_HELD
 def test_finalize_waits_for_an_audio_key_the_outage_dropped(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error
 ) -> None:
     """Only set_audio_key fails: finish() must not mark the row ready without the key
     to its stored WAV, or History can't play it."""
     monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
-    db = _outage(monkeypatch, "set_audio_key")
+    db = _outage(monkeypatch, "set_audio_key", error=error)
 
     async def run() -> None:
         async def send(_msg) -> None:

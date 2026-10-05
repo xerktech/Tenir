@@ -378,6 +378,15 @@ def is_database_unavailable(exc: BaseException) -> bool:
     return False
 
 
+def is_retryable_write(exc: BaseException) -> bool:
+    """True when a write the session holds for retry should stay held: an outage
+    (``is_database_unavailable``), or a statement the server ended at
+    STATEMENT_TIMEOUT_SECONDS (57014) — a lock held past it, e.g. another replica's
+    boot DDL, dropped live transcript segments and the recording's audio key
+    (XERK-1513 QA). Only for writes that must land; elsewhere 57014 stays a fault."""
+    return is_database_unavailable(exc) or getattr(exc, "sqlstate", None) == "57014"
+
+
 # Boot DDL waits at most this long for each table lock (XERK-1603). Even
 # ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` takes ACCESS EXCLUSIVE before it checks
 # the column, so behind one idle-in-transaction reader it waited forever — and every

@@ -64,7 +64,7 @@ from api.persistence import (
     stale,
     wav_to_pcm16,
 )
-from api.persistence.postgres import is_database_unavailable
+from api.persistence.postgres import is_retryable_write
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
 from api.stt.langid import is_english_word, is_shared_english_word
@@ -1784,7 +1784,7 @@ class Session:
                 try:
                     await asyncio.to_thread(self._unsaved_writes[0])
                 except Exception as exc:
-                    if is_database_unavailable(exc):
+                    if is_retryable_write(exc):
                         log.warning(
                             "session %s database unavailable; %d write(s) held for retry",
                             self.session_id,
@@ -1817,7 +1817,7 @@ class Session:
                 self._conversations.finish, self._household, self.session_id, status="ready"
             )
         except Exception as exc:
-            if not is_database_unavailable(exc):
+            if not is_retryable_write(exc):
                 raise
             return False
         return True
@@ -1867,7 +1867,7 @@ class Session:
         try:
             await self._persist_audio()
         except Exception as exc:
-            self._retain_outage = is_database_unavailable(exc)
+            self._retain_outage = is_retryable_write(exc)
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
             return False
