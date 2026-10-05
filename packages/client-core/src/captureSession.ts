@@ -146,6 +146,12 @@ export interface CaptureState {
    * lyrics in place of the cue band, and the api suppresses cues while it plays.
    */
   song: LiveSong | null;
+  /**
+   * Speech-to-text is running behind real time (caption.status, XERK-1498): captions
+   * arrive late, possibly several turns merged, and turns too old to show live are
+   * only in the stored transcript. Every frontend shows it as a status indicator.
+   */
+  captionsDelayed: boolean;
   error?: string;
 }
 
@@ -171,6 +177,7 @@ export type CaptureAction =
   | { type: "songSync"; songId: string; offsetMs: number; now: number }
   // The current song ended (song.done) — clear the box.
   | { type: "songDone"; songId: string }
+  | { type: "captionStatus"; delayed: boolean }
   | { type: "error"; message: string }
   | { type: "togglePause" }
   | { type: "micSwitch"; micSource: MicSource }
@@ -189,6 +196,7 @@ export function initialCaptureState(micSource: MicSource): CaptureState {
     activeCueEndsAt: null,
     pastCues: [],
     song: null,
+    captionsDelayed: false,
   };
 }
 
@@ -249,7 +257,10 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "connection":
       return { ...state, connection: action.state };
     case "ready":
-      return { ...state, sessionId: action.sessionId };
+      // A (re)started session is not delayed until the api says so: a cold resume
+      // or a new pod never sends `delayed: false`, and a warm resume repeats a
+      // still-delayed status right after its session.ready (XERK-1498).
+      return { ...state, sessionId: action.sessionId, captionsDelayed: false };
     case "partial":
       return { ...state, partial: action.text };
     case "final": {
@@ -346,6 +357,10 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       if (!state.song || state.song.id !== action.songId) return state;
       return { ...state, song: null };
     }
+    case "captionStatus":
+      return action.delayed === state.captionsDelayed
+        ? state
+        : { ...state, captionsDelayed: action.delayed };
     case "error":
       return { ...state, error: action.message };
     case "togglePause":
@@ -368,6 +383,7 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
         activeCueEndsAt: null,
         // The live song box is ephemeral too — drop it when the session ends.
         song: null,
+        captionsDelayed: false,
       };
   }
 }
@@ -614,6 +630,7 @@ export class CaptureSession {
       onSongSync: (m) =>
         this.dispatch({ type: "songSync", songId: m.songId, offsetMs: m.offsetMs, now: Date.now() }),
       onSongDone: (m) => this.dispatch({ type: "songDone", songId: m.songId }),
+      onCaptionStatus: (m) => this.dispatch({ type: "captionStatus", delayed: m.delayed }),
       onError: (m) => {
         this.dispatch({ type: "error", message: m.message });
         // A fatal error means the socket is gone for good — ws.ts has already

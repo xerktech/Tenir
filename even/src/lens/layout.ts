@@ -738,16 +738,21 @@ export function clockText(date: Date): string {
  * lens says it is ready rather than pretending to listen, and a dropped or
  * unreachable server is named rather than hidden behind a "×". While recording
  * with an open socket it reads "listening" with dots that move with `tick`
- * (XERK-85) to signify activity.
+ * (XERK-85) to signify activity — or "captions delayed" while speech-to-text runs
+ * behind real time (XERK-1498), so a lagging or blank caption band says why.
  */
 export function statusLine(
-  state: { recording: boolean; connection: "connecting" | "open" | "closed" },
+  state: {
+    recording: boolean;
+    connection: "connecting" | "open" | "closed";
+    captionsDelayed?: boolean;
+  },
   tick = 0,
 ): string {
   if (!state.recording) return "ready";
   if (state.connection === "connecting") return "connecting to server…";
   if (state.connection === "closed") return "server unreachable — retrying";
-  return `listening${dots(tick)}`;
+  return `${state.captionsDelayed ? "captions delayed" : "listening"}${dots(tick)}`;
 }
 
 /**

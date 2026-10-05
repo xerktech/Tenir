@@ -22,6 +22,7 @@ from api.config import settings
 from api.contract import (
     CaptionFinal,
     CaptionPartial,
+    CaptionStatus,
     Cue,
     Lang,
     LyricLine,
@@ -92,6 +93,16 @@ _STT_FLUSH_TIMEOUT_S = 15.0
 # land as one burst on recovery (XERK-1447); on the glasses that buried the present
 # under seconds-old turns. A healthy final lands within ~1-2 s of its turn's end.
 _STALE_FINAL_S = 10.0
+
+# Captions are "delayed" (caption.status, XERK-1498) from the first final that lands
+# more than _LATE_FINAL_S after its audio until finals have landed on time for
+# _CAUGHT_UP_S and the transcriber is no longer behind real time. Without it, STT
+# slower than real time just left the glasses blank or lagging with nothing saying
+# why. A healthy final lands within ~1-2 s. The hold-off, and waiting out the
+# transcriber, keep a slow engine whose merged backlog lands in bursts (some on time)
+# from flapping the indicator.
+_LATE_FINAL_S = 4.0
+_CAUGHT_UP_S = 10.0
 
 # How many (audio position, arrival time) samples the session keeps to date a final's
 # audio. Pruned as finals land; the cap only bounds a long silent stretch with no
@@ -403,6 +414,10 @@ class Session:
         # (session-timeline ms after a push, monotonic time of that push), oldest
         # first, so a final can be dated by when its audio arrived (_final_age_s).
         self._audio_arrivals: deque[tuple[int, float]] = deque(maxlen=_AUDIO_ARRIVALS_MAX)
+        # Whether the client was last told captions are delayed, and the monotonic
+        # time of the latest late final (see _LATE_FINAL_S).
+        self._captions_delayed = False
+        self._last_late_final = 0.0
         # Persistence: the household scopes the conversation store; with auth on it
         # comes from the authenticated principal, else the configured default. The
         # full-audio buffer is the retained record, flushed to the audio store on end.
@@ -687,6 +702,14 @@ class Session:
             for msg in buffered:
                 await send(msg)
 
+    async def send_caption_status(self) -> None:
+        """Repeat a delayed status to a resumed socket, after its session.ready.
+
+        Clients clear the flag on every session.ready, since a cold resume or a new
+        pod starts a session that is not delayed and would never say so."""
+        if self._captions_delayed:
+            await self._send(CaptionStatus(type="caption.status", delayed=True))
+
     def detach(self, *, grace_seconds: float) -> None:
         """Connection dropped without an explicit end: keep the session alive for a
         grace window so a resume can rebind it, instead of finalizing immediately.
@@ -741,9 +764,11 @@ class Session:
                 continue  # close() sentinel
             # A final that sat out an STT outage is history, not a live caption: it
             # goes to the stored transcript only (XERK-1447).
-            is_stale = (
-                isinstance(result, CaptionFinal) and self._final_age_s(result) > _STALE_FINAL_S
-            )
+            is_stale = False
+            if isinstance(result, CaptionFinal):
+                age = self._final_age_s(result)
+                is_stale = age > _STALE_FINAL_S
+                await self._track_caption_lag(age)
             if is_stale:
                 metrics.incr("caption.final_stale")
             else:
@@ -788,6 +813,31 @@ class Session:
                 self._consider_translation(result)
                 # A finalized turn may be cue-worthy; consider it out of band.
                 self._consider_cue(result)
+
+    async def _track_caption_lag(self, age: float) -> None:
+        """Tell the client when captions fall behind and when they catch up again."""
+        now = time.monotonic()
+        if age > _LATE_FINAL_S:
+            self._last_late_final = now
+            delayed = True
+        elif (
+            self._captions_delayed
+            and now - self._last_late_final >= _CAUGHT_UP_S
+            and not (self._transcriber is not None and self._transcriber.behind_real_time)
+        ):
+            delayed = False
+        else:
+            return
+        if delayed == self._captions_delayed:
+            return
+        self._captions_delayed = delayed
+        metrics.incr("caption.delayed" if delayed else "caption.caught_up")
+        try:
+            await self._send(CaptionStatus(type="caption.status", delayed=delayed))
+        except Exception:
+            # Best-effort like the captions themselves (XERK-58): a client already
+            # gone must not stop the drain from persisting the remaining turns.
+            log.warning("session %s could not deliver caption status", self.session_id)
 
     def _final_age_s(self, final: CaptionFinal) -> float:
         """Seconds since the audio that ends `final` reached the session.

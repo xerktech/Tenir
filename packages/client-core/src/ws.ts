@@ -10,6 +10,7 @@
 import type {
   CaptionFinal,
   CaptionPartial,
+  CaptionStatus,
   ClientMessage,
   Cue,
   ErrorMessage,
@@ -39,6 +40,9 @@ export interface ApiHandlers {
   onCue?: (m: Cue) => void;
   onTranslation?: (m: Translation) => void;
   onTranslationDone?: (m: TranslationDone) => void;
+  // Whether live captions are keeping up (XERK-1498): `delayed` while STT runs
+  // behind real time, so a lagging or blank caption band says why.
+  onCaptionStatus?: (m: CaptionStatus) => void;
   // A song was recognized playing (XERK-184): its synced lyrics scroll in the
   // cue box. `song` opens/replaces a run, `song.sync` re-anchors the scroll to
   // correct drift, `song.done` ends it.
@@ -220,6 +224,9 @@ export class ApiClient {
         break;
       case "translation.done":
         this.handlers.onTranslationDone?.(msg);
+        break;
+      case "caption.status":
+        this.handlers.onCaptionStatus?.(msg);
         break;
       case "song":
         this.handlers.onSong?.(msg);

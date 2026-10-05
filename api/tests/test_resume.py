@@ -230,6 +230,28 @@ def test_ws_reconnect_resumes_live_session() -> None:
             assert registry.get(sid) is live
 
 
+def test_ws_warm_resume_repeats_a_delayed_caption_status_after_ready() -> None:
+    """Clients clear "captions delayed" on every session.ready, because a cold resume
+    starts a fresh, undelayed session that never says so (XERK-1498). A warm resume
+    of a session still delayed must therefore repeat it after its ready."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+        live = registry.get(sid)
+        assert live is not None
+        live._captions_delayed = True
+
+        with client.websocket_connect("/ws") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["type"] == "session.ready"
+            assert ws2.receive_json() == {"type": "caption.status", "delayed": True}
+
+
 def test_ws_resume_after_finalize_extends_retained_audio() -> None:
     """The glasses persist their session id and reconnect with it long after the
     grace window has lapsed — by then the first leg has been finalized and

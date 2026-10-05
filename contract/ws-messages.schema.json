@@ -197,6 +197,18 @@
       }
     },
 
+    "CaptionStatus": {
+      "title": "CaptionStatus",
+      "description": "Server -> client. Whether live captions are keeping up with speech. `delayed: true` is sent when speech-to-text falls seconds behind (it is decoding slower than real time, or catching up after an outage): captions may arrive late, several turns may land merged into one, and turns too old to be useful live are kept in the stored transcript but not shown. `delayed: false` is sent once captions have kept up again for a while. Sent only on a change; a session starts not delayed. Clients show it as a status indicator, never as an error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "delayed"],
+      "properties": {
+        "type": { "const": "caption.status" },
+        "delayed": { "type": "boolean" }
+      }
+    },
+
     "LyricLine": {
       "title": "LyricLine",
       "description": "One time-synced lyric line: the text and the timestamp (ms) it is sung at, measured from the START of the song (not the session).",
@@ -311,6 +323,7 @@
         { "$ref": "#/$defs/Cue" },
         { "$ref": "#/$defs/Translation" },
         { "$ref": "#/$defs/TranslationDone" },
+        { "$ref": "#/$defs/CaptionStatus" },
         { "$ref": "#/$defs/Song" },
         { "$ref": "#/$defs/SongSync" },
         { "$ref": "#/$defs/SongDone" },
