@@ -79,3 +79,45 @@ def test_a_recording_that_was_not_deleted_keeps_its_audio() -> None:
 
     asyncio.run(run())
 
+
+def test_a_session_storing_and_linking_inside_the_delete_still_loses_its_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The session stores and links its WAV after the endpoint deleted the audio but
+    before it deleted the row: the endpoint's second pass must remove it."""
+    store = get_conversation_store()
+    real_delete = store.delete
+
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        s = await _live_session()
+
+        def delete_after_the_session_closes(hh: str, cid: str) -> bool:
+            asyncio.run_coroutine_threadsafe(s.close(), loop).result(10)
+            assert store.get(hh, cid).audio_key == audio_key(hh, cid)
+            return real_delete(hh, cid)
+
+        monkeypatch.setattr(store, "delete", delete_after_the_session_closes)
+        r = await asyncio.to_thread(TestClient(app).delete, f"/conversations/{s.session_id}")
+        assert r.status_code == 204
+        assert store.get("default", s.session_id) is None
+        assert not get_audio_store().exists(audio_key("default", s.session_id))
+
+    asyncio.run(run())
+
+
+def test_a_failed_audio_delete_keeps_the_row_to_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> str:
+        s = await _live_session()
+        await s.close()
+        return s.session_id
+
+    sid = asyncio.run(run())
+
+    def disk_error(_key: str) -> bool:
+        raise OSError("disk")
+
+    monkeypatch.setattr(get_audio_store(), "delete", disk_error)
+    r = TestClient(app, raise_server_exceptions=False).delete(f"/conversations/{sid}")
+    assert r.status_code == 500
+    assert get_conversation_store().get("default", sid) is not None
