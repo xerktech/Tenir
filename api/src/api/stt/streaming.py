@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 import time
 import uuid
 from collections import deque
@@ -112,14 +113,19 @@ _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 # catches up to live speech and no turn's text is lost from the stored transcript.
 # Kept well under _STALE_FINAL_S so a merged final still reaches the glasses.
 _FINAL_BEHIND_S = 3.0
-# "Behind" judges the last _BEHIND_WINDOW single-turn final decodes: with the slowest
-# one set aside, did decoding them take longer than their audio lasts? Summed, not per
-# turn: with a fixed per-request cost a long turn decodes faster than its audio while
-# the engine still falls behind on the turns around it. The slowest is set aside so
-# one stalled request on a healthy engine doesn't merge turns. A merged decode doesn't
-# count (it beats real time by design). Never on wait time alone, so a backlog left by
-# an outage drains turn by turn once a healthy engine answers again.
-_BEHIND_WINDOW = 3
+# "Behind" judges the last _BEHIND_WINDOW single-turn final decodes (at least
+# _BEHIND_MIN_DECODES): leaving out stalls, did decoding them take longer than their
+# audio lasts? Summed, not per turn: with a fixed per-request cost a long turn decodes
+# faster than its audio while the engine still falls behind on the turns around it.
+# A stall is a decode over _STALL_FACTOR x the median, so one stalled request on a
+# healthy engine doesn't merge turns. Not "drop the slowest": on a steady engine the
+# slowest is decided by jitter, and with mixed turn lengths that flipped the verdict.
+# A merged decode doesn't count (it beats real time by design). Never on wait time
+# alone, so a backlog left by an outage drains turn by turn once a healthy engine
+# answers again.
+_BEHIND_WINDOW = 5
+_BEHIND_MIN_DECODES = 3
+_STALL_FACTOR = 2.0
 # A merge is sized so its predicted decode, at the last final's seconds of decode per
 # second of audio, fits this budget: well inside the engine's whole-request timeout
 # (ParakeetEngine, 15 s). An engine whose cost grows with audio would otherwise time
@@ -262,10 +268,10 @@ class StreamingTranscriber:
 
     @property
     def behind_real_time(self) -> bool:
-        decodes = sorted(self._final_decodes)
-        if len(decodes) < _BEHIND_WINDOW:
+        if len(self._final_decodes) < _BEHIND_MIN_DECODES:
             return False
-        kept = decodes[:-1]  # the slowest set aside
+        median = statistics.median(e for e, _ in self._final_decodes)
+        kept = [(e, a) for e, a in self._final_decodes if e <= _STALL_FACTOR * median]
         return sum(e for e, _ in kept) > sum(a for _, a in kept)
 
     @property

@@ -1647,7 +1647,11 @@ def test_one_stalled_decode_on_a_healthy_engine_does_not_merge_turns(
     [
         ([(2.0, 1.6), (2.0, 1.6), (2.0, 1.6)], True),  # steadily slow
         ([(2.5, 1.6), (2.5, 3.0), (2.5, 1.6)], True),  # fixed cost, mixed turns
+        # Mixed turns on a steady slow engine, whichever decode jitter made slowest.
+        ([(2.5, 3.0), (2.5001, 1.6), (2.5, 3.0), (2.5, 1.6)], True),
+        ([(2.5001, 3.0), (2.5, 1.6), (2.5, 3.0), (2.5, 1.6), (2.5, 3.0)], True),
         ([(0.1, 0.5), (6.0, 0.5), (0.1, 0.5)], False),  # one stall on a healthy engine
+        ([(0.1, 0.5), (6.0, 0.5), (0.1, 0.5), (9.0, 0.5), (0.1, 0.5)], False),  # two
         ([(0.3, 1.6), (0.3, 3.0), (0.3, 1.6)], False),  # healthy
         ([(2.0, 1.6), (2.0, 1.6)], False),  # too few to judge
     ],
@@ -1658,6 +1662,31 @@ def test_behind_real_time_judges_recent_decodes_setting_the_slowest_aside(
     t = StreamingTranscriber(FakeEngine(), language="en")
     t._final_decodes.extend(decodes)
     assert t.behind_real_time is behind
+
+
+def test_a_final_whose_decode_fails_adds_no_sample_to_the_behind_window() -> None:
+    """A final that never got an answer has no decode time; reusing the previous
+    turn's would count one slow decode twice and could merge an outage's backlog."""
+
+    class FailsSecondFinal(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):  # type: ignore[override]
+            if want_words and self.calls >= 1:
+                self.calls += 1
+                raise ValueError("upstream rejects this input")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FailsSecondFinal(), language="en", partial_interval_ms=60_000, silence_ms=300,
+            min_segment_ms=100,
+        )
+        for _ in range(2):
+            await _push(t, _pcm(300, amplitude=4000))
+            await _push(t, _pcm(300, amplitude=0))
+        assert len(t._final_decodes) == 1
+        await t.close()
+
+    asyncio.run(run())
 
 
 def test_backlog_coalescing_drops_queued_partials_and_stops_at_the_limit(
