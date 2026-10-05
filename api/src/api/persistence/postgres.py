@@ -103,6 +103,12 @@ class SchemaApplyError(RuntimeError):
     a pod that looks healthy and can't record."""
 
 
+class SchemaLockTimeout(SchemaApplyError):
+    """The boot schema apply gave up waiting for a table lock another transaction
+    holds (XERK-1603). Fatal at boot like any ``SchemaApplyError``, but on the
+    request path (a lazy re-open) it is transient, so it answers 503, not 500."""
+
+
 class DatabaseUnavailable(RuntimeError):
     """The pool could not be opened: the last attempt, under OPEN_TIMEOUT_SECONDS
     ago, found the database unreachable (XERK-1434)."""
@@ -182,7 +188,7 @@ def database_error_types() -> tuple[type[BaseException], ...]:
         from psycopg_pool import PoolTimeout
     except ImportError:
         return (DatabaseUnavailable,)
-    return (DatabaseUnavailable, PoolTimeout, psycopg.OperationalError)
+    return (DatabaseUnavailable, SchemaLockTimeout, PoolTimeout, psycopg.OperationalError)
 
 
 def is_database_unavailable(exc: BaseException) -> bool:
@@ -194,7 +200,7 @@ def is_database_unavailable(exc: BaseException) -> bool:
     ``OperationalError``: a lost/refused connection carries no SQLSTATE (the server
     never answered) or a class-08/57P0x one. Other OperationalErrors (disk full, a
     too-large index row) are real faults and stay 500s, as in ``_is_connection_lost``."""
-    if isinstance(exc, DatabaseUnavailable):
+    if isinstance(exc, (DatabaseUnavailable, SchemaLockTimeout)):
         return True
     try:
         import psycopg
@@ -209,6 +215,21 @@ def is_database_unavailable(exc: BaseException) -> bool:
     return False
 
 
+# Boot DDL waits at most this long for each table lock (XERK-1603). Even
+# ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` takes ACCESS EXCLUSIVE before it checks
+# the column, so behind one idle-in-transaction reader it waited forever — and every
+# request on that table queued behind it in the lock queue. Bounded, a blocked apply
+# gives up, the queue drains, and it retries after a backoff; requests stall at most
+# SCHEMA_LOCK_TIMEOUT_MS per attempt instead of until the reader ends.
+SCHEMA_LOCK_TIMEOUT_MS = 2000
+SCHEMA_LOCK_ATTEMPTS = 3
+SCHEMA_LOCK_BACKOFF_SECONDS = 1.0
+
+
+def _is_lock_timeout(exc: BaseException) -> bool:
+    return getattr(exc, "sqlstate", None) == "55P03"  # lock_not_available
+
+
 def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no cover - live DB
     """Apply schema.sql, then a store's ``extra`` DDL, in one transaction under the
     cross-process schema lock.
@@ -218,25 +239,60 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
     applying its own DDL alone failed (UndefinedTable) whenever it opened first —
     and its env-admin seed with it. A statement the database rejects raises
     ``SchemaApplyError``; failing to get a connection, or losing it mid-apply,
-    propagates as-is (database unreachable)."""
+    propagates as-is (database unreachable).
+
+    A table lock still held by another transaction after SCHEMA_LOCK_ATTEMPTS
+    bounded waits is a ``SchemaLockTimeout`` (a ``SchemaApplyError``), so boot fails
+    visibly (and is retried by the restart) rather than serving on a schema it
+    couldn't apply."""
     path = find_schema_file()
     if path is None:
         log.warning("schema.sql not found; skipping it in the boot schema apply")
     sql = path.read_text(encoding="utf-8") if path is not None else ""
+    for attempt in range(1, SCHEMA_LOCK_ATTEMPTS + 1):
+        try:
+            _apply_boot_schema_once(pool, sql, extra, path)
+            break
+        except Exception as exc:
+            if not _is_lock_timeout(exc):
+                raise
+            if attempt == SCHEMA_LOCK_ATTEMPTS:
+                raise SchemaLockTimeout(
+                    f"boot schema (schema.sql from {path}) could not take a table lock in"
+                    f" {SCHEMA_LOCK_ATTEMPTS} attempts; a long-running or idle-in-transaction"
+                    f" session holds it (see pg_stat_activity): {exc}"
+                ) from exc
+            log.warning(
+                "boot schema apply timed out waiting for a table lock (attempt %d/%d);"
+                " retrying: %s",
+                attempt,
+                SCHEMA_LOCK_ATTEMPTS,
+                exc,
+            )
+            time.sleep(SCHEMA_LOCK_BACKOFF_SECONDS * attempt)
+    if path is not None:
+        log.info("applied idempotent schema from %s on pool open", path)
+
+
+def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
     with pool.connection() as conn:
         try:
             lock_schema(conn)
+            # After the advisory lock, not before: waiting on another replica's apply
+            # is bounded already, since every statement it runs is bounded by this.
+            # LOCAL, so it ends with this transaction and never reaches request traffic.
+            conn.execute(
+                "SELECT set_config('lock_timeout', %s, true)", (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
+            )
             apply_schema(conn, sql)
             for statement in extra:
                 conn.execute(statement)
         except Exception as exc:
-            if _is_connection_lost(conn, exc):
+            if _is_connection_lost(conn, exc) or _is_lock_timeout(exc):
                 raise
             raise SchemaApplyError(
                 f"boot schema (schema.sql from {path}) failed to apply: {exc}"
             ) from exc
-    if path is not None:
-        log.info("applied idempotent schema from %s on pool open", path)
 
 
 # Listing and search render a count and a duration per conversation, so they aggregate

@@ -22,6 +22,7 @@ modified outside it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import uuid
@@ -168,3 +169,70 @@ def test_concurrent_first_use_of_both_stores_on_an_empty_database() -> None:
                     store._pool.close()
             with psycopg.connect(DSN, autocommit=True) as admin:
                 admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
+def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -> None:
+    """XERK-1603: one idle-in-transaction session that read ``conversations`` made the
+    boot ALTER wait forever, and every request on the table queued behind it (>8s,
+    until the reader ended). The apply must give up within its lock timeout, so a
+    request stalls at most that long, and boot then fails instead of hanging."""
+    import time
+
+    import api.persistence.postgres as pg
+
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_TIMEOUT_MS", 300)
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0.2)
+    schema = f"t_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {schema}")
+    dsn = psycopg.conninfo.make_conninfo(DSN, options=f"-c search_path={schema},public")
+    store = pg.SqlConversationStore(dsn)
+    try:
+        store.open()  # converge, so only the ALTER ... IF NOT EXISTS no-ops remain
+        store._pool.close()
+        store._pool = None
+        with psycopg.connect(dsn) as idle, psycopg.connect(dsn, autocommit=True) as req:
+            # Unfixed, the request blocks until the reader ends: fail, don't hang CI.
+            req.execute("SET statement_timeout = '5s'")
+            idle.execute("SELECT 1 FROM conversations")  # now idle in transaction
+            errors: list[BaseException] = []
+
+            def boot() -> None:
+                try:
+                    store.open()
+                except BaseException as exc:  # noqa: BLE001 - asserted below
+                    errors.append(exc)
+
+            booting = threading.Thread(target=boot, daemon=True)
+            booting.start()
+            time.sleep(0.1)  # let the ALTER queue
+            started = time.monotonic()
+            req.execute("SELECT count(*) FROM conversations").fetchone()
+            waited = time.monotonic() - started
+            booting.join(timeout=30)
+
+            assert not booting.is_alive(), "boot apply never gave up"
+            assert waited < 2, f"request stalled {waited:.1f}s behind the boot DDL"
+            assert len(errors) == 1 and isinstance(errors[0], pg.SchemaLockTimeout)
+            assert store._pool is None
+
+            # The reader ending lets the next attempt through.
+            idle.rollback()
+            store.open()
+            assert store._pool is not None
+
+            # The timeout is transaction-local: no pooled connection carries it into
+            # request traffic, even after a failed attempt. Hold every connection at
+            # once so each one is checked, not one reused four times.
+            with contextlib.ExitStack() as stack:
+                pooled = [
+                    stack.enter_context(store._pool.connection())
+                    for _ in range(store._pool.max_size)
+                ]
+                timeouts = {c.execute("SHOW lock_timeout").fetchone()[0] for c in pooled}
+            assert timeouts == {"0"}
+    finally:
+        if store._pool is not None:
+            store._pool.close()
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")

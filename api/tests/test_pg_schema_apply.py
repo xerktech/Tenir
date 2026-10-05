@@ -456,3 +456,73 @@ def test_missing_driver_is_fatal_at_boot(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "psycopg_pool", None)  # import -> ImportError
     with pytest.raises(ImportError):
         SqlConversationStore("postgresql://unused").open()
+
+
+class _LockTimeoutConn:
+    """Times out (55P03) on the first ``failures`` DDL statements, like an ALTER
+    queued behind an idle-in-transaction reader; records every statement."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.statements: list[str] = []
+        self.params: list[object] = []
+
+    def execute(self, sql: str, params: object = None) -> _NoRows:
+        sql = " ".join(sql.split())
+        self.statements.append(sql)
+        self.params.append(params)
+        if self.failures and sql.upper().startswith(("CREATE", "ALTER")):
+            self.failures -= 1
+            raise _SqlStateError("55P03")
+        return _NoRows()
+
+
+def test_boot_ddl_runs_under_a_lock_timeout_after_the_schema_lock(monkeypatch) -> None:
+    """Unbounded, the boot ALTERs (ACCESS EXCLUSIVE even when the column exists) waited
+    forever behind one idle-in-transaction reader, and every request on the table
+    queued behind them (XERK-1603). The timeout is LOCAL, and set after the advisory
+    lock so waiting on another replica's (bounded) apply isn't what times out."""
+    from api.persistence.postgres import SCHEMA_LOCK_TIMEOUT_MS, SqlConversationStore
+
+    conn = _LockTimeoutConn(failures=0)
+    _install_fake_pool(monkeypatch, conn)
+    SqlConversationStore("postgresql://unused")._ensure_pool()
+
+    assert conn.statements[0].startswith("SELECT pg_advisory_xact_lock")
+    assert conn.statements[1] == "SELECT set_config('lock_timeout', %s, true)"
+    assert conn.params[1] == (f"{SCHEMA_LOCK_TIMEOUT_MS}ms",)
+
+
+def test_boot_lock_timeout_is_retried(monkeypatch) -> None:
+    """A lock timeout drops the whole apply (its transaction is aborted) and retries
+    it from the advisory lock after a backoff, so a reader that ends meanwhile costs
+    one short stall, not a failed boot."""
+    import api.persistence.postgres as pg
+
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0)
+    conn = _LockTimeoutConn(failures=1)
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = pg.SqlConversationStore("postgresql://unused")
+
+    store.open()
+
+    assert store._pool is pools[0]
+    assert sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements) == 2
+    assert _creates_cues(conn.statements)
+
+
+def test_boot_fails_when_a_table_lock_never_frees(monkeypatch) -> None:
+    """Still blocked after every attempt: boot aborts as a schema it couldn't apply
+    (the pod restarts and tries again) rather than serving on an unknown schema."""
+    import api.persistence.postgres as pg
+
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0)
+    conn = _LockTimeoutConn(failures=10**6)
+    pools = _install_fake_pool(monkeypatch, conn)
+    store = pg.SqlConversationStore("postgresql://unused")
+
+    with pytest.raises(pg.SchemaLockTimeout, match="could not take a table lock"):
+        store.open()
+    assert store._pool is None and pools[0].closed
+    attempts = sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements)
+    assert attempts == pg.SCHEMA_LOCK_ATTEMPTS
