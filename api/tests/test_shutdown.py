@@ -324,3 +324,89 @@ def test_a_deadline_cancel_at_the_music_scan_join_is_not_swallowed(
         _assert_persisted([s])
 
     asyncio.run(run())
+
+
+async def _ws_handler_hung_in_start(monkeypatch: pytest.MonkeyPatch) -> asyncio.Task[None]:
+    """Run the /ws handler as uvicorn would, parked in session.start's account check
+    (a hung database) so it is still running when the graceful-shutdown deadline hits."""
+    from api import main
+
+    in_check = asyncio.Event()
+
+    async def hung_check(_user_id: str) -> bool:
+        in_check.set()
+        await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(main, "_account_exists", hung_check)
+    inbound: asyncio.Queue[dict] = asyncio.Queue()
+    for event in (
+        {"type": "websocket.connect"},
+        {
+            "type": "websocket.receive",
+            "text": '{"type": "session.start", "micSource": "phone-microphone"}',
+        },
+    ):
+        inbound.put_nowait(event)
+
+    async def send(_event: dict) -> None:
+        pass
+
+    scope = {
+        "type": "websocket",
+        "path": "/ws",
+        "raw_path": b"/ws",
+        "root_path": "",
+        "scheme": "ws",
+        "query_string": b"",
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+        "subprotocols": [],
+        "asgi": {"version": "3.0"},
+        "state": {},
+    }
+    task = asyncio.create_task(main.app(scope, inbound.get, send))
+    await asyncio.wait_for(in_check.wait(), timeout=2)
+    return task
+
+
+def test_graceful_shutdown_cancel_ends_the_ws_handler_quietly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """XERK-1530: uvicorn logs whatever a cancelled handler raises as "Exception in ASGI
+    application" with a traceback, so its shutdown cancel must not escape the handler."""
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    async def run() -> None:
+        task = await _ws_handler_hung_in_start(monkeypatch)
+        task.cancel(msg=_UVICORN_SHUTDOWN_CANCEL)
+        await asyncio.wait_for(task, timeout=2)  # returns: nothing for uvicorn to log
+
+    with caplog.at_level("INFO", logger="api"):
+        asyncio.run(run())
+    assert "cancelled at the graceful-shutdown deadline" in caplog.text
+
+
+def test_any_other_cancel_still_propagates_out_of_the_ws_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        task = await _ws_handler_hung_in_start(monkeypatch)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(run())
+
+
+def test_the_shutdown_cancel_message_is_uvicorns() -> None:
+    """The handler recognises the shutdown cancel by uvicorn's message alone. If uvicorn
+    rewords it (it is not pinned upward), the tracebacks come back with CI green."""
+    import inspect
+
+    import uvicorn.server
+
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    assert f'msg="{_UVICORN_SHUTDOWN_CANCEL}"' in inspect.getsource(uvicorn.server)

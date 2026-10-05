@@ -71,6 +71,11 @@ WS_CLOSE_RESUMED_ELSEWHERE = 4001
 # handle a Session keeps on the socket it is bound to (``current_send``).
 _displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
 
+# The message uvicorn cancels in-flight handlers with once --timeout-graceful-shutdown
+# lapses (uvicorn/server.py). If a uvicorn upgrade changes it, the handler just logs
+# the shutdown traceback again; nothing else depends on it.
+_UVICORN_SHUTDOWN_CANCEL = "Task cancelled, timeout graceful shutdown exceeded"
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -715,6 +720,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
         if WebSocketState.DISCONNECTED not in (ws.client_state, ws.application_state):
             raise
         log.info("client disconnected: %s", exc)
+    except asyncio.CancelledError as exc:
+        # uvicorn cancels a handler still running at --timeout-graceful-shutdown and
+        # logs anything it raises, a re-raised cancel included, as "Exception in ASGI
+        # application" with a traceback (XERK-1530). That cancel is expected: end the
+        # handler quietly and let the lifespan drain finalize the session. Its message
+        # is the only shutdown signal uvicorn gives; any other cancel propagates.
+        if exc.args != (_UVICORN_SHUTDOWN_CANCEL,):
+            raise
+        log.info("ws handler cancelled at the graceful-shutdown deadline")
     finally:
         # Socket dropped without an explicit session.end: keep the session alive for
         # a grace window so a reconnect can resume it. Only detach if this handler
