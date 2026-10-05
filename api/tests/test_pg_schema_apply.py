@@ -521,7 +521,7 @@ def test_boot_fails_when_a_table_lock_never_frees(monkeypatch) -> None:
     pools = _install_fake_pool(monkeypatch, conn)
     store = pg.SqlConversationStore("postgresql://unused")
 
-    with pytest.raises(pg.SchemaApplyError, match="could not take a table lock"):
+    with pytest.raises(pg.SchemaLockTimeout, match="could not take a table lock"):
         store.open()
     assert store._pool is None and pools[0].closed
     attempts = sum(s.startswith("SELECT pg_advisory_xact_lock") for s in conn.statements)

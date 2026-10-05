@@ -103,6 +103,12 @@ class SchemaApplyError(RuntimeError):
     a pod that looks healthy and can't record."""
 
 
+class SchemaLockTimeout(SchemaApplyError):
+    """The boot schema apply gave up waiting for a table lock another transaction
+    holds (XERK-1603). Fatal at boot like any ``SchemaApplyError``, but on the
+    request path (a lazy re-open) it is transient, so it answers 503, not 500."""
+
+
 class DatabaseUnavailable(RuntimeError):
     """The pool could not be opened: the last attempt, under OPEN_TIMEOUT_SECONDS
     ago, found the database unreachable (XERK-1434)."""
@@ -182,7 +188,7 @@ def database_error_types() -> tuple[type[BaseException], ...]:
         from psycopg_pool import PoolTimeout
     except ImportError:
         return (DatabaseUnavailable,)
-    return (DatabaseUnavailable, PoolTimeout, psycopg.OperationalError)
+    return (DatabaseUnavailable, SchemaLockTimeout, PoolTimeout, psycopg.OperationalError)
 
 
 def is_database_unavailable(exc: BaseException) -> bool:
@@ -194,7 +200,7 @@ def is_database_unavailable(exc: BaseException) -> bool:
     ``OperationalError``: a lost/refused connection carries no SQLSTATE (the server
     never answered) or a class-08/57P0x one. Other OperationalErrors (disk full, a
     too-large index row) are real faults and stay 500s, as in ``_is_connection_lost``."""
-    if isinstance(exc, DatabaseUnavailable):
+    if isinstance(exc, (DatabaseUnavailable, SchemaLockTimeout)):
         return True
     try:
         import psycopg
@@ -236,8 +242,9 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
     propagates as-is (database unreachable).
 
     A table lock still held by another transaction after SCHEMA_LOCK_ATTEMPTS
-    bounded waits is a ``SchemaApplyError`` too, so boot fails visibly (and is
-    retried by the restart) rather than serving on a schema it couldn't apply."""
+    bounded waits is a ``SchemaLockTimeout`` (a ``SchemaApplyError``), so boot fails
+    visibly (and is retried by the restart) rather than serving on a schema it
+    couldn't apply."""
     path = find_schema_file()
     if path is None:
         log.warning("schema.sql not found; skipping it in the boot schema apply")
@@ -250,7 +257,7 @@ def apply_boot_schema(pool, extra: Sequence[str] = ()) -> None:  # pragma: no co
             if not _is_lock_timeout(exc):
                 raise
             if attempt == SCHEMA_LOCK_ATTEMPTS:
-                raise SchemaApplyError(
+                raise SchemaLockTimeout(
                     f"boot schema (schema.sql from {path}) could not take a table lock in"
                     f" {SCHEMA_LOCK_ATTEMPTS} attempts; a long-running or idle-in-transaction"
                     f" session holds it (see pg_stat_activity): {exc}"

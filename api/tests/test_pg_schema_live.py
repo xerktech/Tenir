@@ -22,6 +22,7 @@ modified outside it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import uuid
@@ -212,13 +213,24 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
 
             assert not booting.is_alive(), "boot apply never gave up"
             assert waited < 2, f"request stalled {waited:.1f}s behind the boot DDL"
-            assert len(errors) == 1 and isinstance(errors[0], pg.SchemaApplyError)
+            assert len(errors) == 1 and isinstance(errors[0], pg.SchemaLockTimeout)
             assert store._pool is None
 
             # The reader ending lets the next attempt through.
             idle.rollback()
             store.open()
             assert store._pool is not None
+
+            # The timeout is transaction-local: no pooled connection carries it into
+            # request traffic, even after a failed attempt. Hold every connection at
+            # once so each one is checked, not one reused four times.
+            with contextlib.ExitStack() as stack:
+                pooled = [
+                    stack.enter_context(store._pool.connection())
+                    for _ in range(store._pool.max_size)
+                ]
+                timeouts = {c.execute("SHOW lock_timeout").fetchone()[0] for c in pooled}
+            assert timeouts == {"0"}
     finally:
         if store._pool is not None:
             store._pool.close()
