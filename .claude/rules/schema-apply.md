@@ -72,6 +72,15 @@ paths:
     each held a worker thread 30s and stalled every sync endpoint (XERK-1434).
   - Without `connect_timeout`, `pool.close()` after a timed-out open waits on connects to a
     blackholed host that never return.
+- `PoolOpener`'s verdict (a failed open, or an apply's `SchemaLockTimeout`) is shared for
+  `OPEN_TIMEOUT_SECONDS` by every opener of that DSN in the process, and their opens are serialized.
+  - Per store, the conversation and user stores each ran schema.sql's bounded ~10s apply behind
+    one held table lock, re-stalling requests on it twice after an outage (XERK-1607, XERK-1612).
+  - A rejected schema (`SchemaApplyError`) is never shared: it retries on the next call.
+  - The verdict registry is process-global: `tests/conftest.py` clears it around every test.
+  - Tests: `test_lock_timeout_verdict_is_shared_across_openers_of_one_dsn`,
+    `test_opens_of_one_dsn_wait_for_each_other`; live
+    `test_both_stores_share_one_lock_timeout_verdict`.
 - Pools are created with `check=check_connection` (postgres.py; bounded, XERK-1513): without it every connection
   pooled before a Postgres restart failed one request (AdminShutdown) before being dropped.
 - Token resolution reads the user store: never call it on the event loop (WS auth runs in

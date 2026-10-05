@@ -292,25 +292,54 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
     return GuardedPool
 
 
+class _OpenVerdict:
+    """What every opener of one DSN shares: a lock serializing their opens, and the
+    last failure worth sharing with when it happened."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.failure: tuple[float, Exception] | None = None
+
+
 class PoolOpener:
     """Opens a store's connection pool with bounded waits (XERK-1434).
 
     A pool that can't open within OPEN_TIMEOUT_SECONDS is closed and its error is
     shared with every caller for that long, instead of each one queueing another
-    full wait behind the store's lock. The caller holds its own lock and caches
-    the returned pool."""
+    full wait behind the store's lock. So is an ``init`` that timed out on a table
+    lock (``SchemaLockTimeout``): on a lazy re-open each caller otherwise re-ran the
+    whole bounded apply, ~10s apiece, re-stalling requests on the table each time.
+
+    The verdict is shared by every opener of the same DSN in this process, not per
+    store (XERK-1612): the conversation and user stores both apply schema.sql, so a
+    held table lock cost a login plus a /ready two full bounded applies, back to
+    back. Opens of one DSN are serialized for the same reason, so a store opening
+    while the other's apply runs waits for its verdict instead of starting its own.
+    The caller holds its own lock and caches the returned pool."""
+
+    _verdicts: dict[str, _OpenVerdict] = {}
+    _verdicts_lock = threading.Lock()
 
     def __init__(self, dsn: str, name: str) -> None:
         self._dsn = dsn
         self._name = name
-        self._failure: tuple[float, Exception] | None = None
+        with PoolOpener._verdicts_lock:
+            self._verdict = PoolOpener._verdicts.setdefault(dsn, _OpenVerdict())
 
     def open(self, init: Callable[[Any], None]):
         """A ready pool with ``init(pool)`` applied; closed again if either fails.
-        Only a failure to open is remembered: an ``init`` error (a rejected schema)
-        is retried on the very next call."""
-        failure = self._failure
+        Only a failure to open or a lock timeout is remembered: any other ``init``
+        error (a rejected schema) is retried on the very next call."""
+        with self._verdict.lock:
+            return self._open(init)
+
+    def _open(self, init: Callable[[Any], None]):
+        failure = self._verdict.failure
         if failure is not None and time.monotonic() - failure[0] < OPEN_TIMEOUT_SECONDS:
+            if isinstance(failure[1], SchemaLockTimeout):
+                raise SchemaLockTimeout(
+                    f"shared verdict of a recent boot schema apply: {failure[1]}"
+                ) from failure[1]
             raise DatabaseUnavailable(f"database unreachable: {failure[1]}") from failure[1]
         log.info("opening Postgres connection pool (%s)", self._name)
         pool = _guarded_pool_class()(
@@ -336,9 +365,13 @@ class PoolOpener:
             try:
                 pool.open(wait=True, timeout=OPEN_TIMEOUT_SECONDS)
             except Exception as exc:
-                self._failure = (time.monotonic(), exc)
+                self._verdict.failure = (time.monotonic(), exc)
                 raise
-            init(pool)
+            try:
+                init(pool)
+            except SchemaLockTimeout as exc:
+                self._verdict.failure = (time.monotonic(), exc)
+                raise
         except BaseException:
             pool.close()
             raise

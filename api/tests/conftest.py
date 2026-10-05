@@ -24,6 +24,17 @@ OIDC_HOUSEHOLD = "default"
 
 
 @pytest.fixture(autouse=True)
+def _pool_open_verdicts():
+    """Pool-open verdicts are shared per DSN for the whole process (XERK-1612); start
+    each test without one a previous test left behind for the same fake DSN."""
+    from api.persistence.postgres import PoolOpener
+
+    PoolOpener._verdicts.clear()
+    yield
+    PoolOpener._verdicts.clear()
+
+
+@pytest.fixture(autouse=True)
 def _auth(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Auth is always required (there is no no-login mode).
 
