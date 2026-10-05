@@ -23,4 +23,7 @@ paths:
 - A revoke closes the socket from another task, so the handler can still read a queued frame and
   reply to a closed socket. That RuntimeError (starlette `WebSocketDisconnected`) is a disconnect
   only when the socket state is DISCONNECTED. Never catch it by class alone (XERK-1517).
+- Hooks never await `ws.close()` inline: on uvicorn's legacy websockets backend it waits for the
+  peer's close frame, so a frozen client stalled the admin's DELETE 20 s (XERK-1550). They schedule
+  the handler's single background close; the handler's `finally` awaits it.
 - Tests: `api/tests/test_ws_deleted_user.py`.

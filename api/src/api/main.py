@@ -436,18 +436,42 @@ async def ws_endpoint(ws: WebSocket) -> None:
     async def send(msg: ServerMessage) -> None:
         await ws.send_text(serialize(msg))
 
+    # The one close this handler sends from outside its own loop (a revoke or a
+    # displacement). It runs in the background: a close handshake with a frozen peer
+    # can block for the ws backend's close timeout (20 s on uvicorn's legacy
+    # websockets), and the callers can't wait that long — a revoke holds the admin's
+    # DELETE (XERK-1550), a displacement holds the resume. This socket's handler
+    # awaits it on the way out (see finally).
+    close_task: asyncio.Task[None] | None = None
+
+    def close_in_background(code: int, reason: str) -> None:
+        nonlocal close_task
+
+        async def close() -> None:
+            try:
+                await ws.close(code=code, reason=reason)
+            except Exception as exc:  # already gone: nothing left to tell
+                log.info("ws gone before its %d close: %r", code, exc)
+
+        close_task = asyncio.create_task(close())
+
+    def closing() -> bool:
+        return close_task is not None or WebSocketState.DISCONNECTED in (
+            ws.client_state,
+            ws.application_state,
+        )
+
     async def close_removed() -> None:
         # A revoke calls this for every socket that ever bound the session, so skip
-        # one that is already gone rather than count it as a removal.
-        if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
+        # one that is already gone (or closing) rather than count it as a removal.
+        if closing():
             return
         # 1008, not a bare drop: clients treat 1006 as a blip and reconnect.
         log.warning("ws closed: account no longer exists")
         metrics.incr("ws.account_removed")
-        await ws.close(code=1008, reason="account removed")
+        close_in_background(1008, "account removed")
 
     displaced = False
-    displaced_close: asyncio.Task[None] | None = None
 
     async def close_displaced() -> None:
         # Another socket warm-resumed this one's session. Mark it displaced so the
@@ -456,24 +480,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # end, feed or take back the session the new socket now owns. Then tell the
         # client, which would otherwise sit OPEN on a session it no longer receives
         # anything from — and that the grace close may finalize (XERK-1526).
-        nonlocal displaced, displaced_close
+        nonlocal displaced
         displaced = True
-        if WebSocketState.DISCONNECTED in (ws.client_state, ws.application_state):
+        if closing():
             return
         log.info("ws closed: session resumed on another socket")
         metrics.incr("ws.displaced")
-
-        async def close() -> None:
-            try:
-                await ws.close(code=WS_CLOSE_RESUMED_ELSEWHERE, reason="session resumed elsewhere")
-            except Exception as exc:  # already gone: nothing left to tell
-                log.info("displaced ws gone before its close: %r", exc)
-
-        # In the background: a close handshake with a frozen peer can block for the
-        # ws backend's close timeout (20 s on uvicorn's legacy websockets), and the
-        # resume calling us holds the id's start lock and owes its client session.ready.
-        # This socket's handler awaits it on the way out (see finally).
-        displaced_close = asyncio.create_task(close())
+        # The resume calling us holds the id's start lock and owes its client
+        # session.ready, so it must not wait on this socket's peer.
+        close_in_background(WS_CLOSE_RESUMED_ELSEWHERE, "session resumed elsewhere")
 
     _displacers[send] = close_displaced
 
@@ -741,11 +756,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
             # This socket is gone: don't let a session that keeps getting resumed pin
             # it (and every earlier one) in memory through its revoke hook.
             session.drop_disconnect(close_removed)
-        if displaced_close is not None:
+        if close_task is not None:
             # A queued frame can wake this handler before the close task runs. Returning
-            # first lets the server drop the transport and the 4001 with it; the client
-            # then sees 1006, reconnects with the same id and displaces the new socket.
-            await displaced_close
+            # first lets the server drop the transport and the close frame with it; the
+            # client then sees 1006 and reconnects (a displaced one with the same id,
+            # displacing the new socket).
+            await close_task
 
 
 def _err(code: str, message: str, *, fatal: bool = False) -> ErrorMessage:

@@ -8,12 +8,15 @@ not yet started, or after ``session.end`` — was never closed, so it could
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from api import registry
 from api.auth import Principal, get_user_store, issue_token, reset_user_store
@@ -353,3 +356,167 @@ def test_audio_after_revoke_is_not_recorded() -> None:
         assert pushed == [before]
 
     asyncio.run(run())
+
+
+@pytest.mark.real_auth
+def test_delete_does_not_wait_on_the_revoked_sockets_close_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1550): on uvicorn's legacy websockets backend ws.close() waits
+    for the peer's close frame, so a frozen client held the admin's DELETE for the
+    20 s close timeout. The patched close stands in for that peer: it doesn't finish
+    until the test releases it (or 5 s pass), so a DELETE awaiting it is slow."""
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    admin = {"Authorization": f"Bearer {admin_token}"}
+    released = threading.Event()
+    real_close = WebSocket.close
+
+    async def frozen_peer_close(self: WebSocket, code: int = 1000, reason: str | None = None):
+        if code == 1008:
+            for _ in range(50):
+                if released.is_set():
+                    break
+                await asyncio.sleep(0.1)
+        await real_close(self, code=code, reason=reason)
+
+    monkeypatch.setattr(WebSocket, "close", frozen_peer_close)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            t0 = time.monotonic()
+            assert client.delete(f"/auth/users/{member_id}", headers=admin).status_code == 204
+            assert time.monotonic() - t0 < 2
+            released.set()
+            # The close still reaches the client once its peer answers.
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
+    assert not [s for s in registry.active() if s.user_id == member_id]
+
+
+def _slow_close(monkeypatch: pytest.MonkeyPatch, slow_code: int) -> None:
+    """Delay closes with ``slow_code`` so frames sent meanwhile queue up ahead of them."""
+    real_close = WebSocket.close
+
+    async def slow_close(self: WebSocket, code: int = 1000, reason: str | None = None) -> None:
+        if code == slow_code:
+            await asyncio.sleep(0.3)
+        await real_close(self, code=code, reason=reason)
+
+    monkeypatch.setattr(WebSocket, "close", slow_close)
+
+
+@pytest.mark.real_auth
+def test_revoked_socket_gets_its_1008_even_with_a_frame_queued() -> None:
+    """XERK-1550, QA: the 1008 goes out in a background task, and on uvicorn's legacy
+    backend its send blocks until the peer answers. A frame queued meanwhile wakes the
+    handler, whose reply to the now-closing socket ends it; returning then let uvicorn
+    drop the transport and the 1008 with it, so the client saw 1006. TestClient
+    delivers a close sent after the app returns, so watch the ASGI order directly."""
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    events: list[str] = []
+
+    async def observed(scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        async def watch(message) -> None:  # type: ignore[no-untyped-def]
+            if message.get("code") == 1008:
+                await asyncio.sleep(0.3)  # the legacy backend awaiting the peer
+                events.append("1008 sent")
+            await send(message)
+
+        if scope["type"] != "websocket":
+            return await app(scope, receive, send)
+        await app(scope, receive, watch)
+        events.append("handler returned")
+
+    ping = json.dumps({"type": "ping", "t": 1})
+    with TestClient(observed) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            headers = {"Authorization": f"Bearer {admin_token}"}
+            assert client.delete(f"/auth/users/{member_id}", headers=headers).status_code == 204
+            with pytest.raises(WebSocketDisconnect) as exc:
+                for _ in range(1000):  # until one ping lands while the close is going out
+                    ws.send_text(ping)
+                    ws.receive_json()
+            assert exc.value.code == 1008
+            assert events == ["1008 sent", "handler returned"]
+
+
+@pytest.mark.real_auth
+def test_delete_leaves_a_socket_already_closing_as_displaced_alone(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """XERK-1550, QA: a socket gets one close. A delete landing while the displaced
+    socket's 4001 is still going out must not schedule a 1008 over it — only the
+    socket that took the session over counts as removed."""
+    caplog.set_level(logging.INFO, logger="api")
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    _slow_close(monkeypatch, WS_CLOSE_RESUMED_ELSEWHERE)
+    with TestClient(app) as client:
+        with (
+            client.websocket_connect(f"/ws?token={member_token}") as ws1,
+            client.websocket_connect(f"/ws?token={member_token}") as ws2,
+        ):
+            ws1.send_text(START)
+            sid = ws1.receive_json()["sessionId"]
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["resumed"] is True
+            headers = {"Authorization": f"Bearer {admin_token}"}
+            assert client.delete(f"/auth/users/{member_id}", headers=headers).status_code == 204
+            assert caplog.text.count("ws closed: account no longer exists") == 1
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws1.receive_json()
+            assert exc.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws2.receive_json()
+            assert exc.value.code == 1008
+
+
+@pytest.mark.real_auth
+def test_resume_does_not_wait_on_the_displaced_sockets_close_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1550, QA: the displacement's 4001 shares the background close. Awaited
+    inline, a frozen displaced peer held the resume (and its session.ready) for the
+    legacy backend's 20 s close timeout. The patched close stands in for that peer."""
+    _, member_token = _token("member", "member")
+    released = threading.Event()
+    real_close = WebSocket.close
+
+    async def frozen_peer_close(self: WebSocket, code: int = 1000, reason: str | None = None):
+        if code == WS_CLOSE_RESUMED_ELSEWHERE:
+            for _ in range(50):
+                if released.is_set():
+                    break
+                await asyncio.sleep(0.1)
+        await real_close(self, code=code, reason=reason)
+
+    monkeypatch.setattr(WebSocket, "close", frozen_peer_close)
+    with TestClient(app) as client:
+        with (
+            client.websocket_connect(f"/ws?token={member_token}") as ws1,
+            client.websocket_connect(f"/ws?token={member_token}") as ws2,
+        ):
+            ws1.send_text(START)
+            sid = ws1.receive_json()["sessionId"]
+            t0 = time.monotonic()
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
+                )
+            )
+            assert ws2.receive_json()["resumed"] is True
+            assert time.monotonic() - t0 < 2
+            released.set()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws1.receive_json()
+            assert exc.value.code == WS_CLOSE_RESUMED_ELSEWHERE
