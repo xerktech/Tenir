@@ -32,6 +32,15 @@ paths:
     writes, so 40P01 at boot is not proof the schema itself is bad.
   - Tests: `test_schema_apply_takes_the_cross_process_lock_first`,
     `test_concurrent_boot_applies_do_not_collide` (live).
+- Boot DDL runs under `SET LOCAL lock_timeout` (`SCHEMA_LOCK_TIMEOUT_MS`), set *after* the advisory
+  lock; a 55P03 retries the whole apply with backoff, and exhausting the attempts is a
+  `SchemaApplyError` (fatal at boot) — not "unreachable", which would serve on an unapplied schema.
+  - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE before checking the column:
+    unbounded, one idle-in-transaction reader stalled it forever and every request on that table
+    queued behind it (XERK-1603). Skipping DDL on a converged schema wouldn't remove this — the
+    first boot after any schema change still runs it.
+  - Tests: `test_boot_lock_timeout_is_retried`, `test_boot_fails_when_a_table_lock_never_frees`;
+    live `test_boot_apply_does_not_stall_requests_behind_an_idle_reader`.
 - Both stores apply through `apply_boot_schema`: the user store runs schema.sql before its own
   DDL, since the users DDL references households (empty DB → UndefinedTable, XERK-1430).
 - `get_user_store` retries `reconcile_admin` only while `_reconcile_is_retryable` (DB unavailable,
