@@ -521,6 +521,50 @@ def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
         assert ws.receive_json()["type"] == "pong"
 
 
+def test_a_resume_target_ending_mid_takeover_cold_resumes_instead_of_revoking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1597): a warm resume awaits closing the socket's own old
+    session before it rebinds. If the target ended meanwhile, the handler rebound
+    onto a closed session and read that as a revoked account: a valid user's socket
+    got 1008 "account removed", which the client treats as an auth failure."""
+    real_close = Session.close
+    slow: list[Session] = []
+
+    async def slow_close(self: Session) -> None:
+        if self in slow:
+            slow.remove(self)
+            await asyncio.sleep(0.5)
+        await real_close(self)
+
+    monkeypatch.setattr(Session, "close", slow_close)
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    removed = metrics.snapshot()["counters"].get("ws.account_removed", 0)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+            a.send_text(json.dumps(start))
+            old = registry.get(a.receive_json()["sessionId"])
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            target = registry.get(sid)
+            slow.append(old)  # A's takeover stalls closing its own session
+            a.send_text(json.dumps({**start, "sessionId": sid}))
+            time.sleep(0.15)
+            b.send_text(json.dumps({"type": "session.end"}))  # target ends meanwhile
+            b.send_text(json.dumps({"type": "ping", "t": 1}))
+            assert b.receive_json()["type"] == "pong"
+            assert target.is_closed
+            # A reopens the finalized recording instead of being told its account is gone.
+            ready = a.receive_json()
+            assert ready["type"] == "session.ready" and ready["sessionId"] == sid
+            a.send_text(json.dumps({"type": "ping", "t": 2}))
+            assert a.receive_json()["type"] == "pong"
+            resumed = registry.get(sid)
+            assert resumed is not None and resumed is not target and not resumed.is_closed
+            assert old.is_closed and registry.get(old.session_id) is None
+    assert metrics.snapshot()["counters"].get("ws.account_removed", 0) == removed
+
+
 def _as_household(monkeypatch: pytest.MonkeyPatch, household: str) -> None:
     """Route the next WS connection's principal to a real admin of ``household``."""
     store = get_user_store()
