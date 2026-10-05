@@ -33,6 +33,10 @@ paths:
 - The deadline cancel lands on whatever the teardown is awaiting, including an await in its
   `finally`. An await there that must finish catches that one `CancelledError`, completes,
   then re-raises (see `_persist`).
+- uvicorn cancels a WS handler still running at `--timeout-graceful-shutdown` and logs anything
+  it raises, a re-raised `CancelledError` included, as "Exception in ASGI application". The
+  handler returns on that one cancel, matched by uvicorn's message (`_UVICORN_SHUTDOWN_CANCEL`,
+  XERK-1530). No lifespan flag can mark it: the lifespan shutdown runs only after the cancel.
 - Tests: `api/tests/test_shutdown.py`; resume-during-teardown in
   `api/tests/test_session_persistence.py` (`test_resume_during_prior_teardown_*`,
   `test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio`).
