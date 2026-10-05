@@ -162,7 +162,7 @@ async def _finalize_deferred() -> None:
                     # Only this session's row is blocked (a lock past the statement
                     # timeout): the sessions behind it may still finalize (XERK-1513).
                     continue
-                log.info("session %s finalized after a database outage", session.session_id)
+                log.info("session %s finalized after a deferred retry", session.session_id)
             except Exception:
                 log.exception("session %s could not be finalized", session.session_id)
             _unfinalized.remove(session)

@@ -436,3 +436,92 @@ def test_a_finish_blocked_on_its_own_row_does_not_stall_other_finalizes(
         assert (await _until_ready("conv-locked")).audio_key is not None
 
     asyncio.run(run())
+
+
+def test_an_audio_key_blocked_on_its_own_row_does_not_stall_other_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retain path: one session's set_audio_key times out on its row lock (57014).
+    Its finalize waits for the key; the sessions behind it still finalize."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_key = store.set_audio_key
+    locked = {"conv-keylocked"}
+
+    def key(household, conversation_id, audio_key):
+        if conversation_id in locked:
+            raise _StatementTimeout("canceling statement due to statement timeout")
+        return real_key(household, conversation_id, audio_key)
+
+    monkeypatch.setattr(store, "set_audio_key", key)
+    real_finish = store.finish
+    down = {"finish": True}
+
+    def finish(household, conversation_id, **kwargs):
+        if down["finish"]:
+            raise DatabaseUnavailable("database unavailable")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-keylocked")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        await first.on_audio(_voice_chunk())
+        await first.close()
+        other = Session(send, session_id="conv-keyfree")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        await other.on_audio(_voice_chunk())
+        await other.close()  # deferred by the outage, behind the locked one
+        down["finish"] = False
+
+        assert (await _until_ready("conv-keyfree")).audio_key is not None
+        conv = store.get("default", "conv-keylocked")
+        assert conv is not None and conv.status == "live"
+
+        locked.clear()
+        assert (await _until_ready("conv-keylocked")).audio_key is not None
+
+    asyncio.run(run())
+
+
+def test_an_outage_costs_one_attempt_per_pass_not_one_per_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """During a whole-database outage the retry pass stops at the head session: each
+    attempt waits out the pool, so walking the queue would tie up the one executor
+    thread for N waits per pass."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_finish = store.finish
+    state = {"down": True}
+    attempts: list[str] = []
+
+    def finish(household, conversation_id, **kwargs):
+        if state["down"]:
+            attempts.append(conversation_id)
+            raise DatabaseUnavailable("database unavailable")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        for name in ("conv-o1", "conv-o2", "conv-o3"):
+            s = Session(send, session_id=name)
+            await s.start(mic_source="phone-microphone", source_lang=None)
+            await s.close()
+        attempts.clear()
+        await asyncio.sleep(0.1)  # several passes, still down
+        assert attempts and set(attempts) == {"conv-o1"}, attempts
+
+        state["down"] = False
+        for name in ("conv-o1", "conv-o2", "conv-o3"):
+            await _until_ready(name)
+
+    asyncio.run(run())
