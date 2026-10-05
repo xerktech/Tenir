@@ -678,12 +678,13 @@ class SqlConversationStore:
 
     def set_audio_key(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, audio_key: str
-    ) -> None:
+    ) -> bool:
         with self._ensure_pool().connection() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE conversations SET audio_key = %s WHERE id = %s AND household = %s",
                 (audio_key, conversation_id, household),
             )
+            return cur.rowcount > 0
 
     def clear_audio_key(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str

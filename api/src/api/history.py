@@ -307,3 +307,10 @@ def delete_conversation(
         for key in keys - {None}:
             audio.delete(key)
     _store().delete(hh, conversation_id)
+    if audio is not None:
+        # Again now the row is gone: a live session may have stored its WAV and
+        # linked it in between. One storing after this finds no row to link and
+        # drops its own WAV (XERK-1608). Audio first above, so a failed delete
+        # leaves the row for the user to retry.
+        for key in keys - {None}:
+            audio.delete(key)

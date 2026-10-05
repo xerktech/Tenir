@@ -52,7 +52,7 @@ def test_store_finish_and_audio_key() -> None:
     store.create("h", "c1")
     store.add_segment("h", "c1", _seg("s1", "rough", 0, 1000))
 
-    store.set_audio_key("h", "c1", "h/c1.wav")
+    assert store.set_audio_key("h", "c1", "h/c1.wav") is True
     finished = store.finish("h", "c1", status="ready")
     assert finished.status == "ready" and finished.ended_at is not None
     assert store.get("h", "c1").audio_key == "h/c1.wav"
@@ -65,7 +65,7 @@ def test_store_missing_targets_are_safe_noops() -> None:
     store = InMemoryConversationStore()
     # Operations against an unknown conversation must not raise.
     store.add_segment("h", "ghost", _seg("s1", "x", 0, 1))
-    store.set_audio_key("h", "ghost", "k")
+    assert store.set_audio_key("h", "ghost", "k") is False
     store.clear_audio_key("h", "ghost")
     assert store.finish("h", "ghost") is None
     assert store.get("h", "ghost") is None
