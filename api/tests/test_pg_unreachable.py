@@ -100,6 +100,94 @@ def test_unreachable_open_is_bounded_and_its_verdict_shared(monkeypatch, store_c
     assert store._pool is None
 
 
+def test_unreachable_verdict_is_shared_across_stores_of_one_dsn(monkeypatch) -> None:
+    """XERK-1612: the user store opening right after the conversation store found the
+    database unreachable gets that verdict, not a second full wait."""
+    pools = _install_unreachable_pool(monkeypatch)
+    with pytest.raises(_PoolTimeout):
+        SqlConversationStore("postgresql://unused")._ensure_pool()
+    with pytest.raises(DatabaseUnavailable, match="pool initialization incomplete"):
+        SqlUserStore("postgresql://unused")._ensure_pool()
+    assert len(pools) == 1
+    # Another database's verdict is its own.
+    with pytest.raises(_PoolTimeout):
+        SqlUserStore("postgresql://other")._ensure_pool()
+    assert len(pools) == 2
+
+
+def test_lock_timeout_verdict_is_shared_across_openers_of_one_dsn(monkeypatch) -> None:
+    """XERK-1612: a boot schema apply that timed out on a held table lock is shared by
+    every store on that DSN for OPEN_TIMEOUT_SECONDS: each re-running the bounded
+    apply (~10s) re-stalled requests on the locked table once per store. A rejected
+    schema is not shared: it is retried on the very next call."""
+    _install_base_pool(monkeypatch)
+    applies: list[str] = []
+
+    def lock_timeout(name: str):
+        def init(pool) -> None:
+            applies.append(name)
+            raise postgres.SchemaLockTimeout("table lock held")
+
+        return init
+
+    conversations = postgres.PoolOpener("postgresql://unused", "conversations")
+    users = postgres.PoolOpener("postgresql://unused", "users")
+    with pytest.raises(postgres.SchemaLockTimeout, match="table lock held"):
+        conversations.open(lock_timeout("conversations"))
+    with pytest.raises(postgres.SchemaLockTimeout, match="shared verdict"):
+        users.open(lock_timeout("users"))
+    assert applies == ["conversations"]
+
+    # Once the window passes the next open re-applies, so the stores recover.
+    now = time.monotonic()
+    monkeypatch.setattr(postgres.time, "monotonic", lambda: now + OPEN_TIMEOUT_SECONDS + 1)
+    assert users.open(lambda pool: applies.append("users")) is not None
+    assert applies == ["conversations", "users"]
+
+    def rejected(pool) -> None:
+        applies.append("rejected")
+        raise postgres.SchemaApplyError("rejected")
+
+    for _ in range(2):
+        with pytest.raises(postgres.SchemaApplyError, match="rejected"):
+            conversations.open(rejected)
+    assert applies.count("rejected") == 2
+
+
+def test_opens_of_one_dsn_wait_for_each_other(monkeypatch) -> None:
+    """A store opening while the other store's apply is still running waits for its
+    verdict instead of starting a second apply alongside it (XERK-1612)."""
+    _install_base_pool(monkeypatch)
+    started, release = threading.Event(), threading.Event()
+    applies: list[str] = []
+
+    def slow_lock_timeout(pool) -> None:
+        applies.append("conversations")
+        started.set()
+        release.wait(5)
+        raise postgres.SchemaLockTimeout("table lock held")
+
+    errors: list[BaseException] = []
+
+    def open_conversations() -> None:
+        try:
+            postgres.PoolOpener("postgresql://unused", "conversations").open(slow_lock_timeout)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=open_conversations)
+    first.start()
+    assert started.wait(5)
+    threading.Timer(0.2, release.set).start()
+    with pytest.raises(postgres.SchemaLockTimeout, match="shared verdict"):
+        postgres.PoolOpener("postgresql://unused", "users").open(
+            lambda pool: applies.append("users")
+        )
+    first.join(5)
+    assert applies == ["conversations"]
+    assert len(errors) == 1 and isinstance(errors[0], postgres.SchemaLockTimeout)
+
+
 def test_open_and_ready_fail_fast_on_unreachable_db(monkeypatch) -> None:
     """The boot sequence: open() logs the outage, the readiness probe that
     follows fails without another wait."""

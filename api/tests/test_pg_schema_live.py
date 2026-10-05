@@ -303,3 +303,61 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
             store._pool.close()
         with psycopg.connect(DSN, autocommit=True) as admin:
             admin.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
+def test_both_stores_share_one_lock_timeout_verdict(monkeypatch) -> None:
+    """XERK-1612: after an outage both stores re-open lazily and both apply schema.sql.
+    Behind an idle reader on ``conversations`` each ran its own bounded apply, so a
+    login plus a /ready re-stalled the table through twice the attempts. The second
+    store must take the first one's verdict instead of applying again."""
+    import api.persistence.postgres as pg
+    from api.auth.sql_users import SqlUserStore
+
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_TIMEOUT_MS", 300)
+    monkeypatch.setattr(pg, "SCHEMA_LOCK_BACKOFF_SECONDS", 0.2)
+    schema = f"t_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        admin.execute(f"CREATE SCHEMA {schema}")
+    dsn = psycopg.conninfo.make_conninfo(DSN, options=f"-c search_path={schema},public")
+    conversations, users = pg.SqlConversationStore(dsn), SqlUserStore(dsn)
+    stores = [conversations, users]
+    attempts: list[None] = []
+    apply_once = pg._apply_boot_schema_once
+
+    def counted(*args, **kwargs):
+        attempts.append(None)
+        return apply_once(*args, **kwargs)
+
+    try:
+        conversations.open()  # converge, so only the ALTER ... IF NOT EXISTS no-ops remain
+        users._ensure_pool()
+        for store in stores:
+            store._pool.close()
+            store._pool = None
+        monkeypatch.setattr(pg, "_apply_boot_schema_once", counted)
+        with psycopg.connect(dsn) as idle:
+            idle.execute("SELECT 1 FROM conversations")  # now idle in transaction
+            errors: list[BaseException] = []
+            start = threading.Barrier(len(stores))
+
+            def first_use(store) -> None:
+                start.wait()
+                try:
+                    store._ensure_pool()
+                except BaseException as exc:  # noqa: BLE001 - asserted below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=first_use, args=(s,)) for s in stores]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+            assert len(errors) == 2 and all(isinstance(e, pg.SchemaLockTimeout) for e in errors)
+            assert len(attempts) == pg.SCHEMA_LOCK_ATTEMPTS, "each store ran its own apply"
+            idle.rollback()
+    finally:
+        for store in stores:
+            if store._pool is not None:
+                store._pool.close()
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {schema} CASCADE")
