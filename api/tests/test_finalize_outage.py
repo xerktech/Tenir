@@ -391,3 +391,48 @@ def test_a_resume_in_another_household_does_not_hold_a_deferred_finalize(
         await other.close()
 
     asyncio.run(run())
+
+
+def test_a_finish_blocked_on_its_own_row_does_not_stall_other_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only one session's finish() times out (57014: a lock on its row). It stays
+    held for retry, not dropped, and the sessions queued behind it still finalize —
+    an outage blocks them all alike, but a row lock does not (XERK-1513 QA)."""
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    store = get_conversation_store()
+    real_finish = store.finish
+    locked = {"conv-locked"}
+
+    def finish(household, conversation_id, **kwargs):
+        if conversation_id in locked:
+            raise _StatementTimeout("canceling statement due to statement timeout")
+        return real_finish(household, conversation_id, **kwargs)
+
+    monkeypatch.setattr(store, "finish", finish)
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        first = Session(send, session_id="conv-locked")
+        await first.start(mic_source="phone-microphone", source_lang=None)
+        await first.on_audio(_voice_chunk())
+        await first.close()  # must not raise; finish deferred
+        other = Session(send, session_id="conv-free")
+        await other.start(mic_source="phone-microphone", source_lang=None)
+        db = _outage(monkeypatch, "finish")
+        db["down"] = True
+        await other.close()  # queued behind the locked one
+        db["down"] = False
+        monkeypatch.setattr(store, "finish", finish)
+
+        assert (await _until_ready("conv-free")).status == "ready"
+        conv = store.get("default", "conv-locked")
+        assert conv is not None and conv.status == "live"
+        assert first in session_mod._unfinalized
+
+        locked.clear()  # the lock is released
+        assert (await _until_ready("conv-locked")).audio_key is not None
+
+    asyncio.run(run())

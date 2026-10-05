@@ -60,8 +60,9 @@ QUERY_TIMEOUT_SECONDS = 15.0
 # each severed borrow orphaned one backend and the pool opened a replacement, so the
 # connection count grew by ~4 per pool every 15s (XERK-1513 QA). The boot schema
 # apply lifts it for its own transaction. Its 57014 is deliberately not an outage:
-# a statement that is slow every time would otherwise be retried forever (held
-# transcript writes, the stale sweep, the admin seed — see _reconcile_is_retryable).
+# the stale sweep and the admin seed would retry a statement that is slow every time
+# forever (see _reconcile_is_retryable). Only the session's held writes retry it
+# (``is_retryable_write``), since dropping them loses the recording.
 STATEMENT_TIMEOUT_SECONDS = 10.0
 
 # How long a request waits for a connection once the pool has given up reconnecting

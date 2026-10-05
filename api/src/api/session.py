@@ -64,7 +64,7 @@ from api.persistence import (
     stale,
     wav_to_pcm16,
 )
-from api.persistence.postgres import is_retryable_write
+from api.persistence.postgres import is_database_unavailable, is_retryable_write
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
 from api.stt.langid import is_english_word, is_shared_english_word
@@ -152,17 +152,20 @@ async def _finalize_deferred() -> None:
     """Retry each deferred finalize until the database is back (XERK-1531)."""
     while _unfinalized:
         await asyncio.sleep(_FINALIZE_RETRY_S)
-        while _unfinalized:
-            session = _unfinalized[0]
+        for session in list(_unfinalized):
             try:
                 # An audio key the outage kept from the row (the WAV itself is stored).
                 await session._retain_audio()
                 if not await session._finalize():
-                    break  # still down: wait out the interval
+                    if session._held_by_outage:
+                        break  # still down: wait out the interval
+                    # Only this session's row is blocked (a lock past the statement
+                    # timeout): the sessions behind it may still finalize (XERK-1513).
+                    continue
                 log.info("session %s finalized after a database outage", session.session_id)
             except Exception:
                 log.exception("session %s could not be finalized", session.session_id)
-            _unfinalized.pop(0)
+            _unfinalized.remove(session)
 
 
 def teardowns_in_flight() -> list[asyncio.Task[None]]:
@@ -446,6 +449,10 @@ class Session:
         # Whether the last failed retain was a database outage, which holds the
         # finalize back; any other failure finalizes without audio (XERK-236).
         self._retain_outage = False
+        # Whether the last held write failed on a whole-database outage rather than
+        # one row's lock timing out (57014); the deferred finalize loop stops its pass
+        # only on an outage.
+        self._held_by_outage = True
         # Transcript writes (segments, translations, cues, songs) not yet stored, in
         # order, with the task storing them. A database outage holds them here for the
         # next write or the finalize retry instead of losing them (XERK-1531).
@@ -1772,6 +1779,12 @@ class Session:
         if self._writer is None or self._writer.done():
             self._writer = asyncio.create_task(self._flush_writes())
 
+    def _hold(self, exc: BaseException) -> bool:
+        """Whether a failed write is held for retry, recording whether it was a
+        whole-database outage (vs. one row's lock timing out) for the retry loop."""
+        self._held_by_outage = is_database_unavailable(exc)
+        return is_retryable_write(exc)
+
     async def _flush_writes(self) -> bool:
         """Store the held writes in order; returns whether none are left.
 
@@ -1784,10 +1797,11 @@ class Session:
                 try:
                     await asyncio.to_thread(self._unsaved_writes[0])
                 except Exception as exc:
-                    if is_retryable_write(exc):
+                    if self._hold(exc):
                         log.warning(
-                            "session %s database unavailable; %d write(s) held for retry",
+                            "session %s write failed (%s); %d write(s) held for retry",
                             self.session_id,
+                            "database unavailable" if self._held_by_outage else "timed out",
                             len(self._unsaved_writes),
                         )
                         metrics.incr("transcript.writes_deferred")
@@ -1817,7 +1831,7 @@ class Session:
                 self._conversations.finish, self._household, self.session_id, status="ready"
             )
         except Exception as exc:
-            if not is_retryable_write(exc):
+            if not self._hold(exc):
                 raise
             return False
         return True
@@ -1867,7 +1881,7 @@ class Session:
         try:
             await self._persist_audio()
         except Exception as exc:
-            self._retain_outage = is_retryable_write(exc)
+            self._retain_outage = self._hold(exc)
             log.exception("session %s could not retain audio", self.session_id)
             metrics.incr("audio.persist_errors")
             return False

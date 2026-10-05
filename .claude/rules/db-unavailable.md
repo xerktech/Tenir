@@ -40,6 +40,8 @@ paths:
   Any other failure must finalize (XERK-236): one stuck session stalls the serial retry.
 - Deferred finalizes retry serially in one task: an outage ties up one executor thread, not one
   per ended session. Held writes are lost if the process exits before the database is back.
+- A pass stops at the first session held by an *outage*; one held by its own row's lock (57014)
+  is skipped so the sessions behind it still finalize (`_held_by_outage`).
 - Pools come from `PoolOpener` only: its `GuardedPool` bounds a hung server client-side (XERK-1513).
   A SIGSTOPped server ACKs at TCP, so connect_timeout, keepalives and statement_timeout never fire.
 - The watchdog severs with `shutdown()` on a dup of libpq's fd; never close libpq's own fd.
