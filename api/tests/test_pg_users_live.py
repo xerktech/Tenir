@@ -9,6 +9,11 @@ test_pg_schema_live.py); each test works in its own dropped-after schema.
 ``users.id`` is a UUID column, so ``WHERE id = 'x'`` raised InvalidTextRepresentation
 (22P02) instead of matching nothing: PATCH/DELETE /auth/users/x 500'd here where the
 in-memory store 404s (XERK-1532). A non-canonical id is now "no such user".
+
+Writes stored the username as given while lookups strip it, so " alice" was created
+beside "alice" and could never log in (XERK-1548). Writes now store the stripped
+name, and ``users_username_norm_idx`` (on the lower-cased, trimmed name) replaces the
+case-only ``users_username_lower_idx``.
 """
 
 from __future__ import annotations
@@ -59,20 +64,25 @@ def make_store():
             admin.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
-def _has_lower_index(admin) -> bool:
+def _has_index(admin, name: str) -> bool:
     return (
         admin.execute(
-            "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema()"
-            " AND indexname = 'users_username_lower_idx'"
+            "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = %s",
+            (name,),
         ).fetchone()
         is not None
     )
 
 
+NORM_IDX = "users_username_norm_idx"
+LOWER_IDX = "users_username_lower_idx"
+
+
 def test_case_variant_usernames_are_duplicates(make_store) -> None:
     make, admin = make_store
     store = make()
-    assert _has_lower_index(admin)
+    assert _has_index(admin, NORM_IDX)
+    assert not _has_index(admin, LOWER_IDX)  # subsumed by the norm index
     alice = store.create("alice", "alice-pw-1", household="default")
     with pytest.raises(DuplicateUser):
         store.create("ALICE", "mallory-pw", household="default")
@@ -94,7 +104,7 @@ def test_legacy_case_variant_duplicates_do_not_abort_boot(make_store, caplog) ->
     make, admin = make_store
     make()
     # A database from before the index, already holding a case-variant pair.
-    admin.execute("DROP INDEX users_username_lower_idx")
+    admin.execute(f"DROP INDEX {NORM_IDX}")
     admin.execute(
         "INSERT INTO users (household, username, password_hash, created_at)"
         " VALUES ('default', 'alice', 'x', now() - interval '1 day'),"
@@ -103,7 +113,8 @@ def test_legacy_case_variant_duplicates_do_not_abort_boot(make_store, caplog) ->
 
     with caplog.at_level(logging.ERROR, logger="api.auth.sql_users"):
         store = make()  # boot on the upgraded image
-    assert not _has_lower_index(admin)
+    assert not _has_index(admin, NORM_IDX)
+    assert not _has_index(admin, LOWER_IDX)
     assert "['alice', 'ALICE']" in caplog.text
 
     # Deterministic: the exact-case row, else the oldest.
@@ -116,10 +127,107 @@ def test_legacy_case_variant_duplicates_do_not_abort_boot(make_store, caplog) ->
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="api.auth.sql_users"):
         store = make()
-    assert _has_lower_index(admin)
+    assert _has_index(admin, NORM_IDX)
     assert caplog.text == ""
     with pytest.raises(DuplicateUser):
         store.create("ALICE", "mallory-pw", household="default")
+
+
+def test_whitespace_variant_usernames_are_duplicates(make_store) -> None:
+    make, _ = make_store
+    store = make()
+    alice = store.create("alice", "alice-pw-1", household="default")
+    for padded in (" alice", "alice ", "\tALICE\n"):
+        with pytest.raises(DuplicateUser):
+            store.create(padded, "mallory-pw", household="default")
+    with pytest.raises(DuplicateUser):
+        store.create_oidc(
+            oidc_sub="sub-1", email=None, username=" alice", household="default", role="member"
+        )
+
+    # A padded name is stored stripped, so it logs in by the name it is listed under.
+    bob = store.create(" bob ", "bob-pw-1", household="default")
+    assert bob.username == "bob"
+    assert store.authenticate("bob", "bob-pw-1").user_id == bob.user_id
+    with pytest.raises(DuplicateUser):
+        store.update_credentials(bob.user_id, username=" alice ")
+    with pytest.raises(DuplicateUser):
+        store.update_oidc(bob.user_id, username="alice\t")
+    assert store.update_credentials(bob.user_id, username=" rob ").username == "rob"
+    assert store.update_oidc(bob.user_id, username=" robin").username == "robin"
+    kim = store.create_oidc(
+        oidc_sub="sub-2", email=None, username=" kim ", household="default", role="member"
+    )
+    assert kim.username == "kim"
+    assert store.get_by_username("kim").user_id == kim.user_id
+    assert store.authenticate(" alice ", "alice-pw-1").user_id == alice.user_id
+
+
+def test_legacy_padded_username_still_logs_in(make_store) -> None:
+    """A row written padded before the fix matches its stripped name, and blocks a
+    new user taking that name."""
+    make, admin = make_store
+    make()
+    admin.execute(f"DROP INDEX {NORM_IDX}")
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash)"
+        " VALUES ('default', E' dave\\t', 'x'), ('default', E'\\x1ccarl\\x1f', 'y')"
+    )
+    store = make()
+    assert _has_index(admin, NORM_IDX)
+    assert store.get_by_username("Dave").username == " dave\t"
+    # The key trims what str.strip() trims, not just btrim's default ' '.
+    assert store.get_by_username("carl").username == "\x1ccarl\x1f"
+    for name in ("dave", "carl"):
+        with pytest.raises(DuplicateUser):
+            store.create(name, "mallory-pw", household="default")
+
+
+def test_blank_login_never_matches_a_legacy_blank_username(make_store) -> None:
+    """A name str.strip() empties (stored raw before XERK-1548) has a blank key; a
+    blank login must not resolve to it."""
+    make, admin = make_store
+    make()
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', E'\\x1f', 'x')"
+    )
+    store = make()
+    for blank in ("", " ", "\t", "\x1f"):
+        assert store.get_by_username(blank) is None
+
+
+def test_legacy_whitespace_duplicates_keep_case_uniqueness(make_store, caplog) -> None:
+    """Whitespace-only duplicates block the norm index but not the case-only one,
+    which stays as the fallback so case variants are still refused."""
+    make, admin = make_store
+    make()
+    admin.execute(f"DROP INDEX {NORM_IDX}")
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash, created_at)"
+        " VALUES ('default', ' eve', 'x', now() - interval '1 day'),"
+        "        ('default', 'eve', 'y', now())"
+    )
+    with caplog.at_level(logging.ERROR, logger="api.auth.sql_users"):
+        store = make()
+    assert not _has_index(admin, NORM_IDX)
+    assert _has_index(admin, LOWER_IDX)
+    assert "[' eve', 'eve']" in caplog.text
+    # Login resolves to the exact row, not the older padded one.
+    assert store.get_by_username(" eve ").username == "eve"
+    with pytest.raises(DuplicateUser):
+        store.create("EVE", "mallory-pw", household="default")
+
+
+def test_upgrade_replaces_the_case_only_index(make_store) -> None:
+    """A database from XERK-1535 has only users_username_lower_idx; the next boot
+    builds the norm index and drops the one it subsumes."""
+    make, admin = make_store
+    make()
+    admin.execute(f"DROP INDEX {NORM_IDX}")
+    admin.execute(f"CREATE UNIQUE INDEX {LOWER_IDX} ON users (lower(username))")
+    make()
+    assert _has_index(admin, NORM_IDX)
+    assert not _has_index(admin, LOWER_IDX)
 
 
 # --- Users in a non-default household (XERK-1508) -----------------------------
@@ -234,6 +342,12 @@ def test_non_canonical_spellings_of_a_real_id_do_not_match(client, store) -> Non
         assert store.get_by_id(spelling) is None
         assert client.delete(f"/auth/users/{spelling}").status_code == 404
     assert store.get_by_id(user.user_id) is not None
+
+
+def test_create_whitespace_variant_of_an_existing_user_is_409(client, store) -> None:
+    store.create("alice", "longpassword", household=settings.household_id)
+    r = client.post("/auth/users", json={"username": " alice", "password": "longpassword"})
+    assert r.status_code == 409, r.text
 
 
 def test_patch_and_delete_a_real_user_still_work(client, store) -> None:

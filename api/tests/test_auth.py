@@ -152,6 +152,44 @@ def test_user_store_create_authenticate_and_duplicates() -> None:
         store.create("maya", "another", household="acme")
 
 
+def test_user_store_stores_usernames_stripped() -> None:
+    """A padded username is stored stripped, so the roster shows what logs in and the
+    SQL store (which indexes the stripped name) agrees (XERK-1548)."""
+    store = InMemoryUserStore()
+    bob = store.create(" bob ", "longpassword", household="acme")
+    assert bob.username == "bob"
+    assert store.authenticate("bob", "longpassword") is bob
+    with pytest.raises(DuplicateUser):
+        store.create(" BOB", "another", household="acme")
+    oidc = store.create_oidc(
+        oidc_sub="s", email=None, username=" kim\t", household="acme", role="member"
+    )
+    assert oidc.username == "kim"
+    assert store.update_credentials(bob.user_id, username=" rob ").username == "rob"
+    assert store.update_oidc(oidc.user_id, username=" kit ").username == "kit"
+    assert [u.username for u in store.list_by_household("acme")] == ["kit", "rob"]
+
+
+def test_blank_login_never_matches_a_blank_username() -> None:
+    """str.strip() reduces e.g. "\\x1f" to "", so a blank login must not resolve to a
+    row whose name stripped to nothing (XERK-1548)."""
+    store = InMemoryUserStore()
+    store.create("\x1f", "longpassword", household="acme")
+    for blank in ("", " ", "\t", "\x1c"):
+        assert store.get_by_username(blank) is None
+        assert store.authenticate(blank, "longpassword") is None
+
+
+def test_sql_user_store_ddl_is_ascii() -> None:
+    """psycopg encodes queries in the server encoding, so a non-ASCII character in the
+    username key's DDL raised UnicodeEncodeError on a LATIN1 database and every login
+    500'd (XERK-1548)."""
+    from api.auth.sql_users import _ENSURE_SCHEMA, _USERNAME_KEY
+
+    assert _USERNAME_KEY.isascii()
+    assert all(statement.isascii() for statement in _ENSURE_SCHEMA)
+
+
 def test_user_store_get_by_id() -> None:
     store = InMemoryUserStore()
     user = store.create("maya", "longpassword", household="acme")
@@ -283,6 +321,16 @@ def test_reconcile_creates_env_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     admin = store.authenticate("root", "rootpassword")
     assert admin is not None and admin.role == "admin" and admin.household == "h1"
     assert store.get_env_admin() is admin
+
+
+def test_reconcile_skips_a_blank_admin_username(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.auth import get_user_store
+
+    _set_admin_env(monkeypatch, "\x1f ", "rootpassword")
+    reset_user_store()
+    store = get_user_store()
+    assert store.get_env_admin() is None  # no blank-named admin row
+    assert store.list_by_household("h1") == []
 
 
 def test_reconcile_updates_username_and_password_keeping_id(
@@ -579,6 +627,40 @@ def test_admin_can_create_user_member_cannot(monkeypatch: pytest.MonkeyPatch) ->
             ).status_code
             == 409
         )
+
+        # A whitespace-padded variant is the same username (XERK-1548), and the
+        # created name is stored stripped.
+        assert (
+            client.post(
+                "/auth/users",
+                json={"username": " bob ", "password": "longpassword"},
+                headers=auth,
+            ).status_code
+            == 409
+        )
+        padded = client.post(
+            "/auth/users",
+            json={"username": "  carol ", "password": "longpassword"},
+            headers=auth,
+        )
+        assert padded.status_code == 201 and padded.json()["username"] == "carol"
+        assert (
+            client.post(
+                "/auth/login", json={"username": "carol", "password": "longpassword"}
+            ).status_code
+            == 200
+        )
+        # A username str.strip() empties is invalid, not an empty user — including
+        # \x1f, which pydantic's own strip_whitespace keeps.
+        for blank in ("   ", "\t\n", "\x1f", "\x1c\xa0"):
+            assert (
+                client.post(
+                    "/auth/users",
+                    json={"username": blank, "password": "longpassword"},
+                    headers=auth,
+                ).status_code
+                == 422
+            ), repr(blank)
 
         # A member token cannot create users.
         member = client.post(

@@ -365,6 +365,17 @@ def test_jit_username_falls_back_when_preferred_is_taken() -> None:
     assert row.username == "bobby"  # fell back to the email local-part, not "bob"
 
 
+def test_jit_skips_a_blank_email_local_part() -> None:
+    """A local-part str.strip() empties falls through to the sub, not an empty
+    username (XERK-1548)."""
+    store = InMemoryUserStore()
+    store.create("bob", "longpassword", household="default")
+    resolve_oidc_principal(
+        _oidc("sub-x", email="\x1f@h.test", email_verified=True, username="bob"), store
+    )
+    assert store.get_by_oidc_sub("sub-x").username == "sub-x"
+
+
 def test_jit_username_falls_back_to_sub_when_all_else_taken() -> None:
     store = InMemoryUserStore()
     store.create("bob", "longpassword", household="default")
