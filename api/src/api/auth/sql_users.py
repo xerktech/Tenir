@@ -41,6 +41,16 @@ def _is_uuid(user_id: str) -> bool:
     except (ValueError, TypeError, AttributeError):
         return False
 
+# The case- and whitespace-insensitive username key: what lookups match and
+# users_username_norm_idx enforces. It trims the ASCII characters ``str.strip()`` removes
+# from the login input (\x1c-\x1f too, not just btrim's default ' '), so a legacy padded
+# row matches its stripped name (XERK-1548). ASCII only, written as E'' escapes: a
+# non-ASCII character in the DDL can't be encoded for a non-UTF8 database and broke
+# every login there. Lookups must use this exact expression for the planner to use the
+# index.
+_STRIPPED_CHARS = "".join(f"\\x{c:02x}" for c in range(0x80) if chr(c).isspace())
+_USERNAME_KEY = f"lower(btrim(username, E'{_STRIPPED_CHARS}'))"
+
 # psycopg3 executes one statement per call (extended protocol), so keep these
 # separate rather than one multi-statement string.
 _ENSURE_SCHEMA = (
@@ -66,16 +76,22 @@ _ENSURE_SCHEMA = (
     "CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL",
-    # Usernames are looked up case-insensitively, so they must be unique that way too:
-    # the column's own UNIQUE let "alice" and "ALICE" coexist, and login then matched
-    # whichever row Postgres returned first (XERK-1535). A database that already holds
-    # case-variant duplicates can't take the index; creating it unconditionally would
-    # abort boot (SchemaApplyError), so it is skipped there and _ensure_schema logs the
-    # rows to rename. The next boot after the rename creates it.
-    """
+    # Usernames are looked up case- and whitespace-insensitively, so they must be unique
+    # that way too: the column's own UNIQUE let "alice", "ALICE" (XERK-1535) and
+    # " alice" (XERK-1548) coexist, and login matched only one of them. Writes now store
+    # the stripped name; this index also covers rows written before that. A database
+    # that already holds such duplicates can't take it; creating it unconditionally
+    # would abort boot (SchemaApplyError), so it is skipped there and _ensure_schema
+    # logs the rows to rename. The next boot after the rename creates it.
+    # users_username_norm_idx subsumes the older case-only users_username_lower_idx,
+    # which is dropped once it exists and kept as a fallback while it can't.
+    f"""
     DO $$
     BEGIN
-        IF NOT EXISTS (SELECT 1 FROM users GROUP BY lower(username) HAVING count(*) > 1) THEN
+        IF NOT EXISTS (SELECT 1 FROM users GROUP BY {_USERNAME_KEY} HAVING count(*) > 1) THEN
+            CREATE UNIQUE INDEX IF NOT EXISTS users_username_norm_idx ON users ({_USERNAME_KEY});
+            DROP INDEX IF EXISTS users_username_lower_idx;
+        ELSIF NOT EXISTS (SELECT 1 FROM users GROUP BY lower(username) HAVING count(*) > 1) THEN
             CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
         END IF;
     END
@@ -83,10 +99,11 @@ _ENSURE_SCHEMA = (
     """,
 )
 
-# Case-variant duplicate usernames, which block users_username_lower_idx.
+# Usernames differing only in case or surrounding whitespace, which block
+# users_username_norm_idx.
 _DUPLICATE_USERNAMES = (
     "SELECT array_agg(username ORDER BY created_at, id) FROM users"
-    " GROUP BY lower(username) HAVING count(*) > 1"
+    f" GROUP BY {_USERNAME_KEY} HAVING count(*) > 1"
 )
 
 # users.household REFERENCES households(id) and schema.sql seeds only 'default', so a
@@ -129,9 +146,10 @@ class SqlUserStore:
             dupes = [row[0] for row in conn.execute(_DUPLICATE_USERNAMES).fetchall()]
         if dupes:
             log.error(
-                "users holds case-variant duplicate usernames %s; case-insensitive username"
-                " uniqueness is NOT enforced until all but one of each group is renamed or"
-                " deleted (login resolves to the exact-case match, else the oldest row)",
+                "users holds usernames differing only in case or surrounding whitespace %s;"
+                " username uniqueness is NOT fully enforced until all but one of each group"
+                " is renamed or deleted (login resolves to the exact match, else the oldest"
+                " row)",
                 dupes,
             )
 
@@ -172,7 +190,7 @@ class SqlUserStore:
                     VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING {_USER_COLUMNS}
                     """,
-                    (household, username, role, hash_password(password), is_env_admin, email),
+                    (household, username.strip(), role, hash_password(password), is_env_admin, email),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
@@ -199,7 +217,7 @@ class SqlUserStore:
                     VALUES (%s, %s, %s, NULL, %s, %s)
                     RETURNING {_USER_COLUMNS}
                     """,
-                    (household, username, role, oidc_sub, email),
+                    (household, username.strip(), role, oidc_sub, email),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
@@ -208,12 +226,14 @@ class SqlUserStore:
     def get_by_username(self, username: str) -> User | None:  # pragma: no cover
         from psycopg.rows import dict_row
 
+        if not username.strip():
+            return None  # never resolve a blank login to a blank-named row
         with self._ensure_pool().connection() as conn:
             row = conn.cursor(row_factory=dict_row).execute(
-                # Unique once users_username_lower_idx exists; on a database whose
-                # legacy duplicates blocked it, prefer the exact-case row, then the
-                # oldest, so login is deterministic (XERK-1535).
-                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(username) = lower(%s)"
+                # Unique once users_username_norm_idx exists; on a database whose
+                # legacy duplicates blocked it, prefer the exact row, then the
+                # oldest, so login is deterministic (XERK-1535, XERK-1548).
+                f"SELECT {_USER_COLUMNS} FROM users WHERE {_USERNAME_KEY} = lower(%s)"
                 " ORDER BY (username = %s) DESC, created_at, id LIMIT 1",
                 (username.strip(), username.strip()),
             ).fetchone()
@@ -310,7 +330,7 @@ class SqlUserStore:
         params: list[object] = []
         if username is not None:
             sets.append("username = %s")
-            params.append(username)
+            params.append(username.strip())
         if password is not None:
             sets.append("password_hash = %s")
             params.append(hash_password(password))
@@ -363,7 +383,7 @@ class SqlUserStore:
             params.append(oidc_sub)
         if username is not None:
             sets.append("username = %s")
-            params.append(username)
+            params.append(username.strip())
         if role is not None:
             sets.append("role = %s")
             params.append(role)

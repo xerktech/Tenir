@@ -84,6 +84,17 @@ class CreateUserIn(BaseModel):
 
     _check_email = field_validator("email")(staticmethod(_validated_email))
 
+    @field_validator("username")
+    @classmethod
+    def _strip_username(cls, value: str) -> str:
+        # The stores strip with str.strip(), so validate with it too: pydantic's
+        # strip_whitespace misses e.g. \x1f, which then stored an empty username
+        # (XERK-1548).
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
 
 class UpdateUserIn(BaseModel):
     """Fields an admin may set on an existing user (XERK-661). All optional; at least

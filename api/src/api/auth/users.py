@@ -166,7 +166,9 @@ class InMemoryUserStore:
                 raise DuplicateUser(email or "")
             user = User(
                 user_id=str(uuid.uuid4()),
-                username=username,
+                # Stored stripped, as SqlUserStore does, so what is listed is what
+                # logs in (XERK-1548).
+                username=username.strip(),
                 household=household,
                 role=role,
                 password_hash=hash_password(password),
@@ -197,7 +199,7 @@ class InMemoryUserStore:
                 raise DuplicateUser(email or "")
             user = User(
                 user_id=str(uuid.uuid4()),
-                username=username,
+                username=username.strip(),
                 household=household,
                 role=role,
                 password_hash=None,  # OIDC-only: no local password
@@ -208,8 +210,11 @@ class InMemoryUserStore:
             return user
 
     def get_by_username(self, username: str) -> User | None:
+        key = username.strip().lower()
+        if not key:
+            return None  # never resolve a blank login to a blank-named row
         with self._lock:
-            return self._by_username.get(username.strip().lower())
+            return self._by_username.get(key)
 
     def get_by_id(self, user_id: str) -> User | None:
         with self._lock:
@@ -266,7 +271,7 @@ class InMemoryUserStore:
             user = self._by_id.get(user_id)
             if user is None:
                 raise KeyError(user_id)
-            new_username = user.username if username is None else username
+            new_username = user.username if username is None else username.strip()
             new_key = new_username.strip().lower()
             if new_key != user.username.strip().lower() and new_key in self._by_username:
                 raise DuplicateUser(new_username)
@@ -308,7 +313,7 @@ class InMemoryUserStore:
             user = self._by_id.get(user_id)
             if user is None:
                 raise KeyError(user_id)
-            new_username = user.username if username is None else username
+            new_username = user.username if username is None else username.strip()
             new_key = new_username.strip().lower()
             if new_key != user.username.strip().lower() and new_key in self._by_username:
                 raise DuplicateUser(new_username)
@@ -357,7 +362,7 @@ def reconcile_admin(store: UserStore) -> None:
     the verified-email link target when the operator first logs in through Authentik
     (docs/auth-oidc.md §6). Left empty, the existing email is untouched.
     """
-    if not (settings.auth_admin_username and settings.auth_admin_password):
+    if not (settings.auth_admin_username.strip() and settings.auth_admin_password):
         return
     email = settings.auth_admin_email.strip() or None
     existing = store.get_env_admin()
@@ -574,6 +579,9 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
     seen: set[str] = set()
     last_exc: DuplicateUser | None = None
     for candidate in candidates:
+        # Stripped as the store will store it, so e.g. a "\x1f" local-part is skipped
+        # rather than provisioned as an empty username (XERK-1548).
+        candidate = candidate.strip()
         if not candidate or candidate.lower() in seen:
             continue
         seen.add(candidate.lower())

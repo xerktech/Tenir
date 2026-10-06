@@ -49,9 +49,10 @@ ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 -- verified-email link key must identify exactly one local row).
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL;
--- username is also unique case-insensitively (users_username_lower_idx, XERK-1535). It is
--- created by the user store's boot DDL (auth/sql_users.py), not here: it must be skipped on
--- a database that already holds case-variant duplicates, and this file is split on ';'.
+-- username is also unique ignoring case and surrounding whitespace (users_username_norm_idx,
+-- XERK-1535/XERK-1548). It is created by the user store's boot DDL (auth/sql_users.py), not
+-- here: it must be skipped on a database that already holds such duplicates, and this file
+-- is split on ';'.
 
 -- A persisted conversation: one live session's durable record.
 CREATE TABLE IF NOT EXISTS conversations (

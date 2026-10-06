@@ -110,7 +110,19 @@ paths:
   `test_concurrent_first_use_applies_the_schema_once`.
 - Never add a unique index that existing data can violate as a plain boot statement: the apply
   aborts and the pod crashloops. Guard it in a `DO` block that skips it when violated, and log the
-  offending rows (`users_username_lower_idx`, XERK-1535).
+  offending rows (`users_username_norm_idx`, XERK-1535/XERK-1548).
   - A `DO $$ ... $$` body can't go in schema.sql: `iter_statements` splits on `;`. Put it in the
     store's `_ENSURE_SCHEMA`.
   - Tests: `test_pg_users_live.py` `test_legacy_case_variant_duplicates_do_not_abort_boot`.
+- Usernames: both stores store `username.strip()` on every write; SQL lookups match
+  `_USERNAME_KEY` (`lower(btrim(...))`), the exact expression the norm index is built on.
+  - The btrim set is the ASCII `str.isspace()` chars as E'' escapes: raw non-ASCII in DDL
+    can't encode for a non-UTF8 database (every login 500'd). Test: `test_sql_user_store_ddl_is_ascii`.
+  - Validate usernames with `str.strip()`: pydantic's `strip_whitespace` keeps `\x1f`, which
+    stored an empty username.
+  - Storing the raw name while looking up the stripped one let " alice" be created beside
+    "alice" and never log in (XERK-1548).
+  - The case-only `users_username_lower_idx` is dropped once the norm index exists, and kept
+    as a fallback while whitespace-only duplicates block it.
+  - Tests: `test_whitespace_variant_usernames_are_duplicates`,
+    `test_legacy_whitespace_duplicates_keep_case_uniqueness`.
