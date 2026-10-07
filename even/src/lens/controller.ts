@@ -649,7 +649,11 @@ export async function wireLens(
 
   /** Stop the current session: the api finalizes + stores it; the lens idles. */
   const stopSession = () => {
-    const menuWasOpen = state.menu !== null;
+    // Any popup strip on the host — the menu, or a translation/song/cue box —
+    // must be torn down: a plain text write can't remove the box container, so a
+    // stop from the phone (or an error / sign-out) with a translation up left it
+    // painted over the idle lens and into the next session.
+    const popupWasUp = popupUp();
     state.recording = false;
     state.menu = null;
     state.cue = null;
@@ -669,9 +673,9 @@ export async function wireLens(
     state.segments = [];
     state.partial = "";
     void store.clear(); // the session is over — nothing to resume anymore
-    // Leaving via the popup: rebuild back to the plain page (which also
-    // carries the idle texts); otherwise plain idle writes suffice.
-    if (menuWasOpen) rebuildPage();
+    // A popup was up: rebuild back to the plain page (which also carries the
+    // idle texts); otherwise plain idle writes suffice.
+    if (popupWasUp) rebuildPage();
     else showIdle();
     syncPhone();
   };
