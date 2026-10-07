@@ -229,6 +229,23 @@ describe("lens teardown when a session stops", () => {
     expect(t.text(C().status)).toBe("not signed in");
   });
 
+  it("sign-out mid-session with a stale page rebuilds once", async () => {
+    const t = await boot();
+    await popups.translation(t);
+    t.ctlr.mode = "fail";
+    await t.phoneStop();
+    t.ctlr.mode = "ok";
+    await t.phoneStart(); // retry rebuild clears the stale page
+    t.ctlr.mode = "fail";
+    await popups.translation(t); // box rebuild fails -> stale again
+    t.ctlr.mode = "ok";
+    const n = t.rebuilds.length;
+    t.controls.disable();
+    await settle();
+    expect(t.rebuilds.length).toBe(n + 1);
+    expect(t.host.page).toBe(4);
+  });
+
   it("ignores late callbacks from a stopped client", async () => {
     const t = await boot();
     const old = t.h();

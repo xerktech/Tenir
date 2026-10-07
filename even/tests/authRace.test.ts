@@ -137,6 +137,25 @@ describe("silent re-login racing a stop", () => {
     expect(t.clients[1].stopped).toBe(0);
   });
 
+  it("a new session's first auth failure gets its own re-login, not a sign-out", async () => {
+    const d = deferred<any>();
+    silentLogin.mockReturnValue(d.p);
+    const t = await boot();
+    t.clients[0].h.onError?.(UNAUTH);
+    await settle();
+    await t.phoneStop();
+    await t.phoneStart();
+    t.clients[1].h.onError?.(UNAUTH); // before the first heal resolved
+    await settle();
+    expect(silentLogin).toHaveBeenCalledTimes(2);
+    expect(t.text(C().status)).not.toBe("not signed in");
+    d.res(USER);
+    await settle();
+    expect(t.clients.length).toBe(3); // the live session reconnected once
+    expect(t.clients[1].stopped).toBe(1);
+    expect(t.text(C().status)).not.toBe("not signed in");
+  });
+
   it("a heal for the live client still reconnects it", async () => {
     silentLogin.mockResolvedValue(USER);
     const t = await boot();

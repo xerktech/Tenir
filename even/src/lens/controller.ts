@@ -671,6 +671,9 @@ export async function wireLens(
     state.pastCues = [];
     state.translation = null;
     state.song = null;
+    // A new session gets its own one silent re-login: a prior session's attempt,
+    // still unresolved when it was stopped, must not sign this one out.
+    reauthAttempted = false;
     // A box the last stop failed to tear down must not carry into this session.
     if (lensPageStale) rebuildPage();
     connect();
@@ -741,9 +744,9 @@ export async function wireLens(
 
   const disable = () => {
     enabled = false;
-    if (state.recording) stopSession();
+    if (state.recording) stopSession(); // rebuilds a stale page itself
     // A box a failed teardown left on the host must not sit over the sign-in prompt.
-    if (lensPageStale) rebuildPage();
+    else if (lensPageStale) rebuildPage();
     showSignInPrompt();
     syncPhone();
   };
