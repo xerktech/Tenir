@@ -630,6 +630,10 @@ export async function wireLens(
           if (!reauthAttempted) {
             reauthAttempted = true;
             void healToken(storage).then((ok) => {
+              // The re-login is async: if the wearer stopped (or started a new
+              // session) meanwhile, this client is no longer live, so neither a
+              // reconnect (a ghost session with the mic on) nor a sign-out applies.
+              if (client !== self) return;
               if (ok) connect();
               else disable();
             });
@@ -738,6 +742,8 @@ export async function wireLens(
   const disable = () => {
     enabled = false;
     if (state.recording) stopSession();
+    // A box a failed teardown left on the host must not sit over the sign-in prompt.
+    if (lensPageStale) rebuildPage();
     showSignInPrompt();
     syncPhone();
   };

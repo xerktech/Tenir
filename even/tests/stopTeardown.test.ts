@@ -215,6 +215,20 @@ describe("lens teardown when a session stops", () => {
     expect(t.host.page).toBe(4);
   });
 
+  it("a failed teardown is retried on sign-out, not left over the sign-in prompt", async () => {
+    const t = await boot();
+    await popups.translation(t);
+    t.ctlr.mode = "fail";
+    await t.phoneStop();
+    expect(t.host.page).toBe(6);
+    t.ctlr.mode = "ok";
+    t.controls.disable();
+    await settle();
+    expect(t.host.page).toBe(4);
+    expect(t.text(C().caption)).toBe(ctl.SIGN_IN_PROMPT);
+    expect(t.text(C().status)).toBe("not signed in");
+  });
+
   it("ignores late callbacks from a stopped client", async () => {
     const t = await boot();
     const old = t.h();
