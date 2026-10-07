@@ -74,10 +74,10 @@ backstops), then LLM-judges every cue.
 ```bash
 cd api && pip install -e '.[dev]'    # replay imports the installed package
 python scripts/cue_eval/replay.py segments.json \
-  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-int4 \
   --out results.json
 python scripts/cue_eval/judge.py results.json segments.json \
-  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-dflash \
+  --endpoint http://localhost:4000/v1 --api-key "$LITELLM_KEY" --model qwen3.8-27b-int4 \
   --max-tokens 500
 python scripts/cue_eval/report.py results.judged.json
 ```

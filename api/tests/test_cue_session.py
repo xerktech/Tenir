@@ -36,7 +36,9 @@ async def _fresh_session(sent: list[ServerMessage]) -> Session:
 
 
 async def _drain_cues(session: Session) -> None:
-    await asyncio.gather(*list(session._cue_tasks))
+    # Loop: a finishing call may start a catch-up call for turns it missed.
+    while session._cue_tasks:
+        await asyncio.gather(*list(session._cue_tasks))
 
 
 def _cues(sent: list[ServerMessage]) -> list[Cue]:
@@ -95,6 +97,201 @@ def test_rate_limit_suppresses_second_cue(monkeypatch: pytest.MonkeyPatch) -> No
         await _drain_cues(session)
         await session.close()
         assert len(_cues(sent)) == 1
+
+    asyncio.run(run())
+
+
+class _GatedGenerator:
+    """Holds each call until released, so a test can land finals mid-call."""
+
+    def __init__(self, cues: list[GeneratedCue | None]) -> None:
+        self.cues = cues
+        self.transcripts: list[str] = []
+        self.release = __import__("threading").Event()
+
+    def generate(self, transcript, *, avoid_cues=(), evidence=()):
+        self.transcripts.append(transcript)
+        self.release.wait(5)
+        return self.cues[len(self.transcripts) - 1]
+
+
+def test_turn_finalized_mid_call_gets_a_catch_up_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A turn that finalized while a call was in flight used to wait for the NEXT
+    # final; when the speaker then went quiet, no call ever saw it.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a", end_ms=1000))
+        session._consider_cue(_final("how far is the sun?", segment_id="b", end_ms=4000))
+        assert len(gen.transcripts) <= 1  # the second turn did not start its own call
+        gen.release.set()
+        await _drain_cues(session)
+        await session.close()
+        assert len(gen.transcripts) == 2
+        assert "how far is the sun?" in gen.transcripts[1]
+        cues = _cues(sent)
+        assert [c.title for c in cues] == ["Sun"]
+        assert cues[0].atMs == 4000  # stamped at the missed turn, not the first
+
+    asyncio.run(run())
+
+
+def test_no_catch_up_when_no_turn_was_missed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None])
+        gen.release.set()
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a"))
+        await _drain_cues(session)
+        await session.close()
+        assert len(gen.transcripts) == 1
+
+    asyncio.run(run())
+
+
+def test_no_catch_up_right_after_a_shown_cue(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The min interval holds the next cue back anyway; the next final retries.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km."), None])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?", segment_id="a"))
+        session._consider_cue(_final("and the moon?", segment_id="b"))
+        gen.release.set()
+        await _drain_cues(session)
+        await session.close()
+        assert len(gen.transcripts) == 1
+        assert len(_cues(sent)) == 1
+
+    asyncio.run(run())
+
+
+def test_catch_up_chain_stops_once_speech_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two finals, no cues: the missed turn gets one catch-up call, then nothing.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None, None, None])
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a"))
+        session._consider_cue(_final("still chatting", segment_id="b"))
+        gen.release.set()
+        await asyncio.wait_for(_drain_cues(session), timeout=5)
+        await session.close()
+        assert len(gen.transcripts) == 2
+
+    asyncio.run(run())
+
+
+def test_a_final_during_a_catch_up_call_never_overlaps_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    threading = __import__("threading")
+
+    class StepGenerator:
+        """Each call blocks on its own gate; records peak concurrency."""
+
+        def __init__(self) -> None:
+            self.gates: list = []
+            self.active = 0
+            self.peak = 0
+            self.lock = threading.Lock()
+
+        def generate(self, transcript, *, avoid_cues=(), evidence=()):
+            gate = threading.Event()
+            with self.lock:
+                self.gates.append(gate)
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            gate.wait(5)
+            with self.lock:
+                self.active -= 1
+            return None
+
+    async def until(cond) -> None:
+        for _ in range(500):
+            if cond():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("condition never held")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = StepGenerator()
+        session._cue_generator = gen
+        session._consider_cue(_final("one", segment_id="a"))
+        await until(lambda: len(gen.gates) == 1)
+        session._consider_cue(_final("two", segment_id="b"))  # missed by call 1
+        gen.gates[0].set()
+        await until(lambda: len(gen.gates) == 2)  # the catch-up call is running
+        session._consider_cue(_final("three", segment_id="c"))  # missed by call 2
+        session._consider_cue(_final("four", segment_id="d"))
+        gen.gates[1].set()
+        await until(lambda: len(gen.gates) == 3)
+        gen.gates[2].set()
+        await asyncio.wait_for(_drain_cues(session), timeout=5)
+        await session.close()
+        assert gen.peak == 1
+        assert len(gen.gates) == 3
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("slot", ["_translation_active", "_music_active"])
+def test_no_catch_up_while_translation_or_music_owns_the_slot(
+    monkeypatch: pytest.MonkeyPatch, slot: str
+) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None])
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a"))
+        session._consider_cue(_final("still chatting", segment_id="b"))
+        setattr(session, slot, True)  # a run / song opened mid-call
+        gen.release.set()
+        await _drain_cues(session)
+        assert len(gen.transcripts) == 1
+        assert session._cue_missed_at_ms is None  # not replayed once the slot frees
+        setattr(session, slot, False)
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_no_catch_up_after_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None])
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a"))
+        session._consider_cue(_final("still chatting", segment_id="b"))
+        tasks = list(session._cue_tasks)
+        await session.close()
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        assert not session._cue_tasks
+        assert len(gen.transcripts) == 1
 
     asyncio.run(run())
 
