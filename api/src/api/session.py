@@ -344,6 +344,10 @@ class Session:
         self._surfaced_cue_subjects: set[str] = set()
         self._last_cue_monotonic: float | None = None
         self._cue_inflight = False
+        # The newest turn that finalized while a cue call was in flight (its endMs),
+        # or None. Such a turn used to wait for the NEXT final before any call saw
+        # it; the in-flight call now ends by trying again on it (`_cue_catch_up`).
+        self._cue_missed_at_ms: int | None = None
         self._cue_tasks: set[asyncio.Task[None]] = set()
         # Live translations (XERK-160): when a finalized turn's detected language
         # isn't English, it is translated off the caption path and delivered as a
@@ -1031,13 +1035,17 @@ class Session:
             # song ends. The turn's text still joined the context window above.
             return
         if self._cue_inflight:
+            self._cue_missed_at_ms = result.endMs
             return
         if self._last_cue_monotonic is not None:
             elapsed_ms = (time.monotonic() - self._last_cue_monotonic) * 1000
             if elapsed_ms < min_interval_ms():
                 return
+        self._start_cue(result.endMs)
+
+    def _start_cue(self, at_ms: int) -> None:
         self._cue_inflight = True
-        task = asyncio.create_task(self._generate_cue(result.endMs))
+        task = asyncio.create_task(self._generate_cue(at_ms))
         self._cue_tasks.add(task)
         task.add_done_callback(self._cue_tasks.discard)
 
@@ -1155,6 +1163,29 @@ class Session:
             metrics.incr("cue.errors")
         finally:
             self._cue_inflight = False
+            self._cue_catch_up()
+
+    def _cue_catch_up(self) -> None:
+        """Start the next cue call right away when turns finalized during the last one.
+
+        A call takes ~5 s (mostly the model's thinking), so turns routinely finalize
+        while one is in flight. Left to wait for the next final, a turn's cue came
+        late — or never, when the speaker then went quiet. Replaying the eval set's
+        final timings with measured call times, catching up cut final-to-cue time
+        from 8.1 s mean / 13.5 s p90 to 6.9 s / 10.4 s, for ~30% more calls
+        (scripts/cue_eval/RESULTS-2026-10.md). Skipped once a cue was just shown:
+        the min interval holds the next one back anyway, and the next final retries.
+        """
+        at_ms, self._cue_missed_at_ms = self._cue_missed_at_ms, None
+        if at_ms is None or self._closed or self._cue_generator is None:
+            return
+        if self._translation_active or self._music_active:
+            return
+        if self._last_cue_monotonic is not None:
+            elapsed_ms = (time.monotonic() - self._last_cue_monotonic) * 1000
+            if elapsed_ms < min_interval_ms():
+                return
+        self._start_cue(at_ms)
 
     # ---- Music ID (XERK-184) -------------------------------------------------
 

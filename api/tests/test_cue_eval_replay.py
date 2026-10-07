@@ -798,3 +798,72 @@ def test_main_saves_fetched_evidence_even_when_the_run_fails(replay, monkeypatch
     with pytest.raises(SystemExit, match="worker died"):
         _grounded_main(replay, monkeypatch, tmp_path, cache, _StubRetriever())
     assert json.loads(cache.read_text())["windows"]
+
+
+class _DecliningServer(_FakeServer):
+    """Answers every cue call with no cue, recording the newest turn it saw."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.newest: list[str] = []
+
+    def post(self, url, json, timeout):  # noqa: A002
+        self.cue_payloads.append(json)
+        self.newest.append(json["messages"][1]["content"].splitlines()[-1])
+        self.now += self.cue_ms / 1000
+        return _Resp('{"cue": false}')
+
+
+def test_a_final_missed_mid_call_gets_a_catch_up_call(replay):
+    # Turns end every 1 s; a call occupies 2.5 s. Turns 1-2 land mid-call, so the
+    # call ends with one more call on the newest turn instead of waiting for turn 4.
+    server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=100)
+    out = _run(replay, server, segments=_segments(4, gap_ms=1000))
+    assert server.newest == ["turn 0 about subject 0", "turn 2 about subject 2",
+                             "turn 3 about subject 3"]
+    assert out["attempts"] == 3
+
+
+def test_a_trailing_missed_final_still_gets_its_call(replay):
+    server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=100)
+    _run(replay, server, segments=_segments(2, gap_ms=1000))
+    assert server.newest == ["turn 0 about subject 0", "turn 1 about subject 1"]
+
+
+def test_no_catch_up_after_a_shown_cue(replay):
+    server = _FakeServer(replay.VERIFY_SYSTEM, cue_ms=100)
+    out = _run(replay, server, segments=_segments(2, gap_ms=1000))
+    assert out["attempts"] == 1 and len(out["cues"]) == 1
+
+
+def test_a_catch_up_cue_is_stamped_at_the_missed_final(replay):
+    class LateCue(_DecliningServer):
+        def post(self, url, json, timeout):  # noqa: A002
+            if self.cue_payloads:  # every call after the first shows a cue
+                self.cue_payloads.append(json)
+                return _Resp('{"cue": true, "title": "Late Topic", "body": "A late fact."}')
+            return super().post(url, json, timeout)
+
+    out = _run(replay, LateCue(replay.VERIFY_SYSTEM, cue_ms=100),
+               segments=_segments(3, gap_ms=1000))
+    # Turn 1 (ends 2000 ms) and turn 2 (3000 ms) land mid-call; the cue belongs to turn 2.
+    assert [c["at_ms"] for c in out["cues"]] == [3000]
+
+
+def test_a_dropped_connection_is_waited_out_not_scored_or_timed(replay, monkeypatch):
+    monkeypatch.setattr(replay, "_TRANSPORT_RETRY_S", 0.0)
+
+    class Flaky(_FakeServer):
+        drops = 2
+
+        def post(self, url, json, timeout):  # noqa: A002
+            if self.drops:
+                self.drops -= 1
+                self.now += 30  # the outage passes on the replay clock
+                raise replay.httpx.ConnectError("refused")
+            return super().post(url, json, timeout)
+
+    out = _run(replay, Flaky(replay.VERIFY_SYSTEM, cue_ms=100), segments=_segments(1),
+               realtime=True)
+    assert out["errors"] == 0 and len(out["cues"]) == 1
+    assert out["call_ms"] == [100]

@@ -94,8 +94,9 @@ translation accuracy) instead of only unit tests or the stub.
   - `milmmt-46-4b-translate` — translations (`tenir-translator`, MiLMMT-46-4B on vLLM); needs
     `API_TRANSLATION_PROMPT_STYLE=milmmt` (completion prompt on `/v1/completions`).
   - `parakeet` — STT (`tenir-stt`), `/v1/audio/transcriptions`.
-  - `qwen3.8-27b-dflash` — cues/summaries. Its in-cluster stack (`ai/tenir/qwen.yaml`) is disabled
-    and the alias is not served until XERK-1422 lands, so cue evals have no model right now.
+  - `qwen3.8-27b-int4` — cues/summaries (`tenir-cue`, Qwen3.8-27B W4A16 on vLLM + MTP). The 512-token
+    thinking cap lives in the LiteLLM route (`extra_body.thinking_token_budget`), not in Tenir.
+  - The cue server's KV pool fits one request at a time: a replay queues live users' cues behind it.
 - Drive it in code with e.g.
   `CompletionTranslator(endpoint="http://localhost:4000/v1", model="milmmt-46-4b-translate",
   api_key=KEY)` (`api.translate.completion`; `OpenAITranslator` is the chat-json style);

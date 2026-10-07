@@ -2,8 +2,9 @@
 
 Reuses the SAME gateway base URL + key the STT engine uses (no new URL/key var):
 it POSTs /chat/completions instead of /audio/transcriptions. In prod the alias is
-``qwen3.8-27b-dflash`` → Qwen3.8-27B on the SGLang server (NVFP4 weights, DFlash
-speculative decoding), which replaced the retired gpt-oss:120b Ollama deployment;
+``qwen3.8-27b-int4`` → Qwen3.8-27B (W4A16, MTP drafting) on vLLM, the same weights the
+prompt was tuned on as NVFP4 + DFlash under SGLang; the 27B replaced the retired
+gpt-oss:120b Ollama deployment;
 the July 2026 cue-model eval that picked gpt-oss is in
 scripts/cue_eval/RESULTS-2026-07.md.
 
@@ -80,6 +81,10 @@ _SYSTEM = (
     "- {guidance}\n"
     "- Never present a sibling model's specs, a predecessor's dates, or a "
     "rival product's defaults as the named thing's own.\n"
+    "- If you would have to guess which device or product the speakers mean "
+    "(\"if this is a 3D printer...\"), stay silent.\n"
+    "- Never take a side in a disagreement between the speakers or comment on "
+    "their habits, choices, or relationships.\n"
     "Reply with a single JSON object and nothing else: "
     '{{"cue": true, "title": "1-3 word label", "body": "one or two short '
     'sentences under 200 characters"}}. If nothing is cue-worthy, reply '
@@ -127,6 +132,21 @@ _SYSTEM = (
     'Speaker: "I can\'t open that link you sent" -> BAD cue {{"title": "Link '
     'Access", "body": "I can\'t open or view external links."}} — the cue '
     'spoke as a participant; a cue is a note about the world, never an "I".\n'
+    'Speaker reads out ad copy or a draft -> BAD cue {{"title": "Copy Edit", '
+    '"body": "Here\'s a tighter version: ..."}} — nobody asked for an edit; a '
+    "cue never rewrites, polishes, or summarizes the words being said, and "
+    "never offers help (\"If you want, I can...\").\n"
+    'Two speakers argue over whether their kid\'s video games count as social '
+    'time -> BAD cue {{"title": "Social Gaming", "body": "Online multiplayer '
+    'counts as social interaction, so gaming can be social time."}} — a cue '
+    "that backs one side of a personal disagreement, or lectures either "
+    "speaker on habits, addiction, or parenting, referees their argument. "
+    'Reply {{"cue": false}}.\n'
+    'Speaker (e-bike promo): "regenerative braking extends your range" -> BAD '
+    'cue {{"title": "Regen Braking", "body": "In electric cars, regenerative '
+    'braking recovers up to 70% of braking energy."}} — a neighbouring '
+    "product category's meaning and numbers; explain a term in the domain of "
+    'the thing being discussed or reply {{"cue": false}}.\n'
     'Speaker: "reviewing the Pixel 12 Pro today" and the newest Pixel you know '
     'is the 9 -> BAD cue {{"title": "Pixel 12 Pro", "body": "The Pixel 12 Pro '
     'has a 6.7-inch display and a Tensor G4 chip..."}} — those are an older '

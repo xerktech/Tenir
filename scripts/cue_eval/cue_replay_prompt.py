@@ -135,6 +135,8 @@ Accuracy is absolute:
 - Never contradict a firsthand detail the speakers stated about something they are looking at.
 - Facts that change over time (current versions, prices, officeholders, recent events) may be past your knowledge; if not confident, stay silent.
 - Never present a sibling model's specs, a predecessor's dates, or a rival product's defaults as the named thing's own.
+- If you would have to guess which device or product the speakers mean ("if this is a 3D printer..."), stay silent.
+- Never take a side in a disagreement between the speakers or comment on their habits, choices, or relationships.
 Reply with a single JSON object and nothing else: {"cue": true, "title": "1-3 word label", "body": "one or two short sentences under 200 characters"}. If nothing is cue-worthy, reply {"cue": false}.'''
 _V6_PROMPT = (
     _V5_PROMPT.replace(

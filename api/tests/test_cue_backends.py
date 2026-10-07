@@ -405,6 +405,10 @@ def test_payload_system_prompt_keeps_the_worked_examples() -> None:
         "salvatore gravano",  # BAD: in-conversation name misheard
         "link access",  # BAD: cue spoke as a participant
         "pixel 12 pro",  # BAD: cross-generation specs
+        # 2026-10 session review (RESULTS-2026-10.md):
+        "copy edit",  # BAD: rewrote ad copy being read aloud
+        "social gaming",  # BAD: took a side in a personal disagreement
+        "regen braking",  # BAD: a neighbouring product category's meaning
     ):
         assert anchor in system
     assert "reply with a single json object and nothing else" in system

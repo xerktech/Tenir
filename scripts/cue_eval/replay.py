@@ -3,7 +3,8 @@
 Builds each request with ``api.cue.openai.OpenAICueGenerator._build_payload``
 from the installed ``api`` package — so what this measures is always the prompt
 that ships — and emulates the session's gating: an 8-turn rolling context, one
-attempt in flight at a time, the min interval between emitted cues, and all
+attempt in flight at a time (a final that lands mid-call earns one catch-up call
+when that call ends without a cue), the min interval between emitted cues, and all
 three dedupe backstops (normalized title + substance fingerprint +
 title-subject containment). Ungrounded by default; ``--grounded`` adds live
 retrieval evidence (cached per transcript window so every model under
@@ -226,6 +227,33 @@ def load_conversations(path: Path) -> dict[str, list[dict]]:
     return by_conv
 
 
+def _post_through_outage(
+    client: httpx.Client, url: str, payload: dict, clock=time.monotonic
+) -> tuple[httpx.Response, float]:
+    """POST, waiting out a dropped connection instead of scoring it as an error.
+
+    The endpoint is usually a ``kubectl port-forward``, which drops for tens of
+    seconds at a time. Each refused call used to count as a failed attempt, and
+    a failing call returns instantly, so the replay raced through the outage and
+    reported a near-mute run that measured nothing (2026-10 round). Only
+    transport failures retry; an HTTP error status still scores as an error.
+    Returns the response and the ``clock()`` its successful try started at, so the
+    outage is not charged to the call's latency.
+    """
+    for _ in range(_TRANSPORT_RETRIES):
+        started = clock()
+        try:
+            return client.post(url, json=payload, timeout=60), started
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+            time.sleep(_TRANSPORT_RETRY_S)
+    started = clock()
+    return client.post(url, json=payload, timeout=60), started
+
+
+_TRANSPORT_RETRIES = 24
+_TRANSPORT_RETRY_S = 5.0
+
+
 def replay_conversation(
     gen: OpenAICueGenerator,
     client: httpx.Client,
@@ -262,17 +290,12 @@ def replay_conversation(
     }
     next_free_ms = 0
     last_emit_ms = -(10**9)
-    for i, seg in enumerate(segments):
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        recent.append(text)
-        at = seg["end_ms"]
-        if at < next_free_ms or at - last_emit_ms < MIN_INTERVAL_MS:
-            continue
+
+    def attempt(at: int, stamp: int, i: int, turns: list[str]) -> bool:
+        """One cue call starting at transcript time ``at``; True if it showed a cue."""
+        nonlocal next_free_ms, last_emit_ms, subjects
         out["attempts"] += 1
         next_free_ms = at + ATTEMPT_MS
-        turns = list(recent)
         found, retrieval_ms = evidence.get(turns) if evidence else ((), 0)
         if evidence:
             out["evidence_windows"] += 1
@@ -285,12 +308,12 @@ def replay_conversation(
         in_flight_ms = retrieval_ms
         started = clock()
         try:
-            resp = client.post(url, json=payload, timeout=60)
+            resp, started = _post_through_outage(client, url, payload, clock)
             resp.raise_for_status()
             content = OpenAICueGenerator._message_content(resp.json()["choices"][0]["message"])
         except Exception:
             out["errors"] += 1
-            continue
+            return False
         finally:
             # Mean call latency bounds cue frequency directly (attempts are
             # serialized one-in-flight live), so the replay records it.
@@ -305,7 +328,7 @@ def replay_conversation(
         cue = gen._parse(content)
         if cue is None:
             out["declines"] += 1
-            continue
+            return False
         if verify:
             v_started = clock()
             verdict = verify_cue(
@@ -318,7 +341,7 @@ def replay_conversation(
                 next_free_ms = at + in_flight_ms
             if verdict != "safe":
                 out["verify_drops" if verdict == "unsafe" else "verify_errors"] += 1
-                continue
+                return False
         norm = normalize_cue_title(cue.title)
         tokens = cue_substance_tokens(cue.title, cue.body)
         subject = cue_subject_tokens(cue.title)
@@ -335,7 +358,7 @@ def replay_conversation(
             or bool(subject & subjects)
         ):
             out["dedup_drops"] += 1
-            continue
+            return False
         norms.add(norm)
         surfaced.append(cue)
         substance.append(tokens)
@@ -343,8 +366,35 @@ def replay_conversation(
         # The min interval runs from when the cue is shown: after the call live.
         last_emit_ms = at + in_flight_ms if realtime else at
         out["cues"].append(
-            {"title": cue.title, "body": cue.body, "at_ms": at, "seg_index": i}
+            {"title": cue.title, "body": cue.body, "at_ms": stamp, "seg_index": i}
         )
+        return True
+
+    # A final that lands while a call is in flight is not dropped: when that call
+    # ends without showing a cue, the session starts one more call right away on
+    # the newest turns (Session._cue_catch_up), stamped at the missed final.
+    missed: tuple[int, int, list[str]] | None = None
+    shown = False
+    for i, seg in enumerate(segments):
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        at = seg["end_ms"]
+        while missed is not None and at >= next_free_ms:
+            stamp, m_i, m_turns = missed
+            missed = None
+            if not shown:
+                shown = attempt(next_free_ms, stamp, m_i, m_turns)
+        recent.append(text)
+        if at < next_free_ms:
+            missed = (at, i, list(recent))
+            continue
+        if at - last_emit_ms < MIN_INTERVAL_MS:
+            continue
+        shown = attempt(at, at, i, list(recent))
+    if missed is not None and not shown:
+        stamp, m_i, m_turns = missed
+        attempt(next_free_ms, stamp, m_i, m_turns)
     return out
 
 
