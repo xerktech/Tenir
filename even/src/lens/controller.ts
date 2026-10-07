@@ -293,6 +293,12 @@ export async function wireLens(
   // attempt fails; the aside then lives out its normal lifecycle on the phone
   // (a cue counts down and dismisses, a song ends on song.done).
   let asideDroppedOnLens = false;
+  // The host may still be showing a popup box the controller believes is gone: a
+  // rebuild back to the plain page failed, or a box rebuild timed out (and so was
+  // marked dropped) yet may still have landed on the host. Nothing else would ever
+  // rebuild again, so the box would outlive the session; the next stop or start
+  // rebuilds to the plain page while this is set. Cleared by any successful rebuild.
+  let lensPageStale = false;
 
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.map((s) => s.text).join("\n");
@@ -466,8 +472,11 @@ export async function wireLens(
       state.song === null &&
       state.translation === null &&
       state.cue !== null;
+    const openingPlain = !openingMenu && !openingSong && !openingTranslation && !openingCue;
     writer.run(async () => {
       const ok = await withBleTimeout(bridge.rebuildPageContainer(page), false);
+      if (ok) lensPageStale = false;
+      else if (openingPlain) lensPageStale = true;
       if (!ok && openingMenu && state.menu && !menuFallback) {
         // The popup page never appeared (XERK-85: this once stranded the
         // wearer inside a session). Fall back: render the menu inside the
@@ -492,6 +501,8 @@ export async function wireLens(
         // unmasks the band (popupUp now reads false) and stops the box being
         // repainted onto the lens (renderMenu / renderSongBody).
         asideDroppedOnLens = true;
+        // A timed-out rebuild may still be applied by the host, leaving the box up.
+        lensPageStale = true;
         const restored = pageContents();
         writer.set(CONTAINER.caption, restored.caption);
         writer.set(CONTAINER.status, restored.status);
@@ -545,7 +556,15 @@ export async function wireLens(
     // server that keeps saying no. onReady resets it: an actual session is the
     // only proof the re-auth worked (XERK-236).
     state.connection = "connecting";
-    client = createClient(config.apiWsUrl, {
+    // Callbacks from a client that has since been stopped or replaced (a stop, or
+    // a re-login reconnect) are dropped: a late translation/song/cue would reopen
+    // a box over the idle lens that nothing would ever dismiss, and a late auth
+    // failure would sign the wearer out of a session that is no longer theirs.
+    const live = <A extends unknown[]>(fn: (...args: A) => void) =>
+      (...args: A) => {
+        if (client === self) fn(...args);
+      };
+    const handlers: ApiHandlers = {
       onConnectionChange: (s) => {
         state.connection = s;
         renderStatus();
@@ -619,12 +638,17 @@ export async function wireLens(
           }
         }
       },
-    });
+    };
+    const guarded = Object.fromEntries(
+      Object.entries(handlers).map(([k, fn]) => [k, live(fn as (...a: unknown[]) => void)]),
+    ) as ApiHandlers;
+    const self = createClient(config.apiWsUrl, guarded);
+    client = self;
     renderStatus();
     renderCaption();
     renderClock();
     void capture.start();
-    client.start(
+    self.start(
       { micSource: state.micSource, sourceLang: config.defaultSourceLang },
       state.sessionId, // resume the prior session if we restored one
     );
@@ -643,6 +667,8 @@ export async function wireLens(
     state.pastCues = [];
     state.translation = null;
     state.song = null;
+    // A box the last stop failed to tear down must not carry into this session.
+    if (lensPageStale) rebuildPage();
     connect();
     syncPhone();
   };
@@ -653,7 +679,7 @@ export async function wireLens(
     // must be torn down: a plain text write can't remove the box container, so a
     // stop from the phone (or an error / sign-out) with a translation up left it
     // painted over the idle lens and into the next session.
-    const popupWasUp = popupUp();
+    const popupWasUp = popupUp() || lensPageStale;
     state.recording = false;
     state.menu = null;
     state.cue = null;
