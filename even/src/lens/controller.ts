@@ -293,6 +293,12 @@ export async function wireLens(
   // attempt fails; the aside then lives out its normal lifecycle on the phone
   // (a cue counts down and dismisses, a song ends on song.done).
   let asideDroppedOnLens = false;
+  // The host may still be showing a popup box the controller believes is gone: a
+  // rebuild back to the plain page failed, or a box rebuild timed out (and so was
+  // marked dropped) yet may still have landed on the host. Nothing else would ever
+  // rebuild again, so the box would outlive the session; the next stop or start
+  // rebuilds to the plain page while this is set. Cleared by any successful rebuild.
+  let lensPageStale = false;
 
   // ---- lens rendering helpers ------------------------------------------------
   const transcriptText = () => state.segments.map((s) => s.text).join("\n");
@@ -466,8 +472,11 @@ export async function wireLens(
       state.song === null &&
       state.translation === null &&
       state.cue !== null;
+    const openingPlain = !openingMenu && !openingSong && !openingTranslation && !openingCue;
     writer.run(async () => {
       const ok = await withBleTimeout(bridge.rebuildPageContainer(page), false);
+      if (ok) lensPageStale = false;
+      else if (openingPlain) lensPageStale = true;
       if (!ok && openingMenu && state.menu && !menuFallback) {
         // The popup page never appeared (XERK-85: this once stranded the
         // wearer inside a session). Fall back: render the menu inside the
@@ -492,6 +501,8 @@ export async function wireLens(
         // unmasks the band (popupUp now reads false) and stops the box being
         // repainted onto the lens (renderMenu / renderSongBody).
         asideDroppedOnLens = true;
+        // A timed-out rebuild may still be applied by the host, leaving the box up.
+        lensPageStale = true;
         const restored = pageContents();
         writer.set(CONTAINER.caption, restored.caption);
         writer.set(CONTAINER.status, restored.status);
@@ -545,7 +556,15 @@ export async function wireLens(
     // server that keeps saying no. onReady resets it: an actual session is the
     // only proof the re-auth worked (XERK-236).
     state.connection = "connecting";
-    client = createClient(config.apiWsUrl, {
+    // Callbacks from a client that has since been stopped or replaced (a stop, or
+    // a re-login reconnect) are dropped: a late translation/song/cue would reopen
+    // a box over the idle lens that nothing would ever dismiss, and a late auth
+    // failure would sign the wearer out of a session that is no longer theirs.
+    const live = <A extends unknown[]>(fn: (...args: A) => void) =>
+      (...args: A) => {
+        if (client === self) fn(...args);
+      };
+    const handlers: ApiHandlers = {
       onConnectionChange: (s) => {
         state.connection = s;
         renderStatus();
@@ -611,6 +630,10 @@ export async function wireLens(
           if (!reauthAttempted) {
             reauthAttempted = true;
             void healToken(storage).then((ok) => {
+              // The re-login is async: if the wearer stopped (or started a new
+              // session) meanwhile, this client is no longer live, so neither a
+              // reconnect (a ghost session with the mic on) nor a sign-out applies.
+              if (client !== self) return;
               if (ok) connect();
               else disable();
             });
@@ -619,12 +642,17 @@ export async function wireLens(
           }
         }
       },
-    });
+    };
+    const guarded = Object.fromEntries(
+      Object.entries(handlers).map(([k, fn]) => [k, live(fn as (...a: unknown[]) => void)]),
+    ) as ApiHandlers;
+    const self = createClient(config.apiWsUrl, guarded);
+    client = self;
     renderStatus();
     renderCaption();
     renderClock();
     void capture.start();
-    client.start(
+    self.start(
       { micSource: state.micSource, sourceLang: config.defaultSourceLang },
       state.sessionId, // resume the prior session if we restored one
     );
@@ -643,13 +671,22 @@ export async function wireLens(
     state.pastCues = [];
     state.translation = null;
     state.song = null;
+    // A new session gets its own one silent re-login: a prior session's attempt,
+    // still unresolved when it was stopped, must not sign this one out.
+    reauthAttempted = false;
+    // A box the last stop failed to tear down must not carry into this session.
+    if (lensPageStale) rebuildPage();
     connect();
     syncPhone();
   };
 
   /** Stop the current session: the api finalizes + stores it; the lens idles. */
   const stopSession = () => {
-    const menuWasOpen = state.menu !== null;
+    // Any popup strip on the host — the menu, or a translation/song/cue box —
+    // must be torn down: a plain text write can't remove the box container, so a
+    // stop from the phone (or an error / sign-out) with a translation up left it
+    // painted over the idle lens and into the next session.
+    const popupWasUp = popupUp() || lensPageStale;
     state.recording = false;
     state.menu = null;
     state.cue = null;
@@ -669,9 +706,9 @@ export async function wireLens(
     state.segments = [];
     state.partial = "";
     void store.clear(); // the session is over — nothing to resume anymore
-    // Leaving via the popup: rebuild back to the plain page (which also
-    // carries the idle texts); otherwise plain idle writes suffice.
-    if (menuWasOpen) rebuildPage();
+    // A popup was up: rebuild back to the plain page (which also carries the
+    // idle texts); otherwise plain idle writes suffice.
+    if (popupWasUp) rebuildPage();
     else showIdle();
     syncPhone();
   };
@@ -707,7 +744,9 @@ export async function wireLens(
 
   const disable = () => {
     enabled = false;
-    if (state.recording) stopSession();
+    if (state.recording) stopSession(); // rebuilds a stale page itself
+    // A box a failed teardown left on the host must not sit over the sign-in prompt.
+    else if (lensPageStale) rebuildPage();
     showSignInPrompt();
     syncPhone();
   };

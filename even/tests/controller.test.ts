@@ -1395,6 +1395,25 @@ describe("wireLens live translations (XERK-160)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
   });
 
+  it("tears the translation box down when the session is stopped from the phone", async () => {
+    const t = await record({ withPhone: true });
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await settle();
+    expect(bodyContainer(t)).toBeDefined(); // the box is up on the lens
+    const rebuildsBefore = t.rebuilds.length;
+
+    (document.getElementById("session-stop") as HTMLButtonElement).click();
+    await settle();
+    // A plain text write can't remove the box container: the stop must rebuild
+    // back to the plain 4-container page, or the box outlives the session.
+    expect(t.rebuilds.length).toBe(rebuildsBefore + 1);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+    expect(bodyContainer(t)).toBeUndefined();
+    expect(t.text(C().caption)).toBe(controllerMod.IDLE_PROMPT);
+    expect(t.text(C().status)).toBe("ready");
+  });
+
   it("dismisses the box at once on translation.done, with no countdown (XERK-181)", async () => {
     const t = await record();
     t.api.handlers().onFinal?.(FINAL_ES);
