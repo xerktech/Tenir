@@ -114,7 +114,7 @@ class SessionReady(BaseModel):
     resumed: bool | None = False
     warm: bool | None = Field(
         False,
-        description='True only when this socket took over a session still live on the server (frames produced during the gap were replayed before this one). False on a fresh or cold start, where no translation run or song carries over: clients drop any translation or song box still held from the previous socket, whose translation.done / song.done was lost with it. resumed is true for warm and cold resumes alike.',
+        description='True only when this socket took over a session still live on the server: its translation run / song carry on, and the server repeats the done marker of any that already ended right after this frame. False on a fresh or cold start, where no translation run or song carries over: clients drop any translation or song box still held from the previous socket, whose translation.done / song.done was lost with it. resumed is true for warm and cold resumes alike.',
     )
 
 

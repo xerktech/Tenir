@@ -845,6 +845,29 @@ describe("CaptureSession song handlers (XERK-184)", () => {
   });
 });
 
+describe("CaptureSession cold resume (XERK-1736)", () => {
+  const songMsg = {
+    type: "song" as const,
+    songId: "s1",
+    title: "Weird Fishes",
+    artist: "Radiohead",
+    atMs: 1000,
+    offsetMs: 0,
+    lines: [line(0, "a")],
+  };
+
+  it("drops a held song on a cold session.ready but keeps it on a warm one", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    refs.client!.handlers.onSong?.(songMsg);
+    const r = { type: "session.ready" as const, sessionId: "x", resumed: true };
+    refs.client!.handlers.onReady?.({ ...r, warm: true });
+    expect(session.getState().song?.id).toBe("s1");
+    refs.client!.handlers.onReady?.({ ...r, warm: false });
+    expect(session.getState().song).toBeNull();
+  });
+});
+
 describe("captions delayed status (XERK-1498)", () => {
   it("flags and clears delayed captions from caption.status, and resets on stop", async () => {
     const { session, refs } = harness();

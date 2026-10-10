@@ -389,6 +389,48 @@ def test_warm_resume_closes_the_socket_it_takes_over(monkeypatch: pytest.MonkeyP
             assert registry.get(sid) is live
 
 
+def test_warm_resume_repeats_the_done_markers_a_dead_socket_swallowed() -> None:
+    """Regression (XERK-1736, QA): displacing a still-open but dead socket replays
+    nothing, so a song.done / translation.done the server already wrote to it never
+    reached the client and its box stuck. The takeover repeats them after ready."""
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as b:
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            live = registry.get(sid)
+            assert live is not None
+            # A song and a translation run both ended while b's peer was gone.
+            live._music_last_run_id = "song-1"
+            live._translation_queue = asyncio.Queue()
+            with client.websocket_connect("/ws") as c:
+                c.send_text(json.dumps({**start, "sessionId": sid}))
+                assert c.receive_json()["warm"] is True
+                assert c.receive_json() == {"type": "song.done", "songId": "song-1"}
+            assert live._translation_queue.get_nowait() == ("done", None, None)
+
+
+def test_resend_ended_asides_leaves_live_runs_alone() -> None:
+    """A run or song still live on the server keeps its box: no done is repeated."""
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+
+        session = Session(send)
+        await session.resend_ended_asides()  # nothing ever ran: nothing to repeat
+        session._translation_queue = asyncio.Queue()
+        session._translation_active = True
+        session._music_last_run_id = "song-1"
+        session._music_active = True
+        await session.resend_ended_asides()
+        assert sent == [] and session._translation_queue.empty()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("restart_with_id", [False, True], ids=["fresh", "same-id"])
 def test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone(
     monkeypatch: pytest.MonkeyPatch, restart_with_id: bool

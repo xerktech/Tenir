@@ -683,12 +683,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                     type="session.ready",
                                     sessionId=session.session_id,
                                     resumed=True,
-                                    # The buffer was just replayed: a live run's or song's
-                                    # done marker is still to come, so clients keep the box.
+                                    # The session lives on: a live run's or song's done marker
+                                    # is still to come, so clients keep the box (any already
+                                    # ended is repeated below, resend_ended_asides).
                                     warm=True,
                                 )
                             )
                             await session.send_caption_status()
+                            await session.resend_ended_asides()
                             metrics.incr("sessions.resumed")
                             continue
                     # A session id that is live under *another* household must never be

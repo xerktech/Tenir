@@ -35,6 +35,8 @@ paths:
 - A cold resume of a persisted id also reports `resumed=True`; only `warm` (true solely from the
   `rebind()` path) tells warm from cold. Clients drop held translation/song boxes on
   `warm: false`, since the old sitting's done markers died in its buffer (XERK-1736).
+- A warm resume replays nothing when it displaces a still-open dead socket, so a done marker
+  already written to that socket is lost: `resend_ended_asides()` repeats them after the ready.
 - Worktree pitfall: the host's pip-installed `api` package may be another worktree's
   editable install. Check `python -c "import api; print(api.__file__)"`, and run tests
   with `PYTHONPATH=src` from `api/`, or you test someone else's code.
