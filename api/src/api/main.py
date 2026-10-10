@@ -680,7 +680,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                 break
                             await send(
                                 SessionReady(
-                                    type="session.ready", sessionId=session.session_id, resumed=True
+                                    type="session.ready",
+                                    sessionId=session.session_id,
+                                    resumed=True,
+                                    # The buffer was just replayed: a live run's or song's
+                                    # done marker is still to come, so clients keep the box.
+                                    warm=True,
                                 )
                             )
                             await session.send_caption_status()

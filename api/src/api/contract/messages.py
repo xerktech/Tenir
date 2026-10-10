@@ -112,6 +112,10 @@ class SessionReady(BaseModel):
     type: Literal['session.ready']
     sessionId: str
     resumed: bool | None = False
+    warm: bool | None = Field(
+        False,
+        description='True only when this socket took over a session still live on the server (frames produced during the gap were replayed before this one). False on a fresh or cold start, where no translation run or song carries over: clients drop any translation or song box still held from the previous socket, whose translation.done / song.done was lost with it. resumed is true for warm and cold resumes alike.',
+    )
 
 
 class CaptionPartial(BaseModel):

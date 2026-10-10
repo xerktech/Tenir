@@ -607,8 +607,13 @@ class Session:
         # but re-warming is a cheap no-op there anyway.
         self._warmup = asyncio.create_task(self._transcriber.warmup())
         self._warmup.add_done_callback(self._on_warmup_done)
+        # warm=False even on a (cold) resume: no translation run or song carries over
+        # from the prior sitting, whose done marker died with its socket — clients drop
+        # any box still held from it (XERK-1736). Only rebind() resumes warm.
         await self._send(
-            SessionReady(type="session.ready", sessionId=self.session_id, resumed=self.resumed)
+            SessionReady(
+                type="session.ready", sessionId=self.session_id, resumed=self.resumed, warm=False
+            )
         )
         log.info("session %s ready (mic=%s)", self.session_id, mic_source)
 

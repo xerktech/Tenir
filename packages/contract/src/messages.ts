@@ -74,6 +74,10 @@ export interface SessionReady {
   type: "session.ready";
   sessionId: string;
   resumed?: boolean;
+  /**
+   * True only when this socket took over a session still live on the server (frames produced during the gap were replayed before this one). False on a fresh or cold start, where no translation run or song carries over: clients drop any translation or song box still held from the previous socket, whose translation.done / song.done was lost with it. resumed is true for warm and cold resumes alike.
+   */
+  warm?: boolean;
 }
 /**
  * Server -> client. Fast, unstable hypothesis for the live caption band.

@@ -225,6 +225,9 @@ def test_ws_reconnect_resumes_live_session() -> None:
             assert ready["type"] == "session.ready"
             assert ready["sessionId"] == sid
             assert ready["resumed"] is True
+            # Warm: the replayed buffer carries any done marker, so clients keep their
+            # translation/song box (XERK-1736).
+            assert ready["warm"] is True
             # The very same Session object was rebound (not a fresh one with the
             # same id), so transcriber continuity is genuinely preserved.
             assert registry.get(sid) is live
@@ -297,7 +300,11 @@ def test_ws_resume_after_finalize_extends_retained_audio() -> None:
                     {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
                 )
             )
-            assert ws2.receive_json()["sessionId"] == sid
+            ready = ws2.receive_json()
+            assert ready["sessionId"] == sid
+            # Cold: resumed, yet no run or song carries over, so clients must drop any
+            # box held from leg 1, whose done marker died with it (XERK-1736).
+            assert ready["resumed"] is True and ready["warm"] is False
             for _ in range(20):
                 ws2.send_bytes(_voice_chunk(freq=400))
             ws2.send_text(json.dumps({"type": "session.end"}))
@@ -612,7 +619,12 @@ def test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume(
                 owner.send_text(json.dumps({**start, "sessionId": sid}))
                 ready = owner.receive_json()
                 waited = time.monotonic() - began
-            assert ready == {"type": "session.ready", "sessionId": sid, "resumed": True}
+            assert ready == {
+                "type": "session.ready",
+                "sessionId": sid,
+                "resumed": True,
+                "warm": True,
+            }
             assert waited < 0.4, f"owner's resume waited {waited:.2f}s behind the intruder"
             assert intruder.receive_json()["sessionId"] != sid
 

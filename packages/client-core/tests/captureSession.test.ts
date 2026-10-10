@@ -716,6 +716,17 @@ describe("song reducer (XERK-184)", () => {
     expect(same).toBe(s);
   });
 
+  it("drops the song on a cold session.ready, whose song.done was lost (XERK-1736)", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    expect(reduce(s, { type: "ready", sessionId: "x", warm: false }).song).toBeNull();
+  });
+
+  it("keeps the song on a warm session.ready or one without the flag (XERK-1736)", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    expect(reduce(s, { type: "ready", sessionId: "x", warm: true }).song?.id).toBe("s1");
+    expect(reduce(s, { type: "ready", sessionId: "x" }).song?.id).toBe("s1");
+  });
+
   it("replaces the run when a different song takes over", () => {
     let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
     s = reduce(s, songAction("s2", 0, [line(0, "x")], 2000, { title: "Starlight", artist: "Muse" }));
