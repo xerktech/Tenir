@@ -546,6 +546,7 @@ jobs:
           name: even-ehpk-dry-run
           path: even/tenir.ehpk
           if-no-files-found: error
+          retention-days: 3
 
   # -------------------------------------------------------- build: mobile -----
   # GitHub-hosted: ubuntu-latest ships a JDK + the Android SDK, so assembleRelease
@@ -599,6 +600,7 @@ jobs:
           name: asset-mobile
           path: tenir-android-v${{ needs.plan.outputs.version }}.apk
           if-no-files-found: error
+          retention-days: 3
 
   # --------------------------------------------------------------- publish ----
   # Runs last. Assembles manifest.json + release notes, carries unchanged assets
@@ -703,6 +705,7 @@ jobs:
           path: |
             meta/
             dist/
+          retention-days: 3
       - name: Create tag + release
         if: needs.plan.outputs.dry_run != 'true'
         run: |
