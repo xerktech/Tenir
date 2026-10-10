@@ -102,6 +102,7 @@ jobs:
           name: api-coverage
           path: api/coverage.xml
           if-no-files-found: ignore
+          retention-days: 3
 
   image:
     name: Image build + scan (api)
