@@ -203,6 +203,10 @@ def test_hold_expiry_ends_run() -> None:
         assert len(dones) == 1
         assert dones[0].songId == _songs(sent)[0].songId
         assert session._music_active is False
+        # A warm takeover of a dead socket repeats the ended run's done (XERK-1736).
+        sent.clear()
+        await session.resend_ended_asides()
+        assert [d.songId for d in _dones(sent)] == [dones[0].songId]
         await session.close()
 
     asyncio.run(run())

@@ -406,7 +406,12 @@ def test_warm_resume_repeats_the_done_markers_a_dead_socket_swallowed() -> None:
             with client.websocket_connect("/ws") as c:
                 c.send_text(json.dumps({**start, "sessionId": sid}))
                 assert c.receive_json()["warm"] is True
-                assert c.receive_json() == {"type": "song.done", "songId": "song-1"}
+                # Read up to a pong, so a missing repeat fails instead of hanging.
+                c.send_text(json.dumps({"type": "ping", "t": 1}))
+                frames = []
+                while (frame := c.receive_json())["type"] != "pong":
+                    frames.append(frame)
+                assert {"type": "song.done", "songId": "song-1"} in frames
             assert live._translation_queue.get_nowait() == ("done", None, None)
 
 
