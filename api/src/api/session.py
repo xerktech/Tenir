@@ -80,12 +80,13 @@ Sender = Callable[[ServerMessage], Awaitable[None]]
 # without bound — keep the most recent ones.
 _DETACHED_BUFFER_MAX = 500
 
-# Finals, translations and cues sent in the last _RECENT_WINDOW_S are kept and replayed
-# on a warm resume (XERK-1771). A still-open but dead socket (a phone switching
-# networks) swallows frames until uvicorn's ping times out (20 s interval + 20 s
-# timeout by default), and the client reconnects well before that, displacing it: no
-# delivery is ever confirmed, so everything in that window may be lost. Clients drop a
-# re-delivered final / translation / cue they already hold.
+# Finals, translations and cues sent in the _RECENT_WINDOW_S before a socket was given
+# up are kept and replayed on a warm resume (XERK-1771). A still-open but dead socket
+# (a phone switching networks) swallows frames until uvicorn's ping times out (20 s
+# interval + 20 s timeout by default): no delivery is ever confirmed, so everything in
+# that window may be lost. The window ends at the detach (frames after it are in the
+# detached buffer) or, when a resume displaced the socket, at the takeover. Clients
+# drop a re-delivered final / translation / cue they already hold.
 _RECENT_WINDOW_S = 60.0
 _RECENT_MAX = 500
 
@@ -502,12 +503,13 @@ class Session:
         # waits for it before finish() (XERK-1529).
         self._create: asyncio.Future[object] | None = None
         self._detached = False
+        self._detached_at = 0.0
         self._grace_task: asyncio.Task[None] | None = None
         # Messages produced while detached are buffered here and replayed on rebind
         # so a brief drop doesn't silently lose captions.
         self._detached_buffer: list[ServerMessage] = []
         # (monotonic send time, frame) of recent finals/translations/cues, replayed on
-        # a warm resume (replay_recent, XERK-1771).
+        # a warm resume (rebind, XERK-1771).
         self._recent: deque[tuple[float, ServerMessage]] = deque(maxlen=_RECENT_MAX)
 
     @property
@@ -722,19 +724,40 @@ class Session:
         """Reattach a resumed connection's sender, cancelling any pending grace close.
 
         The live transcriber and buffers are untouched, so captions pick up where
-        the drop left off; messages produced during the gap are replayed to the new
-        socket in order.
+        the drop left off. The new socket first gets, in send order, the recent frames
+        the old socket may have swallowed before it was given up (XERK-1771), then the
+        frames buffered since; new frames are held behind them until it has caught up.
+
+        The old socket may have died without closing: frames written to it before the
+        detach (or the takeover, when this displaces a still-open socket) never arrived,
+        and no delivery is ever confirmed. Clients drop a final/translation/cue they
+        already hold. Done markers aren't replayed (translation.done names no run, so a
+        stale one would end a live run): resend_ended_asides repeats the ones that matter.
         """
         if self._grace_task is not None:
             self._grace_task.cancel()
             self._grace_task = None
-        self._send = send
+        given_up_at = self._detached_at if self._detached else time.monotonic()
+        # Hold frames produced while catching up, so none overtakes an older one.
+        self._send = self._buffer_send
         self._detached = False
         self.resumed = True
-        if self._detached_buffer:
-            buffered, self._detached_buffer = self._detached_buffer, []
-            for msg in buffered:
-                await send(msg)
+        try:
+            for sent_at, msg in list(self._recent):
+                if given_up_at - _RECENT_WINDOW_S <= sent_at < given_up_at:
+                    await send(msg)
+            while self._detached_buffer:
+                buffered, self._detached_buffer = self._detached_buffer, []
+                for msg in buffered:
+                    await send(msg)
+        finally:
+            self._send = send
+        position_ms = self._song_position_ms(time.monotonic())
+        if self._music_active and self._music_song is not None and position_ms is not None:
+            # Re-anchor the live song: a `song` it held is replaced by the same run, one
+            # it never got now shows (clients ignore a song.sync for a run they lack),
+            # and a stale buffered offset is corrected.
+            await send(self._music_song.model_copy(update={"offsetMs": max(0, position_ms)}))
 
     async def send_caption_status(self) -> None:
         """Repeat a delayed status to a resumed socket, after its session.ready.
@@ -758,28 +781,9 @@ class Session:
             await self._send(SongDone(type="song.done", songId=self._music_last_run_id))
 
     def _remember(self, msg: ServerMessage) -> None:
-        """Keep a sent final/translation/cue for replay_recent. Recorded before the
+        """Keep a sent final/translation/cue for a resume to replay. Recorded before the
         send: a send that raised certainly didn't arrive."""
         self._recent.append((time.monotonic(), msg))
-
-    async def replay_recent(self) -> None:
-        """Re-send recent finals, translations and cues, and the live song re-anchored,
-        to a warm-resumed socket after its session.ready (XERK-1771).
-
-        The socket a resume takes over may have died without closing: frames written
-        to it in the window before the takeover never arrived, and nothing else would
-        replay them. Clients drop a final/translation/cue they already hold. Done
-        markers aren't replayed (translation.done names no run, so a stale one would
-        end a live run): resend_ended_asides repeats the ones that matter."""
-        now = time.monotonic()
-        for sent_at, msg in list(self._recent):
-            if now - sent_at <= _RECENT_WINDOW_S:
-                await self._send(msg)
-        position_ms = self._song_position_ms(now)
-        if self._music_active and self._music_song is not None and position_ms is not None:
-            # A replayed `song` re-anchors the scroll; a song clients already hold is
-            # simply replaced by the same run.
-            await self._send(self._music_song.model_copy(update={"offsetMs": max(0, position_ms)}))
 
     def detach(self, *, grace_seconds: float) -> None:
         """Connection dropped without an explicit end: keep the session alive for a
@@ -791,6 +795,7 @@ class Session:
         if self._closed or self._detached:
             return
         self._detached = True
+        self._detached_at = time.monotonic()
         self._send = self._buffer_send
         if grace_seconds <= 0:
             # Resume disabled — finalize on the next loop turn.

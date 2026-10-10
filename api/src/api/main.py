@@ -690,9 +690,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                 )
                             )
                             await session.send_caption_status()
-                            # Frames the socket it took over may have swallowed (XERK-1771),
-                            # before the done markers so a repeated done lands after its run.
-                            await session.replay_recent()
                             await session.resend_ended_asides()
                             metrics.incr("sessions.resumed")
                             continue

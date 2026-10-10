@@ -872,11 +872,12 @@ def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.Mo
                 # Pretend the song has played on for 5 s since its frame went out.
                 assert live._music_offset_monotonic is not None
                 live._music_offset_monotonic -= 5
+                # The translation run has ended: its done is repeated after the ready.
+                live._translation_active = False
 
             client.portal.call(dead_window)
             with client.websocket_connect("/ws") as c:
                 c.send_text(json.dumps({**start, "sessionId": sid}))
-                assert c.receive_json()["warm"] is True
                 c.send_text(json.dumps({"type": "ping", "t": 1}))
                 frames = []
                 while (frame := c.receive_json())["type"] != "pong":
@@ -884,25 +885,39 @@ def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.Mo
             types = [f["type"] for f in frames]
             assert "caption.final" in types and "translation" in types
             assert types.index("caption.final") < types.index("translation")
+            # Replayed while catching up, before the ready; the repeated done after both,
+            # so it can't land ahead of the run it ends.
+            assert types.index("translation") < types.index("session.ready")
+            assert frames[types.index("session.ready")]["warm"] is True
+            assert types.index("session.ready") < types.index("translation.done")
             (song,) = [f for f in frames if f["type"] == "song"]
             # Re-anchored to where the song is now, not where it was when first sent.
             assert 65000 <= song["offsetMs"] < 66000
             assert not any(f["type"] == "song.sync" for f in frames)
 
 
-def test_replay_recent_skips_old_frames_ended_songs_and_done_markers() -> None:
-    from api.contract import CaptionFinal, Cue, Song, TranslationDone
+def _final_msg(segment_id: str) -> object:
+    from api.contract import CaptionFinal
+
+    return CaptionFinal(
+        type="caption.final", segmentId=segment_id, text=segment_id, startMs=0, endMs=1, lang="en"
+    )
+
+
+def test_rebind_replays_only_recent_frames_and_no_done_markers_or_ended_songs() -> None:
+    from api.contract import Cue, Song, TranslationDone
 
     async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
         sent: list[ServerMessage] = []
 
         async def send(msg: ServerMessage) -> None:
             sent.append(msg)
 
-        session = Session(send)
-        old = CaptionFinal(
-            type="caption.final", segmentId="old", text="a", startMs=0, endMs=1, lang="en"
-        )
+        session = Session(old_send)
+        old = _final_msg("old")
         new = Cue(type="cue", cueId="c1", title="t", body="b", atMs=0)
         session._remember(old)
         session._recent[0] = (time.monotonic() - 61, old)  # outside the window
@@ -913,9 +928,45 @@ def test_replay_recent_skips_old_frames_ended_songs_and_done_markers() -> None:
         )
         session._music_active = False
         await session._send(TranslationDone(type="translation.done"))
-        sent.clear()
-        await session.replay_recent()
+        await session.rebind(send)
         assert sent == [new]
+
+    asyncio.run(run())
+
+
+def test_rebind_after_a_detach_replays_lost_frames_ahead_of_the_buffer() -> None:
+    """QA (XERK-1771): frames swallowed before the ping-timeout detach must reach the
+    new socket ahead of the ones buffered after it, each once, or clients append the
+    lost turns after newer ones. The window runs back from the detach, not the resume."""
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        sent: list[ServerMessage] = []
+        session = Session(old_send)
+        lost = _final_msg("lost")
+        session._remember(lost)
+        await session._send(lost)
+        session.detach(grace_seconds=60)
+        # The resume lands 65 s after the frame went out, 50 s after the detach.
+        session._recent[0] = (time.monotonic() - 65, lost)
+        session._detached_at = time.monotonic() - 50
+        buffered = _final_msg("buffered")
+        session._remember(buffered)
+        await session._send(buffered)
+        live = _final_msg("live")
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+            if msg is lost:
+                # A frame produced while the new socket catches up waits behind it.
+                session._remember(live)
+                await session._send(live)
+
+        await session.rebind(send)
+        assert sent == [lost, buffered, live]
+        assert session.current_send is send
 
     asyncio.run(run())
 
