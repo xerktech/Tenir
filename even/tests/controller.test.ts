@@ -751,6 +751,18 @@ describe("wireLens cues (XERK-81)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
+  it("does not show a cue again when a warm resume re-delivers it (XERK-1771)", async () => {
+    const t = await record();
+    t.api.handlers().onCue?.(CUE);
+    await vi.advanceTimersByTimeAsync(50);
+    t.api.handlers().onCue?.(CUE); // replayed while still showing: not queued behind itself
+    await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS + 50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+    t.api.handlers().onCue?.(CUE); // replayed once reviewed: stays reviewed
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
   it("lets the double-tap menu take the popup over from a showing cue", async () => {
     const t = await record();
     t.api.handlers().onCue?.(CUE);
@@ -1311,6 +1323,27 @@ describe("wireLens live translations (XERK-160)", () => {
     await vi.advanceTimersByTimeAsync(controllerMod.CUE_TTL_MS * 3);
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
     expect(liveTitle(t)).toBe(card().title);
+  });
+
+  it("ignores a final and translation a warm resume re-delivers (XERK-1771)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    // The resume replays the recent frames the old socket may have swallowed.
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bodyContainer(t)?.content).toBe(layout.cueBodyText(card(TR.text)));
+    expect(t.text(C().caption)!.split(FINAL_ES.text).length - 1).toBe(1);
+
+    // A run that already finished is not reopened by its replayed translation.
+    t.api.handlers().onTranslationDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
   });
 
   it("titles a live run 'Translating <Source> → English' with moving dots (XERK-173)", async () => {

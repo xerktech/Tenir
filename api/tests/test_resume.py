@@ -804,3 +804,219 @@ def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
         done = store.get("default", sid)
         assert done is not None and done.status == "ready"
         assert done.ended_at is not None and done.ended_at >= first_end
+
+
+class _OneSongMusic:
+    """Music service that recognizes one song on every scan."""
+
+    async def identify(self, wav: bytes) -> object:
+        from api.music.base import MusicMatch
+        from api.music.tuning import track_key
+
+        return MusicMatch(
+            artist="A",
+            title="T",
+            offset_ms=60000,
+            confidence=1.0,
+            duration_ms=318000,
+            track_key=track_key("A", "T"),
+        )
+
+    async def lyrics(self, match: object) -> list[object]:
+        from api.music.lyrics import SyncedLine
+
+        return [SyncedLine(at_ms=0, text="one")]
+
+    async def close(self) -> None:
+        pass
+
+
+def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (XERK-1771): a still-open but dead socket swallows every frame
+    written to it until the takeover. Only a detached session buffered sends, so the
+    finals, translations and live-song start written to it were lost: the client
+    ignores the song.sync of a run it never got. The takeover replays them."""
+    from api.contract import CaptionFinal
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as b:
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            live = registry.get(sid)
+            assert live is not None
+
+            async def dead_window() -> None:
+                # b's peer is gone but its socket stays open: these all go to b.
+                final = CaptionFinal(
+                    type="caption.final", segmentId="seg-es", text="hola", startMs=0,
+                    endMs=1000, lang="es",
+                )
+
+
+                class _OneFinal:
+                    async def results(self):  # type: ignore[no-untyped-def]
+                        yield final
+
+                real, live._transcriber = live._transcriber, _OneFinal()  # type: ignore[assignment]
+                await live._drain_results()  # sent through the pump's own path
+                live._transcriber = real
+                live._consider_translation(final)
+                assert live._translation_queue is not None
+                await live._translation_queue.join()
+                live._music = _OneSongMusic()
+                live._music_window_bytes = 160_000
+                live._music_audio = bytearray(b"\x01\x02" * 80_000)
+                await live._scan_music_once()
+                # Pretend the song has played on for 5 s since its frame went out.
+                assert live._music_offset_monotonic is not None
+                live._music_offset_monotonic -= 5
+                # The translation run has ended: its done is repeated after the ready.
+                live._translation_active = False
+
+            client.portal.call(dead_window)
+            with client.websocket_connect("/ws") as c:
+                c.send_text(json.dumps({**start, "sessionId": sid}))
+                c.send_text(json.dumps({"type": "ping", "t": 1}))
+                frames = []
+                while (frame := c.receive_json())["type"] != "pong":
+                    frames.append(frame)
+            types = [f["type"] for f in frames]
+            assert "caption.final" in types and "translation" in types
+            assert types.index("caption.final") < types.index("translation")
+            # Replayed while catching up, before the ready; the repeated done after both,
+            # so it can't land ahead of the run it ends.
+            assert types.index("translation") < types.index("session.ready")
+            assert frames[types.index("session.ready")]["warm"] is True
+            assert types.index("session.ready") < types.index("translation.done")
+            (song,) = [f for f in frames if f["type"] == "song"]
+            # Re-anchored to where the song is now, not where it was when first sent.
+            assert 65000 <= song["offsetMs"] < 66000
+            assert not any(f["type"] == "song.sync" for f in frames)
+
+
+def _final_msg(segment_id: str) -> object:
+    from api.contract import CaptionFinal
+
+    return CaptionFinal(
+        type="caption.final", segmentId=segment_id, text=segment_id, startMs=0, endMs=1, lang="en"
+    )
+
+
+def test_rebind_replays_only_recent_frames_and_no_done_markers_or_ended_songs() -> None:
+    from api.contract import Cue, Song, TranslationDone
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        sent: list[ServerMessage] = []
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+
+        session = Session(old_send)
+        old = _final_msg("old")
+        new = Cue(type="cue", cueId="c1", title="t", body="b", atMs=0)
+        session._remember(old)
+        session._recent[0] = (time.monotonic() - 61, old)  # outside the window
+        session._remember(new)
+        # An ended song is not replayed, nor is any done marker.
+        session._music_song = Song(
+            type="song", songId="s", title="t", artist="a", atMs=0, offsetMs=0, lines=[]
+        )
+        session._music_active = False
+        await session._send(TranslationDone(type="translation.done"))
+        await session.rebind(send)
+        assert sent == [new]
+
+    asyncio.run(run())
+
+
+def test_rebind_after_a_detach_replays_lost_frames_ahead_of_the_buffer() -> None:
+    """QA (XERK-1771): frames swallowed before the ping-timeout detach must reach the
+    new socket ahead of the ones buffered after it, each once, or clients append the
+    lost turns after newer ones. The window runs back from the detach, not the resume."""
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        sent: list[ServerMessage] = []
+        session = Session(old_send)
+        lost = _final_msg("lost")
+        session._remember(lost)
+        await session._send(lost)
+        session.detach(grace_seconds=60)
+        # The resume lands 65 s after the frame went out, 50 s after the detach.
+        session._recent[0] = (time.monotonic() - 65, lost)
+        session._detached_at = time.monotonic() - 50
+        buffered = _final_msg("buffered")
+        session._remember(buffered)
+        await session._send(buffered)
+        live = _final_msg("live")
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+            if msg is lost:
+                # A frame produced while the new socket catches up waits behind it.
+                session._remember(live)
+                await session._send(live)
+
+        await session.rebind(send)
+        assert sent == [lost, buffered, live]
+        assert session.current_send is send
+
+    asyncio.run(run())
+
+
+def test_the_pump_keeps_finals_for_replay_but_not_partials() -> None:
+    from api.contract import CaptionFinal, CaptionPartial
+
+    final = CaptionFinal(
+        type="caption.final", segmentId="s1", text="hi", startMs=0, endMs=1, lang="en"
+    )
+    partial = CaptionPartial(type="caption.partial", text="h")
+
+    class _Transcriber:
+        async def results(self):  # type: ignore[no-untyped-def]
+            yield partial
+            yield final
+
+    async def run() -> None:
+        async def send(msg: ServerMessage) -> None:
+            pass
+
+        session = Session(send)
+        session._transcriber = _Transcriber()  # type: ignore[assignment]
+        await session._drain_results()
+        assert [m for _, m in session._recent] == [final]
+
+    asyncio.run(run())
+
+
+def test_a_rebind_whose_socket_fails_midway_still_binds_it_for_its_own_detach() -> None:
+    """QA (XERK-1771): rebind holds new frames in the buffer while the new socket
+    catches up. If that socket dies mid-replay the session must still end up bound to
+    it, or the handler's identity check skips the detach and no grace close is armed."""
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        session = Session(old_send)
+        session._remember(_final_msg("a"))
+        session._remember(_final_msg("b"))
+
+        async def send(msg: ServerMessage) -> None:
+            raise RuntimeError("socket gone")
+
+        with pytest.raises(RuntimeError):
+            await session.rebind(send)
+        assert session.current_send is send
+        session.detach(grace_seconds=60)
+        assert session._grace_task is not None
+        session._grace_task.cancel()
+
+    asyncio.run(run())

@@ -35,6 +35,15 @@ describe("reduce", () => {
     expect(s.partial).toBe("");
   });
 
+  it("keeps one copy of a turn a warm resume re-delivers (XERK-1771)", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hola", lang: "es" });
+    s = reduce(s, { type: "translation", segmentId: "a", text: "hello" });
+    const replayed = reduce(s, { type: "final", segmentId: "a", text: "hola", lang: "es" });
+    expect(replayed).toBe(s);
+    // The replayed translation lands on the same turn, not a new one.
+    expect(reduce(s, { type: "translation", segmentId: "a", text: "hello" }).segments).toEqual(s.segments);
+  });
+
   it("carries the detected language on a final turn (XERK-160)", () => {
     const s = reduce(base(), { type: "final", segmentId: "a", text: "hola", lang: "es" });
     expect(s.segments[0].lang).toBe("es");
