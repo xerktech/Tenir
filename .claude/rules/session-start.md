@@ -35,8 +35,14 @@ paths:
 - A cold resume of a persisted id also reports `resumed=True`; only `warm` (true solely from the
   `rebind()` path) tells warm from cold. Clients drop held translation/song boxes on
   `warm: false`, since the old sitting's done markers died in its buffer (XERK-1736).
-- A warm resume replays nothing when it displaces a still-open dead socket, so a done marker
-  already written to that socket is lost: `resend_ended_asides()` repeats them after the ready.
+- A displaced socket may be dead but open (uvicorn notices only at its ping timeout), so frames
+  written to it are lost. After the ready a warm resume calls `replay_recent()` (finals,
+  translations, cues of the last `_RECENT_WINDOW_S`, plus the live `song` re-anchored), then
+  `resend_ended_asides()` (done markers) (XERK-1736, XERK-1771).
+  - No delivery is ever confirmed, so the replay overlaps what the client has: every client
+    (client-core reducer, Even controller) must drop a re-delivered final/translation/cue by id.
+  - Never replay `translation.done`: it names no run, so a stale one ends a live run early.
+  - Never replay a stored `song`/`song.sync` as-is: the offset is anchored on arrival.
 - Worktree pitfall: the host's pip-installed `api` package may be another worktree's
   editable install. Check `python -c "import api; print(api.__file__)"`, and run tests
   with `PYTHONPATH=src` from `api/`, or you test someone else's code.
@@ -46,4 +52,5 @@ paths:
   `::test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
   `::test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued`,
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`,
+  `::test_warm_resume_replays_what_a_dead_socket_swallowed`,
   `api/tests/test_resilience.py::test_start_cancelled_during_create_does_not_leave_the_row_live`.

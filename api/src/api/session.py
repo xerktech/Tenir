@@ -80,6 +80,15 @@ Sender = Callable[[ServerMessage], Awaitable[None]]
 # without bound — keep the most recent ones.
 _DETACHED_BUFFER_MAX = 500
 
+# Finals, translations and cues sent in the last _RECENT_WINDOW_S are kept and replayed
+# on a warm resume (XERK-1771). A still-open but dead socket (a phone switching
+# networks) swallows frames until uvicorn's ping times out (20 s interval + 20 s
+# timeout by default), and the client reconnects well before that, displacing it: no
+# delivery is ever confirmed, so everything in that window may be lost. Clients drop a
+# re-delivered final / translation / cue they already hold.
+_RECENT_WINDOW_S = 60.0
+_RECENT_MAX = 500
+
 # Bound on the end-of-session STT flush. The transcriber decodes off the WS path, so
 # a hung STT upstream builds a backlog of turn decodes, each waiting out the engine
 # timeout; an unbounded flush held teardown (persisting the conversation and its
@@ -416,6 +425,9 @@ class Session:
         # playing lyric-less (XERK-184). A genuine "no synced lyrics" miss leaves
         # this False — nothing to retry.
         self._music_lyrics_pending = False
+        # The live run's latest `song` frame, re-sent re-anchored on a warm resume:
+        # clients ignore a song.sync for a run they never got (XERK-1771).
+        self._music_song: Song | None = None
         # Running total of audio pushed this sitting, so the music scan can stamp a
         # recognized song at the current session-timeline position (the same
         # timeline cues/segments use), independent of the STT seam.
@@ -494,6 +506,9 @@ class Session:
         # Messages produced while detached are buffered here and replayed on rebind
         # so a brief drop doesn't silently lose captions.
         self._detached_buffer: list[ServerMessage] = []
+        # (monotonic send time, frame) of recent finals/translations/cues, replayed on
+        # a warm resume (replay_recent, XERK-1771).
+        self._recent: deque[tuple[float, ServerMessage]] = deque(maxlen=_RECENT_MAX)
 
     @property
     def household(self) -> str | None:
@@ -742,6 +757,30 @@ class Session:
         if not self._music_active and self._music_last_run_id is not None:
             await self._send(SongDone(type="song.done", songId=self._music_last_run_id))
 
+    def _remember(self, msg: ServerMessage) -> None:
+        """Keep a sent final/translation/cue for replay_recent. Recorded before the
+        send: a send that raised certainly didn't arrive."""
+        self._recent.append((time.monotonic(), msg))
+
+    async def replay_recent(self) -> None:
+        """Re-send recent finals, translations and cues, and the live song re-anchored,
+        to a warm-resumed socket after its session.ready (XERK-1771).
+
+        The socket a resume takes over may have died without closing: frames written
+        to it in the window before the takeover never arrived, and nothing else would
+        replay them. Clients drop a final/translation/cue they already hold. Done
+        markers aren't replayed (translation.done names no run, so a stale one would
+        end a live run): resend_ended_asides repeats the ones that matter."""
+        now = time.monotonic()
+        for sent_at, msg in list(self._recent):
+            if now - sent_at <= _RECENT_WINDOW_S:
+                await self._send(msg)
+        position_ms = self._song_position_ms(now)
+        if self._music_active and self._music_song is not None and position_ms is not None:
+            # A replayed `song` re-anchors the scroll; a song clients already hold is
+            # simply replaced by the same run.
+            await self._send(self._music_song.model_copy(update={"offsetMs": max(0, position_ms)}))
+
     def detach(self, *, grace_seconds: float) -> None:
         """Connection dropped without an explicit end: keep the session alive for a
         grace window so a resume can rebind it, instead of finalizing immediately.
@@ -804,6 +843,8 @@ class Session:
             if is_stale:
                 metrics.incr("caption.final_stale")
             else:
+                if isinstance(result, CaptionFinal):
+                    self._remember(result)
                 try:
                     await self._send(result)
                 except Exception:
@@ -1013,15 +1054,15 @@ class Session:
             # misquotes the speaker, so it is dropped rather than rendered.
             metrics.incr("translation.echo_drops")
             return
+        translation = Translation(
+            type="translation",
+            segmentId=final.segmentId,
+            text=translated,
+            sourceLang=final.lang,
+        )
+        self._remember(translation)
         try:
-            await self._send(
-                Translation(
-                    type="translation",
-                    segmentId=final.segmentId,
-                    text=translated,
-                    sourceLang=final.lang,
-                )
-            )
+            await self._send(translation)
         except Exception:
             # Like captions, delivery is best-effort but the record is not:
             # persist below even if the socket is gone.
@@ -1155,17 +1196,17 @@ class Session:
             self._last_cue_monotonic = time.monotonic()
             cue_id = uuid.uuid4().hex
             source = generated.source
+            cue = Cue(
+                type="cue",
+                cueId=cue_id,
+                title=title,
+                body=body,
+                atMs=at_ms,
+                source=source,
+            )
+            self._remember(cue)
             try:
-                await self._send(
-                    Cue(
-                        type="cue",
-                        cueId=cue_id,
-                        title=title,
-                        body=body,
-                        atMs=at_ms,
-                        source=source,
-                    )
-                )
+                await self._send(cue)
             except Exception:
                 # Like captions, delivery is best-effort but the record is not:
                 # persist below even if the socket is gone.
@@ -1363,14 +1404,16 @@ class Session:
         """Wall-ms until the current track reaches its end position, derived from
         the retained scroll anchor; None when the end or the anchor is unknown.
         May be negative — the song is already past its end (dismiss now)."""
-        if (
-            self._music_end_ms is None
-            or self._music_offset_ms is None
-            or self._music_offset_monotonic is None
-        ):
+        position_ms = self._song_position_ms(now)
+        if self._music_end_ms is None or position_ms is None:
             return None
-        position_ms = self._music_offset_ms + (now - self._music_offset_monotonic) * 1000
-        return int(self._music_end_ms - position_ms)
+        return self._music_end_ms - position_ms
+
+    def _song_position_ms(self, now: float) -> int | None:
+        """The current track's play position, from the retained scroll anchor."""
+        if self._music_offset_ms is None or self._music_offset_monotonic is None:
+            return None
+        return int(self._music_offset_ms + (now - self._music_offset_monotonic) * 1000)
 
     def _anchor_song(self, offset_ms: int) -> None:
         """Retain the scroll anchor just sent (the offset and when it was true) and
@@ -1433,19 +1476,18 @@ class Session:
         # (which schedules the precise `song.done` off that end).
         self._music_end_ms = self._song_end_ms(match, lines)
         self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
+        self._music_song = Song(
+            type="song",
+            songId=song_id,
+            title=match.title,
+            artist=match.artist,
+            atMs=at_ms,
+            offsetMs=self._music_offset_ms,
+            durationMs=match.duration_ms,
+            lines=lines,
+        )
         try:
-            await self._send(
-                Song(
-                    type="song",
-                    songId=song_id,
-                    title=match.title,
-                    artist=match.artist,
-                    atMs=at_ms,
-                    offsetMs=self._music_offset_ms,
-                    durationMs=match.duration_ms,
-                    lines=lines,
-                )
-            )
+            await self._send(self._music_song)
         except Exception:
             # Like captions, delivery is best-effort but the record is not.
             log.warning("session %s could not deliver a song (client gone)", self.session_id)
@@ -1498,19 +1540,18 @@ class Session:
         # off the fresh offset (this reschedules the precise `song.done`).
         self._music_end_ms = self._song_end_ms(match, lines)
         self._anchor_song(self._synced_offset_ms(match, window_end_monotonic))
+        self._music_song = Song(
+            type="song",
+            songId=run_id,
+            title=match.title,
+            artist=match.artist,
+            atMs=at_ms,
+            offsetMs=self._music_offset_ms,
+            durationMs=match.duration_ms,
+            lines=lines,
+        )
         try:
-            await self._send(
-                Song(
-                    type="song",
-                    songId=run_id,
-                    title=match.title,
-                    artist=match.artist,
-                    atMs=at_ms,
-                    offsetMs=self._music_offset_ms,
-                    durationMs=match.duration_ms,
-                    lines=lines,
-                )
-            )
+            await self._send(self._music_song)
         except Exception:
             log.warning("session %s could not deliver song (client gone)", self.session_id)
             metrics.incr("music.send_errors")
@@ -1574,6 +1615,7 @@ class Session:
         self._music_offset_monotonic = None
         self._music_end_ms = None
         self._music_lyrics_pending = False
+        self._music_song = None
         if song_id is not None:
             try:
                 await self._send(SongDone(type="song.done", songId=song_id))

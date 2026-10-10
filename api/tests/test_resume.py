@@ -804,3 +804,142 @@ def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
         done = store.get("default", sid)
         assert done is not None and done.status == "ready"
         assert done.ended_at is not None and done.ended_at >= first_end
+
+
+class _OneSongMusic:
+    """Music service that recognizes one song on every scan."""
+
+    async def identify(self, wav: bytes) -> object:
+        from api.music.base import MusicMatch
+        from api.music.tuning import track_key
+
+        return MusicMatch(
+            artist="A",
+            title="T",
+            offset_ms=60000,
+            confidence=1.0,
+            duration_ms=318000,
+            track_key=track_key("A", "T"),
+        )
+
+    async def lyrics(self, match: object) -> list[object]:
+        from api.music.lyrics import SyncedLine
+
+        return [SyncedLine(at_ms=0, text="one")]
+
+    async def close(self) -> None:
+        pass
+
+
+def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (XERK-1771): a still-open but dead socket swallows every frame
+    written to it until the takeover. Only a detached session buffered sends, so the
+    finals, translations and live-song start written to it were lost: the client
+    ignores the song.sync of a run it never got. The takeover replays them."""
+    from api.contract import CaptionFinal
+
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as b:
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            live = registry.get(sid)
+            assert live is not None
+
+            async def dead_window() -> None:
+                # b's peer is gone but its socket stays open: these all go to b.
+                final = CaptionFinal(
+                    type="caption.final", segmentId="seg-es", text="hola", startMs=0,
+                    endMs=1000, lang="es",
+                )
+
+
+                class _OneFinal:
+                    async def results(self):  # type: ignore[no-untyped-def]
+                        yield final
+
+                real, live._transcriber = live._transcriber, _OneFinal()  # type: ignore[assignment]
+                await live._drain_results()  # sent through the pump's own path
+                live._transcriber = real
+                live._consider_translation(final)
+                assert live._translation_queue is not None
+                await live._translation_queue.join()
+                live._music = _OneSongMusic()
+                live._music_window_bytes = 160_000
+                live._music_audio = bytearray(b"\x01\x02" * 80_000)
+                await live._scan_music_once()
+                # Pretend the song has played on for 5 s since its frame went out.
+                assert live._music_offset_monotonic is not None
+                live._music_offset_monotonic -= 5
+
+            client.portal.call(dead_window)
+            with client.websocket_connect("/ws") as c:
+                c.send_text(json.dumps({**start, "sessionId": sid}))
+                assert c.receive_json()["warm"] is True
+                c.send_text(json.dumps({"type": "ping", "t": 1}))
+                frames = []
+                while (frame := c.receive_json())["type"] != "pong":
+                    frames.append(frame)
+            types = [f["type"] for f in frames]
+            assert "caption.final" in types and "translation" in types
+            assert types.index("caption.final") < types.index("translation")
+            (song,) = [f for f in frames if f["type"] == "song"]
+            # Re-anchored to where the song is now, not where it was when first sent.
+            assert 65000 <= song["offsetMs"] < 66000
+            assert not any(f["type"] == "song.sync" for f in frames)
+
+
+def test_replay_recent_skips_old_frames_ended_songs_and_done_markers() -> None:
+    from api.contract import CaptionFinal, Cue, Song, TranslationDone
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+
+        session = Session(send)
+        old = CaptionFinal(
+            type="caption.final", segmentId="old", text="a", startMs=0, endMs=1, lang="en"
+        )
+        new = Cue(type="cue", cueId="c1", title="t", body="b", atMs=0)
+        session._remember(old)
+        session._recent[0] = (time.monotonic() - 61, old)  # outside the window
+        session._remember(new)
+        # An ended song is not replayed, nor is any done marker.
+        session._music_song = Song(
+            type="song", songId="s", title="t", artist="a", atMs=0, offsetMs=0, lines=[]
+        )
+        session._music_active = False
+        await session._send(TranslationDone(type="translation.done"))
+        sent.clear()
+        await session.replay_recent()
+        assert sent == [new]
+
+    asyncio.run(run())
+
+
+def test_the_pump_keeps_finals_for_replay_but_not_partials() -> None:
+    from api.contract import CaptionFinal, CaptionPartial
+
+    final = CaptionFinal(
+        type="caption.final", segmentId="s1", text="hi", startMs=0, endMs=1, lang="en"
+    )
+    partial = CaptionPartial(type="caption.partial", text="h")
+
+    class _Transcriber:
+        async def results(self):  # type: ignore[no-untyped-def]
+            yield partial
+            yield final
+
+    async def run() -> None:
+        async def send(msg: ServerMessage) -> None:
+            pass
+
+        session = Session(send)
+        session._transcriber = _Transcriber()  # type: ignore[assignment]
+        await session._drain_results()
+        assert [m for _, m in session._recent] == [final]
+
+    asyncio.run(run())

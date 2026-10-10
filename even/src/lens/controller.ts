@@ -596,6 +596,9 @@ export async function wireLens(
         syncPhone();
       },
       onFinal: (m) => {
+        // A warm resume replays recent turns the old socket may have swallowed
+        // (XERK-1771): one already held is a re-delivery, not a new turn.
+        if (state.segments.some((s) => s.id === m.segmentId)) return;
         state.segments.push({ id: m.segmentId, text: m.text, lang: m.lang });
         if (state.segments.length > MAX_SEGMENTS) {
           state.segments.shift();
@@ -872,6 +875,9 @@ export async function wireLens(
    */
   const showTranslation = (segmentId: string, text: string, sourceLang?: string) => {
     const seg = state.segments.find((s) => s.id === segmentId);
+    // Already shown: a warm resume replays recent translations (XERK-1771), and
+    // re-adding one would stack it in the box twice or reopen a finished run.
+    if (seg?.translation === text) return;
     if (seg) seg.translation = text;
     if (!state.translation || state.translation.done) {
       // A new run: its source language, fixed here from the first turn, titles
@@ -1036,6 +1042,10 @@ export async function wireLens(
    * moment the box frees (dismissCue / closeMenu drain the queue).
    */
   const showCue = (cue: { id: string; title: string; body: string; source?: string }) => {
+    // A warm resume replays recent cues (XERK-1771): one already showing, queued or
+    // reviewed is a re-delivery, not a new cue.
+    const held = (c: { id: string }) => c.id === cue.id;
+    if ((state.cue && held(state.cue)) || state.cueQueue.some(held) || state.pastCues.some(held)) return;
     // Anchor the cue to the last finalized turn the moment it arrives, so once
     // it's reviewed it lands inline right after the words that triggered it
     // (XERK-108). No turns yet → -1, i.e. it leads the transcript.

@@ -281,6 +281,9 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       // anchored to them lingered and floated to the top — so scrolling up showed
       // all the cue data but no transcript. Caption text is tiny, so retaining it
       // costs nothing next to the audio being streamed; correctness wins.
+      // A warm resume replays recent turns the old socket may have swallowed
+      // (XERK-1771): one already held is a re-delivery, not a new turn.
+      if (state.segments.some((s) => s.id === action.segmentId)) return state;
       const segments = [
         ...state.segments,
         { id: action.segmentId, text: action.text, lang: action.lang },
