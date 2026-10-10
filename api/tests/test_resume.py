@@ -994,3 +994,29 @@ def test_the_pump_keeps_finals_for_replay_but_not_partials() -> None:
         assert [m for _, m in session._recent] == [final]
 
     asyncio.run(run())
+
+
+def test_a_rebind_whose_socket_fails_midway_still_binds_it_for_its_own_detach() -> None:
+    """QA (XERK-1771): rebind holds new frames in the buffer while the new socket
+    catches up. If that socket dies mid-replay the session must still end up bound to
+    it, or the handler's identity check skips the detach and no grace close is armed."""
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        session = Session(old_send)
+        session._remember(_final_msg("a"))
+        session._remember(_final_msg("b"))
+
+        async def send(msg: ServerMessage) -> None:
+            raise RuntimeError("socket gone")
+
+        with pytest.raises(RuntimeError):
+            await session.rebind(send)
+        assert session.current_send is send
+        session.detach(grace_seconds=60)
+        assert session._grace_task is not None
+        session._grace_task.cancel()
+
+    asyncio.run(run())
