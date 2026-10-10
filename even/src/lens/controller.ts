@@ -577,6 +577,15 @@ export async function wireLens(
         reauthAttempted = false;
         // Not delayed until the api says so (a warm resume repeats it after this).
         state.captionsDelayed = false;
+        // A fresh or cold start (`warm: false`) continues no translation run or song:
+        // their done markers were lost with the old socket, so drop any box still held
+        // from it or it sticks until some later run ends (XERK-1736). A warm resume
+        // replayed the buffer before this, so a live run there is real. An older api
+        // omits `warm`: keep the box, as before.
+        if (m.warm === false) {
+          dismissTranslation();
+          dismissSong();
+        }
         persist();
         renderStatus();
         syncPhone();

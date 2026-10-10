@@ -158,7 +158,7 @@ export interface CaptureState {
 export type CaptureAction =
   | { type: "start"; micSource: MicSource }
   | { type: "connection"; state: Connection }
-  | { type: "ready"; sessionId: string }
+  | { type: "ready"; sessionId: string; warm?: boolean }
   | { type: "partial"; text: string }
   | { type: "final"; segmentId: string; text: string; lang?: Lang }
   // English translation of an earlier finalized turn (XERK-160), paired by id.
@@ -260,7 +260,15 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       // A (re)started session is not delayed until the api says so: a cold resume
       // or a new pod never sends `delayed: false`, and a warm resume repeats a
       // still-delayed status right after its session.ready (XERK-1498).
-      return { ...state, sessionId: action.sessionId, captionsDelayed: false };
+      // Only a warm resume continues the server's song: on a fresh or cold start
+      // (`warm: false`) the song.done for a box still held from the old socket was
+      // lost with it, so drop it here (XERK-1736). An older api omits `warm`: keep.
+      return {
+        ...state,
+        sessionId: action.sessionId,
+        captionsDelayed: false,
+        song: action.warm === false ? null : state.song,
+      };
     case "partial":
       return { ...state, partial: action.text };
     case "final": {
@@ -606,7 +614,7 @@ export class CaptureSession {
       onConnectionChange: (state) => this.dispatch({ type: "connection", state }),
       onReady: (m) => {
         this.deps.saveSessionId(m.sessionId);
-        this.dispatch({ type: "ready", sessionId: m.sessionId });
+        this.dispatch({ type: "ready", sessionId: m.sessionId, warm: m.warm });
       },
       onPartial: (m) => this.dispatch({ type: "partial", text: m.text }),
       onFinal: (m) =>

@@ -388,6 +388,9 @@ class Session:
         self._music_window_bytes = 0
         self._music_active = False
         self._music_run_id: str | None = None
+        # The latest run's id, kept after it ends so a warm resume can repeat its
+        # `song.done` (XERK-1736, resend_ended_asides).
+        self._music_last_run_id: str | None = None
         self._music_track_key: str | None = None
         self._music_last_match_monotonic: float | None = None
         self._music_misses = 0
@@ -607,8 +610,13 @@ class Session:
         # but re-warming is a cheap no-op there anyway.
         self._warmup = asyncio.create_task(self._transcriber.warmup())
         self._warmup.add_done_callback(self._on_warmup_done)
+        # warm=False even on a (cold) resume: no translation run or song carries over
+        # from the prior sitting, whose done marker died with its socket — clients drop
+        # any box still held from it (XERK-1736). Only rebind() resumes warm.
         await self._send(
-            SessionReady(type="session.ready", sessionId=self.session_id, resumed=self.resumed)
+            SessionReady(
+                type="session.ready", sessionId=self.session_id, resumed=self.resumed, warm=False
+            )
         )
         log.info("session %s ready (mic=%s)", self.session_id, mic_source)
 
@@ -720,6 +728,19 @@ class Session:
         pod starts a session that is not delayed and would never say so."""
         if self._captions_delayed:
             await self._send(CaptionStatus(type="caption.status", delayed=True))
+
+    async def resend_ended_asides(self) -> None:
+        """Repeat the done marker of an ended translation run / song to a warm-resumed
+        socket, after its session.ready (XERK-1736).
+
+        Displacing a still-open but dead socket replays nothing: a done marker the
+        server already wrote to it never reached the client, whose box would stick.
+        Clients ignore a done for a run they don't hold, so a repeat is harmless."""
+        if not self._translation_active and self._translation_queue is not None:
+            # Behind any still-pending translations, as _end_translation_run queues it.
+            self._translation_queue.put_nowait(("done", None, None))
+        if not self._music_active and self._music_last_run_id is not None:
+            await self._send(SongDone(type="song.done", songId=self._music_last_run_id))
 
     def detach(self, *, grace_seconds: float) -> None:
         """Connection dropped without an explicit end: keep the session alive for a
@@ -1404,6 +1425,7 @@ class Session:
             self._music_lyrics_pending = True
         song_id = uuid.uuid4().hex
         self._music_run_id = song_id
+        self._music_last_run_id = song_id
         self._music_track_key = key
         self._music_active = True
         lines = [LyricLine(atMs=max(0, ln.at_ms), text=ln.text) for ln in synced]

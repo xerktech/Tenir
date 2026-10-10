@@ -1757,6 +1757,60 @@ describe("wireLens synced-lyric song box (XERK-184)", () => {
     expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4); // plain page again
   });
 
+  // A cold resume (grace lapsed, or another pod) starts a fresh server sitting
+  // with no run or song: the old socket's translation.done / song.done went into
+  // a dead buffer, so the box would otherwise stick (XERK-1736).
+  const ready = (warm?: boolean) => ({
+    type: "session.ready" as const,
+    sessionId: "sess-1",
+    resumed: true,
+    ...(warm === undefined ? {} : { warm }),
+  });
+
+  it("a cold session.ready drops a held song and translation box (XERK-1736)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+
+    t.api.handlers().onReady?.(ready(false));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4); // plain page again
+    // Nothing held behind the song either: a later song.done frees nothing new.
+    const before = t.rebuilds.length;
+    t.api.handlers().onSongDone?.(DONE);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds.length).toBe(before);
+  });
+
+  it("a cold session.ready drops a live translation box on its own (XERK-1736)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+
+    t.api.handlers().onReady?.(ready(false));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(4);
+  });
+
+  it("a warm session.ready (or an api without the flag) keeps the box (XERK-1736)", async () => {
+    const t = await record();
+    t.api.handlers().onFinal?.(FINAL_ES);
+    t.api.handlers().onTranslation?.(TR);
+    t.api.handlers().onSong?.(SONG);
+    await vi.advanceTimersByTimeAsync(50);
+
+    t.api.handlers().onReady?.(ready(true));
+    t.api.handlers().onReady?.(ready());
+    await vi.advanceTimersByTimeAsync(50);
+    expect(t.rebuilds[t.rebuilds.length - 1]?.containerTotalNum).toBe(6);
+    expect(t.text(C().menu)).toBe(TITLE);
+  });
+
   it("suppresses cues while a song plays, releasing the queued cue when it ends", async () => {
     const t = await record();
     t.api.handlers().onSong?.(SONG);

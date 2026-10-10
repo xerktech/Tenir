@@ -716,6 +716,17 @@ describe("song reducer (XERK-184)", () => {
     expect(same).toBe(s);
   });
 
+  it("drops the song on a cold session.ready, whose song.done was lost (XERK-1736)", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    expect(reduce(s, { type: "ready", sessionId: "x", warm: false }).song).toBeNull();
+  });
+
+  it("keeps the song on a warm session.ready or one without the flag (XERK-1736)", () => {
+    const s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
+    expect(reduce(s, { type: "ready", sessionId: "x", warm: true }).song?.id).toBe("s1");
+    expect(reduce(s, { type: "ready", sessionId: "x" }).song?.id).toBe("s1");
+  });
+
   it("replaces the run when a different song takes over", () => {
     let s = reduce(base(), songAction("s1", 60000, [line(0, "a")], 1000));
     s = reduce(s, songAction("s2", 0, [line(0, "x")], 2000, { title: "Starlight", artist: "Muse" }));
@@ -830,6 +841,29 @@ describe("CaptureSession song handlers (XERK-184)", () => {
     expect(session.getState().song?.anchorOffsetMs).toBe(78000);
 
     refs.client!.handlers.onSongDone?.({ type: "song.done", songId: "s1" });
+    expect(session.getState().song).toBeNull();
+  });
+});
+
+describe("CaptureSession cold resume (XERK-1736)", () => {
+  const songMsg = {
+    type: "song" as const,
+    songId: "s1",
+    title: "Weird Fishes",
+    artist: "Radiohead",
+    atMs: 1000,
+    offsetMs: 0,
+    lines: [line(0, "a")],
+  };
+
+  it("drops a held song on a cold session.ready but keeps it on a warm one", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    refs.client!.handlers.onSong?.(songMsg);
+    const r = { type: "session.ready" as const, sessionId: "x", resumed: true };
+    refs.client!.handlers.onReady?.({ ...r, warm: true });
+    expect(session.getState().song?.id).toBe("s1");
+    refs.client!.handlers.onReady?.({ ...r, warm: false });
     expect(session.getState().song).toBeNull();
   });
 });
