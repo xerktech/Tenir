@@ -551,3 +551,15 @@ def test_degenerate_turns_stay_cheap(text: str) -> None:
     detect_lang(text)
     leans_english(text, "es")
     assert time.perf_counter() - t0 < 0.05
+
+
+def test_word_frequency_lookups_are_memoised() -> None:
+    # A repeated word is looked up in wordfreq once: the un-memoised lookups were most of
+    # a flood turn's cost (QA of XERK-1591).
+    from api.stt.langid import _zipf
+
+    detect_lang("ñandú " * 100)
+    hits = _zipf.cache_info().hits
+    detect_lang("ñandú " * 100)
+    assert _zipf.cache_info().hits > hits
+    assert _zipf.cache_info().maxsize >= 1024
