@@ -592,8 +592,13 @@ def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
         if substring_term(term) and not term.startswith("-"):
             # Quotes mean nothing to a substring.
             bare = term.strip('"')
-            if bare:
-                substrings.append(bare)
+            # Case-folded here, in both directions: under a C locale Postgres's lower()
+            # folds only ASCII, so "CAFÉ" missed a stored "café" and "café" a stored
+            # "CAFÉ" (both matched when full-text dropped the É). The SQL side still
+            # lower()s, which covers the ASCII letters around them.
+            for form in (bare.lower(), bare.upper()):
+                if form and form not in substrings:
+                    substrings.append(form)
         else:
             full_text.append(term)
     return " ".join(full_text), substrings

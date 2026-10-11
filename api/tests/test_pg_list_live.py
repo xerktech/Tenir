@@ -270,6 +270,18 @@ def test_sql_ascii_mixed_search_keeps_both_terms(encoded_store) -> None:
     assert [c.id for c in store.search(HH, "日本")] == [jp]
 
 
+@pytest.mark.parametrize("encoding", ["SQL_ASCII", "LATIN1"])
+def test_non_ascii_search_is_case_insensitive_under_a_c_locale(encoded_store, encoding) -> None:
+    """Postgres's lower() folds only ASCII under a C locale; before non-ASCII terms
+    became substrings, full-text dropped the É and "CAFÉ" matched "café" either way."""
+    store = encoded_store(encoding)
+    lower = _one_conversation(store, "un café noir")
+    upper = _one_conversation(store, "UN CAFÉ NOIR")
+    mixed = _one_conversation(store, "Un Café noir")
+    for query in ("CAFÉ", "café", "Café", "cAFÉ"):
+        assert {c.id for c in store.search(HH, query)} == {lower, upper, mixed}, query
+
+
 def test_search_with_no_terms_lists_everything(store) -> None:
     """As the in-memory store answers: a blank query is the plain list."""
     ids = _seed(store, 2)
