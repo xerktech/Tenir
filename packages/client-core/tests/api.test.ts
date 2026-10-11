@@ -75,6 +75,16 @@ describe("request plumbing", () => {
     expect(getToken()).toBe("tok-1");
   });
 
+  it.each([502, 504])("a gateway %i is a NetworkError, not an ApiError", async (status) => {
+    setToken("tok-1");
+    mockFetch(() => new Response("Bad Gateway", { status }));
+    const err = await me().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError); // callers keep the session, not a login form
+    expect(err).not.toBeInstanceOf(ServerUnavailableError);
+    expect(err).not.toBeInstanceOf(ApiError);
+    expect(getToken()).toBe("tok-1");
+  });
+
   it("returns undefined for a 204 (delete)", async () => {
     mockFetch(() => new Response(null, { status: 204 }));
     await expect(history.remove("c1")).resolves.toBeUndefined();

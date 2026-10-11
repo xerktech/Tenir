@@ -296,6 +296,164 @@ def test_no_catch_up_after_close(monkeypatch: pytest.MonkeyPatch) -> None:
     asyncio.run(run())
 
 
+def test_no_cue_for_a_final_arriving_after_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The STT flush final emitted during teardown used to start a cue call.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        await session.close()
+        session._consider_cue(_final("how far is the sun?"))
+        assert not session._cue_tasks
+        assert not _cues(sent)
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_after_finalize_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An in-flight cue used to be sent and stored into a conversation already ready.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?"))
+        tasks = list(session._cue_tasks)
+        await session.close()
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        assert gen.transcripts  # the call did run
+        assert not _cues(sent)
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None and conv.cues == []
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_during_the_final_flush_lands_before_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cue finishing as teardown flushes its writes joins that flush (the row is
+    # still live) instead of starting a writer that could land after finish().
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?"))
+        tasks = list(session._cue_tasks)
+        flush = session._flush_writes
+
+        async def flush_with_cue_landing() -> bool:
+            gen.release.set()
+            await asyncio.gather(*tasks)
+            return await flush()
+
+        session._flush_writes = flush_with_cue_landing  # type: ignore[method-assign]
+        await session.close()
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None and conv.status == "ready"
+        assert [c.title for c in conv.cues] == ["Sun"]
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_while_the_row_is_marked_ready_is_not_stored_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Too late for the final flush: a writer started now would store the cue into a
+    # row finish() just marked ready. It stays queued and is never written.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?"))
+        tasks = list(session._cue_tasks)
+        store = get_conversation_store()
+        finish = store.finish
+        loop = asyncio.get_running_loop()
+
+        def finish_with_cue_landing(*args, **kwargs):
+            gen.release.set()
+
+            async def landed() -> None:
+                await asyncio.gather(*tasks)
+
+            asyncio.run_coroutine_threadsafe(landed(), loop).result(5)
+            return finish(*args, **kwargs)
+
+        monkeypatch.setattr(store, "finish", finish_with_cue_landing)
+        await session.close()
+        await asyncio.sleep(0.1)  # a stray writer would have stored it by now
+        conv = store.get("default", session.session_id)
+        assert conv is not None and conv.status == "ready"
+        assert conv.cues == []
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_after_a_resume_took_over_the_row_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A later sitting resumed mid-teardown owns the still-live row, so this sitting's
+    # finalize leaves it open; a cue landing afterwards must still be written.
+    import types
+
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?"))
+        tasks = list(session._cue_tasks)
+        session._successor = types.SimpleNamespace(  # type: ignore[assignment]
+            _row_opened=True, _closed=False, _successor=None
+        )
+        await session.close()
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        if session._writer is not None:
+            await session._writer
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None and conv.status == "live"
+        assert [c.title for c in conv.cues] == ["Sun"]
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_during_teardown_still_lands(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Before the row is finalized it is still live: a cue finishing then is kept.
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        session._cue_generator = gen
+        session._consider_cue(_final("how far is the sun?"))
+        tasks = list(session._cue_tasks)
+        session._closed = True  # mid-teardown: closed, row not yet finalized
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        session._closed = False
+        await session.close()
+        assert len(_cues(sent)) == 1
+        conv = get_conversation_store().get("default", session.session_id)
+        assert conv is not None and len(conv.cues) == 1
+
+    asyncio.run(run())
+
+
 def test_dedupes_repeated_title(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "cue_backend", "stub")
 

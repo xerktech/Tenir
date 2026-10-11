@@ -123,6 +123,9 @@ async function request<T>(
       /* non-JSON error body */
     }
     if (res.status === 503) throw new ServerUnavailableError(detail);
+    // 502/504: a gateway in front of the api answered for it (the api is gone or
+    // not answering) — unreachable, not a verdict on the token.
+    if (res.status === 502 || res.status === 504) throw new NetworkError(detail);
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;

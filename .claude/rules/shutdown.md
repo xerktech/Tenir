@@ -41,6 +41,13 @@ paths:
 - That middleware must stay pure ASGI and outermost (added last). The traceback only shows when
   the lifespan shutdown outlasts the cancel's unwinding — a bare local uvicorn run with an instant
   shutdown exits first and logs nothing, so a repro needs a slow lifespan shutdown.
+- A cue finishing after `close()` must never start a writer: one could store it after `finish()`
+  marked the row ready. It joins `_unsaved_writes` for `_finalize`'s flush (or a deferred retry's);
+  once `finish()` committed (`_finished`) it is dropped. A row handed to a resumed sitting
+  (`_handed_off`) is stored as usual: that sitting finishes the row, so if it ends first the cue
+  can still land after its `finish()` (pre-existing, narrow).
+  - Tests: `test_cue_session.py` `test_cue_finishing_*`; `test_finalize_outage.py`
+    `test_a_cue_finishing_while_the_finalize_is_deferred_still_lands`.
 - Tests: `api/tests/test_shutdown.py`; resume-during-teardown in
   `api/tests/test_session_persistence.py` (`test_resume_during_prior_teardown_*`,
   `test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio`).

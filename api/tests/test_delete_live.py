@@ -7,6 +7,7 @@ stores its audio again; its key write found no row and the WAV stayed on disk.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,3 +122,28 @@ def test_a_failed_audio_delete_keeps_the_row_to_retry(monkeypatch: pytest.Monkey
     r = TestClient(app, raise_server_exceptions=False).delete(f"/conversations/{sid}")
     assert r.status_code == 500
     assert get_conversation_store().get("default", sid) is not None
+
+
+def test_writes_to_a_deleted_row_log_one_line_not_a_traceback_each(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Postgres answers a write to a deleted conversation with an FK violation; each
+    # segment used to log an ERROR with a full traceback (XERK-1608 QA).
+    class ForeignKeyViolation(Exception):
+        sqlstate = "23503"
+
+    def write(*_a) -> None:
+        raise ForeignKeyViolation("segments_conversation_id_fkey")
+
+    async def run() -> None:
+        s = await _live_session()
+        for _ in range(3):
+            s._store(write)
+        assert await s._flush_writes()
+        await s.close()
+
+    with caplog.at_level(logging.INFO, logger="api.session"):
+        asyncio.run(run())
+    gone = [r for r in caplog.records if "row is gone" in r.getMessage()]
+    assert len(gone) == 1 and gone[0].levelno == logging.INFO
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

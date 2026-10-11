@@ -14,10 +14,10 @@
 model_list:
   # Live STT — Parakeet on the parakeet server, OpenAI /audio/transcriptions. mode
   # flags it for the transcription route (LiteLLM otherwise assumes chat). Routed
-  # via the openai/ provider: the parakeet server implements verbose_json, so the
-  # openai transform's json->verbose_json rewrite (to read 'duration' for cost
-  # calc) works — the very rewrite vLLM-served Voxtral 400'd on, which is why the
-  # old route needed mistral/. verbose_json also carries the word timestamps back.
+  # via the openai/ provider: the parakeet server implements verbose_json, which the
+  # openai transform asks for (to read 'duration' for cost calc) when the caller
+  # sends no response_format — the request vLLM-served Voxtral 400'd on, which is
+  # why the old route needed mistral/. verbose_json also carries word timestamps.
   - model_name: parakeet
     litellm_params:
       model: openai/parakeet-tdt-0.6b-v3

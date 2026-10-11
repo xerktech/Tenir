@@ -69,6 +69,25 @@ def test_liveness_lookup_outage_is_503_logged_once(
     reset_user_store()
 
 
+@pytest.mark.real_auth
+def test_outage_log_line_escapes_the_request_path(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The path is attacker-chosen: ESC / NEL / U+2028 went into the log raw, so a
+    # request could rewrite the operator's terminal.
+    _, token = _member_token()
+    monkeypatch.setattr(get_user_store(), "get_by_id", _raise(DatabaseUnavailable("refused")))
+
+    with TestClient(app, raise_server_exceptions=False) as client, caplog.at_level(logging.WARNING):
+        r = client.get("/conversations/x%1B%5B2K%C2%85", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 503
+    [line] = [rec.getMessage() for rec in caplog.records if "database unavailable" in rec.getMessage()]
+    assert "\x1b" not in line and "\x85" not in line
+    assert "\\x1b" in line
+    reset_user_store()
+
+
 def test_store_outage_on_a_route_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
     class DownStore:
         def __getattr__(self, _name: str):
