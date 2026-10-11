@@ -1070,7 +1070,7 @@ def test_warm_resume_without_dedupe_flag_does_not_replay_delivered_turns() -> No
 
             client.portal.call(deliver)
             assert b.receive_json()["segmentId"] == "seg-1"
-            for path, replayed in (("/ws", False), ("/ws?dedupe=1", True)):
+            for path, replayed in (("/ws", False), ("/ws?dedupe=0", False), ("/ws?dedupe=1", True)):
                 with client.websocket_connect(path) as c:
                     c.send_text(json.dumps({**start, "sessionId": sid}))
                     c.send_text(json.dumps({"type": "ping", "t": 1}))
