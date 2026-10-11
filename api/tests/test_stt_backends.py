@@ -64,18 +64,17 @@ def test_factory_final_word_timestamps_default_off(monkeypatch: pytest.MonkeyPat
 def test_factory_turn_close_windows_tuned_for_latency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pin the XERK-175 turn-close windows. Translations and cues run only on
-    finalized turns, so these two values ARE their latency floor: measured over
-    the July 2026 deployment audio, 500 ms silence / 8 s cap cuts the mean
-    wait-for-final from 4.7 s to 3.0 s and closes more turns on a real pause
-    (see the Settings comment). Don't regress them without re-running
+    """Pin the turn-close windows (XERK-175, XERK-1667). Translations and cues
+    run only on finalized turns, so these two values ARE their latency floor;
+    800 ms silence trades +0.6 s wait-for-final for far fewer mid-phrase splits
+    (see the Settings comment). Don't change them without re-running
     scripts/stt_eval/segment_sim.py on current session audio."""
     from api.config import settings
     from api.stt.engine import BYTES_PER_SEC
 
     monkeypatch.setattr(settings, "stt_backend", "parakeet")
     transcriber = make_transcriber()
-    assert transcriber._silence_bytes == 500 * BYTES_PER_SEC // 1000
+    assert transcriber._silence_bytes == 800 * BYTES_PER_SEC // 1000
     assert transcriber._max_segment_bytes == 8000 * BYTES_PER_SEC // 1000
 
 

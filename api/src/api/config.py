@@ -295,9 +295,16 @@ class Settings(BaseSettings):
     # 16 % even with the tighter cap; 8 % at 500/12000). Re-run
     # scripts/stt_eval/segment_sim.py against current session audio before
     # retuning further.
+    # Silence then rose to 800 ms (XERK-1667): at 500 ms quiet far-field speech
+    # read as a pause, splitting sentences mid-phrase (~28 % of turns were <=3
+    # words) and Parakeet mis-decoded the fragments. Over 9 October 2026 sessions
+    # (~3.7 h, every turn re-decoded by Parakeet), 800 ms cut <=3-word turns 57 %
+    # and divergence from a 25 s-chunk re-transcription from 29.9 % to 26.2 %, for
+    # +0.6 s word-weighted wait-for-final (2.7 -> 3.3 s). Rooms loud enough that
+    # most turns close on the cap are unaffected either way.
     stt_max_segment_ms: int = 8000  # force a final at this segment length
     stt_min_segment_ms: int = 400  # don't close a turn on silence below this length
-    stt_silence_ms: int = 500  # trailing silence that closes a turn
+    stt_silence_ms: int = 800  # trailing silence that closes a turn
     stt_silence_rms: float = 0.005  # energy threshold below which audio is "silent"
     # Adaptive VAD (XERK-115). stt_silence_rms alone is an ABSOLUTE gate: in a room
     # whose noise floor sits above it — a café, a car, a fan — no frame is ever
