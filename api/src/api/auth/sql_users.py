@@ -243,11 +243,11 @@ class SqlUserStore:
         return conn.execute(_NAME_TAKEN, (username, user_id)).fetchone() is not None
 
     def _lookup(  # pragma: no cover - live DB
-        self, sql: str, params: tuple, fallback: tuple | None = None
+        self, sql: str, params: tuple, *fallbacks: tuple
     ) -> User | None:
         """One row by ``sql``, or None. A value the database encoding can't hold
         can't match a stored row: that is "no such user", not a 500 (XERK-1591) —
-        unless ``fallback`` params are given, which are tried instead."""
+        unless ``fallbacks`` params are given, which are tried in turn instead."""
         from psycopg.rows import dict_row
 
         try:
@@ -256,7 +256,7 @@ class SqlUserStore:
         except Exception as exc:
             if not _is_unencodable(exc):
                 raise
-            return self._lookup(sql, fallback) if fallback is not None else None
+            return self._lookup(sql, *fallbacks) if fallbacks else None
         return self._row_to_user(row) if row else None
 
     @staticmethod
@@ -359,9 +359,10 @@ class SqlUserStore:
             f" ORDER BY (username = %s) DESC, ({_USERNAME_KEY} = lower(%s)) DESC,"
             " created_at, id LIMIT 1",
             (typed, normalized, typed, typed),
-            # The typed spelling may not encode (fullwidth on LATIN1) where its NFKC
-            # form, the stored one, does: look that up alone.
-            fallback=(normalized,) * 4 if normalized != typed else None,
+            # One form may not encode where the other does, on e.g. LATIN1: fullwidth
+            # typed while its NFKC form (a new row) does; a legacy "\u00b5ser" whose
+            # NFKC form (Greek mu) doesn't. Then look up whichever form encodes, alone.
+            *(((normalized,) * 4, (typed,) * 4) if normalized != typed else ()),
         )
 
     def get_by_id(self, user_id: str) -> User | None:  # pragma: no cover

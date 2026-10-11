@@ -25,6 +25,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from api.auth.tokens import hash_password
 from api.auth.users import DuplicateUser
 from api.config import settings
 from api.main import app
@@ -603,6 +604,15 @@ def test_latin1_database_treats_unencodable_input_as_no_such_user(make_encoded_s
     )
     SqlUserStore._ensure_schema(store._pool)
     assert store.get_by_username("nina").username == "nina"
+    # The mirror: a legacy name LATIN1 holds whose NFKC form it can't (micro sign ->
+    # Greek mu, one-half -> 1/2 with U+2044) still logs in by its own spelling.
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES"
+        " ('default', %s, %s), ('default', %s, %s)",
+        ("µser", hash_password("longpassword"), "½x", hash_password("longpassword")),
+    )
+    for legacy in ("µser", "½x", " µser "):
+        assert store.authenticate(legacy, "longpassword") is not None, legacy
 
 
 def test_latin1_oidc_token_with_an_unencodable_email_is_401(
