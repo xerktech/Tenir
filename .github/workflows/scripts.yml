@@ -14,6 +14,10 @@ on:
       - 'scripts/**/*.sh'
       - 'scripts/translation_eval/public/**'
       - 'scripts/longform_eval/**'
+      # segment_sim.py subclasses the live StreamingTranscriber, so a refactor there
+      # must re-run its tests (a refactor once left it silently reporting 0 turns)
+      - 'scripts/stt_eval/**'
+      - 'api/src/api/stt/streaming.py'
       # the long-form replay test decides language with the shipped langid
       - 'api/src/api/stt/langid.py'
       # the harness tests build requests from the shipped translator prompt, so a
@@ -77,3 +81,8 @@ jobs:
 
       - name: Run the long-form harness tests
         run: python -m pytest scripts/longform_eval/tests -q -rs
+
+      # scripts/stt_eval: scorer, audio slicing and segment_sim's VAD replay, which
+      # hooks StreamingTranscriber internals and broke silently when they changed.
+      - name: Run the STT eval harness tests
+        run: python -m pytest scripts/stt_eval/tests -q -rs

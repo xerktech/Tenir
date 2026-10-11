@@ -139,6 +139,17 @@ class TestSegmentSim:
         assert 1400 <= first <= 1700
         assert 1700 <= second <= 2000
 
+    def test_a_turn_under_min_segment_is_closed_by_flush_not_silence(self):
+        # Live push() never closes a turn on silence below min_segment_ms (400), so
+        # a short tail ended only by flush() must not be labelled "silence".
+        import asyncio
+
+        from segment_sim import replay
+
+        pcm = self._pcm((100, True), (250, False))
+        result = asyncio.run(replay(pcm, silence_ms=200, max_segment_ms=4000))
+        assert [reason for _, reason in result["turns"]] == ["flush"]
+
     def test_cap_forces_final_when_no_pause_exists(self):
         import asyncio
 
