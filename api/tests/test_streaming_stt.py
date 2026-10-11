@@ -1430,7 +1430,7 @@ def test_finalizing_clears_when_the_final_decode_raises() -> None:
         def transcribe(self, samples, *, language, want_words=True):
             raise TimeoutError("stt stalled")
 
-    t = StreamingTranscriber(Boom(), partial_interval_ms=60_000)
+    t = StreamingTranscriber(Boom(), partial_interval_ms=60_000, silence_ms=500)
 
     async def run() -> None:
         await _push(t, _pcm(600, amplitude=3000))
