@@ -323,3 +323,100 @@ def test_env_flag_off_values(monkeypatch: pytest.MonkeyPatch, value: str) -> Non
 def test_env_flag_on_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("PARAKEET_CUDA_GRAPHS", value)
     assert server._env_flag("PARAKEET_CUDA_GRAPHS") is True
+
+
+class FakeTorch:
+    """Just the torch.cuda surface _apply_vram_cap touches."""
+
+    def __init__(self, total_gib: float) -> None:
+        self.fraction: float | None = None
+        outer = self
+
+        class _Cuda:
+            @staticmethod
+            def get_device_properties(_idx: int):  # noqa: ANN205
+                return type("Props", (), {"total_memory": int(total_gib * server.GIB)})()
+
+            @staticmethod
+            def set_per_process_memory_fraction(fraction: float, _idx: int) -> None:
+                outer.fraction = fraction
+
+        self.cuda = _Cuda()
+
+
+def test_vram_cap_is_off_without_a_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PARAKEET_VRAM_CLAIM_GIB", raising=False)
+    torch = FakeTorch(24)
+    assert server._apply_vram_cap(torch) is None
+    assert torch.fraction is None
+
+
+def test_vram_cap_is_the_claim_less_the_cuda_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The talos04 case: a 4 GiB claim on a 24 GiB 3090 caps the allocator at 3 GiB.
+    monkeypatch.setenv("PARAKEET_VRAM_CLAIM_GIB", "4")
+    torch = FakeTorch(24)
+    assert server._apply_vram_cap(torch) == pytest.approx(3 / 24)
+    assert torch.fraction == pytest.approx(3 / 24)
+
+
+def test_vram_cap_skipped_when_the_claim_covers_the_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PARAKEET_VRAM_CLAIM_GIB", "16")
+    torch = FakeTorch(8)
+    assert server._apply_vram_cap(torch) is None
+    assert torch.fraction is None
+
+
+@pytest.mark.parametrize("value", ["1", "0.5", "abc"])
+def test_vram_cap_rejects_a_claim_that_cannot_hold_the_context(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PARAKEET_VRAM_CLAIM_GIB", value)
+    with pytest.raises(ValueError):
+        server._apply_vram_cap(FakeTorch(24))
+
+
+def test_load_model_caps_vram_before_moving_weights_to_the_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cap must be set before the first CUDA allocation, or the weights escape it.
+    import sys
+    import types
+
+    events: list[str] = []
+
+    class LoadedModel(FakeModel):
+        def eval(self) -> None:
+            pass
+
+        def cuda(self) -> LoadedModel:
+            events.append("cuda")
+            return self
+
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)
+    )
+    asr = types.SimpleNamespace(
+        models=types.SimpleNamespace(
+            ASRModel=types.SimpleNamespace(from_pretrained=lambda **_: LoadedModel())
+        )
+    )
+    nemo = types.ModuleType("nemo")
+    collections = types.ModuleType("nemo.collections")
+    collections.asr = asr
+    nemo.collections = collections
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "nemo", nemo)
+    monkeypatch.setitem(sys.modules, "nemo.collections", collections)
+    monkeypatch.setitem(sys.modules, "nemo.collections.asr", asr)
+    monkeypatch.setattr(
+        server, "_apply_vram_cap", lambda t: events.append("cap" if t is fake_torch else "bad")
+    )
+    monkeypatch.setenv("PARAKEET_CUDA_GRAPHS", "1")
+    monkeypatch.setattr(server, "_model", None)
+    monkeypatch.setattr(server, "_supported", server._supported)
+    try:
+        server._load_model()
+        assert events == ["cap", "cuda"]
+        assert server._ready.is_set()
+    finally:
+        server._ready.clear()
