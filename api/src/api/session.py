@@ -1245,17 +1245,25 @@ class Session:
                 metrics.incr("cue.grounded")
             if self._conversations is not None:
                 record = CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms, source=source)
-                if self._closed and not self._handed_off:
+                # A row handed to a resumed sitting is that sitting's to finish, so the
+                # cue joins its writes: stored by our own writer, it could land after
+                # that sitting already marked the row ready.
+                owner = self
+                while owner._handed_off and owner._successor is not None:
+                    owner = owner._successor
+                if owner._finished:
+                    metrics.incr("cue.closed_drops")
+                elif owner._closed and not owner._handed_off:
                     # Teardown: queue it for _finalize's flush rather than start a
                     # writer that could store it after finish(). Landing too late for
                     # that flush, it is stored only if the finalize is deferred.
-                    self._unsaved_writes.append(
+                    owner._unsaved_writes.append(
                         functools.partial(
                             self._conversations.add_cue, self._household, self.session_id, record
                         )
                     )
                 else:
-                    self._store(self._conversations.add_cue, record)
+                    owner._store(self._conversations.add_cue, record)
         except Exception:
             log.warning("session %s cue generation failed", self.session_id, exc_info=True)
             metrics.incr("cue.errors")

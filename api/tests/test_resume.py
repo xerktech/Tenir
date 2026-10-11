@@ -564,6 +564,53 @@ def test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued(
             assert events == ["4001 sent", "handler returned"]
 
 
+def test_the_displaced_handler_keeps_reading_while_its_close_goes_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (XERK-1591): on uvicorn's legacy websockets backend the close waits
+    for the client's close echo, which sits behind frames the client still sent. The
+    handler stopped reading while it awaited the close, so the TCP close took the
+    backend's ~10 s close timeout. The patched close stands in for that backend: it
+    completes once the app has read past the queued frames (or after 5 s)."""
+    real_close = WebSocket.close
+    state = {"closing": False, "reads": 0}
+
+    async def legacy_close(self: WebSocket, code: int = 1000, reason: str | None = None) -> None:
+        if code == WS_CLOSE_RESUMED_ELSEWHERE:
+            state["closing"] = True
+            for _ in range(50):
+                if state["reads"] >= 3:  # the echo is behind three queued frames
+                    break
+                await asyncio.sleep(0.1)
+        await real_close(self, code=code, reason=reason)
+
+    async def counted(scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        async def counting_receive():  # type: ignore[no-untyped-def]
+            message = await receive()
+            if state["closing"] and message["type"] == "websocket.receive":
+                state["reads"] += 1
+            return message
+
+        await app(scope, counting_receive if scope["type"] == "websocket" else receive, send)
+
+    monkeypatch.setattr(WebSocket, "close", legacy_close)
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(counted) as client:
+        with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+            a.send_text(json.dumps(start))
+            sid = a.receive_json()["sessionId"]
+            b.send_text(json.dumps({**start, "sessionId": sid}))
+            assert b.receive_json()["resumed"] is True
+            t0 = time.monotonic()
+            for _ in range(3):
+                a.send_bytes(b"\x00\x00" * 160)
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    a.receive_json()
+            assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+            assert time.monotonic() - t0 < 2
+
+
 def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
     start = {"type": "session.start", "micSource": "g2-microphone"}
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
@@ -804,6 +851,46 @@ def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
         done = store.get("default", sid)
         assert done is not None and done.status == "ready"
         assert done.ended_at is not None and done.ended_at >= first_end
+
+
+def test_resuming_a_deleted_recording_starts_fresh_instead_of_recreating_it() -> None:
+    """A client that resumes after its recording was deleted (DELETE /conversations)
+    gets a new conversation under a fresh server id; the deleted one stays deleted.
+    create() is an upsert, so honoring the id used to bring the row back."""
+
+    def drain_to_pong(ws) -> None:
+        while ws.receive_json()["type"] != "pong":
+            pass
+
+    store = get_conversation_store()
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            drain_to_pong(ws)
+        assert client.delete(f"/conversations/{sid}").status_code == 204
+
+        with client.websocket_connect("/ws") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            ready = ws2.receive_json()
+            assert ready["type"] == "session.ready"
+            assert ready["sessionId"] != sid
+            assert ready["resumed"] is False
+            new_sid = ready["sessionId"]
+            ws2.send_text(json.dumps({"type": "session.end"}))
+            ws2.send_text(json.dumps({"type": "ping", "t": 2}))
+            drain_to_pong(ws2)
+
+        assert store.get("default", sid) is None
+        assert client.get(f"/conversations/{sid}").status_code == 404
+        fresh = store.get("default", new_sid)
+        assert fresh is not None and fresh.status == "ready"
 
 
 class _OneSongMusic:

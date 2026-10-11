@@ -400,33 +400,66 @@ def test_cue_finishing_while_the_row_is_marked_ready_is_not_stored_after(
     asyncio.run(run())
 
 
+async def _handed_off_sitting(
+    sent: list[ServerMessage], gen: _GatedGenerator
+) -> tuple[Session, Session, list[asyncio.Task[None]]]:
+    """A sitting with a cue in flight whose row a resumed, still-live sitting took over."""
+    first = await _fresh_session(sent)
+    first._cue_generator = gen
+    first._consider_cue(_final("how far is the sun?"))
+    tasks = list(first._cue_tasks)
+
+    async def sender(m: ServerMessage) -> None:
+        sent.append(m)
+
+    second = Session(sender, session_id=first.session_id, household="default")
+    await second.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+    first._successor = second
+    await first.close()
+    assert first._handed_off
+    return first, second, tasks
+
+
 def test_cue_finishing_after_a_resume_took_over_the_row_is_stored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A later sitting resumed mid-teardown owns the still-live row, so this sitting's
-    # finalize leaves it open; a cue landing afterwards must still be written.
-    import types
-
+    # finalize leaves it open; a cue landing afterwards must still be written, and
+    # before that sitting marks the row ready.
     monkeypatch.setattr(settings, "cue_backend", "stub")
 
     async def run() -> None:
         sent: list[ServerMessage] = []
-        session = await _fresh_session(sent)
         gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
-        session._cue_generator = gen
-        session._consider_cue(_final("how far is the sun?"))
-        tasks = list(session._cue_tasks)
-        session._successor = types.SimpleNamespace(  # type: ignore[assignment]
-            _row_opened=True, _closed=False, _successor=None
-        )
-        await session.close()
+        first, second, tasks = await _handed_off_sitting(sent, gen)
         gen.release.set()
         await asyncio.gather(*tasks)
-        if session._writer is not None:
-            await session._writer
-        conv = get_conversation_store().get("default", session.session_id)
-        assert conv is not None and conv.status == "live"
+        await second.close()
+        conv = get_conversation_store().get("default", first.session_id)
+        assert conv is not None and conv.status == "ready"
         assert [c.title for c in conv.cues] == ["Sun"]
+
+    asyncio.run(run())
+
+
+def test_cue_finishing_after_the_resumed_sitting_finished_the_row_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The resumed sitting ended and marked the row ready while this sitting's cue was
+    # generating: stored by this sitting's own writer, it landed after finish().
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        gen = _GatedGenerator([GeneratedCue(title="Sun", body="149.6 million km.")])
+        first, second, tasks = await _handed_off_sitting(sent, gen)
+        await second.close()
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0.1)  # a stray writer would have stored it by now
+        conv = get_conversation_store().get("default", first.session_id)
+        assert conv is not None and conv.status == "ready"
+        assert conv.cues == []
 
     asyncio.run(run())
 

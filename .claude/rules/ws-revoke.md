@@ -14,6 +14,8 @@ paths:
   with no registered session can't record after its account is gone (XERK-1504).
 - A session keeps one disconnect hook per socket bound to it (start + every resume). Revoke must
   close every socket still open, not only the one that bound it last.
+- A hook skips a socket already closing *or* DISCONNECTED (a failed send marks it so while the
+  handler still waits in receive()): `test_delete_leaves_a_socket_whose_peer_is_gone_alone`.
 - Hooks must be safe on a dead socket, idempotent per socket, and dropped in the handler's
   `finally`, or a session resumed in a loop pins every dead socket (unbounded memory).
 - `revoke()` iterates a copy of the hook list: a hook may drop itself mid-loop.

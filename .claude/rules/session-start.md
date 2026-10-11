@@ -30,6 +30,12 @@ paths:
   uvicorn drop the transport and the 4001; the client sees 1006 and reconnects into a bounce. Clients must not
   reconnect on 4001, or two sockets with one id take the session from each other forever
   (`packages/client-core/src/ws.ts`, XERK-1526).
+- It keeps reading (and discarding) frames while it awaits that close (`_drain_while`): the
+  legacy backend stops reading a full frame queue, so the client's close echo sat behind them
+  and the TCP close took the ~10 s close timeout.
+- A cold resume of an id with no row starts fresh under a server id, like a foreign id: every
+  id the server issues has its row from `start()`, so no row means the recording was deleted,
+  and `create()` is an upsert that would bring it back. Clients adopt the id in session.ready.
 - Once a start knows it runs under a fresh server id, it releases the presented id's start lock
   before `start()`: holding it let anyone who knew a victim's id stall that victim's resume.
 - A cold resume of a persisted id also reports `resumed=True`; only `warm` (true solely from the
@@ -60,6 +66,8 @@ paths:
   `::test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alone`,
   `::test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued`,
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`,
+  `::test_the_displaced_handler_keeps_reading_while_its_close_goes_out`,
+  `::test_resuming_a_deleted_recording_starts_fresh_instead_of_recreating_it`,
   `::test_warm_resume_replays_what_a_dead_socket_swallowed`,
   `::test_rebind_after_a_detach_replays_lost_frames_ahead_of_the_buffer`,
   `::test_warm_resume_without_dedupe_flag_does_not_replay_delivered_turns`,
