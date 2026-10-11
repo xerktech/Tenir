@@ -34,6 +34,45 @@ def test_factory_parakeet_builds_streaming_transcriber(monkeypatch: pytest.Monke
     assert isinstance(make_transcriber(), StreamingTranscriber)
 
 
+def test_factory_gives_each_conversation_its_own_silero_vad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loud-room pauses (XERK-1819) are on by default, with per-conversation model state."""
+    from api.config import settings
+    from api.stt.vad import SileroVad
+
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    a, b = make_transcriber(), make_transcriber()
+    assert isinstance(a._vad_model, SileroVad)
+    assert a._vad_model is not b._vad_model
+    assert a._vad_model_floor_rms == settings.stt_vad_model_floor_rms
+
+
+def test_factory_vad_model_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    monkeypatch.setattr(settings, "stt_vad_model", False)
+    assert make_transcriber()._vad_model is None
+
+
+def test_factory_falls_back_to_energy_vad_when_the_model_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken model install costs loud-room pauses, never the session's captions."""
+    import api.stt.vad
+    from api.config import settings
+
+    def broken() -> None:
+        raise RuntimeError("no onnxruntime")
+
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    monkeypatch.setattr(api.stt.vad, "SileroVad", broken)
+    t = make_transcriber()
+    assert isinstance(t, StreamingTranscriber)
+    assert t._vad_model is None
+
+
 def test_factory_threads_start_offset_through_both_backends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -802,6 +802,165 @@ def test_adaptive_vad_can_be_turned_off() -> None:
     asyncio.run(run())
 
 
+# ----- model VAD for loud rooms (XERK-1819) ----------------------------------
+
+
+class ScriptedVad:
+    """A SpeechModel that returns a scripted probability per chunk (then repeats the
+    last), recording every chunk it was asked to score."""
+
+    def __init__(self, probs: list[float]) -> None:
+        self.probs = list(probs)
+        self.calls = 0
+
+    def speech_prob(self, pcm: bytes) -> float:
+        self.calls += 1
+        return self.probs.pop(0) if len(self.probs) > 1 else self.probs[0]
+
+
+def _loud_room(vad: object | None) -> StreamingTranscriber:
+    return StreamingTranscriber(
+        FakeEngine(),
+        language="en",
+        partial_interval_ms=100000,
+        silence_ms=300,
+        min_segment_ms=100,
+        max_segment_ms=100000,
+        silence_rms=0.005,
+        vad_model=vad,
+    )
+
+
+def _finals(t: StreamingTranscriber) -> list[CaptionFinal]:
+    return [m for m in _queued(t) if isinstance(m, CaptionFinal)]
+
+
+def test_energy_vad_finds_no_pause_in_a_flat_loud_room() -> None:
+    """The regression: music at ~-12 dBFS barely moves, so speech and the pause after
+    it sit at the same level and the energy gate never counts a silent frame."""
+
+    async def run() -> None:
+        t = _loud_room(None)
+        for _ in range(20):
+            await _push(t, _pcm(100, amplitude=9000))
+        assert not _finals(t)
+        assert t._trailing_silence == 0
+
+    asyncio.run(run())
+
+
+def test_model_vad_closes_the_turn_in_the_same_loud_room() -> None:
+    """Same flat audio; the model hears speech for 1 s then none, and the turn closes
+    on that pause."""
+
+    async def run() -> None:
+        t = _loud_room(ScriptedVad([0.9] * 10 + [0.05]))
+        for _ in range(20):
+            await _push(t, _pcm(100, amplitude=9000))
+        assert len(_finals(t)) == 1
+
+    asyncio.run(run())
+
+
+def test_model_vad_is_ignored_below_the_loud_floor() -> None:
+    """In a quiet room the energy gate decides alone, so a model that hears nothing
+    can't drop a quiet talker's speech."""
+
+    async def run() -> None:
+        vad = ScriptedVad([0.0])
+        t = _loud_room(vad)
+        await _push(t, _pcm(100, amplitude=0))  # quiet background: floor ~0
+        await _push(t, _pcm(100, amplitude=4000))
+        assert t._has_speech is True
+        assert t._trailing_silence == 0
+        # Still scored, so its recurrent state is warm when the room turns loud.
+        assert vad.calls == 2
+
+    asyncio.run(run())
+
+
+def test_model_vad_hysteresis_holds_a_word_near_the_line() -> None:
+    """Speech starts at 0.5 and only ends under 0.35: a 0.4 dip mid-word stays speech,
+    but 0.4 from a pause doesn't start it."""
+
+    async def run() -> None:
+        t = _loud_room(ScriptedVad([0.4, 0.6, 0.4, 0.3]))
+        await _push(t, _pcm(100, amplitude=9000))
+        assert t._has_speech is False
+        await _push(t, _pcm(100, amplitude=9000))
+        assert t._has_speech is True
+        await _push(t, _pcm(100, amplitude=9000))
+        assert t._trailing_silence == 0
+        await _push(t, _pcm(100, amplitude=9000))
+        assert t._trailing_silence == _ms_to_bytes(100)
+
+    asyncio.run(run())
+
+
+def test_model_vad_floor_is_configurable() -> None:
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine(), vad_model=ScriptedVad([0.0]), vad_model_floor_rms=0.5)
+        await _push(t, _pcm(100, amplitude=9000))  # loud, but under a 0.5 floor
+        assert t._has_speech is True
+
+    asyncio.run(run())
+
+
+def _loud_rumble(seconds: int) -> list[bytes]:
+    """10 s of loud, bass-heavy, non-speech sound (-10 dBFS, seeded): a loud room the
+    energy gate can't tell from a talker, as 100 ms chunks."""
+    rng = np.random.default_rng(0)
+    x = np.cumsum(rng.normal(size=16000 * seconds))
+    x -= np.convolve(x, np.ones(800) / 800, "same")  # drop the random walk's drift
+    x *= 0.3 / np.sqrt(np.mean(x**2))
+    pcm = (np.clip(x, -1, 1) * 32767).astype(np.int16)
+    return [pcm[i : i + 1600].tobytes() for i in range(0, pcm.size, 1600)]
+
+
+def test_real_silero_vad_tells_loud_noise_from_speech_without_losing_it() -> None:
+    """End to end with the bundled model: 10 s of loud non-speech. The energy gate reads
+    it as speech (live partials, a speech final the translation hold waits on); Silero
+    scores it as non-speech, so no partials. Either way the audio still decodes at the
+    cap: a VAD miss costs latency, never words."""
+    from api.stt.vad import SileroVad
+
+    async def run(vad: object | None) -> tuple[int, int, bool]:
+        t = StreamingTranscriber(
+            FakeEngine(), partial_interval_ms=700, max_segment_ms=8000, vad_model=vad
+        )
+        speech_turns = 0
+        for chunk in _loud_rumble(10):
+            await t.push(chunk)
+            speech_turns = max(speech_turns, t._speech_finals_pending)
+            await t._jobs.join()
+        out = _queued(t)
+        partials = sum(isinstance(m, CaptionPartial) for m in out)
+        return partials, speech_turns, any(isinstance(m, CaptionFinal) for m in out)
+
+    partials, speech_turns, decoded = asyncio.run(run(None))
+    assert partials > 0 and speech_turns == 1 and decoded
+    assert asyncio.run(run(SileroVad())) == (0, 0, True)
+
+
+def test_silero_vad_carries_partial_frames_between_chunks() -> None:
+    """Clients send chunks that aren't a multiple of the model's 512-sample frame: the
+    remainder waits for the next chunk, and a chunk too short to finish a frame repeats
+    the last score instead of reading as silence."""
+    from api.stt.vad import SileroVad
+
+    vad = SileroVad()
+    assert vad.speech_prob(b"") == 0.0
+    first = vad.speech_prob(_pcm(100, amplitude=0))  # 1600 samples: 3 frames + 64
+    assert 0.0 <= first < 0.2
+    assert len(vad._pending) == 64
+    vad._last = 0.42
+    assert vad.speech_prob(_pcm(10, amplitude=0)) == 0.42  # 64 + 160 < 512
+    assert len(vad._pending) == 224
+    vad.speech_prob(np.zeros(288, dtype=np.int16).tobytes())  # completes the frame
+    assert len(vad._pending) == 0
+    assert vad._last != 0.42
+
+
 # ----- factory --------------------------------------------------------------
 
 

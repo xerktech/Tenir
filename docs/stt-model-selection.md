@@ -180,6 +180,14 @@ migration in §5.
   demoted to a floor. A ceiling at half the recent peak level stops the threshold ever
   climbing over the speaker during uniformly loud speech. In a quiet room the measured
   floor is ~0 and behaviour is bit-for-bit what it was.
+- **Model VAD for loud rooms** (`API_STT_VAD_MODEL`, on by default; XERK-1819). Adaptive VAD
+  wasn't enough in rooms with loud music: the noise floor sat at 0.22-0.29 RMS (about
+  -12 dBFS), the level moved only ~4 dB, and 80-99 % of speech turns closed on the 8 s cap.
+  Once the floor reaches `API_STT_VAD_MODEL_FLOOR_RMS` (0.05), the bundled Silero VAD
+  (ONNX, CPU, ~0.4 % of a core per session) decides speech vs. pause instead. Below that
+  floor the energy gate decides alone. On the three loud sessions, cap-closed speech turns
+  fell to 29/10/0 % and mean wait-for-final from ~4.0 s to 3.6/2.9/2.0 s. The two quiet
+  sessions moved by at most 3 points.
 
 **Researched and deliberately *not* changed:**
 - **CUDA-graph / label-looping TDT decoding.** The documented big decode speedup, but
