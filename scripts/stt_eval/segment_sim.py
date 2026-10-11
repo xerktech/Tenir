@@ -31,6 +31,7 @@ import statistics
 import wave
 from pathlib import Path
 
+from api.config import settings
 from api.stt.streaming import StreamingTranscriber
 
 # The audio store writes 16 kHz mono s16le (api/src/api/persistence/wav.py).
@@ -73,7 +74,9 @@ class BoundaryProbe(StreamingTranscriber):
         if self._trailing_silence == 0 and self._has_speech:
             self.speech_ms.append(self._segment_start_ms + len(self._buf) * 1000 // BYTES_PER_SEC)
 
-    async def _finalize(self) -> None:
+    def _close_turn(self) -> None:
+        # Every turn boundary (silence, cap or flush) goes through _close_turn, which
+        # still holds the closing turn's state; decodes happen later in the worker.
         reason = (
             "cap"
             if len(self._buf) >= self._max_segment_bytes
@@ -82,7 +85,10 @@ class BoundaryProbe(StreamingTranscriber):
         start = self._segment_start_ms
         end = start + len(self._buf) * 1000 // BYTES_PER_SEC
         self.turns.append((start, end, self._has_speech, reason))
-        await super()._finalize()
+        super()._close_turn()
+
+    def _submit(self, kind: str, pcm: bytes, start: int, has_speech: bool) -> None:
+        """Boundaries are the subject: skip the decode worker entirely."""
 
 
 async def replay(pcm: bytes, silence_ms: int, max_segment_ms: int) -> dict:
@@ -92,13 +98,12 @@ async def replay(pcm: bytes, silence_ms: int, max_segment_ms: int) -> dict:
         partial_interval_ms=10**9,  # partials never fire; boundaries are the subject
         max_segment_ms=max_segment_ms,
         silence_ms=silence_ms,
+        min_segment_ms=settings.stt_min_segment_ms,
         local_agreement=False,
         final_words=False,
     )
     for i in range(0, len(pcm), CHUNK_BYTES):
         await probe.push(pcm[i : i + CHUNK_BYTES])
-        while not probe._queue.empty():  # keep the unread caption queue bounded
-            probe._queue.get_nowait()
     await probe.flush()
 
     speech_turns = [(s, e, r) for (s, e, sp, r) in probe.turns if sp]
