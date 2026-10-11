@@ -49,7 +49,9 @@ DUP_THRESHOLD = 0.35  # session._CUE_SUBSTANCE_DUP_THRESHOLD
 
 # Self-check prompt for --verify: the same model, thinking off, decides whether a
 # generated cue is safe to show. Measured 2026-09 (RESULTS-2026-09-shootout.md):
-# ~0.3 s per cue, cuts judged-wrong cues ~3x on full-thinking output.
+# ~0.3 s per cue, cuts judged-wrong cues ~3x on full-thinking output. At the shipped
+# 512-token thinking cap (INT4, RESULTS-2026-10.md) it mostly drops good cues: 2 of its
+# 23 drops were wrong, at a cost of 16 perfect cues.
 VERIFY_SYSTEM = (
     "You fact-check short notes (\"cues\") that an assistant shows a listener during a "
     "live conversation. The transcript is speech-to-text and may contain misheard words. "

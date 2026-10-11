@@ -86,3 +86,57 @@ Bad cues hand-counted on the reviewed session.
 - Garbled-name meanings ("BMSM") persist in all variants.
 - Decode speed (~95 tok/s for a 27B INT4 + MTP on an RTX PRO 6000) is the dominant latency term;
   that is server tuning in the ArgoCD repo, not Tenir.
+
+## Thinking-cap accuracy and the self-check (2026-10-11, XERK-1455)
+
+Is the 512-token thinking cap in the `qwen3.8-27b-int4` route accurate enough on real
+conversations, and does the self-check help at that cap?
+
+Setup:
+
+- Frozen 6-conversation set, fresh export. `replay.py --grounded --realtime --workers 1` through
+  the gateway alias. The model is INT4 + MTP on the RTX 3090.
+- The cap is set per request (`--extra '{"thinking_token_budget": N}'`), which overrides the
+  route's value. All runs shared one warmed evidence cache (145/917 windows empty).
+- Blind judging: the runs were pooled and shuffled into 4 packs, one reviewer each
+  (`blind_judge.py`).
+- Anchor: the production cues of the same six conversations (July 2026, gpt-oss-120b). Those
+  stay in the `cues` table, so later batches can rebuild the same anchor.
+- Self-check: `VERIFY_SYSTEM` with thinking off, run over each replay's own cues (same window,
+  same evidence). That isolates what it drops from the avoid-list knock-on of a separate run.
+
+| run | call mean / p90 | cues | wrong | perfect |
+|---|---|---|---|---|
+| anchor (production, July) | — | 114 | 15.8% | 26 |
+| **cap 512 (shipped)** | **4.5 s / 5.8 s** | 137 | **3.6%** | 81 |
+| cap 512 + self-check | +0.3 s | 114 | 2.6% | 65 |
+| cap 768 | 5.5 s / 7.9 s | 136 | 6.6% | 86 |
+| cap 768 + self-check | +0.3 s | 119 | 5.9% | 74 |
+
+What this shows:
+
+- Cap 512 is accurate on this data. Its 3.6% wrong (5 cues) is below the September full-thinking
+  row (5.6%). Spot-checked wrong cues: a misheard game title given invented facts, Thunderbolt 4
+  called the current generation, a 1,300 km orbit called MEO, a Fold cover-screen aspect claim,
+  and a GNOME pronunciation.
+- Cap 768 buys nothing for 1.0 s more mean and 2.1 s more p90. It had 9 wrong vs 5, and 86
+  perfect vs 81. Both gaps are within the ±3 pt batch noise. The route stays at 512.
+- The self-check does not help at the shipped cap, so it is not shipped.
+  - At 512 it dropped 23 cues and only 2 of them were wrong. It cost 16 perfect cues to remove
+    2 wrong ones.
+  - Almost all its drops are hedged engineering advice in the meeting sessions ("If X means
+    RabbitMQ…", idempotency and queue-design notes). It reads them as unsafe guesses.
+  - It still passes subtle spec errors such as the aspect ratio, the IP rating and the
+    pronunciation. That matches September: without thinking it only catches coarse errors.
+  - Live (realtime) it dropped 48 of 163 candidate cues (115 shown) at 0.30 s mean / 0.35 s p90
+    per check. That is the same picture as the after-the-fact check.
+- Latency on real transcripts at 512 (4.5 s mean, 5.8 s p90 on the 3090) is about half the
+  synthetic-transcript figure from XERK-1422 (8.9 s). Real windows are shorter, and about 30%
+  of calls decline early.
+
+Residuals:
+
+- Remaining wrong cues are subtle facts about post-cutoff or edge-of-knowledge products.
+- Better grounding is the remaining lever: the news FTS tier is still skipped in replay.
+- A self-check would need a new prompt that tolerates hedged advice, or thinking on, which costs
+  the latency the cap saved. Neither is measured yet.

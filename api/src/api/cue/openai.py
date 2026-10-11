@@ -19,7 +19,10 @@ set; judged accuracy 1.97 vs 1.81). Clean single-request latency is ~6s p50 /
 missed cue degrades to a skipped card, never a stalled caption. The toggle is
 sent explicitly in both directions so the outcome never depends on the server's
 own default; a server that doesn't know the kwarg drops it harmlessly (LiteLLM's
-drop_params). We still extract the first JSON object defensively, and fall back
+drop_params). In prod the LiteLLM route caps thinking at 512 tokens
+(``thinking_token_budget``); on the frozen replay set that measured 3.6% blind-judged wrong
+cues at 4.5 s mean, and neither a 768 cap nor the self-check pass improved on it
+(scripts/cue_eval/RESULTS-2026-10.md). We still extract the first JSON object defensively, and fall back
 to ``reasoning_content`` if a gateway ever routes the answer there instead.
 
 The network call is excluded from coverage — CI runs the deterministic stub and the
