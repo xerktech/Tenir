@@ -21,6 +21,9 @@ dependencies = [
     # inherited turn ("I seen" -> "I saw") from a real translation. Only the small lists
     # are loaded (~40 MB resident).
     "wordfreq>=3.1,<4",
+    # Silero VAD (XERK-1819): finds pauses in rooms too loud for the energy gate.
+    # CPU-only runtime for the bundled api/stt/silero_vad.onnx.
+    "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]
@@ -66,3 +69,7 @@ omit = ["**/api/contract/messages.py"]
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["api*"]
+
+[tool.setuptools.package-data]
+# The bundled Silero VAD model (XERK-1819); without this the wheel ships without it.
+"api.stt" = ["*.onnx"]

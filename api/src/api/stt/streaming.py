@@ -35,6 +35,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator
+from typing import Protocol
 
 import numpy as np
 
@@ -46,12 +47,25 @@ from api.stt.langid import detect_lang
 
 log = logging.getLogger("api.stt.streaming")
 
+
+class SpeechModel(Protocol):
+    """A streaming speech scorer (`api.stt.vad.SileroVad`): probability in [0, 1]
+    that a chunk of 16 kHz s16le PCM holds speech."""
+
+    def speech_prob(self, pcm: bytes) -> float: ...
+
 # Ceiling on the adaptive speech threshold, as a fraction of the loudest frame in the
 # VAD window. Without it, a stretch of uniformly loud speech (no gaps to pull the
 # measured floor down) would push the threshold above the speaker's own level and
 # read them as silence. Half the recent peak keeps a talker at that peak always
 # detected, whatever the floor estimate says.
 _VAD_PEAK_FRACTION = 0.5
+
+# Speech-probability hysteresis for the model VAD (XERK-1819), Silero's own defaults:
+# a frame turns speech at 0.5 and stays speech until it drops under 0.35, so a word
+# scoring around the line doesn't flicker the turn's trailing-silence count.
+_VAD_MODEL_ON = 0.5
+_VAD_MODEL_OFF = 0.35
 
 # Minimum words a partial must carry before an empty whole-turn decode may surface
 # it as the final (the XERK-174 recovery). A recovered final is a *partial*
@@ -166,6 +180,8 @@ class StreamingTranscriber:
         vad_adaptive: bool = True,
         vad_noise_ratio: float = 3.0,
         vad_window_ms: int = 3000,
+        vad_model: SpeechModel | None = None,
+        vad_model_floor_rms: float = 0.05,
         start_offset_ms: int = 0,
         final_words: bool = True,
     ) -> None:
@@ -201,6 +217,19 @@ class StreamingTranscriber:
         # (chunk length, chunk RMS) for the trailing window, oldest first.
         self._levels: deque[tuple[int, float]] = deque()
         self._levels_bytes = 0
+
+        # Model VAD for loud rooms (XERK-1819). Once the measured floor reaches
+        # `vad_model_floor_rms` the room is too loud for any energy threshold — music
+        # at -12 dBFS barely moves — so speech vs. pause comes from the model instead.
+        # Below it the energy gate decides exactly as before. The model scores every
+        # chunk either way, so its recurrent state is warm the moment the room turns.
+        self._vad_model = vad_model
+        self._vad_model_floor_rms = vad_model_floor_rms
+        self._model_speaking = False
+        # Whether the energy gate heard speech in the in-flight turn, even when the model
+        # overruled it. flush() keeps such a tail: dropping what the model called noise
+        # lost real low-SNR speech at session end (QA), while a cap close decodes it.
+        self._energy_heard = False
 
         # LocalAgreement-2 makes partials grow word by word instead of rewriting the
         # whole line each cadence (XERK-90). One buffer per in-flight segment; reset
@@ -328,6 +357,7 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        self._energy_heard = False
 
     async def _work(self) -> None:
         while True:
@@ -430,9 +460,34 @@ class StreamingTranscriber:
         ):
             self._levels_bytes -= self._levels.popleft()[0]
 
+    def _model_says_speech(self, pcm: bytes) -> bool | None:
+        """The model's verdict for this chunk once the room is loud, else None (the
+        energy gate decides)."""
+        if self._vad_model is None:
+            return None
+        try:
+            prob = self._vad_model.speech_prob(pcm)
+        except Exception:
+            # Raising out of push() would stop the turn-close logic for the rest of the
+            # session while the buffer grows without bound. Fall back to energy for good.
+            log.exception("Silero VAD failed; this session falls back to the energy gate")
+            metrics.incr("stage.stt.vad_model_errors")
+            self._vad_model = None
+            return None
+        cutoff = _VAD_MODEL_OFF if self._model_speaking else _VAD_MODEL_ON
+        self._model_speaking = prob >= cutoff
+        if min(lvl for _, lvl in self._levels) < self._vad_model_floor_rms:
+            return None
+        return self._model_speaking
+
     def _update_vad(self, pcm: bytes) -> None:
         self._track_level(pcm)
-        if self._levels[-1][1] >= self._speech_threshold():
+        energy = self._levels[-1][1] >= self._speech_threshold()
+        self._energy_heard = self._energy_heard or energy
+        speech = self._model_says_speech(pcm)
+        if speech is None:
+            speech = energy
+        if speech:
             self._has_speech = True
             self._trailing_silence = 0
         else:
@@ -684,7 +739,7 @@ class StreamingTranscriber:
     async def flush(self) -> None:
         """Finalize the in-flight turn and wait for every queued decode to land.
         Session.close bounds this wait, so a hung upstream can't hold teardown."""
-        if self._buf and self._has_speech:
+        if self._buf and (self._has_speech or self._energy_heard):
             self._close_turn()
         if self._worker is not None:
             await self._jobs.join()

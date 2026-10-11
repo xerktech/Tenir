@@ -321,6 +321,16 @@ class Settings(BaseSettings):
     # inter-word gap (so the quietest frame in it really is background, not a
     # mid-sentence stop), short enough to follow a room that changes.
     stt_vad_window_ms: int = 3000
+    # Model VAD for loud rooms (XERK-1819): Silero VAD (bundled ONNX, CPU) decides speech
+    # vs. pause once the noise floor above reaches stt_vad_model_floor_rms. Rooms that
+    # loud are almost always music, whose level barely moves, so the energy threshold
+    # finds no pause and 80-99 % of turns closed on stt_max_segment_ms. Below the floor
+    # the energy gate decides alone, so quiet-room behaviour is unchanged.
+    stt_vad_model: bool = True
+    # The noise floor (RMS, 0-1) where the model takes over. 0.05 ~= -26 dBFS: the
+    # loud sessions sit at 0.22-0.29, quiet rooms at ~0.01 and above 0.05 only 1-4 %
+    # of the time.
+    stt_vad_model_floor_rms: float = 0.05
     # LocalAgreement-2 (XERK-90): commit a partial's words only once two consecutive
     # window hypotheses agree, so live captions grow word by word instead of
     # rewriting the whole line each cadence. Off falls back to the raw-window partial.

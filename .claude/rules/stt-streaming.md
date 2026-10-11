@@ -1,6 +1,7 @@
 ---
 paths:
   - "api/src/api/stt/streaming.py"
+  - "api/src/api/stt/vad.py"
   - "api/src/api/session.py"
   - "api/tests/test_streaming_stt.py"
   - "api/src/api/stt/parakeet.py"
@@ -83,6 +84,26 @@ paths:
     after its ready (`Session.send_caption_status`).
   - Tests: `test_resilience.py::test_client_is_told_when_captions_fall_behind_and_catch_up`,
     `test_resume.py::test_ws_warm_resume_repeats_a_delayed_caption_status_after_ready`.
+- Loud rooms use a model VAD (Silero, `api/stt/vad.py`) to find pauses (XERK-1819).
+  - It decides only once the window's noise floor reaches `vad_model_floor_rms`. Silero alone
+    dropped 6-8 % of quiet-room words from speech turns, partly real conversation, so the
+    energy gate keeps quiet rooms.
+  - The model scores every chunk even while the energy gate decides, so its recurrent state is
+    warm when the room turns loud.
+  - A turn with no speech still decodes when it hits the cap (`_close_turn` ignores
+    `has_speech`). A VAD miss costs latency, never words. Don't gate cap decodes on speech.
+  - `flush()` keeps a tail the energy gate heard even when the model overruled it
+    (`_energy_heard`). Gating it on `has_speech` alone dropped real low-SNR speech at session
+    end (QA: 5/20 clips at 0 dB SNR).
+  - A model that raises drops to the energy gate for the session; raising out of `push()`
+    stopped turn closes while the buffer grew unbounded. `SileroVad` scores at most the last
+    1 s of a chunk, so one huge WS frame can't hold the event loop for seconds.
+  - Loud rooms here were music: a "speech turn" count from `segment_sim.py` there mostly
+    counts music, and its wait metric covers speech chunks only.
+  - Tests: `test_streaming_stt.py::test_model_vad_closes_the_turn_in_the_same_loud_room`,
+    `::test_model_vad_is_ignored_below_the_loud_floor`,
+    `::test_real_silero_vad_tells_loud_noise_from_speech_without_losing_it`,
+    `::test_flush_keeps_a_loud_tail_the_model_called_noise`.
 - Tests: push through the `_push` / `_drain` helpers, which join the job queue. A bare
   `t.push` returns before any decode has run.
 - Repro harness for regressions: real uvicorn (`ws_ping_interval=5`) plus a `websockets`

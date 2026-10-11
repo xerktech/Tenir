@@ -3,12 +3,47 @@ model via LiteLLM or a direct route)."""
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from api.config import settings
 from api.contract import Lang
 from api.stt.base import Transcriber
 from api.stt.stub import StubTranscriber
 
-__all__ = ["Transcriber", "make_transcriber"]
+if TYPE_CHECKING:
+    from api.stt.streaming import SpeechModel
+
+__all__ = ["Transcriber", "make_transcriber", "preload_vad_model"]
+
+log = logging.getLogger("api.stt")
+
+
+def preload_vad_model() -> None:
+    """Load the shared Silero model at boot, off the event loop, instead of inside the
+    first session.start. A failure is logged here and again per session (energy only)."""
+    if settings.stt_backend != "parakeet" or not settings.stt_vad_model:
+        return
+    try:
+        from api.stt.vad import preload
+
+        preload()
+    except Exception:
+        log.exception("Silero VAD failed to load; loud rooms fall back to the energy gate")
+
+
+def _vad_model() -> SpeechModel | None:
+    """A per-conversation Silero VAD, or None (energy gate only) when it is turned off
+    or can't load. A missing model must cost loud-room pauses, never the captions."""
+    if not settings.stt_vad_model:
+        return None
+    try:
+        from api.stt.vad import SileroVad
+
+        return SileroVad()
+    except Exception:
+        log.exception("Silero VAD failed to load; loud rooms fall back to the energy gate")
+        return None
 
 
 def make_transcriber(
@@ -54,6 +89,8 @@ def make_transcriber(
             vad_adaptive=settings.stt_vad_adaptive,
             vad_noise_ratio=settings.stt_vad_noise_ratio,
             vad_window_ms=settings.stt_vad_window_ms,
+            vad_model=_vad_model(),
+            vad_model_floor_rms=settings.stt_vad_model_floor_rms,
             start_offset_ms=start_offset_ms,
             final_words=settings.stt_final_word_timestamps,
         )
