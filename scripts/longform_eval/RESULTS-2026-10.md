@@ -129,13 +129,18 @@ eval host). Whisper ran on vLLM 0.30.0 in its production shape (4 GiB claim, 512
   on ~1.4 turns a minute of inter-turn noise, all tagged `en`; silence probes gave "you",
   noise ".", 100 ms tails "We'll be right back.", near-silent 1.5 s partials "*sad music*".
   vLLM returns no `no_speech_prob`, and avg_logprob / RMS overlapped real short turns, so
-  `api.stt.parakeet` blanks a decode whose whole text is one of those phrases or only sound
-  notes. The live rows above are with that filter; residue was "us", "So,", "um".
+  `api.stt.parakeet` blanks a decode whose whole text is one of those phrases (and the
+  Spanish/French/Japanese/Russian outros it gives on noise) or only sound notes. The live rows above are with that filter; residue was "us", "So,", "um".
 - **Partials**: same re-decode model as Parakeet; per-decode cost is within ~15 ms (different
   cards), and LocalAgreement-2 still gates what is shown.
 - **Blank-final retry** is inert on Whisper speech (no blank finals on FLEURS or the streams);
   it now fires only on filtered non-speech turns, where it recovered 1 of 23 at ~90 ms each.
   Kept: harmless, and it still serves Parakeet on rollback.
 - **Request contract**: vLLM accepts and ignores `timestamps=false`; returns `"words": null`
-  (handled) and the language only in `verbose_json`, which the engine now requests (the
-  LiteLLM gateway already asks upstream for it). 10–20 ms tails return 200, not Parakeet's 500.
+  (handled) and the language only in `verbose_json`, which the engine now requests (LiteLLM
+  forwards `json` as sent, so before this the language was simply lost, nothing crashed).
+  10–20 ms tails return 200, not Parakeet's 500. On Parakeet (rollback), `verbose_json` makes
+  every partial compute word timing: ~38 → 54 ms per 6 s window.
+- **Leaks the filter leaves** (QA, synthetic noise between turns): other-language outros are
+  filtered too, but bare "Gracias." / "Merci." (pinned es/fr) and one-off English inventions
+  ("So,", "us") still caption; a real one-phrase "Thank you." is lost by design.

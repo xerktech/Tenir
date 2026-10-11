@@ -157,6 +157,10 @@ def test_parakeet_requests_verbose_json_for_the_detected_language(
         "*sad music*",
         "[Music]",
         "(upbeat music) ...",
+        "ご視聴ありがとうございました。",
+        "Продолжение следует...",
+        "Gracias por ver el video.",
+        "Sous-titrage Société Radio-Canada",
         "Subtítulos realizados por la comunidad de Amara.org",
     ],
 )
@@ -176,7 +180,15 @@ def test_whisper_non_speech_output_reads_as_blank(
 
 @pytest.mark.parametrize(
     "text",
-    ["Thank you very much.", "you know", "Okay.", "Gracias.", "Sous-titres?", "[Music] hola"],
+    [
+        "Thank you very much.",
+        "you know",
+        "Okay.",
+        "Gracias.",
+        "Merci.",
+        "Sous-titres?",
+        "[Music] hola",
+    ],
 )
 def test_real_short_turns_are_not_taken_for_non_speech(
     monkeypatch: pytest.MonkeyPatch, text: str

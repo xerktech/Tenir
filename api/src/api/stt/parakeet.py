@@ -23,7 +23,8 @@ from api.stt.engine import EngineResult, EngineWord, float32_to_wav
 
 log = logging.getLogger("api.stt.parakeet")
 
-# Whisper's canonical output for a window with no speech in it (XERK-1476). vLLM reports no
+# Whisper's canonical output for a window with no speech in it (XERK-1476): mostly
+# video-subtitle outros it learned, in whatever language it guesses. vLLM reports no
 # no_speech_prob, and on FLEURS streams neither avg_logprob nor RMS separated these from real
 # short turns, so a decode whose WHOLE text is one of them is treated as blank: it then takes
 # the ordinary blank-final path (padded retry, XERK-174 partial fallback). A real one-phrase
@@ -41,6 +42,15 @@ _NON_SPEECH = frozenset(
         "subtítulos realizados por la comunidad de amaraorg",
         "subtítulos por la comunidad de amaraorg",
         "soustitres réalisés par la communauté damaraorg",
+        # Seen in QA on noise between turns (auto, or with es/fr pinned). Bare "Gracias." /
+        # "Merci." also came out, but are left alone: they are real replies too.
+        "gracias por ver el video",
+        "gracias por ver el vídeo",
+        "gracias por ver",
+        "soustitrage société radiocanada",
+        "soustitrage st 501",
+        "ご視聴ありがとうございました",
+        "продолжение следует",
     }
 )
 _SOUND_EVENT = re.compile(r"\*[^*]*\*|\[[^\]]*\]|\([^)]*\)")
@@ -90,9 +100,10 @@ class ParakeetEngine:
         self, samples: np.ndarray, *, language: str | None, want_words: bool = True
     ) -> EngineResult:
         # verbose_json: vLLM's Whisper returns the detected language only in it (plain
-        # json is text alone), and the LiteLLM gateway asks upstream for verbose_json
-        # anyway. Per-turn language from the model beat text langid on every turn
-        # measured (XERK-1476). Word timing rides the body's words field when the
+        # json is text alone; LiteLLM forwards the format as sent). Per-turn language
+        # from the model beat text langid on every turn measured (XERK-1476). The
+        # Parakeet server computes word timing for verbose_json even with
+        # timestamps=false, so on Parakeet partials cost ~15 ms more. Word timing rides the body's words field when the
         # server has it; StreamingTranscriber falls back to segment timing without.
         data = {"model": self._model, "response_format": "verbose_json"}
         if language is not None:

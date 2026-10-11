@@ -21,6 +21,8 @@ def norm(t):
     return re.sub(r"\s+", " ", t).strip()
 
 
+if len(sys.argv) not in (3, 4):
+    sys.exit(__doc__)
 clips = {c["id"]: c for c in json.load(open(sys.argv[1]))}
 run = json.load(open(sys.argv[2]))
 refs, hyps = [], []
