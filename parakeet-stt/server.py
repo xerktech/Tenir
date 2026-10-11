@@ -112,6 +112,49 @@ def _supported_kwargs(model: object) -> frozenset[str]:
     return frozenset(name for name in _OPTIONAL_KWARGS if name in params)
 
 
+# VRAM a torch process holds outside its caching allocator: CUDA context, cuBLAS/cuDNN
+# handles, lazily loaded kernels. ~0.7 GiB measured on talos04 (XERK-1389); 1.0 leaves
+# headroom, matching SmashBot's ai/train_platform/vram.py.
+CUDA_CONTEXT_OVERHEAD_GIB = 1.0
+GIB = 1024**3
+
+
+def _apply_vram_cap(torch: object) -> float | None:
+    """Cap torch's allocator to the pod's DRA claim (PARAKEET_VRAM_CLAIM_GIB), XERK-1400.
+
+    A DRA claim reserves VRAM in the scheduler's books only; nothing in-process holds us
+    to it, so a long or bursty input that grows torch's cache past the claim takes the
+    excess from whoever shares the card. Capped, that burst OOMs *this* request instead.
+    The cap is the claim less the CUDA context, which sits outside the allocator.
+
+    Unset (compose, a dedicated card) means no cap. Returns the fraction set, or None.
+    """
+    raw = os.environ.get("PARAKEET_VRAM_CLAIM_GIB", "").strip()
+    if not raw:
+        return None
+    claim_gib = float(raw)
+    cap = (claim_gib - CUDA_CONTEXT_OVERHEAD_GIB) * GIB
+    if cap <= 0:
+        raise ValueError(
+            f"PARAKEET_VRAM_CLAIM_GIB={raw} leaves no room beyond the "
+            f"{CUDA_CONTEXT_OVERHEAD_GIB} GiB CUDA context"
+        )
+    total = torch.cuda.get_device_properties(0).total_memory  # type: ignore[attr-defined]
+    fraction = cap / total
+    if fraction >= 1:
+        log.info("VRAM claim %.1f GiB covers the whole card; no cap", claim_gib)
+        return None
+    torch.cuda.set_per_process_memory_fraction(fraction, 0)  # type: ignore[attr-defined]
+    log.info(
+        "VRAM claim %.1f GiB: torch allocator capped at %.1f GiB (%.3f of %.1f GiB)",
+        claim_gib,
+        cap / GIB,
+        fraction,
+        total / GIB,
+    )
+    return fraction
+
+
 def _warmup() -> None:
     """Decode a throwaway clip so the first real request doesn't pay for setup."""
     t0 = time.perf_counter()
@@ -144,6 +187,8 @@ def _load_model() -> None:
     )
     model.eval()
     if torch.cuda.is_available():
+        # Before the first CUDA allocation, so the weights count against the cap too.
+        _apply_vram_cap(torch)
         model = model.cuda()
         gc.collect()
         torch.cuda.empty_cache()
