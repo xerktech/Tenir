@@ -195,17 +195,26 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
 # "Il dit: Peña." is a name.
 _SENTENCE_END = ".!?¿¡…"
 _DIALOGUE_DASHES = "-–—"
-# Whitespace and opening quotes/brackets between a sentence start and its first word.
-_LEADING_RE = re.compile(r"[\s\"'«“(]+$")
+# Opening quotes/brackets between a sentence start and its first word.
+_OPENERS = "\"'«“("
+
+
+def _strip_leading(before: str) -> str:
+    """``before`` without its trailing whitespace and openers, in any mix ("« \"Mañana")."""
+    while True:
+        stripped = before.rstrip().rstrip(_OPENERS)
+        if stripped == before:
+            return before
+        before = stripped
 
 
 def _sentence_initial(text: str, start: int) -> bool:
-    before = _LEADING_RE.sub("", text[:start])
+    before = _strip_leading(text[:start])
     if before and before[-1] in _DIALOGUE_DASHES:
         before = before[:-1]
         if before and before[-1].isspace():
-            return True
-        before = _LEADING_RE.sub("", before)  # "«—Mañana»"
+            return True  # "OK —Mañana." (and so "Jean -Peña" too: accepted)
+        before = _strip_leading(before)  # "«—Mañana»"
     return not before or before[-1] in _SENTENCE_END
 
 

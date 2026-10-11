@@ -478,6 +478,7 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "—«Mañana».",
         "«—Mañana»",
         "OK. —Mañana.",
+        "OK —Mañana.",
         "OK.—Mañana.",
         "—\tMañana.",
         '« "Mañana" »',
@@ -518,3 +519,14 @@ def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
     # Intended (XERK-1591): hola/gracias/bueno beside one English word is a code-switched
     # turn, left None so it neither opens nor closes a run.
     assert detect_lang("Hola, I'm here.") is None
+
+
+def test_long_runs_of_spaces_and_quotes_stay_fast() -> None:
+    # detect_lang runs on the event loop; a hallucinated run of blanks or quotes before
+    # capitalised words must not go quadratic per word (QA of XERK-1591).
+    import time
+
+    text = "Hola" + ' "' * 1500 + " Peña" * 300
+    t0 = time.perf_counter()
+    detect_lang(text)
+    assert time.perf_counter() - t0 < 1.0
