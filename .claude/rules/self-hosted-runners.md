@@ -16,3 +16,12 @@ paths:
   - Defense in depth only: a fork PR runs its own copy of the workflow and can delete the `if`.
   - It stops an approver who skimmed a Dockerfile `RUN` from handing a fork privileged dind.
 - Never use `pull_request_target` with a PR-head checkout on self-hosted — that adds secrets too.
+
+# Disk on the k8x runner pods (XERK-1821)
+
+- Each job gets a fresh per-pod Longhorn scratch volume (ArgoCD `apps/ghar.yaml`, `scratch`) that
+  holds dind's `/var/lib/docker` and `_work`; nothing persists between jobs.
+  - ENOSPC in a build means that volume is too small — a prune step cannot help. Resize it in ArgoCD.
+  - dind's containerd image store keeps compressed layers and extracted snapshots side by side, so
+    an image needs ~2x its pull size; the NeMo base of `parakeet-stt` overflowed 60Gi.
+  - `df -h /` there is the runner container's root, not Docker's disk; `df "$GITHUB_WORKSPACE"` is.
