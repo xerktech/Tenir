@@ -165,10 +165,54 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
         # letter isn't enough, or "It is a piñata." is es on ñ + "a" (XERK-1419 QA).
         if code != "en" and scores[code]:
             scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
+    letters, punctuation = _char_evidence(text)
+    english = _english_evidence(text)
     for code, chars in _CHARS.items():
-        if any(c in lowered for c in chars):
+        # German capitalises every noun ("Fußball"), and pt names are pt evidence ("Japão").
+        written = letters if code == "es" else lowered
+        # A letter beside English and no word of its own is a loanword or a name, not
+        # evidence: "It's a piñata.", "No jalapeños please." went es (XERK-1591). ¿/¡ are
+        # the STT model writing Spanish punctuation, never a loanword, so they still count.
+        if english and not scores[code]:
+            hit = any(c in punctuation for c in chars)
+        else:
+            hit = any(c in written + punctuation for c in chars)
+        if hit:
             scores[code] += 2
     return scores, words
+
+
+# What may end a sentence, so the next capitalised word starts one.
+_SENTENCE_END = ".!?¿¡…"
+
+
+def _sentence_initial(text: str, start: int) -> bool:
+    before = text[:start].rstrip(" \"'«“(")
+    return not before or before[-1] in _SENTENCE_END
+
+
+def _char_evidence(text: str) -> tuple[str, str]:
+    """What ``_CHARS`` may score, lowercased: the letters of every word except a capitalised
+    one mid-sentence — that is a name ("Le chanteur Peña est venu." went es, XERK-1591;
+    a sentence-initial capital still counts: "Mañana."), and the punctuation."""
+    letters = "".join(
+        m.group()
+        for m in _TOKEN_RE.finditer(text)
+        if not m.group()[0].isupper() or _sentence_initial(text, m.start())
+    )
+    punctuation = "".join(ch for ch in text if not ch.isalpha())
+    return letters.lower(), punctuation
+
+
+def _english_evidence(text: str) -> bool:
+    """Whether the turn holds a word that can only be English (``is_english_word``): any
+    English vocab word, or a lowercase word by frequency — a capitalised one is likely a
+    name ("Tom", "Cookie") that wordfreq counts as English."""
+    return any(
+        is_english_word(t.lower())
+        for t in _TOKEN_RE.findall(text)
+        if not t[0].isupper() or t.lower() in _WORDS["en"]
+    )
 
 
 def _ruled_out(text: str) -> set[str]:
@@ -269,17 +313,44 @@ def detect_lang(text: str) -> str | None:
     # A word-list call the letters rule out ("Tu pelo volverá a crecer." fr on tu/a), or
     # a tie they break ("Tu canción." fr/it on tu), is still a call for the frequencies
     # to correct, without the None-turn gate.
-    overturned = False
+    vetoed: set[str] = set()
     if ruled_out:
         top = max(scores.values())
-        overturned = top > 0 and any(scores[code] == top for code in ruled_out)
+        vetoed = {code for code in ruled_out if top > 0 and scores[code] == top}
         scores = {code: 0 if code in ruled_out else n for code, n in scores.items()}
     by_words = _word_list_lang(text, scores, words)
     if by_words == "en":
         return by_words
-    by_freq = _frequency_lang(scores, words, by_words, correcting=overturned)
+    by_freq = _frequency_lang(scores, words, by_words, correcting=bool(vetoed))
     # A clear frequency call outranks the letters: French borrows "jalapeño", "piñata".
-    return by_freq or by_words
+    if by_freq:
+        return by_freq
+    if vetoed and by_words and not _frequencies_back(by_words, vetoed, words):
+        return None
+    return by_words
+
+
+# How much (Zipf, so 10x) the whole turn's frequencies must favour the language the letters
+# leave over the one they veto, when the rest of the turn doesn't lean its way.
+_LETTER_LEAN = 1.0
+
+
+def _frequencies_back(lang: str, vetoed: set[str], words: list[str]) -> bool:
+    """Whether word frequencies back ``lang`` over every language the letters vetoed: the
+    whole turn by ``_LETTER_LEAN``, or the words without the vetoing letters at all.
+
+    The letters alone don't crown the runner-up: an ASR-lowercased name is no word of the
+    turn ("la musique de maría." went es on a 0.07 lean, XERK-1591). Either test alone
+    loses real Spanish on Tatoeba: the whole-turn test where rare words sit at the floor
+    ("La enchironarán."), the rest-of-turn test where a shared word is all that's left
+    ("Era un inútil.")."""
+    whole = _frequency_totals(words)
+    rest = _frequency_totals(
+        [w for w in words if not any(c in w for code in vetoed for c in _FOREIGN_CHARS[code])]
+    )
+    return all(
+        whole[lang] - whole[code] >= _LETTER_LEAN or rest[lang] > rest[code] for code in vetoed
+    )
 
 
 def _word_list_lang(text: str, scores: dict[str, int], words: list[str]) -> str | None:
@@ -322,6 +393,14 @@ _FREQ_MARGIN = 3.0
 _FREQ_MIN_DISTINCT = 4
 
 
+def _frequency_totals(words: list[str]) -> dict[str, float]:
+    """Each contract language's summed Zipf over the turn's words (a unigram log-likelihood)."""
+    return {
+        code: sum(max(zipf_frequency(w, code, wordlist="small"), _FREQ_FLOOR) for w in words)
+        for code in _WORDS
+    }
+
+
 def _frequency_lang(
     scores: dict[str, int], words: list[str], by_words: str | None, *, correcting: bool = False
 ) -> str | None:
@@ -338,10 +417,7 @@ def _frequency_lang(
     right 65% -> 85% (Tatoeba), 75% -> 85% (FLEURS), wrong 2.4% -> 0.4% (FLEURS)."""
     if scores["en"] or any(is_english_word(w) for w in words):
         return None
-    totals = {
-        code: sum(max(zipf_frequency(w, code, wordlist="small"), _FREQ_FLOOR) for w in words)
-        for code in _WORDS
-    }
+    totals = _frequency_totals(words)
     (best, best_total), (_, second_total) = sorted(
         totals.items(), key=lambda kv: kv[1], reverse=True
     )[:2]

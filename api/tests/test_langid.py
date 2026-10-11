@@ -408,3 +408,78 @@ def test_word_frequencies_correct_a_short_word_list_call() -> None:
     # words nor an own hit (Tatoeba es wrong 1.1% -> 0.4%).
     assert detect_lang("Se lo dije.") == "es"
     assert detect_lang("Tu pelo volverá a crecer.") == "es"
+
+
+# ---- ñ names and loanwords, lowercased names (XERK-1591) -----------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A capitalised word mid-sentence is a name: its ñ is no Spanish evidence.
+        "C'est Peña.",
+        "Avec Muñoz.",
+        "Le chanteur Peña.",
+        "Ma fille va en España.",
+        "Le chanteur Peña est venu.",
+        "Il a mangé un jalapeño avec la sauce.",
+        # A ñ beside English and no Spanish word is a loanword or a name.
+        "It's a piñata.",
+        "I got a piñata.",
+        "No jalapeños please.",
+        "We met Peña.",
+        "Peña is here.",
+        "My friend Muñoz.",
+        # A lowercased name doesn't hand a French turn to Spanish by ruling French out.
+        "la musique de maría.",
+        "le chien de maría.",
+        "la chanson de ramón.",
+    ],
+)
+def test_names_and_loanwords_are_not_spanish(text: str) -> None:
+    assert detect_lang(text) != "es"
+
+
+def test_names_keep_the_turn_in_its_language() -> None:
+    assert detect_lang("C'est Peña.") == "fr"
+    assert detect_lang("Avec Muñoz.") == "fr"
+    assert detect_lang("Il cantante Peña è qui.") == "it"
+    assert detect_lang("Der Sänger Peña ist hier.") == "de"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A sentence-initial capital still counts: "Mañana." is Spanish, not a name.
+        "Mañana.",
+        "Mañana voy.",
+        "Sí. Mañana.",
+        "Niño.",
+        "Sí, señor.",
+        "Señor, ¿dónde está?",
+        # ¿/¡ count beside an English-looking word: the STT model wrote Spanish.
+        "¿Has ido a Boston alguna vez?",
+        "¡Cuánto has crecido!",
+        # The letters still break an es/fr tie when the frequencies agree (Tatoeba).
+        "Habló de música.",
+        "Era un inútil.",
+        "La enchironarán.",
+        "Me la infló completamente.",
+        "Va a casa de la música.",
+    ],
+)
+def test_spanish_letters_still_count(text: str) -> None:
+    assert detect_lang(text) == "es"
+
+
+def test_other_languages_letters_count_in_capitalised_words() -> None:
+    # German capitalises every noun, and a pt name in ã/õ is a pt turn.
+    assert detect_lang("Tom spielt gerade Fußball.") == "de"
+    assert detect_lang("Die Straße war voller Werbung.") == "de"
+    assert detect_lang("Bem-vindo ao Japão.") == "pt"
+
+
+def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
+    # Intended (XERK-1591): hola/gracias/bueno beside one English word is a code-switched
+    # turn, left None so it neither opens nor closes a run.
+    assert detect_lang("Hola, I'm here.") is None
