@@ -336,6 +336,22 @@ describe("silent refresh before expiry", () => {
     expect(getOidcSession()).toBeNull();
   });
 
+  it("keeps a concurrently rotated session when the losing refresh gets invalid_grant", async () => {
+    // Authentik rotates: the first use of refresh-1 wins (→ refresh-2), a reuse is
+    // rejected. The loser must not wipe the winner's fresh sidecar.
+    setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
+    let used = false;
+    mockFetch(() => {
+      if (used) return json({ error: "invalid_grant" }, 400);
+      used = true;
+      return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 });
+    });
+    const results = await Promise.allSettled([refreshOidcSession(), refreshOidcSession()]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(getToken()).toBe("access-2");
+    expect(getOidcSession()?.refreshToken).toBe("refresh-2");
+  });
+
   it("keeps the sidecar when the IdP is unreachable or answers 5xx", async () => {
     setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
     globalThis.fetch = vi.fn(async () => {
