@@ -114,7 +114,7 @@ eval host). Whisper ran on vLLM 0.30.0 in its production shape (4 GiB claim, 512
 |---|---|---|
 | FLEURS WER es / en / fr, whole clips, 150 each | 3.7 / 5.3 / 7.9 | 3.3 / 5.4 / 9.6 |
 | turns tagged the right language (es / en / fr) | 150 / 145 / 150 | 150 / 150 / 150 |
-| live streams, pooled WER: 3 × es-only / 3 × en–es alternating | 7.8 / 13.8 | 6.7 / 11.1 |
+| live streams, pooled WER: 3 × es-only / 3 × en–es alternating | 7.8 / 13.8 | 6.0 / 11.1 |
 | live finals with no language tag | 31 of 196 | 0 of 199 |
 | final latency p50 / p95 (live, through the api) | 104 / 201 ms | 107 / 188 ms |
 | partial latency p50 / p95 | 95 / 174 ms | 112 / 174 ms |
