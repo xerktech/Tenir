@@ -584,7 +584,7 @@ class StreamingTranscriber:
             metrics.incr("stage.stt.final_retry_exhausted")
             result = EngineResult(text="", words=[], language=None)
         else:
-            if not result.text.strip() and has_speech:
+            if not result.text.strip() and has_speech and not result.non_speech:
                 result = await self._retry_blank_final(pcm, result)
         end = start + _bytes_to_ms(len(pcm))
 
@@ -609,6 +609,12 @@ class StreamingTranscriber:
         # has no reliable per-word timing, so it carries none — production runs with
         # word timing off regardless.
         recovered = False
+        if not text and result.non_speech:
+            # The engine recognised the whole turn as non-speech (Whisper's "Thank you." /
+            # subtitle outro on noise, XERK-1476): the partials over it were the same
+            # invention, so surfacing one would caption the noise anyway.
+            metrics.incr("stage.stt.final_non_speech")
+            return
         if not text:
             text = fallback.strip()
             if not text:

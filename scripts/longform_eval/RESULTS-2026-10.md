@@ -102,3 +102,49 @@ this table.
   streaming mode — partials would re-decode the turn like Parakeet's do today), and a
   live WebSocket run on the new model. Switching models is follow-up work (serving +
   `api.stt` engine wiring): XERK-1476.
+
+## Whisper switch check (XERK-1476)
+
+Before moving `tenir-stt` to Whisper large-v3-turbo, the open items above were measured on
+public FLEURS audio (`../stt_eval/fleurs/`; the hour-long source video is bot-blocked from the
+eval host). Whisper ran on vLLM 0.30.0 in its production shape (4 GiB claim, 512 MiB KV pool:
+3,038 MiB in use on the RTX PRO 6000); Parakeet was the live `tenir-stt` on a shared 3090.
+
+| check | Parakeet (auto) | Whisper turbo (auto) |
+|---|---|---|
+| FLEURS WER es / en / fr, whole clips, 150 each | 3.7 / 5.3 / 7.9 | 3.3 / 5.4 / 9.6 |
+| turns tagged the right language (es / en / fr) | 150 / 145 / 150 | 150 / 150 / 150 |
+| live streams, pooled WER: 3 × es-only / 3 × en–es alternating | 7.8 / 13.8 | 6.0 / 11.1 |
+| live finals with no language tag | 31 of 196 | 0 of 199 |
+| final latency p50 / p95 (live, through the api) | 104 / 201 ms | 107 / 188 ms |
+| partial latency p50 / p95 | 95 / 174 ms | 112 / 174 ms |
+
+- **Auto-language is safe to rely on; no client change.** Pinned and auto Whisper scored the
+  same WER to 0.1 on all three FLEURS sets, and Whisper's own per-turn language matched text
+  langid on every live turn langid decided, and named the 22 it left open. Sessions keep
+  passing `session.start` `sourceLang` when a client sets one (it pins decoding); none does.
+  Pinning server-side was rejected: Turma dictation and the household's English turns share
+  the route, and with `es` pinned Whisper rendered 26 of 40 English FLEURS clips in Spanish.
+- **Whisper invents text on non-speech.** The first live run captioned "Thank you." / "you"
+  on ~1.4 turns a minute of inter-turn noise, all tagged `en`; silence probes gave "you",
+  noise ".", 100 ms tails "We'll be right back.", near-silent 1.5 s partials "*sad music*".
+  vLLM returns no `no_speech_prob`, and avg_logprob / RMS overlapped real short turns, so
+  `api.stt.parakeet` blanks a decode whose whole text is one of those phrases (and the
+  Spanish/French/Japanese/Russian outros it gives on noise) or only sound notes. The live
+  rows above are with that filter and the non-speech drop below (6.7 / 11.1 with the filter
+  alone); residue was "us", "So,", "um".
+- **Partials**: same re-decode model as Parakeet; per-decode cost is within ~15 ms (different
+  cards), and LocalAgreement-2 still gates what is shown.
+- **Blank-final retry** is inert on Whisper speech (no blank finals on FLEURS or the streams);
+  it now fires only on filtered non-speech turns, where it recovered 1 of 23 at ~90 ms each.
+  Kept: harmless, and it still serves Parakeet on rollback.
+- **Request contract**: vLLM accepts and ignores `timestamps=false`; returns `"words": null`
+  (handled) and the language only in `verbose_json`, which the engine now requests (LiteLLM
+  forwards `json` as sent, so before this the language was simply lost, nothing crashed).
+  10–20 ms tails return 200, not Parakeet's 500. On Parakeet (rollback), `verbose_json` makes
+  every partial compute word timing: ~38 → 54 ms per 6 s window.
+- **Leaks the filter leaves** (QA, synthetic noise between turns): other-language outros are
+  filtered too, but bare "Gracias." / "Merci." (pinned es/fr) and one-off English inventions
+  ("So,", "us") still caption; a real one-phrase "Thank you." is lost by design.
+- A turn the engine blanks as non-speech is dropped with its partials: the XERK-174 fallback
+  had captioned the junk partial over the noise in its place ("Gracias. al canal!").

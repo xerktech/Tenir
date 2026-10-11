@@ -114,20 +114,18 @@ def test_parakeet_wav_encoding_is_16k_mono_s16le() -> None:
         assert wav.getnframes() == samples.size
 
 
-def test_parakeet_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The retired vLLM-Voxtral server rejected response_format=verbose_json with a
-    # 400; the engine settled on "json" and keeps requesting it (word timestamps
-    # ride the body's words field either way).
+def _fake_body(monkeypatch: pytest.MonkeyPatch, body: dict) -> dict:
+    """Patch httpx so every engine POST answers ``body``; returns the captured request."""
     import httpx
 
     captured: dict = {}
 
     class _Resp:
-        def raise_for_status(self) -> None:  # noqa: D401
+        def raise_for_status(self) -> None:
             pass
 
         def json(self) -> dict:
-            return {"text": "hello", "language": "en"}
+            return body
 
     async def _fake_post(self, url, *, data, files, headers):  # noqa: ANN001
         captured["data"] = data
@@ -135,14 +133,88 @@ def test_parakeet_requests_json_not_verbose_json(monkeypatch: pytest.MonkeyPatch
         return _Resp()
 
     monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    return captured
+
+
+def test_parakeet_requests_verbose_json_for_the_detected_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # vLLM's Whisper reports the detected language only in verbose_json (XERK-1476),
+    # and sends "words": null there — which must read as "no word timing", not crash.
+    captured = _fake_body(
+        monkeypatch, {"text": " hola amigos", "language": "es", "words": None, "segments": []}
+    )
     engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
     result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
-    assert captured["data"]["response_format"] == "json"
-    assert captured["data"]["response_format"] != "verbose_json"
+    assert captured["data"]["response_format"] == "verbose_json"
     # No key configured → no auth header (a direct vLLM doesn't authenticate).
     assert "Authorization" not in captured["headers"]
-    assert result.text == "hello"
+    assert result.text == "hola amigos"
+    assert result.language == "es"
+    assert result.words == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "you",
+        " Thank you.",
+        "THANK YOU!",
+        ".",
+        " ",
+        "Thanks for watching!",
+        "We'll be right back.",
+        "-",
+        "*sad music*",
+        "[Music]",
+        "(upbeat music) ...",
+        "ご視聴ありがとうございました。",
+        "Продолжение следует...",
+        "Gracias por ver el video.",
+        "Sous-titrage Société Radio-Canada",
+        "Sous-titrage ST' 501",
+        "¡Gracias por ver!",
+        "Subtítulos realizados por la comunidad de Amara.org",
+    ],
+)
+def test_whisper_non_speech_output_reads_as_blank(
+    monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    # Whisper's canonical decode of a window with no speech in it (XERK-1476): it must
+    # take the blank path, not become a caption. The pinned language still stands.
+    _fake_body(monkeypatch, {"text": text, "language": "en", "words": None})
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
+    result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language="es")
+
+    assert result.text == ""
+    assert result.words == []
+    assert result.language == "es"
+    assert result.non_speech
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Thank you very much.",
+        "you know",
+        "Okay.",
+        "Gracias.",
+        "Merci.",
+        "Sous-titres?",
+        "[Music] hola",
+    ],
+)
+def test_real_short_turns_are_not_taken_for_non_speech(
+    monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    # Only the WHOLE text matching counts; real short replies keep their caption.
+    _fake_body(monkeypatch, {"text": text, "language": "en"})
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
+    result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+
+    assert result.text == text
+    assert not result.non_speech
 
 
 def test_parakeet_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> None:

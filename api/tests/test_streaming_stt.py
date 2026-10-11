@@ -942,6 +942,53 @@ def test_final_recovers_partial_on_single_engine_empty_final() -> None:
     asyncio.run(run())
 
 
+def test_a_final_the_engine_calls_non_speech_drops_the_turn_and_its_partials() -> None:
+    """XERK-1476: the engine blanked the whole-turn decode as Whisper's non-speech output
+    (a subtitle outro over noise). The partials over that noise are the same invention, so
+    the XERK-174 fallback must not caption one, and no padded retry is spent on it."""
+
+    junk = "Gracias. al canal! suscríbete"
+    calls: list[bool] = []
+
+    class OutroFinalEngine:
+        def transcribe(
+            self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+        ) -> EngineResult:
+            if samples.size == 0 or float(np.abs(samples).max()) == 0.0:
+                return EngineResult(text="", words=[], language=None)
+            calls.append(want_words)
+            if want_words:  # the whole-turn final decode: filtered as non-speech
+                return EngineResult(text="", words=[], language="es", non_speech=True)
+            return EngineResult(text=junk, words=[], language=None)
+
+    async def run() -> None:
+        from api.metrics import metrics
+
+        metrics.reset()
+        t = StreamingTranscriber(
+            OutroFinalEngine(),
+            language="es",
+            partial_interval_ms=100,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
+        )
+        for _ in range(3):  # "speech" (noise the VAD passed) -> partials show the junk
+            await _push(t, _pcm(100, amplitude=4000))
+        for _ in range(3):  # trailing silence -> finalize
+            await _push(t, _pcm(100, amplitude=0))
+        msgs = await _drain(t)
+        assert any(isinstance(m, CaptionPartial) for m in msgs)
+        assert not [m for m in msgs if isinstance(m, CaptionFinal)]
+        assert calls.count(True) == 1  # one final decode, no padded retry
+        counters = metrics.snapshot()["counters"]
+        assert counters["stage.stt.final_non_speech"] == 1
+        assert "stage.stt.final_recovered" not in counters
+        metrics.reset()
+
+    asyncio.run(run())
+
+
 def test_recovery_suppresses_short_filler_partial() -> None:
     """XERK-182: an empty whole-turn decode may only surface a *substantive*
     partial. On non-speech audio (music, room noise) the partial source
