@@ -960,6 +960,24 @@ def test_flush_keeps_a_loud_tail_the_model_called_noise() -> None:
     assert asyncio.run(run(ScriptedVad([0.0]))) == 2
 
 
+def test_energy_heard_resets_with_each_turn() -> None:
+    """A turn closes with the flag cleared, so flush() never decodes a later silent tail
+    on the strength of an earlier turn's audio."""
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), partial_interval_ms=100000, max_segment_ms=300, vad_model=ScriptedVad([0.0])
+        )
+        for _ in range(3):
+            await _push(t, _pcm(100, amplitude=9000))  # loud: heard, then cap-closed
+        assert not t._buf and t._energy_heard is False
+        await _push(t, _pcm(100, amplitude=0))
+        await t.flush()
+        assert len(_finals(t)) == 1  # the silent tail was not decoded
+
+    asyncio.run(run())
+
+
 def test_a_model_that_raises_falls_back_to_the_energy_gate() -> None:
     """A runtime model failure must not escape push(): that stopped the turn-close
     logic for the rest of the session while the buffer grew without bound (QA)."""
@@ -968,13 +986,17 @@ def test_a_model_that_raises_falls_back_to_the_energy_gate() -> None:
         def speech_prob(self, pcm: bytes) -> float:
             raise RuntimeError("onnxruntime blew up")
 
+    from api.metrics import metrics
+
     async def run() -> None:
+        metrics.reset()
         t = StreamingTranscriber(
             FakeEngine(), partial_interval_ms=100000, max_segment_ms=1000, vad_model=Raising()
         )
         for _ in range(25):
             await _push(t, _pcm(100, amplitude=9000))
         assert t._vad_model is None
+        assert metrics.snapshot()["counters"]["stage.stt.vad_model_errors"] == 1
         assert len(_finals(t)) == 2  # the cap still closes turns
         assert len(t._buf) < _ms_to_bytes(1000)
 
@@ -1043,9 +1065,15 @@ def test_silero_vad_scores_at_most_a_second_of_an_oversized_chunk(
     """A huge WS frame held the event loop for seconds while every frame was scored."""
     onnx = FakeOnnx([])
     vad = _vad_with(monkeypatch, onnx)
-    vad.speech_prob(_pcm(60_000, amplitude=100))  # a minute of audio in one chunk
+    ramp = (np.arange(960_000) % 1000).astype(np.int16)  # a minute of audio in one chunk
+    vad.speech_prob(ramp.tobytes())
     assert len(onnx.inputs) <= 16000 // 512 + 1  # 1 s, rounded up to whole frames
     assert len(vad._pending) == 960000 % 512  # remainder alignment kept
+    # The first scored frame carries the 64 samples that really precede it.
+    first = onnx.inputs[0]["input"][0]
+    start = 960000 - 960000 % 512 - len(onnx.inputs) * 512
+    np.testing.assert_array_equal(first[:64], ramp[start - 64 : start].astype(np.float32) / 32768)
+    np.testing.assert_array_equal(first[64:], ramp[start : start + 512].astype(np.float32) / 32768)
 
 
 def test_preload_loads_the_model_once_only_when_it_will_be_used(

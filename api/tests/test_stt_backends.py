@@ -48,6 +48,18 @@ def test_factory_gives_each_conversation_its_own_silero_vad(
     assert a._vad_model_floor_rms == settings.stt_vad_model_floor_rms
 
 
+def test_lifespan_preloads_the_vad_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boot loads the model off the event loop, so the first session.start doesn't."""
+    from fastapi.testclient import TestClient
+
+    from api import main
+
+    calls: list[int] = []
+    monkeypatch.setattr(main, "preload_vad_model", lambda: calls.append(1))
+    with TestClient(main.app):
+        assert calls == [1]
+
+
 def test_factory_vad_model_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.config import settings
 

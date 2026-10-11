@@ -68,7 +68,10 @@ class SileroVad:
         if len(samples) > _MAX_SCORED:
             # Keep the frame alignment of the remainder: drop whole frames off the front.
             drop = (len(samples) - _MAX_SCORED) // _FRAME * _FRAME
-            samples = samples[drop:]
+            if drop:
+                # The first scored frame's context is what directly precedes it.
+                self._context = samples[drop - _CONTEXT : drop]
+                samples = samples[drop:]
         whole = len(samples) - len(samples) % _FRAME
         best = None
         for i in range(0, whole, _FRAME):
