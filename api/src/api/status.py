@@ -56,6 +56,10 @@ class Component:
 # Cached snapshot (last probe pass) + per-component "first seen unreachable" timer.
 _cache: list[Component] = []
 _down_since: dict[str, float] = {}
+# Failure classes already logged per probe target in its current outage, so a
+# persistent failure logs once rather than on every pass (XERK-1438). A set, not
+# the last class: a down database alternates PoolTimeout / DatabaseUnavailable.
+_logged_failures: dict[str, set[str]] = {}
 
 
 def _now() -> float:
@@ -66,9 +70,24 @@ def _now() -> float:
 def _public_detail(target: str, exc: BaseException) -> str:
     """``/status`` is public, and a raw probe error carries internal hostnames,
     absolute paths and SQL text — so the full message is logged server-side and
-    the body gets only the exception class (XERK-1427)."""
-    log.warning("status probe of %s failed: %s: %s", target, type(exc).__name__, exc)
-    return f"unreachable ({type(exc).__name__})"
+    the body gets only the exception class (XERK-1427).
+
+    Logged once per failure class per outage, and on one line: psycopg
+    messages carry ``LINE 1:`` and caret lines that split in line-based aggregators.
+    """
+    name = type(exc).__name__
+    seen = _logged_failures.setdefault(target, set())
+    if name not in seen:
+        seen.add(name)
+        log.warning("status probe of %s failed: %s: %s", target, name, " ".join(str(exc).split()))
+    return f"unreachable: {name}"
+
+
+def _probe_ok(target: str) -> None:
+    """Note a reachable target (any answer, even a 5xx), ending its outage so its
+    next failure is logged again."""
+    if _logged_failures.pop(target, None) is not None:
+        log.info("status probe of %s reachable again", target)
 
 
 def _iso(ts: float) -> str:
@@ -86,6 +105,7 @@ async def _http_probe(url: str) -> tuple[str, str]:
             resp = await client.get(url)
     except Exception as exc:  # noqa: BLE001 - any transport failure means unreachable
         return UNREACHABLE, _public_detail(url, exc)
+    _probe_ok(url)
     if resp.status_code == 200:
         return READY, "ready"
     if resp.status_code == 503:
@@ -97,10 +117,12 @@ async def _infra_probe(fn: Callable[[], object] | None) -> tuple[str, str]:
     """Probe an infra store with one cheap call off the event loop."""
     if fn is None:
         return UNREACHABLE, "not configured"
+    target = getattr(fn, "__qualname__", "store")
     try:
         await asyncio.to_thread(fn)
     except Exception as exc:  # noqa: BLE001
-        return UNREACHABLE, _public_detail(getattr(fn, "__qualname__", "store"), exc)
+        return UNREACHABLE, _public_detail(target, exc)
+    _probe_ok(target)
     return READY, "reachable"
 
 
@@ -176,9 +198,10 @@ def _apply(cid: str, raw: str, detail: str) -> tuple[str, str]:
         _down_since.pop(cid, None)
         return STATE_CONNECTING, detail
     # UNREACHABLE: yellow within the grace window, red once it's been down too long.
+    # The state already says "connecting", so the detail is passed through unwrapped.
     since = _down_since.setdefault(cid, _now())
     if _now() - since < settings.status_grace_seconds:
-        return STATE_CONNECTING, f"connecting… ({detail})"
+        return STATE_CONNECTING, detail
     return STATE_DOWN, detail
 
 
@@ -248,6 +271,7 @@ def reset() -> None:
     global _cache
     _cache = []
     _down_since.clear()
+    _logged_failures.clear()
 
 
 async def probe_loop() -> None:

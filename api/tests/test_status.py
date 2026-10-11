@@ -450,7 +450,7 @@ def test_http_probe_maps_status_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert raw == st.NOT_READY and "500" in detail
     _patch_httpx(monkeypatch, exc=OSError("connection refused to internal-host:8000"))
     raw, detail = asyncio.run(st._http_probe("http://x/health"))
-    assert raw == st.UNREACHABLE and detail == "unreachable (OSError)"
+    assert raw == st.UNREACHABLE and detail == "unreachable: OSError"
 
 
 def test_infra_probe(caplog: pytest.LogCaptureFixture) -> None:
@@ -466,8 +466,76 @@ def test_infra_probe(caplog: pytest.LogCaptureFixture) -> None:
 
     with caplog.at_level("WARNING", logger="api.status"):
         raw, detail = asyncio.run(st._infra_probe(_boom))
-    assert raw == st.UNREACHABLE and detail == "unreachable (RuntimeError)"
+    assert raw == st.UNREACHABLE and detail == "unreachable: RuntimeError"
     assert secret in caplog.text
+
+
+def test_probe_failure_logs_once_per_change(caplog: pytest.LogCaptureFixture) -> None:
+    # XERK-1438: a persistent failure logs once, not every pass; a new failure
+    # class or a recovery-then-failure logs again, but classes alternating within
+    # one outage don't re-log. Multi-line errors log on one line.
+    st.reset()
+    errors = [ValueError("bad\nLINE 1: SELECT 1\n       ^")]
+    ok = {"v": False}
+
+    def _probe() -> None:
+        if not ok["v"]:
+            raise errors[0]
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    with caplog.at_level("INFO", logger="api.status"):
+        for _ in range(3):
+            asyncio.run(st._infra_probe(_probe))
+        assert len(warnings()) == 1
+        assert "\n" not in warnings()[0] and "bad LINE 1: SELECT 1 ^" in warnings()[0]
+
+        errors[0] = RuntimeError("other")
+        asyncio.run(st._infra_probe(_probe))
+        asyncio.run(st._infra_probe(_probe))
+        assert len(warnings()) == 2
+        errors[0] = ValueError("bad again")  # alternating back: already logged
+        asyncio.run(st._infra_probe(_probe))
+        assert len(warnings()) == 2
+
+        ok["v"] = True
+        asyncio.run(st._infra_probe(_probe))
+        assert "reachable again" in caplog.text
+        ok["v"] = False
+        asyncio.run(st._infra_probe(_probe))
+        assert len(warnings()) == 3
+
+
+def test_http_probe_failure_relogs_after_recovery(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    st.reset()
+
+    def warnings() -> int:
+        return sum(r.levelname == "WARNING" for r in caplog.records)
+
+    with caplog.at_level("INFO", logger="api.status"):
+        _patch_httpx(monkeypatch, exc=OSError("refused"))
+        asyncio.run(st._http_probe("http://gw/health"))
+        asyncio.run(st._http_probe("http://gw/health"))
+        assert warnings() == 1
+        _patch_httpx(monkeypatch, resp=_FakeResp(200))
+        asyncio.run(st._http_probe("http://gw/health"))
+        _patch_httpx(monkeypatch, exc=OSError("refused"))
+        asyncio.run(st._http_probe("http://gw/health"))
+        assert warnings() == 2
+
+        # reset() forgets what was logged, so the same failure logs afresh.
+        st.reset()
+        asyncio.run(st._http_probe("http://gw/health"))
+        assert warnings() == 3
+
+
+def test_grace_window_detail_is_not_nested() -> None:
+    st.reset()
+    state, detail = st._apply("x", st.UNREACHABLE, "unreachable: ConnectError")
+    assert state == st.STATE_CONNECTING and detail == "unreachable: ConnectError"
 
 
 def test_probe_loop_runs_then_survives_errors(monkeypatch: pytest.MonkeyPatch) -> None:
