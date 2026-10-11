@@ -148,6 +148,11 @@ paths:
     C-locale non-UTF8 database, whose parser drops it; an unspaced-script term like CJK on UTF8,
     which parses as one whole-run token) match as substrings, OR'd with the full-text part,
     as the in-memory store matches any term. A query with no lexemes is all substring terms.
+  - Negated terms stay full-text: OR'd in as substrings they turned "-日本" into a match.
+  - A C-locale lower() folds only ASCII, so `_case_fold_sql` also folds the Latin-1 letters on
+    both sides: translate() on LATIN1, a whole-character replace() per letter on SQL_ASCII
+    (translate() maps bytes there and made "本" equal "漬"). Never send Python upper/lower
+    forms: LATIN1 can't hold some (µ -> Greek Mu) and the whole search went empty.
   - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*`, `test_sql_ascii_search_*`
     (live, create their own DB).
 - FastAPI's default 422 echoes the input with `ensure_ascii=False`: a lone surrogate made it a
