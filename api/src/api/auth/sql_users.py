@@ -255,7 +255,8 @@ class SqlUserStore:
         if skipped:
             log.warning(
                 "usernames %r are padded but were left as they are: stripped, each is blank"
-                " or another user's name; rename or delete them",
+                " or another user's name, or its update failed (logged above); rename or"
+                " delete them",
                 skipped,
             )
 
