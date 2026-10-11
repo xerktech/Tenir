@@ -440,6 +440,11 @@ def test_word_frequencies_correct_a_short_word_list_call() -> None:
         "la musique de maría.",
         "le chien de maría.",
         "la chanson de ramón.",
+        # A hyphen joins a double-barrelled name; it doesn't start a sentence (QA).
+        "C'est Marie-Peña.",
+        "Le match Peña-Muñoz est fini.",
+        "C'est la famille García-Muñoz.",
+        "Il dit: Peña.",
     ],
 )
 def test_names_and_loanwords_are_not_spanish(text: str) -> None:
@@ -467,6 +472,7 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "- Mañana.",
         "— Mañana iremos.",
         "Dijo: Mañana.",
+        "— Peña.",
         # A capitalised ñ word counts where the rest of the turn is Spanish anyway.
         "Hola Señor.",
         "Gracias, Señor.",

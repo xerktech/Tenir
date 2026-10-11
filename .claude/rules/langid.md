@@ -71,7 +71,8 @@ paths:
   are Spanish-looking but native there, so they stay out.
 - A `_CHARS` letter (ñ) in a capitalised mid-sentence word is a name, not es evidence ("C'est
   Peña." went es), unless the rest of the turn leans es by frequency ("Hola Señor." stays es).
-  Sentence-initial capitals (after `.!?:` or a dialogue dash) always count ("Mañana.").
+  Sentence-initial capitals (after `.!?`, or a dash + space) always count ("Mañana.").
+  A hyphen joins names ("Marie-Peña") and a colon precedes them ("Il dit: Peña."): no start.
 - es only: German capitalises nouns ("Fußball") and pt names are pt turns ("Japão") —
   name-skipping ß/ã/õ lost ~40 of 20k Tatoeba sentences.
 - A `_CHARS` letter beside English (`_english_evidence`) and no word hit of its own scores
