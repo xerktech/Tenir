@@ -130,7 +130,9 @@ eval host). Whisper ran on vLLM 0.30.0 in its production shape (4 GiB claim, 512
   noise ".", 100 ms tails "We'll be right back.", near-silent 1.5 s partials "*sad music*".
   vLLM returns no `no_speech_prob`, and avg_logprob / RMS overlapped real short turns, so
   `api.stt.parakeet` blanks a decode whose whole text is one of those phrases (and the
-  Spanish/French/Japanese/Russian outros it gives on noise) or only sound notes. The live rows above are with that filter; residue was "us", "So,", "um".
+  Spanish/French/Japanese/Russian outros it gives on noise) or only sound notes. The live
+  rows above are with that filter and the non-speech drop below (6.7 / 11.1 with the filter
+  alone); residue was "us", "So,", "um".
 - **Partials**: same re-decode model as Parakeet; per-decode cost is within ~15 ms (different
   cards), and LocalAgreement-2 still gates what is shown.
 - **Blank-final retry** is inert on Whisper speech (no blank finals on FLEURS or the streams);
