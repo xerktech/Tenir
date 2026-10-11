@@ -27,9 +27,10 @@ paths:
     about once a minute is worse (XERK-1591).
 - Whisper's non-speech inventions that are real phrases ("Gracias." / "Merci." pinned, "So,",
   "I'm going to go to the next one.") are accepted, not filtered (XERK-1591). No cheap signal
-  separates them: vLLM's `no_speech_prob` is null; on real Whisper, `es`-pinned noise windows came back
-  "Gracias." at avg_logprob -0.12 to -0.83 against -0.49 to -0.56 for an espeak-spoken one; turn RMS
-  overlapped too (noise 0.002-0.03, quiet replies 0.003-0.006). Re-measure before adding a gate.
+  separates them: vLLM's `no_speech_prob` is null.
+  - On real Whisper, `es`-pinned noise windows came back "Gracias." at avg_logprob -0.12 to
+    -0.83, against -0.38 to -0.56 for an espeak-spoken one. Turn RMS overlapped too (noise
+    0.002-0.03, quiet replies 0.003-0.006). Re-measure before adding a gate.
 - Never pin a language server-side: with `es` pinned Whisper rendered 26 of 40 English clips in
   Spanish, and Turma dictation shares the route. Only a session's own `sourceLang` pins.
 - Measure a model change with `scripts/stt_eval/fleurs/` (README there) before switching.
