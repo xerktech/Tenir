@@ -479,6 +479,8 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "«—Mañana»",
         "OK. —Mañana.",
         "OK —Mañana.",
+        "OK. (Mañana).",
+        "OK. 'Mañana'.",
         "OK.—Mañana.",
         "—\tMañana.",
         '« "Mañana" »',
