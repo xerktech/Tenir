@@ -249,6 +249,7 @@ def test_unknown_translation_selector_is_refused_at_config_time(field, value, me
         "auth_token_ttl_seconds",
         "stt_partial_interval_ms",
         "stt_max_segment_ms",
+        "stt_silence_ms",
         "cue_rss_keep_days",
         "cue_rss_interval_seconds",
         "status_probe_interval_seconds",

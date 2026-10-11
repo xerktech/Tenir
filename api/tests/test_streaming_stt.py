@@ -1452,7 +1452,7 @@ def test_finalizing_holds_through_the_blank_final_retry() -> None:
                 return EngineResult(text="", words=[], language=None)
             return EngineResult(text="uno dos tres cuatro", words=[], language=None)
 
-    t = StreamingTranscriber(BlankThenText(), partial_interval_ms=60_000)
+    t = StreamingTranscriber(BlankThenText(), partial_interval_ms=60_000, silence_ms=500)
 
     async def run() -> None:
         await _push(t, _pcm(600, amplitude=3000))

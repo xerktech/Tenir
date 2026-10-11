@@ -78,6 +78,19 @@ def test_factory_turn_close_windows_tuned_for_latency(
     assert transcriber._max_segment_bytes == 8000 * BYTES_PER_SEC // 1000
 
 
+def test_factory_passes_the_configured_silence_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rolling the silence window back is config-only (API_STT_SILENCE_MS), so
+    the setting must reach the transcriber rather than a hardcoded value."""
+    from api.config import settings
+    from api.stt.engine import BYTES_PER_SEC
+
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    monkeypatch.setattr(settings, "stt_silence_ms", 500)
+    assert make_transcriber()._silence_bytes == 500 * BYTES_PER_SEC // 1000
+
+
 def test_factory_rejects_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     from api.config import settings
 
