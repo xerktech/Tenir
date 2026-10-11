@@ -520,7 +520,8 @@ def test_http_probe_failure_relogs_after_recovery(
         asyncio.run(st._http_probe("http://gw/health"))
         asyncio.run(st._http_probe("http://gw/health"))
         assert warnings() == 1
-        _patch_httpx(monkeypatch, resp=_FakeResp(200))
+        # Any answer, even a 5xx, ends the outage: the target is reachable again.
+        _patch_httpx(monkeypatch, resp=_FakeResp(503))
         asyncio.run(st._http_probe("http://gw/health"))
         _patch_httpx(monkeypatch, exc=OSError("refused"))
         asyncio.run(st._http_probe("http://gw/health"))
@@ -579,6 +580,32 @@ def test_db_outage_detail_is_stable_across_pool_errors(monkeypatch: pytest.Monke
             raise e
 
         assert asyncio.run(st._infra_probe(_boom)) == (st.UNREACHABLE, "unreachable: DatabaseUnavailable")
+
+
+def test_db_outage_alternating_pool_errors_log_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # XERK-1438: dedup keys on the stable class, so PoolTimeout / DatabaseUnavailable
+    # alternating through one outage logs a single WARNING.
+    import sys
+
+    from api.persistence.postgres import DatabaseUnavailable
+
+    class PoolTimeout(Exception):
+        pass
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.ModuleType("psycopg"))
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(PoolTimeout=PoolTimeout))
+    st.reset()
+    errors = [PoolTimeout("timeout"), DatabaseUnavailable("down")] * 2
+
+    def _boom() -> None:
+        raise errors.pop(0)
+
+    with caplog.at_level("WARNING", logger="api.status"):
+        for _ in range(4):
+            asyncio.run(st._infra_probe(_boom))
+    assert sum(r.levelname == "WARNING" for r in caplog.records) == 1
 
 
 def test_probe_requests_do_not_log_httpx_info(
