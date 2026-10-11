@@ -97,6 +97,9 @@ export interface CaptionFinal {
   lang?: Lang;
   startMs: number;
   endMs: number;
+  /**
+   * Per-word timing, sent only with API_STT_FINAL_WORD_TIMESTAMPS on and an engine that returns it (Parakeet; Whisper on vLLM sends none). Not aligned to text.split(): the engine can split a token the text fuses ("like'cause" -> "like", "'cause"), so never index one by the other.
+   */
   words?: Word[];
 }
 export interface Word {

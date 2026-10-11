@@ -101,11 +101,9 @@ class ParakeetEngine:
     ) -> EngineResult:
         # verbose_json: vLLM's Whisper returns the detected language only in it (plain
         # json is text alone; LiteLLM forwards the format as sent). Per-turn language
-        # from the model beat text langid on every turn measured (XERK-1476). The
-        # Parakeet server computes word timing for verbose_json even with
-        # timestamps=false, so on Parakeet partials cost ~15 ms more. Word timing rides
-        # the body's words field when the server has it; StreamingTranscriber falls
-        # back to segment timing without.
+        # from the model beat text langid on every turn measured (XERK-1476). Word
+        # timing rides the body's words field when the server has it;
+        # StreamingTranscriber falls back to segment timing without.
         data = {"model": self._model, "response_format": "verbose_json"}
         if language is not None:
             data["language"] = language

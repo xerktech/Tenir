@@ -22,7 +22,8 @@ endpoint didn't.
   `response_format`, `timestamps`). `timestamps=false` skips word/segment timing for
   callers that only want the text — the api's live *partials*, which are most of the
   request volume ([XERK-115](https://xerktech.atlassian.net/browse/XERK-115)). It
-  defaults on, and `verbose_json` always keeps timing. `response_format`:
+  defaults on, and an explicit `false` is honoured for every format (`verbose_json` then
+  returns empty `words`/`segments`). `response_format`:
   - `json` (default) → `{"text", "language", "words"}` (the `words` superset is what
     `api.stt.parakeet.ParakeetEngine` — the generic HTTP transcription engine — reads
     for per-word timing)
