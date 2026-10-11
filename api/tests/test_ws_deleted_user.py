@@ -444,6 +444,10 @@ def test_revoked_socket_gets_its_1008_even_with_a_frame_queued() -> None:
                     ws.send_text(ping)
                     ws.receive_json()
             assert exc.value.code == 1008
+            # The handler returns after the close is out, once it stops draining.
+            deadline = time.monotonic() + 5
+            while "handler returned" not in events and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert events == ["1008 sent", "handler returned"]
 
 

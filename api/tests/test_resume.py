@@ -560,7 +560,12 @@ def test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued(
                 while True:
                     a.receive_json()
             assert closed.value.code == WS_CLOSE_RESUMED_ELSEWHERE
-            # A's handler has returned once its close is out; B's is still running.
+            # A's handler returns after its close is out (it still stops the drain of
+            # its queued frames first, so the client can see the close a moment
+            # before); B's is still running.
+            deadline = time.monotonic() + 5
+            while "handler returned" not in events and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert events == ["4001 sent", "handler returned"]
 
 
