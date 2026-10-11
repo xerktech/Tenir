@@ -31,7 +31,8 @@ paths:
   would otherwise retry at the base delay for the whole outage.
 - client-core turns a 503 into `ServerUnavailableError`, a `NetworkError` subclass on purpose:
   every client already keeps the session and retries on `NetworkError` (web, Android, Even).
-- Boot (web, Android) confirms the token via client-core `checkSession()`: 401 clears it; any
+- Boot (web, Android) confirms the token via client-core `checkSession()`: 401 clears it (an
+  OIDC session clears only the access token — the refresh sidecar must survive an IdP outage); any
   server fault (`isServerFault`: `NetworkError` or any 5xx) keeps it and shows the unreachable
   state. Even's `resolveBootAuth` follows the same rule. A plain 500 is NOT folded into
   `NetworkError` in `request()`: a 500 on an ordinary action must still surface as `ApiError`.

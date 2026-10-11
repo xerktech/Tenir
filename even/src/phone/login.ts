@@ -28,6 +28,8 @@
  */
 
 import {
+  ApiError,
+  clearToken,
   completeOidcCallback,
   configureApi,
   describeLoginError,
@@ -180,19 +182,24 @@ function renderOidcSection(els: PhoneLoginElements, oidc: ServerOidc | null): vo
  */
 async function resolveBootAuth(storage: KeyValueStorage): Promise<Principal | "offline" | null> {
   if (!isServerConfigured()) return null;
-  const hadSession = getToken() !== null || (await loadCredentials(storage)) !== null;
-  // The server rejected the cached token: if nothing below replaces it, drop it, so
-  // a later outage can't boot this wearer into the app on a dead token (XERK-1591).
+  // An OIDC session whose dead access token was dropped (below) still carries its
+  // refresh sidecar, so it still goes through the refresh path on the next boot.
+  const oidcSession = getSessionKind() === "oidc";
+  const hadSession =
+    getToken() !== null || oidcSession || (await loadCredentials(storage)) !== null;
+  // The server 401'd the cached token: if nothing below replaces it, drop it, so a
+  // later outage can't boot this wearer into the app on a dead token (XERK-1591).
   let tokenRejected = false;
-  if (getToken() !== null) {
+  if (getToken() !== null || oidcSession) {
     try {
       return await me();
     } catch (err) {
       // Unreachable, or any 5xx (a real 500 included): says nothing about the token
       // — keep it and show the app best-effort, as for a network failure (XERK-1591).
       if (isServerFault(err)) return hadSession ? "offline" : null;
-      // 401: token expired/revoked.
-      tokenRejected = true;
+      // 401: token expired/revoked. Any other rejection says nothing definite about
+      // the token, so it is kept (web/Android parity: only a 401 clears it).
+      tokenRejected = err instanceof ApiError && err.status === 401;
       if (getSessionKind() === "oidc") {
         // OIDC: there are no cached credentials to replay — silently refresh the
         // access token against the IdP instead. A failed refresh sends the wearer
@@ -200,11 +207,15 @@ async function resolveBootAuth(storage: KeyValueStorage): Promise<Principal | "o
         if (await refreshOidcOnBoot()) {
           try {
             return await me();
-          } catch {
+          } catch (retryErr) {
+            // A server fault right after a good refresh: keep the fresh session.
+            if (isServerFault(retryErr)) return "offline";
             /* the refreshed token still didn't confirm — fall through to login */
           }
         }
-        logout();
+        // Drop only the access token: the refresh sidecar survives an IdP outage
+        // and is retried next boot (an Authentik sign-in or Log out replaces it).
+        if (tokenRejected) clearToken();
         return null;
       }
       // built-in: fall through to a silent re-login with the cached credentials.

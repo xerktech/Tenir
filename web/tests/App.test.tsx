@@ -51,7 +51,8 @@ vi.mock("@tenir/client-core", () => ({
     } catch (err) {
       const core = await import("@tenir/client-core");
       if (err instanceof ApiErrorMock && err.status === 401) {
-        core.logout();
+        if (core.getSessionKind() === "oidc") core.clearToken();
+        else core.logout();
         return null;
       }
       const fault = err instanceof NetworkErrorMock || (err instanceof ApiErrorMock && err.status >= 500);
@@ -61,6 +62,7 @@ vi.mock("@tenir/client-core", () => ({
   },
   login: vi.fn(),
   logout: vi.fn(),
+  clearToken: vi.fn(),
   describeLoginError: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
   // OIDC surface (docs/auth-oidc.md §10). Default: server advertises OIDC off, so
   // the existing suites see the login form + dashboard exactly as before.
@@ -598,6 +600,8 @@ describe("boot with the server unreachable", () => {
     renderApp();
     expect(await screen.findByRole("heading", { name: "Your server hit an error" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Internal Server Error");
+    expect(screen.getByText(/answered with an error/)).toBeInTheDocument();
+    expect(screen.queryByText(/offline or restarting/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
     expect(logout).not.toHaveBeenCalled();
   });

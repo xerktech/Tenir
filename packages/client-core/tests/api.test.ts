@@ -13,7 +13,15 @@ import {
   type SystemStatus,
   users,
 } from "../src/api";
-import { clearToken, getToken, setToken } from "../src/auth";
+import {
+  clearOidcSession,
+  clearToken,
+  getOidcSession,
+  getToken,
+  registerOidcRefresher,
+  setOidcSession,
+  setToken,
+} from "../src/auth";
 import { configureApi } from "../src/config";
 
 type FetchCall = { url: string; init: RequestInit };
@@ -156,6 +164,31 @@ describe("checkSession (boot, XERK-1591)", () => {
     mockFetch(() => json({ detail: "token expired" }, 401));
     await expect(checkSession()).resolves.toBeNull();
     expect(getToken()).toBeNull();
+  });
+
+  it("keeps an OIDC refresh sidecar on a 401 so the session recovers once the IdP is back", async () => {
+    // The IdP is unreachable: request()'s silent refresh fails, /auth/me 401s.
+    setToken("oidc-stale");
+    setOidcSession({ refreshToken: "rt-1", expiresAt: 0 });
+    registerOidcRefresher(async () => false);
+    mockFetch(() => json({ detail: "expired" }, 401));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBeNull(); // the dead access token is gone
+    expect(getOidcSession()?.refreshToken).toBe("rt-1"); // the refresh token is not
+
+    // Next boot, IdP back: the 401 refreshes and the retry signs straight in.
+    registerOidcRefresher(async () => {
+      setToken("oidc-fresh");
+      return true;
+    });
+    mockFetch(({ init }) =>
+      (init.headers as Record<string, string>).Authorization === "Bearer oidc-fresh"
+        ? json(PRINCIPAL)
+        : json({ detail: "expired" }, 401),
+    );
+    await expect(checkSession()).resolves.toEqual(PRINCIPAL);
+    registerOidcRefresher(null);
+    clearOidcSession();
   });
 
   it.each([500, 501, 502, 503, 504])(

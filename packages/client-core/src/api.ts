@@ -11,6 +11,7 @@ import {
   authHeader,
   clearOidcSession,
   clearToken,
+  getSessionKind,
   getToken,
   setToken,
   tryOidcRefresh,
@@ -301,8 +302,8 @@ export function isServerFault(err: unknown): boolean {
  * Confirm the stored session at app boot (web + Android share this; XERK-1591).
  *
  * - Resolves the principal when the token is good.
- * - A 401 means the token is dead: clear it (`logout`) and resolve null, so a later
- *   outage doesn't tell this user they're still signed in.
+ * - A 401 means the token is dead: clear it and resolve null, so a later outage
+ *   doesn't tell this user they're still signed in (an OIDC refresh sidecar is kept).
  * - A server fault (`isServerFault`) with a stored token rejects with that error:
  *   the token may be fine, so keep it and let the caller show an unreachable /
  *   server-error state with Retry instead of a login form.
@@ -314,7 +315,12 @@ export async function checkSession(): Promise<Principal | null> {
     return await me();
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
-      logout();
+      // An OIDC session keeps its refresh sidecar: `request()` already tried a silent
+      // refresh, and it may have failed only because the IdP is briefly unreachable.
+      // With the access token gone, the next `me()` 401s and refreshes again, so the
+      // session recovers once the IdP is back; a built-in token has nothing to keep.
+      if (getSessionKind() === "oidc") clearToken();
+      else logout();
       return null;
     }
     if (isServerFault(err) && getToken() != null) throw err;

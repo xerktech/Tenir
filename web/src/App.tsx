@@ -224,8 +224,10 @@ function Unreachable({
       <h2>{error instanceof ApiError ? "Your server hit an error" : "Can't reach your server"}</h2>
       <Card>
         <p className="muted">
-          We couldn&apos;t check whether you&apos;re still signed in. If your Tenir server is just
-          offline or restarting, you don&apos;t need to sign in again — retry once it&apos;s back.
+          We couldn&apos;t check whether you&apos;re still signed in.{" "}
+          {error instanceof ApiError
+            ? "Your Tenir server answered with an error, which doesn't mean you were signed out — retry in a moment."
+            : "If your Tenir server is just offline or restarting, you don't need to sign in again — retry once it's back."}
         </p>
         {detail && (
           <p className="field-error" role="alert">
