@@ -144,3 +144,5 @@ eval host). Whisper ran on vLLM 0.30.0 in its production shape (4 GiB claim, 512
 - **Leaks the filter leaves** (QA, synthetic noise between turns): other-language outros are
   filtered too, but bare "Gracias." / "Merci." (pinned es/fr) and one-off English inventions
   ("So,", "us") still caption; a real one-phrase "Thank you." is lost by design.
+- A turn the engine blanks as non-speech is dropped with its partials: the XERK-174 fallback
+  had captioned the junk partial over the noise in its place ("Gracias. al canal!").

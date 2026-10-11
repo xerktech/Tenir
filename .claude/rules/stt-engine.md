@@ -2,6 +2,7 @@
 paths:
   - "api/src/api/stt/parakeet.py"
   - "api/tests/test_stt_backends.py"
+  - "api/src/api/stt/streaming.py"
   - "scripts/stt_eval/fleurs/**"
 ---
 
@@ -24,3 +25,7 @@ paths:
 - Never pin a language server-side: with `es` pinned Whisper rendered 26 of 40 English clips in
   Spanish, and Turma dictation shares the route. Only a session's own `sourceLang` pins.
 - Measure a model change with `scripts/stt_eval/fleurs/` (README there) before switching.
+- A final blanked as non-speech sets `EngineResult.non_speech`; `_finalize` then drops the turn
+  with no padded retry and no XERK-174 partial fallback — the partials over that noise were the
+  same invention ("Gracias. al canal!" captioned in QA).
+  - Tests: `test_streaming_stt.py::test_a_final_the_engine_calls_non_speech_drops_the_turn_and_its_partials`.

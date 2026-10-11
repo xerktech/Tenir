@@ -38,6 +38,9 @@ class EngineResult:
     text: str
     words: list[EngineWord] = field(default_factory=list)
     language: str | None = None
+    # The model answered with its stock output for audio without speech (blanked text):
+    # the turn is non-speech, so nothing — not even a partial — may stand in for it.
+    non_speech: bool = False
 
 
 class WhisperEngine(Protocol):

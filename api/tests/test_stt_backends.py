@@ -161,6 +161,8 @@ def test_parakeet_requests_verbose_json_for_the_detected_language(
         "Продолжение следует...",
         "Gracias por ver el video.",
         "Sous-titrage Société Radio-Canada",
+        "Sous-titrage ST' 501",
+        "¡Gracias por ver!",
         "Subtítulos realizados por la comunidad de Amara.org",
     ],
 )
@@ -176,6 +178,7 @@ def test_whisper_non_speech_output_reads_as_blank(
     assert result.text == ""
     assert result.words == []
     assert result.language == "es"
+    assert result.non_speech
 
 
 @pytest.mark.parametrize(
@@ -199,6 +202,7 @@ def test_real_short_turns_are_not_taken_for_non_speech(
     result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
 
     assert result.text == text
+    assert not result.non_speech
 
 
 def test_parakeet_sends_bearer_when_keyed(monkeypatch: pytest.MonkeyPatch) -> None:

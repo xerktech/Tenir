@@ -103,8 +103,9 @@ class ParakeetEngine:
         # json is text alone; LiteLLM forwards the format as sent). Per-turn language
         # from the model beat text langid on every turn measured (XERK-1476). The
         # Parakeet server computes word timing for verbose_json even with
-        # timestamps=false, so on Parakeet partials cost ~15 ms more. Word timing rides the body's words field when the
-        # server has it; StreamingTranscriber falls back to segment timing without.
+        # timestamps=false, so on Parakeet partials cost ~15 ms more. Word timing rides
+        # the body's words field when the server has it; StreamingTranscriber falls
+        # back to segment timing without.
         data = {"model": self._model, "response_format": "verbose_json"}
         if language is not None:
             data["language"] = language
@@ -129,7 +130,7 @@ class ParakeetEngine:
             loop.close()
         text = (body.get("text") or "").strip()
         if _non_speech(text):
-            return EngineResult(text="", words=[], language=language)
+            return EngineResult(text="", words=[], language=language, non_speech=True)
         # Word timestamps are returned only when the server supports them; absent (vLLM
         # sends "words": null), the streaming layer falls back to segment-boundary timing.
         words = [
