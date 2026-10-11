@@ -1,12 +1,10 @@
-"""Offline HTTP transcription engine — Parakeet (XERK-92).
+"""Offline HTTP transcription engine (XERK-92; named for its first model, Parakeet).
 
 An OpenAI-compatible ``/audio/transcriptions`` client behind the same engine seam
 faster-whisper used, so it reuses all of ``StreamingTranscriber``'s windowing /
-VAD / partial-final cadence unchanged. In production it drives the Parakeet
-server (``parakeet-stt/``), directly or through the LiteLLM gateway, sending
-each window as an in-memory WAV. (It replaced the retired Voxtral audio-LLM —
-see ``parakeet-stt/README.md`` for that history; a few defensive choices below
-date from it.)
+VAD / partial-final cadence unchanged. In production it drives Whisper
+large-v3-turbo on vLLM (XERK-1476; Parakeet, ``parakeet-stt/``, before it),
+directly or through the LiteLLM gateway, sending each window as an in-memory WAV.
 
 The windowing is covered by ``StreamingTranscriber`` tests against a fake engine;
 the request shape and the whole-request deadline by ``tests/test_stt_backends.py``
@@ -17,12 +15,40 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import numpy as np
 
 from api.stt.engine import EngineResult, EngineWord, float32_to_wav
 
 log = logging.getLogger("api.stt.parakeet")
+
+# Whisper's canonical output for a window with no speech in it (XERK-1476). vLLM reports no
+# no_speech_prob, and on FLEURS streams neither avg_logprob nor RMS separated these from real
+# short turns, so a decode whose WHOLE text is one of them is treated as blank: it then takes
+# the ordinary blank-final path (padded retry, XERK-174 partial fallback). A real one-phrase
+# "Thank you." is lost with them — an English turn Tenir never translates. Compared with
+# sound-event notes ("*sad music*", "[Music]") removed, then punctuation and case; "" covers
+# a decode that was only those (".", "-" on noise).
+_NON_SPEECH = frozenset(
+    {
+        "",
+        "you",
+        "thank you",
+        "thanks for watching",
+        "thank you for watching",
+        "well be right back",
+        "subtítulos realizados por la comunidad de amaraorg",
+        "subtítulos por la comunidad de amaraorg",
+        "soustitres réalisés par la communauté damaraorg",
+    }
+)
+_SOUND_EVENT = re.compile(r"\*[^*]*\*|\[[^\]]*\]|\([^)]*\)")
+
+
+def _non_speech(text: str) -> bool:
+    bare = re.sub(r"[^\w\s]|_", "", _SOUND_EVENT.sub(" ", text).lower())
+    return " ".join(bare.split()) in _NON_SPEECH
 
 
 class ParakeetEngine:
@@ -63,17 +89,18 @@ class ParakeetEngine:
     def transcribe(
         self, samples: np.ndarray, *, language: str | None, want_words: bool = True
     ) -> EngineResult:
-        # response_format "json" (no per-word timestamps in the body itself):
-        # chosen when the retired vLLM-Voxtral server 400'd on verbose_json, and
-        # kept — the Parakeet server returns its words field either way, and
-        # StreamingTranscriber falls back to segment-boundary timing without it.
-        data = {"model": self._model, "response_format": "json"}
+        # verbose_json: vLLM's Whisper returns the detected language only in it (plain
+        # json is text alone), and the LiteLLM gateway asks upstream for verbose_json
+        # anyway. Per-turn language from the model beat text langid on every turn
+        # measured (XERK-1476). Word timing rides the body's words field when the
+        # server has it; StreamingTranscriber falls back to segment timing without.
+        data = {"model": self._model, "response_format": "verbose_json"}
         if language is not None:
             data["language"] = language
         if not want_words:
             # Tenir extension (parakeet-stt/server.py): skip word-timestamp decoding
             # for partials, which only ever use the text. A server that doesn't know
-            # the field ignores it and returns words anyway — correct, just not
+            # the field (vLLM) ignores it and returns words anyway — correct, just not
             # cheaper — so this is safe to send through the gateway too.
             data["timestamps"] = "false"
         files = {"file": ("audio.wav", self._wav_bytes(samples), "audio/wav")}
@@ -89,18 +116,21 @@ class ParakeetEngine:
         finally:
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
-        # Word timestamps are returned only when the server supports them; absent,
-        # the streaming layer falls back to segment-boundary timing.
+        text = (body.get("text") or "").strip()
+        if _non_speech(text):
+            return EngineResult(text="", words=[], language=language)
+        # Word timestamps are returned only when the server supports them; absent (vLLM
+        # sends "words": null), the streaming layer falls back to segment-boundary timing.
         words = [
             EngineWord(
                 text=w.get("word", ""),
                 start=float(w.get("start", 0.0)),
                 end=float(w.get("end", 0.0)),
             )
-            for w in body.get("words", [])
+            for w in body.get("words") or []
         ]
         return EngineResult(
-            text=(body.get("text") or "").strip(),
+            text=text,
             words=words,
             language=body.get("language") or language,
         )

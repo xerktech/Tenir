@@ -93,7 +93,8 @@ translation accuracy) instead of only unit tests or the stub.
   `API_*_MODEL` values in ArgoCD `ai/tenir/deployment.yaml`. `GET /v1/models` lists what is live:
   - `milmmt-46-4b-translate` — translations (`tenir-translator`, MiLMMT-46-4B on vLLM); needs
     `API_TRANSLATION_PROMPT_STYLE=milmmt` (completion prompt on `/v1/completions`).
-  - `parakeet` — STT (`tenir-stt`), `/v1/audio/transcriptions`.
+  - `parakeet` — STT (`tenir-stt`, Whisper large-v3-turbo on vLLM since XERK-1476; the alias
+    kept its name), `/v1/audio/transcriptions`.
   - `qwen3.8-27b-int4` — cues/summaries (`tenir-cue`, Qwen3.8-27B W4A16 on vLLM + MTP). The 512-token
     thinking cap lives in the LiteLLM route (`extra_body.thinking_token_budget`), not in Tenir.
   - The cue server's KV pool fits one request at a time: a replay queues live users' cues behind it.
