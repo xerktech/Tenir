@@ -80,6 +80,8 @@ paths:
   every opener of that DSN in the process, and their opens are serialized.
   - Unshared, the second store waited out the first's apply behind the lock, then ran its own
     against the same outage (XERK-1591). Test: `test_database_lost_mid_apply_is_shared_*`.
+  - Trade-off, accepted: a sub-second restart mid-apply now 503s until the window ends (≤5s),
+    exactly like a failed open; any longer outage recovers sooner than unshared.
   - Per store, the conversation and user stores each ran schema.sql's bounded ~10s apply behind
     one held table lock, re-stalling requests on it twice after an outage (XERK-1607, XERK-1612).
   - A rejected schema (`SchemaApplyError`) is never shared: it retries on the next call.
