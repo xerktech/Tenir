@@ -21,6 +21,7 @@ import os
 import socket
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
@@ -36,6 +37,25 @@ from api.persistence.models import (
 )
 
 log = logging.getLogger("api.persistence.postgres")
+
+# Connections a failed boot schema apply closed on purpose (the close is what drops
+# its schema lock and lock_timeout). psycopg_pool warns "discarding closed
+# connection" when one comes back, on top of our own retry warning; that warning is
+# noise for these and a real signal for any other connection, so only these are
+# filtered (XERK-1591 QA).
+_closed_on_purpose: weakref.WeakSet = weakref.WeakSet()
+
+
+def _not_closed_on_purpose(record: logging.LogRecord) -> bool:
+    return not (
+        record.msg == "discarding closed connection: %s"
+        and isinstance(record.args, tuple)
+        and len(record.args) == 1
+        and record.args[0] in _closed_on_purpose
+    )
+
+
+logging.getLogger("psycopg.pool").addFilter(_not_closed_on_purpose)
 
 # How long opening the pool may wait for its first connections, how long a failed
 # open is remembered before the next attempt, and how long any caller waits for a
@@ -254,7 +274,28 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
             self.unreachable = False
             self._last_ok = time.monotonic()
             self._watchdogs: dict[int, _Watchdog] = {}
-            super().__init__(*args, configure=self._connected, **kwargs)
+            # Pooled connections outlive a Postgres restart; without a check each
+            # one fails its next borrower once (AdminShutdown) before it is dropped.
+            super().__init__(*args, configure=self._connected, check=self._check_or_drain, **kwargs)
+
+        # pool.check() (the drain below) runs this, so it is bounded too.
+        check_connection = staticmethod(check_connection)
+
+        def _check_or_drain(self, conn) -> None:
+            """The check before lending ``conn``. When it fails fast, every other idle
+            connection is checked (and the dead ones replaced) before the borrower
+            retries: a pool idle through a restart holds only dead connections, and
+            psycopg retried them one by one on its backoff (1+2+4s), so the first
+            request after the database was back waited out its timeout and 503'd
+            (XERK-1591 QA). A check that hit its bound means a hung server, where
+            each further check would cost the borrower another CHECK_TIMEOUT_SECONDS."""
+            t0 = time.monotonic()
+            try:
+                check_connection(conn)
+            except Exception:
+                if time.monotonic() - t0 < CHECK_TIMEOUT_SECONDS:
+                    self.check()
+                raise
 
         def _reachable(self) -> None:
             self._last_ok = time.monotonic()
@@ -308,7 +349,8 @@ class PoolOpener:
     shared with every caller for that long, instead of each one queueing another
     full wait behind the store's lock. So is an ``init`` that timed out on a table
     lock (``SchemaLockTimeout``): on a lazy re-open each caller otherwise re-ran the
-    whole bounded apply, ~10s apiece, re-stalling requests on the table each time.
+    whole bounded apply, ~10s apiece, re-stalling requests on the table each time;
+    and one that lost the database mid-apply (``is_database_unavailable``).
 
     The verdict is shared by every opener of the same DSN in this process, not per
     store (XERK-1612): the conversation and user stores both apply schema.sql, so a
@@ -328,8 +370,9 @@ class PoolOpener:
 
     def open(self, init: Callable[[Any], None]):
         """A ready pool with ``init(pool)`` applied; closed again if either fails.
-        Only a failure to open or a lock timeout is remembered: any other ``init``
-        error (a rejected schema) is retried on the very next call."""
+        Only a failure to open or an ``init`` error that means the database is
+        unavailable (a lock timeout, a lost connection) is remembered: any other
+        ``init`` error (a rejected schema) is retried on the very next call."""
         with self._verdict.lock:
             return self._open(init)
 
@@ -351,9 +394,6 @@ class PoolOpener:
             # after the pool opened, psycopg's 30s default held a worker thread per
             # request, and 50 of them stalled every sync endpoint for 30-60s.
             timeout=OPEN_TIMEOUT_SECONDS,
-            # Pooled connections outlive a Postgres restart; without a check each
-            # one fails its next borrower once (AdminShutdown) before it is dropped.
-            check=check_connection,
             # Give up a failed reconnect after this long, so the next request's
             # connect attempt starts fresh. psycopg's 5-minute default kept each
             # broken connection on exponential backoff (1, 2, 4 ... 64s), and the
@@ -369,8 +409,13 @@ class PoolOpener:
                 raise
             try:
                 init(pool)
-            except SchemaLockTimeout as exc:
-                self._verdict.failure = (time.monotonic(), exc)
+            except Exception as exc:
+                # A lock timeout, or the database gone mid-apply (no connection, or
+                # the connection lost): the other store waited out this apply behind
+                # the verdict lock, then ran its own against the same outage
+                # (XERK-1591 QA). A rejected schema is never shared: it retries.
+                if is_database_unavailable(exc):
+                    self._verdict.failure = (time.monotonic(), exc)
                 raise
         except BaseException:
             pool.close()
@@ -524,6 +569,7 @@ def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
             lost = _is_connection_lost(conn, exc)
             # The pool discards a closed connection: that ends the session, releasing the
             # schema lock and the lock_timeout, so a retry or request never inherits them.
+            _closed_on_purpose.add(conn)
             conn.close()
             if lost or _is_lock_timeout(exc):
                 raise

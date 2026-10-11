@@ -52,7 +52,8 @@ def _install_unreachable_pool(monkeypatch) -> list:
             assert kw["timeout"] == OPEN_TIMEOUT_SECONDS
             # Stale connections from before a Postgres restart are checked, not lent.
             # ...by a check that can't hang on a server that stopped answering.
-            assert kw["check"] is postgres.check_connection
+            # (GuardedPool's, which wraps postgres.check_connection.)
+            assert kw["check"].__func__.__name__ == "_check_or_drain"
             # A failed reconnect is retried fresh, not on a minute-long backoff.
             assert kw["reconnect_timeout"] == OPEN_TIMEOUT_SECONDS
             self.open_timeout: float | None = None
@@ -152,6 +153,40 @@ def test_lock_timeout_verdict_is_shared_across_openers_of_one_dsn(monkeypatch) -
         with pytest.raises(postgres.SchemaApplyError, match="rejected"):
             conversations.open(rejected)
     assert applies.count("rejected") == 2
+
+
+def _connection_lost() -> Exception:
+    psycopg = pytest.importorskip("psycopg")
+    return psycopg.OperationalError("server closed the connection unexpectedly")
+
+
+@pytest.mark.parametrize(
+    "lost",
+    [lambda: _PoolTimeout("couldn't get a connection after 5.00 sec"), _connection_lost],
+    ids=["no-connection", "connection-lost"],
+)
+def test_database_lost_mid_apply_is_shared_across_openers_of_one_dsn(monkeypatch, lost) -> None:
+    """The database gone during the first store's apply: the second store waited it
+    out behind the verdict lock, then ran its own apply against the same outage, so
+    a lazy re-open took 2s for conversations and 4s for users (XERK-1591 QA)."""
+    _install_base_pool(monkeypatch)
+    error = lost()
+    applies: list[str] = []
+
+    def init(name: str):
+        def apply(pool) -> None:
+            applies.append(name)
+            raise error
+
+        return apply
+
+    with pytest.raises(type(error)):
+        postgres.PoolOpener("postgresql://unused", "conversations").open(init("conversations"))
+    with pytest.raises(DatabaseUnavailable, match="database unreachable") as shared:
+        postgres.PoolOpener("postgresql://unused", "users").open(init("users"))
+    assert shared.value.__cause__ is error
+    assert postgres.is_database_unavailable(shared.value), "still a 503"
+    assert applies == ["conversations"]
 
 
 def test_opens_of_one_dsn_wait_for_each_other(monkeypatch) -> None:
@@ -332,6 +367,8 @@ def _install_base_pool(monkeypatch) -> type:
             self.timeout = kw.get("timeout", 30.0)
             self.name = kw.get("name", "fake")
             self.configure = configure
+            self.lend_check = kw.get("check")
+            self.drains = 0
             self.lent: list = []
             self.waits: list = []
             self.returned: list = []
@@ -359,8 +396,12 @@ def _install_base_pool(monkeypatch) -> type:
         def reconnect_failed(self) -> None:
             pass
 
+        def check(self) -> None:
+            self.drains += 1
+
     fake_mod = types.ModuleType("psycopg_pool")
     fake_mod.ConnectionPool = _BasePool
+    fake_mod.PoolTimeout = _PoolTimeout
     monkeypatch.setitem(sys.modules, "psycopg_pool", fake_mod)
     return postgres._guarded_pool_class()
 
@@ -375,6 +416,34 @@ def test_check_on_a_hung_server_is_bounded(monkeypatch) -> None:
     with pytest.raises(OSError, match="closed"):
         _bounded(lambda: postgres.check_connection(conn))
     assert time.monotonic() - t0 < 2
+
+
+def test_a_dead_connection_drains_the_idle_pool(monkeypatch) -> None:
+    """A pool idle through a restart holds only dead connections. psycopg retried them
+    one per backoff step (1+2+4s), so the first request after the database was back
+    503'd: a fast-failing check makes the pool check every idle connection first."""
+    pool = _install_base_pool(monkeypatch)(timeout=5.0)
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 0.2)
+    dead = _SocketConn()
+    dead.peer.close()
+    with pytest.raises(OSError, match="closed"):
+        pool.lend_check(dead)
+    assert pool.drains == 1
+
+    healthy = _SocketConn()
+    healthy.peer.sendall(b"x")
+    pool.lend_check(healthy)
+    assert pool.drains == 1
+
+
+def test_a_hung_connection_does_not_drain_the_idle_pool(monkeypatch) -> None:
+    """Against a hung server every further check would also run to its bound, adding
+    CHECK_TIMEOUT_SECONDS per idle connection to the borrower's wait."""
+    pool = _install_base_pool(monkeypatch)(timeout=5.0)
+    monkeypatch.setattr(postgres, "CHECK_TIMEOUT_SECONDS", 0.2)
+    with pytest.raises(OSError):
+        _bounded(lambda: pool.lend_check(_SocketConn()))
+    assert pool.drains == 0
 
 
 def test_healthy_check_and_borrow_leave_the_connection_alone(monkeypatch) -> None:
@@ -481,3 +550,30 @@ def test_borrow_watchdog_is_armed_after_the_boot_schema_only(monkeypatch) -> Non
     assert seen == [None]
     assert pool.borrow_timeout == postgres.QUERY_TIMEOUT_SECONDS
     assert pool.name == "conversations"
+
+
+def test_only_deliberately_closed_connections_skip_the_pool_warning() -> None:
+    """A failed boot apply closes its connection on purpose; psycopg_pool's "discarding
+    closed connection" warning for it is noise. For any other connection it stays."""
+    import logging
+
+    class _Conn:
+        pass
+
+    mine, other = _Conn(), _Conn()
+    postgres._closed_on_purpose.add(mine)
+
+    def record(conn) -> logging.LogRecord:
+        return logging.LogRecord(
+            "psycopg.pool",
+            logging.WARNING,
+            __file__,
+            0,
+            "discarding closed connection: %s",
+            (conn,),
+            None,
+        )
+
+    pool_log = logging.getLogger("psycopg.pool")
+    assert not pool_log.filter(record(mine))
+    assert pool_log.filter(record(other))

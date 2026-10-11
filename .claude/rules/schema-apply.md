@@ -75,8 +75,11 @@ paths:
     each held a worker thread 30s and stalled every sync endpoint (XERK-1434).
   - Without `connect_timeout`, `pool.close()` after a timed-out open waits on connects to a
     blackholed host that never return.
-- `PoolOpener`'s verdict (a failed open, or an apply's `SchemaLockTimeout`) is shared for
-  `OPEN_TIMEOUT_SECONDS` by every opener of that DSN in the process, and their opens are serialized.
+- `PoolOpener`'s verdict (a failed open, or an apply error `is_database_unavailable` accepts:
+  `SchemaLockTimeout`, no connection, connection lost) is shared for `OPEN_TIMEOUT_SECONDS` by
+  every opener of that DSN in the process, and their opens are serialized.
+  - Unshared, the second store waited out the first's apply behind the lock, then ran its own
+    against the same outage (XERK-1591). Test: `test_database_lost_mid_apply_is_shared_*`.
   - Per store, the conversation and user stores each ran schema.sql's bounded ~10s apply behind
     one held table lock, re-stalling requests on it twice after an outage (XERK-1607, XERK-1612).
   - A rejected schema (`SchemaApplyError`) is never shared: it retries on the next call.
@@ -84,8 +87,17 @@ paths:
   - Tests: `test_lock_timeout_verdict_is_shared_across_openers_of_one_dsn`,
     `test_opens_of_one_dsn_wait_for_each_other`; live
     `test_both_stores_share_one_lock_timeout_verdict`.
-- Pools are created with `check=check_connection` (postgres.py; bounded, XERK-1513): without it every connection
-  pooled before a Postgres restart failed one request (AdminShutdown) before being dropped.
+- `GuardedPool` checks every lent connection (`_check_or_drain`, bounded, XERK-1513): without it
+  every connection pooled before a Postgres restart failed one request (AdminShutdown).
+  - A check that fails fast runs `pool.check()` on the other idle connections: psycopg retried
+    them one per backoff step (1+2+4s), so after an idle outage the first request 503'd.
+  - A check that hit `CHECK_TIMEOUT_SECONDS` (hung server) doesn't drain: each further check
+    would add its bound to the borrower's wait.
+  - Tests: `test_first_request_after_an_idle_outage_succeeds` (live),
+    `test_a_dead_connection_drains_the_idle_pool`.
+- A failed apply's deliberate `conn.close()` is registered in `_closed_on_purpose`, and a filter
+  on the `psycopg.pool` logger drops its "discarding closed connection" warning for those only.
+  Keep the close itself. Test: `test_only_deliberately_closed_connections_skip_the_pool_warning`.
 - Token resolution reads the user store: never call it on the event loop (WS auth runs in
   `to_thread`) — a blocking read there froze the whole server while the DB was down.
 - Probes (`/ready`, `/status`) call the store's bounded `ready()`, never a request-path query;
