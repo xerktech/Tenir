@@ -334,6 +334,23 @@ def test_empty_push_is_ignored() -> None:
     asyncio.run(run())
 
 
+def test_odd_length_push_carries_byte_into_next_push() -> None:
+    # XERK-1826: an odd-length frame used to land in _buf (shifting every later
+    # sample a byte) and then raise from the VAD's int16 decode.
+    async def run() -> None:
+        t = StreamingTranscriber(FakeEngine())
+        speech = _pcm(100, amplitude=8000)
+        await _push(t, speech[:-1])
+        assert len(t._buf) == len(speech) - 2 and t._carry == speech[-2:-1]
+        await _push(t, speech[-1:] + speech)
+        assert len(t._buf) == 2 * len(speech) and not t._carry
+        assert bytes(t._buf) == speech + speech  # still sample-aligned
+        await _push(t, b"\x01")  # a lone byte is held, not decoded
+        assert len(t._buf) == 2 * len(speech) and t._carry == b"\x01"
+
+    asyncio.run(run())
+
+
 def test_flush_noop_when_no_speech() -> None:
     async def run() -> None:
         eng = FakeEngine()

@@ -16,6 +16,7 @@ import pytest
 from api.config import settings
 from api.contract import LyricLine, MicSource, ServerMessage, Song, SongDone, SongSync
 from api.cue.base import GeneratedCue
+from api.music import window_bytes
 from api.music.base import MusicMatch
 from api.music.lyrics import SyncedLine
 from api.persistence import get_conversation_store
@@ -602,6 +603,34 @@ def test_scan_tightens_near_song_end() -> None:
         # Inside the end-prep window → fast search cadence.
         session._music_offset_ms = 200000 - (settings.music_end_prep_ms // 2)
         assert session._next_scan_interval_ms() == settings.music_scan_interval_ms
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_music_window_stays_sample_aligned_under_odd_frames() -> None:
+    # XERK-1826: trimming an odd byte count started the window mid-sample.
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._music = _SpyMusicService([])
+        session._music_window_bytes = 8
+        stream = bytes(range(1, 22))
+        for frame in (stream[:3], stream[3:10], stream[10:]):  # odd lengths
+            await session.on_audio(frame)
+        window = bytes(session._music_audio)
+        assert stream.endswith(window) and (len(stream) - len(window)) % 2 == 0
+        # A full window left one byte short by an odd total still scans, even when
+        # the window is no longer than the scan's ~5 s minimum.
+        session._music_window_bytes = window_bytes(5.0)
+        for _ in range(200):
+            await session.on_audio(b"\x01\x02" * 640)
+        assert len(session._music_audio) == window_bytes(5.0) - 1
+        wav = session._music_window_wav()
+        assert wav is not None
+        # The data chunk holds whole samples: an odd-length one fails to fingerprint.
+        data_len = int.from_bytes(wav[40:44], "little")
+        assert data_len == len(wav) - 44 == window_bytes(5.0) - 2
         await session.close()
 
     asyncio.run(run())

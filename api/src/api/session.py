@@ -716,6 +716,9 @@ class Session:
         if self._music is not None:
             self._music_audio.extend(pcm)
             excess = len(self._music_audio) - self._music_window_bytes
+            # Trim whole samples only: an odd-length frame would otherwise start the
+            # window mid-sample and fingerprint byte-shifted noise (XERK-1826).
+            excess += excess & 1
             if excess > 0:
                 del self._music_audio[:excess]
         if self._transcriber is not None:
@@ -1294,9 +1297,13 @@ class Session:
         accumulated. Requires ~5s so a landmark match has something to work with;
         below that a scan would just waste a recognition call."""
         min_bytes = min(self._music_window_bytes, window_bytes(5.0))
-        if len(self._music_audio) < min_bytes or min_bytes == 0:
+        # +1: after an odd stream total the whole-sample trim in on_audio leaves a full
+        # window one byte short, which must still count as full (XERK-1826).
+        if len(self._music_audio) + 1 < min_bytes or min_bytes == 0:
             return None
-        return pcm16_to_wav(bytes(self._music_audio))
+        # Whole samples only: an odd-length data chunk fails to decode (shazamio_core
+        # falls back to ffmpeg, which the image doesn't ship).
+        return pcm16_to_wav(bytes(self._music_audio[: len(self._music_audio) & ~1]))
 
     async def _music_scan_loop(self) -> None:
         """Periodically fingerprint the audio window and drive the song run.
