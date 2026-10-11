@@ -74,6 +74,12 @@ def _has_index(admin, name: str) -> bool:
     )
 
 
+def _skip_unless_utf8(admin) -> None:
+    """For tests whose legacy rows hold characters only a UTF8 database can store."""
+    if admin.execute("SHOW server_encoding").fetchone()[0] != "UTF8":
+        pytest.skip("needs a UTF8 database")
+
+
 NORM_IDX = "users_username_norm_idx"
 LOWER_IDX = "users_username_lower_idx"
 
@@ -164,23 +170,23 @@ def test_whitespace_variant_usernames_are_duplicates(make_store) -> None:
 
 
 def test_legacy_padded_username_still_logs_in(make_store) -> None:
-    """A row written padded before the fix matches its stripped name, and blocks a
-    new user taking that name."""
+    """A row written padded (by an old replica mid-rollout) matches its stripped name,
+    and blocks a new user taking that name; the next boot stores it stripped."""
     make, admin = make_store
-    make()
-    admin.execute(f"DROP INDEX {NORM_IDX}")
+    store = make()
     admin.execute(
         "INSERT INTO users (household, username, password_hash)"
         " VALUES ('default', E' dave\\t', 'x'), ('default', E'\\x1ccarl\\x1f', 'y')"
     )
-    store = make()
-    assert _has_index(admin, NORM_IDX)
     assert store.get_by_username("Dave").username == " dave\t"
     # The key trims what str.strip() trims, not just btrim's default ' '.
     assert store.get_by_username("carl").username == "\x1ccarl\x1f"
     for name in ("dave", "carl"):
         with pytest.raises(DuplicateUser):
             store.create(name, "mallory-pw", household="default")
+    store = make()
+    assert store.get_by_username("Dave").username == "dave"
+    assert store.get_by_username("carl").username == "carl"
 
 
 def test_blank_login_never_matches_a_legacy_blank_username(make_store) -> None:
@@ -357,3 +363,272 @@ def test_patch_and_delete_a_real_user_still_work(client, store) -> None:
     assert patched.json()["role"] == "admin"
     assert client.delete(f"/auth/users/{user.user_id}").status_code == 204
     assert store.get_by_id(user.user_id) is None
+
+
+# --- Legacy states and non-UTF8 databases (XERK-1591) --------------------------
+
+
+def test_fallback_mode_refuses_a_whitespace_variant_of_a_legacy_name(
+    make_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While whitespace duplicates block the norm index only the case-only index exists,
+    so a new "bob" beside a legacy " bob\\t" slipped past it, and login "bob" then
+    resolved to the new row: a takeover of the legacy account."""
+    import api.auth.users as users
+
+    make, admin = make_store
+    make()
+    admin.execute(f"DROP INDEX {NORM_IDX}")
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES"
+        " ('default', 'alice', 'x'), ('default', ' alice', 'x')"
+    )
+    store = make()
+    assert not _has_index(admin, NORM_IDX) and _has_index(admin, LOWER_IDX)
+    # Written after boot (which strips padding where it can), as by an old replica.
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', E' bob\\t', 'x')"
+    )
+    monkeypatch.setattr(users, "_store", store)
+    monkeypatch.setattr(users, "_admin_reconciled", True)
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.post("/auth/users", json={"username": "bob", "password": "longpassword"})
+    assert r.status_code == 409, r.text
+    with pytest.raises(DuplicateUser):
+        store.create("BOB", "longpassword", household="default")
+    with pytest.raises(DuplicateUser):
+        store.create_oidc(
+            oidc_sub="s", email=None, username="bob", household="default", role="member"
+        )
+    carol = store.create("carol", "longpassword", household="default")
+    with pytest.raises(DuplicateUser):
+        store.update_credentials(carol.user_id, username="bob")
+    with pytest.raises(DuplicateUser):
+        store.update_oidc(carol.user_id, username="Bob")
+    assert store.get_by_username("bob").username == " bob\t"
+    # Renaming a row to its own name (any case or padding) is not a clash.
+    assert store.update_credentials(carol.user_id, username=" Carol").username == "Carol"
+
+
+def test_norm_index_race_falls_back_instead_of_failing(make_store) -> None:
+    """A rolling update: an old replica commits a whitespace duplicate after the DO
+    block's duplicate check but before CREATE UNIQUE INDEX, which then failed 23505 and
+    the apply raised SchemaApplyError. It now falls back to the case-only index."""
+    import threading
+
+    from api.auth.sql_users import _ENSURE_SCHEMA
+
+    make, admin = make_store
+    make()
+    admin.execute(f"DROP INDEX {NORM_IDX}")
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', 'eve', 'x')"
+    )
+    search_path = admin.execute("SHOW search_path").fetchone()[0]
+    with psycopg.connect(DSN) as writer, psycopg.connect(DSN, autocommit=True) as applier:
+        for conn in (writer, applier):
+            conn.execute(f"SET search_path TO {search_path}")
+        writer.commit()
+        # Uncommitted, so the DO block's check doesn't see it; its CREATE INDEX then
+        # waits on the writer's lock and meets the row once it commits.
+        writer.execute(
+            "INSERT INTO users (household, username, password_hash)"
+            " VALUES ('default', ' eve', 'y')"
+        )
+        errors: list[BaseException] = []
+
+        def apply() -> None:
+            try:
+                applier.execute(_ENSURE_SCHEMA[-1])
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                errors.append(exc)
+
+        thread = threading.Thread(target=apply)
+        thread.start()
+        pid = applier.info.backend_pid
+        waiting = None
+        for _ in range(200):
+            waiting = admin.execute(
+                "SELECT 1 FROM pg_locks WHERE pid = %s AND NOT granted", (pid,)
+            ).fetchone()
+            if waiting:
+                break
+            thread.join(0.05)
+        assert waiting, "the DO block never blocked on the writer"
+        writer.commit()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert errors == []
+    assert not _has_index(admin, NORM_IDX)
+    assert _has_index(admin, LOWER_IDX)
+
+
+def test_legacy_non_ascii_padding_is_stripped_at_boot(make_store, caplog) -> None:
+    """The username key trims only ASCII, so a legacy name padded with e.g. NBSP or
+    U+3000 never matched its stripped name and could not log in. Boot strips such rows
+    unless the stripped name is already taken (or blank); those are logged."""
+    make, admin = make_store
+    _skip_unless_utf8(admin)
+    make()
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES"
+        " ('default', %s, 'x'), ('default', %s, 'x'), ('default', %s, 'x'),"
+        " ('default', %s, 'x'), ('default', 'quinn', 'x'), ('default', %s, 'x')",
+        (" nina", "　omar ", "pat\x85", " Quinn ", " "),
+    )
+    with caplog.at_level(logging.WARNING, logger="api.auth.sql_users"):
+        store = make()
+    assert store.get_by_username("nina").username == "nina"
+    assert store.get_by_username("OMAR").username == "omar"
+    assert store.get_by_username("pat").username == "pat"
+    # Stripping would collide with "quinn" or leave a blank name: left alone, logged.
+    names = {r[0] for r in admin.execute("SELECT username FROM users").fetchall()}
+    assert {" Quinn ", " ", "quinn"} <= names
+    assert "Quinn" in caplog.text and "\\xa0" in caplog.text
+    with pytest.raises(DuplicateUser):
+        store.create("nina", "longpassword", household="default")
+
+
+@pytest.fixture
+def make_encoded_store():
+    """factory(encoding) -> (SqlUserStore, admin connection) on a fresh database of that
+    server encoding, dropped afterwards."""
+    from psycopg.conninfo import make_conninfo
+
+    from api.auth.sql_users import SqlUserStore
+
+    created: list[tuple[str, SqlUserStore, object]] = []
+
+    def make(encoding: str):
+        name = f"t_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(DSN, autocommit=True) as root:
+            root.execute(
+                f"CREATE DATABASE {name} ENCODING '{encoding}'"
+                " LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+            )
+        dsn = make_conninfo(DSN, dbname=name)
+        store = SqlUserStore(dsn)
+        admin = psycopg.connect(dsn, autocommit=True, client_encoding="UTF8")
+        created.append((name, store, admin))
+        store._ensure_pool()
+        return store, admin
+
+    yield make
+    with psycopg.connect(DSN, autocommit=True) as root:
+        for name, store, admin in created:
+            if store._pool is not None:
+                store._pool.close()
+            admin.close()
+            root.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+def test_sql_ascii_database_logs_in(make_encoded_store) -> None:
+    """On a SQL_ASCII database psycopg returned every text column as bytes, so the
+    password hash never verified and every login (the env admin's too) 401'd."""
+    store, _ = make_encoded_store("SQL_ASCII")
+    user = store.create(
+        "admin", "longpassword", household="default", role="admin", email="a@b.c"
+    )
+    assert isinstance(user.username, str)
+    assert store.authenticate("admin", "longpassword").user_id == user.user_id
+    assert store.get_by_email("A@b.c").user_id == user.user_id
+    jo = store.create("josé", "longpassword", household="default")
+    assert store.get_by_username("josé").user_id == jo.user_id
+
+
+def test_latin1_database_treats_unencodable_input_as_no_such_user(make_encoded_store) -> None:
+    """A lookup holding a character LATIN1 can't store matches no row, rather than
+    raising (a 500); a write of one is refused as an invalid value."""
+    from api.auth.sql_users import SqlUserStore
+    from api.auth.users import InvalidUserValue
+
+    store, admin = make_encoded_store("LATIN1")
+    store.create("josé", "longpassword", household="default", email="j@example.com")
+    assert store.get_by_username("josé").username == "josé"
+    assert store.get_by_email("　x@example.com") is None
+    assert store.get_by_username("漢字") is None
+    assert store.authenticate("漢字", "longpassword") is None
+    assert store.get_by_oidc_sub("漢") is None
+    with pytest.raises(InvalidUserValue):
+        store.create("漢字", "longpassword", household="default")
+    with pytest.raises(InvalidUserValue):
+        store.create_oidc(
+            oidc_sub="s1",
+            email="　x@example.com",
+            username="x",
+            household="default",
+            role="member",
+        )
+    jo = store.get_by_username("josé")
+    with pytest.raises(InvalidUserValue):
+        store.update_credentials(jo.user_id, email="　x@example.com")
+    with pytest.raises(InvalidUserValue):
+        store.update_oidc(jo.user_id, username="漢")
+    # A legacy LATIN1 name padded with NBSP / NEL is stripped at boot, as on UTF8.
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', %s, 'x')",
+        (" nina\x85",),
+    )
+    SqlUserStore._ensure_schema(store._pool)
+    assert store.get_by_username("nina").username == "nina"
+
+
+def test_latin1_oidc_token_with_an_unencodable_email_is_401(
+    make_encoded_store, oidc_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verified email is looked up (and would be stored) before JIT: a U+3000 in it
+    raised UnicodeEncodeError out of get_by_email on LATIN1, a 500."""
+    import api.auth.users as users
+    from api.auth.deps import current_principal
+
+    store, _ = make_encoded_store("LATIN1")
+    monkeypatch.setattr(users, "_store", store)
+    monkeypatch.setattr(users, "_admin_reconciled", True)
+    monkeypatch.delitem(app.dependency_overrides, current_principal, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    token = oidc_env.mint(
+        sub="sub-u3000", email="　x@example.com", preferred_username="x"
+    )
+    r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401, r.text
+    # A non-Latin-1 preferred_username alone falls through to the next candidate.
+    token = oidc_env.mint(sub="sub-kanji", email="k@example.com", preferred_username="漢")
+    r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    assert r.json()["username"] == "k"
+
+
+def test_new_usernames_are_nfkc_and_refuse_format_chars(make_store, client) -> None:
+    """Operator decision (XERK-1591): "carl" + a zero-width char could be created beside
+    "carl". New names are NFKC-normalised and may not hold format (Cf) characters;
+    legacy rows are left alone and still log in by their exact name."""
+    from api.auth.users import InvalidUserValue
+
+    make, admin = make_store
+    _skip_unless_utf8(admin)
+    store = make()
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', %s, 'x')",
+        ("dave​",),
+    )
+    carl = store.create("carl", "longpassword", household=settings.household_id)
+    for bad in ("carl​", "c‍arl", "⁠carl", "carl﻿"):
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="default")
+        with pytest.raises(InvalidUserValue):
+            store.update_credentials(carl.user_id, username=bad)
+        with pytest.raises(InvalidUserValue):
+            store.update_oidc(carl.user_id, username=bad)
+        with pytest.raises(InvalidUserValue):
+            store.create_oidc(
+                oidc_sub="s", email=None, username=bad, household="default", role="member"
+            )
+        r = client.post("/auth/users", json={"username": bad, "password": "longpassword"})
+        assert r.status_code == 422, r.text
+    wide = store.create("ｅｍｍａ", "longpassword", household="default")
+    assert wide.username == "emma"
+    for login in ("emma", "ｅｍｍａ", "EMMA"):
+        assert store.authenticate(login, "longpassword").user_id == wide.user_id
+    with pytest.raises(DuplicateUser):
+        store.create("emma", "longpassword", household="default")
+    assert store.get_by_username("dave​").username == "dave​"

@@ -376,6 +376,43 @@ def test_jit_skips_a_blank_email_local_part() -> None:
     assert store.get_by_oidc_sub("sub-x").username == "sub-x"
 
 
+def test_jit_skips_a_username_the_store_refuses() -> None:
+    """A preferred_username holding a format character (XERK-1591) falls through to the
+    email local-part; one that is NFKC-different is stored normalized."""
+    store = InMemoryUserStore()
+    resolve_oidc_principal(
+        _oidc("sub-z", email="zoe@h.test", email_verified=True, username="zo​e"), store
+    )
+    assert store.get_by_oidc_sub("sub-z").username == "zoe"
+    resolve_oidc_principal(
+        _oidc("sub-w", email="w@h.test", email_verified=True, username="ｗｉｌ"),
+        store,
+    )
+    assert store.get_by_oidc_sub("sub-w").username == "wil"
+
+
+def test_jit_every_candidate_refused_is_an_auth_error(oidc_env) -> None:
+    """Every candidate refused (here all hold a format character) fails closed as a
+    401 through the bearer resolver, never a 500."""
+    from api.auth.deps import principal_from_bearer
+
+    token = oidc_env.mint(
+        sub="s​", email="x​@h.test", preferred_username="x​"
+    )
+    with pytest.raises(AuthError):
+        principal_from_bearer(token)
+
+
+def test_login_refresh_keeps_the_name_when_the_token_one_is_refused() -> None:
+    store = InMemoryUserStore()
+    p = resolve_oidc_principal(_oidc("sub-r", username="ron"), store)
+    again = resolve_oidc_principal(_oidc("sub-r", username="r​on", role="admin"), store)
+    assert again.user_id == p.user_id
+    assert again.username == "ron" and again.role == "admin"
+    # A compatibility spelling of the same name is no change at all.
+    assert resolve_oidc_principal(_oidc("sub-r", username="ｒon"), store).username == "ron"
+
+
 def test_jit_username_falls_back_to_sub_when_all_else_taken() -> None:
     store = InMemoryUserStore()
     store.create("bob", "longpassword", household="default")

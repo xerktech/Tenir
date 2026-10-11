@@ -21,8 +21,21 @@ import threading
 import uuid
 
 from api.auth.tokens import Role, hash_password, verify_password
-from api.auth.users import DuplicateUser, User
-from api.persistence.postgres import PoolOpener, apply_boot_schema
+from api.auth.users import (
+    DuplicateUser,
+    InvalidUserValue,
+    User,
+    new_username,
+    normalize_username,
+    renamed_username,
+)
+from api.persistence.postgres import (
+    PoolOpener,
+    apply_boot_schema,
+    is_database_unavailable,
+    lock_schema,
+    unlock_schema,
+)
 
 log = logging.getLogger("api.auth.sql_users")
 
@@ -85,14 +98,27 @@ _ENSURE_SCHEMA = (
     # logs the rows to rename. The next boot after the rename creates it.
     # users_username_norm_idx subsumes the older case-only users_username_lower_idx,
     # which is dropped once it exists and kept as a fallback while it can't.
+    # Each CREATE also catches unique_violation: on a rolling update an old replica can
+    # commit a duplicate between the check and the CREATE, which then failed 23505 and
+    # the apply raised SchemaApplyError. It falls through to the next branch instead.
     f"""
     DO $$
     BEGIN
         IF NOT EXISTS (SELECT 1 FROM users GROUP BY {_USERNAME_KEY} HAVING count(*) > 1) THEN
-            CREATE UNIQUE INDEX IF NOT EXISTS users_username_norm_idx ON users ({_USERNAME_KEY});
-            DROP INDEX IF EXISTS users_username_lower_idx;
-        ELSIF NOT EXISTS (SELECT 1 FROM users GROUP BY lower(username) HAVING count(*) > 1) THEN
-            CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
+            BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS users_username_norm_idx ON users ({_USERNAME_KEY});
+                DROP INDEX IF EXISTS users_username_lower_idx;
+                RETURN;
+            EXCEPTION WHEN unique_violation THEN
+                NULL;
+            END;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM users GROUP BY lower(username) HAVING count(*) > 1) THEN
+            BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
+            EXCEPTION WHEN unique_violation THEN
+                NULL;
+            END;
         END IF;
     END
     $$
@@ -106,6 +132,12 @@ _DUPLICATE_USERNAMES = (
     f" GROUP BY {_USERNAME_KEY} HAVING count(*) > 1"
 )
 
+# Another row whose key matches a name: checked before every username write. The norm
+# index enforces this on its own, but while legacy duplicates block it only the
+# case-only index exists, and a new "bob" beside a legacy " bob\t" took over login
+# "bob" (XERK-1591).
+_NAME_TAKEN = f"SELECT 1 FROM users WHERE {_USERNAME_KEY} = lower(%s) AND id IS DISTINCT FROM %s"
+
 # users.household REFERENCES households(id) and schema.sql seeds only 'default', so a
 # write placing a user in any other household creates that row first, in the same
 # transaction (XERK-1508). Without it a non-default API_AUTH_ADMIN_HOUSEHOLD, or any
@@ -114,6 +146,13 @@ _ENSURE_HOUSEHOLD = "INSERT INTO households (id) VALUES (%s) ON CONFLICT (id) DO
 
 # Every read selects the same column set so a row maps cleanly to ``User``.
 _USER_COLUMNS = "id, household, username, role, password_hash, oidc_sub, email"
+
+
+def _is_unencodable(exc: BaseException) -> bool:
+    """A value holding a character the database's encoding can't represent (22P05,
+    e.g. U+3000 on a LATIN1 database). Connections speak UTF8 (``CONNECT_KWARGS``),
+    so the server reports it at bind time."""
+    return getattr(exc, "sqlstate", None) == "22P05"
 
 
 class SqlUserStore:
@@ -142,6 +181,13 @@ class SqlUserStore:
         # store's apply: the users DDL references households, which on an empty
         # database doesn't exist until schema.sql ran (XERK-1430).
         apply_boot_schema(pool, _ENSURE_SCHEMA)
+        try:
+            SqlUserStore._strip_padded_usernames(pool)
+        except Exception as exc:
+            if is_database_unavailable(exc):
+                raise
+            # A best-effort data repair: never fail boot over it.
+            log.exception("could not strip padded legacy usernames; continuing")
         with pool.connection() as conn:
             dupes = [row[0] for row in conn.execute(_DUPLICATE_USERNAMES).fetchall()]
         if dupes:
@@ -152,6 +198,63 @@ class SqlUserStore:
                 " row)",
                 dupes,
             )
+
+    @staticmethod
+    def _strip_padded_usernames(pool) -> None:  # pragma: no cover - requires a live database
+        """Store legacy padded usernames stripped (XERK-1591).
+
+        _USERNAME_KEY trims only ASCII (non-ASCII can't go in the DDL of a non-UTF8
+        database), so a name written before XERK-1548 padded with e.g. NBSP, U+3000 or
+        \x85 never matched its stripped name and could not log in. A row is left alone
+        and logged when its stripped name is blank or already some other row's key:
+        stripping must never create a duplicate. Runs under the schema lock so two
+        booting replicas can't each strip a different row onto the same name."""
+        skipped: list[str] = []
+        with pool.connection() as conn:
+            try:
+                lock_schema(conn)
+                rows = conn.execute("SELECT id, username FROM users ORDER BY created_at, id")
+                for user_id, username in rows.fetchall():
+                    stripped = username.strip()
+                    if stripped == username:
+                        continue
+                    # One transaction: a later row sees an earlier row's new name.
+                    if not stripped or conn.execute(_NAME_TAKEN, (stripped, user_id)).fetchone():
+                        skipped.append(username)
+                        continue
+                    conn.execute("UPDATE users SET username = %s WHERE id = %s", (stripped, user_id))
+                    log.info("stripped padded username %r to %r", username, stripped)
+                conn.commit()
+                unlock_schema(conn)
+            except BaseException:
+                # The pool discards a closed connection, ending the session and the
+                # schema lock with it, so no pooled connection keeps holding it.
+                conn.close()
+                raise
+        if skipped:
+            log.warning(
+                "usernames %r are padded but were left as they are: stripped, each is blank"
+                " or another user's name; rename or delete them",
+                skipped,
+            )
+
+    @staticmethod
+    def _name_taken(conn, username: str, user_id: str | None = None) -> bool:  # pragma: no cover
+        return conn.execute(_NAME_TAKEN, (username, user_id)).fetchone() is not None
+
+    def _lookup(self, sql: str, params: tuple) -> User | None:  # pragma: no cover - live DB
+        """One row by ``sql``, or None. A value the database encoding can't hold
+        can't match a stored row: that is "no such user", not a 500 (XERK-1591)."""
+        from psycopg.rows import dict_row
+
+        try:
+            with self._ensure_pool().connection() as conn:
+                row = conn.cursor(row_factory=dict_row).execute(sql, params).fetchone()
+        except Exception as exc:
+            if _is_unencodable(exc):
+                return None
+            raise
+        return self._row_to_user(row) if row else None
 
     @staticmethod
     def _row_to_user(row) -> User:  # pragma: no cover - requires a live database
@@ -178,8 +281,11 @@ class SqlUserStore:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
 
+        username = new_username(username)
         try:
             with self._ensure_pool().connection() as conn:
+                if self._name_taken(conn, username):
+                    raise DuplicateUser(username)
                 conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 # Cursor-scoped row factory: psycopg's pool doesn't reset
                 # row_factory, so mutating the pooled connection would poison the
@@ -190,10 +296,14 @@ class SqlUserStore:
                     VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING {_USER_COLUMNS}
                     """,
-                    (household, username.strip(), role, hash_password(password), is_env_admin, email),
+                    (household, username, role, hash_password(password), is_env_admin, email),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
+        except Exception as exc:
+            if _is_unencodable(exc):
+                raise InvalidUserValue("the database can't store this username or email") from exc
+            raise
         return self._row_to_user(row)
 
     def create_oidc(  # pragma: no cover - requires a live database
@@ -208,8 +318,11 @@ class SqlUserStore:
         from psycopg.errors import UniqueViolation
         from psycopg.rows import dict_row
 
+        username = new_username(username)
         try:
             with self._ensure_pool().connection() as conn:
+                if self._name_taken(conn, username):
+                    raise DuplicateUser(username)
                 conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 row = conn.cursor(row_factory=dict_row).execute(
                     f"""
@@ -217,27 +330,32 @@ class SqlUserStore:
                     VALUES (%s, %s, %s, NULL, %s, %s)
                     RETURNING {_USER_COLUMNS}
                     """,
-                    (household, username.strip(), role, oidc_sub, email),
+                    (household, username, role, oidc_sub, email),
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
+        except Exception as exc:
+            if _is_unencodable(exc):
+                raise InvalidUserValue("the database can't store this username or email") from exc
+            raise
         return self._row_to_user(row)
 
     def get_by_username(self, username: str) -> User | None:  # pragma: no cover
-        from psycopg.rows import dict_row
-
-        if not username.strip():
+        typed = username.strip()
+        if not typed:
             return None  # never resolve a blank login to a blank-named row
-        with self._ensure_pool().connection() as conn:
-            row = conn.cursor(row_factory=dict_row).execute(
-                # Unique once users_username_norm_idx exists; on a database whose
-                # legacy duplicates blocked it, prefer the exact row, then the
-                # oldest, so login is deterministic (XERK-1535, XERK-1548).
-                f"SELECT {_USER_COLUMNS} FROM users WHERE {_USERNAME_KEY} = lower(%s)"
-                " ORDER BY (username = %s) DESC, created_at, id LIMIT 1",
-                (username.strip(), username.strip()),
-            ).fetchone()
-        return self._row_to_user(row) if row else None
+        return self._lookup(
+            # The name as typed (a legacy row, stored un-normalized) or its NFKC form
+            # (how new names are stored, XERK-1591). Unique per key once
+            # users_username_norm_idx exists; on a database whose legacy duplicates
+            # blocked it, prefer the exact row, then the typed key, then the oldest,
+            # so login is deterministic (XERK-1535, XERK-1548).
+            f"SELECT {_USER_COLUMNS} FROM users"
+            f" WHERE {_USERNAME_KEY} IN (lower(%s), lower(%s))"
+            f" ORDER BY (username = %s) DESC, ({_USERNAME_KEY} = lower(%s)) DESC,"
+            " created_at, id LIMIT 1",
+            (typed, normalize_username(username), typed, typed),
+        )
 
     def get_by_id(self, user_id: str) -> User | None:  # pragma: no cover
         from psycopg.rows import dict_row
@@ -252,29 +370,17 @@ class SqlUserStore:
         return self._row_to_user(row) if row else None
 
     def get_by_oidc_sub(self, oidc_sub: str) -> User | None:  # pragma: no cover
-        from psycopg.rows import dict_row
-
         if not oidc_sub:
             return None
-        with self._ensure_pool().connection() as conn:
-            row = conn.cursor(row_factory=dict_row).execute(
-                f"SELECT {_USER_COLUMNS} FROM users WHERE oidc_sub = %s",
-                (oidc_sub,),
-            ).fetchone()
-        return self._row_to_user(row) if row else None
+        return self._lookup(f"SELECT {_USER_COLUMNS} FROM users WHERE oidc_sub = %s", (oidc_sub,))
 
     def get_by_email(self, email: str) -> User | None:  # pragma: no cover
-        from psycopg.rows import dict_row
-
         key = (email or "").strip()
         if not key:
             return None
-        with self._ensure_pool().connection() as conn:
-            row = conn.cursor(row_factory=dict_row).execute(
-                f"SELECT {_USER_COLUMNS} FROM users WHERE lower(email) = lower(%s)",
-                (key,),
-            ).fetchone()
-        return self._row_to_user(row) if row else None
+        return self._lookup(
+            f"SELECT {_USER_COLUMNS} FROM users WHERE lower(email) = lower(%s)", (key,)
+        )
 
     def get_env_admin(self) -> User | None:  # pragma: no cover
         from psycopg.rows import dict_row
@@ -303,6 +409,17 @@ class SqlUserStore:
             if cur.rowcount == 0:
                 raise KeyError(user_id)
 
+    def _renamed(self, user_id: str, username: str | None) -> str | None:  # pragma: no cover
+        """The username a rename stores (``renamed_username``), or None for no rename:
+        an unchanged name is not re-validated, so a legacy one can be re-applied."""
+        if username is None:
+            return None
+        current = self.get_by_id(user_id)
+        if current is None:
+            raise KeyError(user_id)
+        renamed = renamed_username(current.username, username)
+        return None if renamed == current.username else renamed
+
     def authenticate(self, username: str, password: str) -> User | None:  # pragma: no cover
         user = self.get_by_username(username)
         # An OIDC-only row has no password_hash and can never authenticate locally.
@@ -326,11 +443,12 @@ class SqlUserStore:
 
         if not _is_uuid(user_id):
             raise KeyError(user_id)
+        username = self._renamed(user_id, username)
         sets: list[str] = []
         params: list[object] = []
         if username is not None:
             sets.append("username = %s")
-            params.append(username.strip())
+            params.append(username)
         if password is not None:
             sets.append("password_hash = %s")
             params.append(hash_password(password))
@@ -348,6 +466,8 @@ class SqlUserStore:
         params.append(user_id)
         try:
             with self._ensure_pool().connection() as conn:
+                if username is not None and self._name_taken(conn, username, user_id):
+                    raise DuplicateUser(username)
                 if household is not None:
                     conn.execute(_ENSURE_HOUSEHOLD, (household,))
                 row = conn.cursor(row_factory=dict_row).execute(
@@ -361,6 +481,10 @@ class SqlUserStore:
                     raise KeyError(user_id)
         except UniqueViolation as exc:
             raise DuplicateUser(username or "") from exc
+        except Exception as exc:
+            if _is_unencodable(exc):
+                raise InvalidUserValue("the database can't store this username or email") from exc
+            raise
         return self._row_to_user(row)
 
     def update_oidc(  # pragma: no cover - requires a live database
@@ -376,6 +500,7 @@ class SqlUserStore:
 
         if not _is_uuid(user_id):
             raise KeyError(user_id)
+        username = self._renamed(user_id, username)
         sets: list[str] = []
         params: list[object] = []
         if oidc_sub is not None:
@@ -383,7 +508,7 @@ class SqlUserStore:
             params.append(oidc_sub)
         if username is not None:
             sets.append("username = %s")
-            params.append(username.strip())
+            params.append(username)
         if role is not None:
             sets.append("role = %s")
             params.append(role)
@@ -395,6 +520,8 @@ class SqlUserStore:
         params.append(user_id)
         try:
             with self._ensure_pool().connection() as conn:
+                if username is not None and self._name_taken(conn, username, user_id):
+                    raise DuplicateUser(username)
                 row = conn.cursor(row_factory=dict_row).execute(
                     f"UPDATE users SET {', '.join(sets)} WHERE id = %s"
                     f" RETURNING {_USER_COLUMNS}",
@@ -402,6 +529,10 @@ class SqlUserStore:
                 ).fetchone()
         except UniqueViolation as exc:
             raise DuplicateUser(username or oidc_sub or "") from exc
+        except Exception as exc:
+            if _is_unencodable(exc):
+                raise InvalidUserValue("the database can't store this username or email") from exc
+            raise
         if row is None:
             raise KeyError(user_id)
         return self._row_to_user(row)

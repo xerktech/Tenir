@@ -114,15 +114,31 @@ paths:
   - A `DO $$ ... $$` body can't go in schema.sql: `iter_statements` splits on `;`. Put it in the
     store's `_ENSURE_SCHEMA`.
   - Tests: `test_pg_users_live.py` `test_legacy_case_variant_duplicates_do_not_abort_boot`.
-- Usernames: both stores store `username.strip()` on every write; SQL lookups match
-  `_USERNAME_KEY` (`lower(btrim(...))`), the exact expression the norm index is built on.
+- Usernames: every create/rename stores `new_username()` (NFKC, `str.strip()`, no Unicode Cf
+  chars); SQL lookups match `_USERNAME_KEY` (`lower(btrim(...))`), the exact expression the norm
+  index is built on, against both the typed and the NFKC name (legacy rows aren't normalized).
   - The btrim set is the ASCII `str.isspace()` chars as E'' escapes: raw non-ASCII in DDL
     can't encode for a non-UTF8 database (every login 500'd). Test: `test_sql_user_store_ddl_is_ascii`.
-  - Validate usernames with `str.strip()`: pydantic's `strip_whitespace` keeps `\x1f`, which
-    stored an empty username.
+  - So boot (`_strip_padded_usernames`, under the schema lock) stores legacy names padded with
+    non-ASCII whitespace stripped, skipping (and logging) any that would go blank or collide.
+  - Validate usernames with `new_username()`: pydantic's `strip_whitespace` keeps `\x1f`, which
+    stored an empty username; "carl"+U+200B looked like "carl" (operator decision, XERK-1591).
+  - A rename to the row's current name is not re-validated (`renamed_username`): the env admin
+    re-applies its name every boot.
   - Storing the raw name while looking up the stripped one let " alice" be created beside
     "alice" and never log in (XERK-1548).
   - The case-only `users_username_lower_idx` is dropped once the norm index exists, and kept
     as a fallback while whitespace-only duplicates block it.
+  - So every SQL username write first checks `_NAME_TAKEN`: the fallback index let "bob" be
+    created beside a legacy " bob\t" and take over its login.
+  - The DO block catches `unique_violation` per CREATE: an old replica committing a duplicate
+    between its check and the CREATE failed the apply (SchemaApplyError).
   - Tests: `test_whitespace_variant_usernames_are_duplicates`,
-    `test_legacy_whitespace_duplicates_keep_case_uniqueness`.
+    `test_legacy_whitespace_duplicates_keep_case_uniqueness`,
+    `test_fallback_mode_refuses_a_whitespace_variant_of_a_legacy_name`,
+    `test_norm_index_race_falls_back_instead_of_failing`.
+- Pooled connections set `client_encoding=UTF8` (`CONNECT_KWARGS`): on a SQL_ASCII database
+  psycopg otherwise returns text as bytes and no login verifies.
+  - On LATIN1 etc. an unrepresentable char is 22P05: a user-store lookup returns "no such
+    user", a write raises `InvalidUserValue` (422; a 401 on the OIDC path), never a 500.
+  - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*` (live, create their own DB).

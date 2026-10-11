@@ -23,7 +23,7 @@ from api.auth import (
     verify_password,
 )
 from api.auth.tokens import AuthError
-from api.auth.users import DuplicateUser, InMemoryUserStore
+from api.auth.users import DuplicateUser, InMemoryUserStore, InvalidUserValue, User
 from conftest import TEST_AUTH_SECRET
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
@@ -174,10 +174,76 @@ def test_blank_login_never_matches_a_blank_username() -> None:
     """str.strip() reduces e.g. "\\x1f" to "", so a blank login must not resolve to a
     row whose name stripped to nothing (XERK-1548)."""
     store = InMemoryUserStore()
-    store.create("\x1f", "longpassword", household="acme")
+    # A legacy row: new names can't be blank (InvalidUserValue).
+    store._index(
+        User(user_id="legacy", username="\x1f", household="acme", role="member",
+             password_hash=hash_password("longpassword"))
+    )
     for blank in ("", " ", "\t", "\x1c"):
         assert store.get_by_username(blank) is None
         assert store.authenticate(blank, "longpassword") is None
+    with pytest.raises(InvalidUserValue):
+        store.create("\x1f", "longpassword", household="acme")
+
+
+FORMAT_CHAR_NAMES = ("carl​", "c‍arl", "⁠carl", "carl﻿", "carl­")
+
+
+def test_new_usernames_are_nfkc_and_refuse_format_chars() -> None:
+    """Operator decision (XERK-1591): "carl" + a zero-width char was a separate account
+    that looks like "carl". New names are NFKC-normalised and may not hold Unicode
+    format (Cf) characters; a lookup normalises too, so either spelling logs in."""
+    store = InMemoryUserStore()
+    carl = store.create("carl", "longpassword", household="acme")
+    for bad in FORMAT_CHAR_NAMES:
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="acme")
+        with pytest.raises(InvalidUserValue):
+            store.create_oidc(
+                oidc_sub="s", email=None, username=bad, household="acme", role="member"
+            )
+        with pytest.raises(InvalidUserValue):
+            store.update_credentials(carl.user_id, username=bad)
+        with pytest.raises(InvalidUserValue):
+            store.update_oidc(carl.user_id, username=bad)
+    wide = store.create("ｅｍｍａ", "longpassword", household="acme")
+    assert wide.username == "emma"
+    for login in ("emma", "ｅｍｍａ", "EMMA", "　emma "):
+        assert store.authenticate(login, "longpassword") is wide
+    with pytest.raises(DuplicateUser):
+        store.create("Emma", "longpassword", household="acme")
+    # Re-applying the current name is not a rename, so it is not re-validated.
+    assert store.update_credentials(carl.user_id, username=" carl ").username == "carl"
+
+
+def test_create_user_endpoint_refuses_format_chars() -> None:
+    client = TestClient(app)
+    for bad in FORMAT_CHAR_NAMES:
+        r = client.post("/auth/users", json={"username": bad, "password": "longpassword"})
+        assert r.status_code == 422, r.text
+    r = client.post("/auth/users", json={"username": "ｎｉａ", "password": "longpassword"})
+    assert r.status_code == 201, r.text
+    assert r.json()["username"] == "nia"
+
+
+def test_store_refusals_are_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A value the database encoding can't hold (SqlUserStore on LATIN1) is the
+    store's InvalidUserValue: a 422, not a 500."""
+    import api.auth.users as users
+
+    client = TestClient(app)
+    store = users.get_user_store()
+    member = store.create("mia", "longpassword", household=settings.household_id)
+
+    def refuse(*args, **kwargs):
+        raise InvalidUserValue("the database can't store this username or email")
+
+    monkeypatch.setattr(store, "create", refuse)
+    monkeypatch.setattr(store, "update_credentials", refuse)
+    r = client.post("/auth/users", json={"username": "nico", "password": "longpassword"})
+    assert r.status_code == 422, r.text
+    r = client.patch(f"/auth/users/{member.user_id}", json={"email": "m@example.com"})
+    assert r.status_code == 422, r.text
 
 
 def test_sql_user_store_ddl_is_ascii() -> None:
@@ -1482,15 +1548,17 @@ def test_sql_user_store_authenticate_round_trips_password(fake_psycopg) -> None:
 def test_sql_user_store_create_and_update_scope_dict_row_to_cursor(
     fake_psycopg,
 ) -> None:
-    # The households upsert runs first (XERK-1508), then the user INSERT.
-    conn = _FakeConn([None, _ADMIN_ROW])
+    # The name check (XERK-1591) and households upsert (XERK-1508) run first, then
+    # the user INSERT.
+    conn = _FakeConn([None, None, _ADMIN_ROW])
     created = _store_with(conn).create(
         "ada", _ADMIN_PASSWORD, household="default", role="admin"
     )
     assert created.username == "ada"
-    assert "INSERT INTO households" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("default",)
-    assert conn.calls[1][2] is fake_psycopg.dict_row
+    assert conn.calls[0][1] == ("ada", None)
+    assert "INSERT INTO households" in conn.calls[1][0]
+    assert conn.calls[1][1] == ("default",)
+    assert conn.calls[2][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
 
     conn2 = _FakeConn([_ADMIN_ROW])
@@ -1534,8 +1602,9 @@ _OIDC_ROW = {
 
 
 def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -> None:
-    # The households upsert runs first (XERK-1508), then the user INSERT.
-    conn = _FakeConn([None, _OIDC_ROW])
+    # The name check (XERK-1591) and households upsert (XERK-1508) run first, then
+    # the user INSERT.
+    conn = _FakeConn([None, None, _OIDC_ROW])
     user = _store_with(conn).create_oidc(
         oidc_sub="authentik-sub-1",
         email="maya@household.test",
@@ -1545,9 +1614,18 @@ def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -
     )
     assert user.oidc_sub == "authentik-sub-1" and user.email == "maya@household.test"
     assert user.password_hash is None  # OIDC-only row read back cleanly
-    assert "INSERT INTO households" in conn.calls[0][0]
-    assert conn.calls[1][2] is fake_psycopg.dict_row
+    assert "INSERT INTO households" in conn.calls[1][0]
+    assert conn.calls[2][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
+
+
+def test_sql_user_store_create_refuses_a_name_another_row_holds(fake_psycopg) -> None:
+    """The explicit name check (XERK-1591): with only the fallback case-only index, the
+    INSERT itself would have succeeded beside a legacy padded row."""
+    conn = _FakeConn([(1,)])
+    with pytest.raises(DuplicateUser):
+        _store_with(conn).create("bob", _ADMIN_PASSWORD, household="default")
+    assert len(conn.calls) == 1  # nothing inserted
 
 
 def test_sql_user_store_update_oidc_links_and_scopes_dict_row(fake_psycopg) -> None:

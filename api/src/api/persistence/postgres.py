@@ -76,7 +76,12 @@ OUTAGE_WAIT_SECONDS = 0.5
 # libpq kwargs every pooled connection gets. Keepalives and tcp_user_timeout bound a
 # blackholed network at ~QUERY_TIMEOUT_SECONDS instead of the kernel's ~15 minute
 # retransmission limit; libpq ignores them on a Unix socket.
-CONNECT_KWARGS: dict[str, int] = {
+CONNECT_KWARGS: dict[str, int | str] = {
+    # Speak UTF8 whatever the server encoding. Left to default, a SQL_ASCII database's
+    # client encoding is SQL_ASCII too, for which psycopg returns every text column as
+    # bytes: no password hash ever verified, so every login 401'd (XERK-1591). On
+    # LATIN1 etc. the server converts, and refuses an unrepresentable char as 22P05.
+    "client_encoding": "UTF8",
     # Closing a pool that timed out waits for its in-flight connects, which
     # against a blackholed host never return.
     "connect_timeout": int(OPEN_TIMEOUT_SECONDS),
