@@ -19,6 +19,7 @@ model goes yellow→green, a genuinely dead one goes yellow→red.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 from collections.abc import Callable
@@ -29,8 +30,22 @@ import httpx
 
 from api.config import settings
 from api.persistence import get_audio_store, get_conversation_store
+from api.persistence.postgres import is_database_unavailable
 
 log = logging.getLogger("api.status")
+
+# httpx logs every request at INFO; a probe pass every few seconds made that 12
+# lines/min per target (XERK-1818). The flag is a contextvar, so it is set only in
+# the probe's own task and LiteLLM/translation requests keep their httpx logs.
+_in_probe: contextvars.ContextVar[bool] = contextvars.ContextVar("status_probe", default=False)
+
+
+class _QuietProbeRequests(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or not _in_probe.get()
+
+
+logging.getLogger("httpx").addFilter(_QuietProbeRequests())
 
 # Raw probe outcomes.
 READY = "ready"
@@ -68,7 +83,11 @@ def _public_detail(target: str, exc: BaseException) -> str:
     absolute paths and SQL text — so the full message is logged server-side and
     the body gets only the exception class (XERK-1427)."""
     log.warning("status probe of %s failed: %s: %s", target, type(exc).__name__, exc)
-    return f"unreachable ({type(exc).__name__})"
+    # One outage, one class: during a boot-time outage PoolOpener alternates a real
+    # attempt (PoolTimeout) with its shared verdict (DatabaseUnavailable), which
+    # flipped the public detail every few seconds (XERK-1818).
+    name = "DatabaseUnavailable" if is_database_unavailable(exc) else type(exc).__name__
+    return f"unreachable ({name})"
 
 
 def _iso(ts: float) -> str:
@@ -81,13 +100,18 @@ def _iso(ts: float) -> str:
 async def _http_probe(url: str) -> tuple[str, str]:
     """Probe a model server's health endpoint: 200 → ready, other status →
     reachable-but-not-ready, transport error → unreachable."""
+    token = _in_probe.set(True)
     try:
         async with httpx.AsyncClient(timeout=settings.status_probe_timeout_seconds) as client:
             resp = await client.get(url)
     except Exception as exc:  # noqa: BLE001 - any transport failure means unreachable
         return UNREACHABLE, _public_detail(url, exc)
+    finally:
+        _in_probe.reset(token)
     if resp.status_code == 200:
         return READY, "ready"
+    # The quieted httpx line was the only server-side record of why a model is yellow.
+    log.info("status probe of %s: HTTP %d", url, resp.status_code)
     if resp.status_code == 503:
         return NOT_READY, "loading (HTTP 503)"
     return NOT_READY, f"HTTP {resp.status_code}"

@@ -489,3 +489,66 @@ def test_probe_loop_runs_then_survives_errors(monkeypatch: pytest.MonkeyPatch) -
 
     asyncio.run(_run())
     assert calls["n"] >= 1  # loop kept calling refresh despite each raising
+
+
+def test_db_outage_detail_is_stable_across_pool_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    # XERK-1818: PoolOpener alternates PoolTimeout and its shared DatabaseUnavailable
+    # verdict during a boot-time outage; /status must report one class for both.
+    import sys
+
+    from api.persistence.postgres import DatabaseUnavailable
+
+    # Stand-in psycopg_pool: CI doesn't install the persistence extra's drivers.
+    class PoolTimeout(Exception):
+        pass
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.ModuleType("psycopg"))
+    monkeypatch.setitem(sys.modules, "psycopg_pool", types.SimpleNamespace(PoolTimeout=PoolTimeout))
+
+    for exc in (PoolTimeout("couldn't get a connection"), DatabaseUnavailable("unreachable")):
+
+        def _boom(e: Exception = exc) -> None:
+            raise e
+
+        assert asyncio.run(st._infra_probe(_boom)) == (st.UNREACHABLE, "unreachable (DatabaseUnavailable)")
+
+
+def test_probe_requests_do_not_log_httpx_info(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # XERK-1818: the probe's own httpx INFO line is dropped; httpx logs outside a
+    # probe, and a probe's warnings, still go through.
+    import logging
+
+    import httpx
+
+    httpx_log = logging.getLogger("httpx")
+    transport = httpx.MockTransport(lambda _req: httpx.Response(200))
+    real_client = httpx.AsyncClient
+
+    async def _run() -> None:
+        st.httpx.AsyncClient = lambda **kw: real_client(transport=transport, **kw)  # type: ignore[misc]
+        try:
+            assert (await st._http_probe("http://probe/health"))[0] == st.READY
+        finally:
+            st.httpx.AsyncClient = real_client  # type: ignore[misc]
+        async with real_client(transport=transport) as client:
+            await client.get("http://litellm/v1/completions")
+
+    with caplog.at_level("INFO", logger="httpx"):
+        asyncio.run(_run())
+        token = st._in_probe.set(True)
+        try:
+            httpx_log.warning("probe warning")
+        finally:
+            st._in_probe.reset(token)
+    assert "http://probe/health" not in caplog.text
+    assert "http://litellm/v1/completions" in caplog.text
+    assert "probe warning" in caplog.text
+
+    # A not-ready target is still logged, by api.status itself.
+    _patch_httpx(monkeypatch, resp=_FakeResp(503))
+    caplog.clear()
+    with caplog.at_level("INFO", logger="api.status"):
+        asyncio.run(st._http_probe("http://probe/health"))
+    assert "http://probe/health: HTTP 503" in caplog.text
