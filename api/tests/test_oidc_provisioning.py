@@ -413,6 +413,28 @@ def test_login_refresh_keeps_the_name_when_the_token_one_is_refused() -> None:
     assert resolve_oidc_principal(_oidc("sub-r", username="ｒon"), store).username == "ron"
 
 
+def test_login_refresh_with_a_refused_name_does_not_rewrite_the_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused preferred_username with an unchanged role must not write the row on
+    every authenticated request (QA D2, XERK-1591)."""
+    store = InMemoryUserStore()
+    resolve_oidc_principal(_oidc("sub-q", username="quin"), store)
+    writes: list[dict] = []
+    real = store.update_oidc
+
+    def counting(user_id: str, **kwargs):
+        writes.append(kwargs)
+        return real(user_id, **kwargs)
+
+    monkeypatch.setattr(store, "update_oidc", counting)
+    for _ in range(3):
+        p = resolve_oidc_principal(_oidc("sub-q", username="qu​in"), store)
+        assert p.username == "quin"
+    assert len(writes) == 3  # each only the refused rename attempt
+    assert all("username" in w for w in writes)
+
+
 def test_jit_username_falls_back_to_sub_when_all_else_taken() -> None:
     store = InMemoryUserStore()
     store.create("bob", "longpassword", household="default")

@@ -608,8 +608,12 @@ def _refresh_login(store: UserStore, user: User, token: Principal) -> User:
         return store.update_oidc(user.user_id, username=username, role=role)
     except (DuplicateUser, InvalidUserValue):
         # Username taken by another row, or one the store refuses (a format character,
-        # or unencodable for the database) — keep ours, still apply the role change.
-        return store.update_oidc(user.user_id, username=user.username, role=role)
+        # or unencodable for the database) — keep ours, still apply a role change.
+        # No write when the role is unchanged: else such a token rewrote the row on
+        # every authenticated request.
+        if role == user.role:
+            return user
+        return store.update_oidc(user.user_id, role=role)
 
 
 def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:

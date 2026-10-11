@@ -489,6 +489,34 @@ def test_legacy_non_ascii_padding_is_stripped_at_boot(make_store, caplog) -> Non
         store.create("nina", "longpassword", household="default")
 
 
+def test_padding_strip_waits_for_the_schema_lock(make_store) -> None:
+    """Two replicas booting together could each strip a different row onto the same
+    name, so the strip runs under the cross-process schema lock."""
+    import threading
+
+    from api.auth.sql_users import SqlUserStore
+    from api.persistence.postgres import SCHEMA_LOCK_KEY
+
+    make, admin = make_store
+    store = make()
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES ('default', ' lou', 'x')"
+    )
+    with psycopg.connect(DSN, autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+        thread = threading.Thread(
+            target=SqlUserStore._strip_padded_usernames, args=(store._pool,)
+        )
+        thread.start()
+        thread.join(1.0)
+        assert thread.is_alive(), "the strip ran without the schema lock"
+        assert store.get_by_username("lou").username == " lou"
+        holder.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
+        thread.join(10)
+    assert not thread.is_alive()
+    assert store.get_by_username("lou").username == "lou"
+
+
 @pytest.fixture
 def make_encoded_store():
     """factory(encoding) -> (SqlUserStore, admin connection) on a fresh database of that
@@ -559,6 +587,10 @@ def test_latin1_database_treats_unencodable_input_as_no_such_user(make_encoded_s
             household="default",
             role="member",
         )
+    # Fullwidth doesn't encode in LATIN1, but its NFKC form (what is stored) does.
+    wide = store.create("ｃａｒｌ", "longpassword", household="default")
+    assert wide.username == "carl"
+    assert store.authenticate("ｃａｒｌ", "longpassword").user_id == wide.user_id
     jo = store.get_by_username("josé")
     with pytest.raises(InvalidUserValue):
         store.update_credentials(jo.user_id, email="　x@example.com")

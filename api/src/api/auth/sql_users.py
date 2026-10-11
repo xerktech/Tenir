@@ -242,18 +242,21 @@ class SqlUserStore:
     def _name_taken(conn, username: str, user_id: str | None = None) -> bool:  # pragma: no cover
         return conn.execute(_NAME_TAKEN, (username, user_id)).fetchone() is not None
 
-    def _lookup(self, sql: str, params: tuple) -> User | None:  # pragma: no cover - live DB
+    def _lookup(  # pragma: no cover - live DB
+        self, sql: str, params: tuple, fallback: tuple | None = None
+    ) -> User | None:
         """One row by ``sql``, or None. A value the database encoding can't hold
-        can't match a stored row: that is "no such user", not a 500 (XERK-1591)."""
+        can't match a stored row: that is "no such user", not a 500 (XERK-1591) —
+        unless ``fallback`` params are given, which are tried instead."""
         from psycopg.rows import dict_row
 
         try:
             with self._ensure_pool().connection() as conn:
                 row = conn.cursor(row_factory=dict_row).execute(sql, params).fetchone()
         except Exception as exc:
-            if _is_unencodable(exc):
-                return None
-            raise
+            if not _is_unencodable(exc):
+                raise
+            return self._lookup(sql, fallback) if fallback is not None else None
         return self._row_to_user(row) if row else None
 
     @staticmethod
@@ -344,6 +347,7 @@ class SqlUserStore:
         typed = username.strip()
         if not typed:
             return None  # never resolve a blank login to a blank-named row
+        normalized = normalize_username(username)
         return self._lookup(
             # The name as typed (a legacy row, stored un-normalized) or its NFKC form
             # (how new names are stored, XERK-1591). Unique per key once
@@ -354,7 +358,10 @@ class SqlUserStore:
             f" WHERE {_USERNAME_KEY} IN (lower(%s), lower(%s))"
             f" ORDER BY (username = %s) DESC, ({_USERNAME_KEY} = lower(%s)) DESC,"
             " created_at, id LIMIT 1",
-            (typed, normalize_username(username), typed, typed),
+            (typed, normalized, typed, typed),
+            # The typed spelling may not encode (fullwidth on LATIN1) where its NFKC
+            # form, the stored one, does: look that up alone.
+            fallback=(normalized,) * 4 if normalized != typed else None,
         )
 
     def get_by_id(self, user_id: str) -> User | None:  # pragma: no cover
