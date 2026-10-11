@@ -71,11 +71,12 @@ class Settings(BaseSettings):
     # + litellm_api_key, POSTing /chat/completions instead of /audio/transcriptions).
     #   "off"    — no cues (default; the stripped core stays STT-only unless enabled).
     #   "stub"   — model-free, deterministic generator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: qwen3.8-27b-dflash on
-    #   the SGLang server — see docs/cues.md).
+    #   "openai" — real chat model via the gateway (prod sets API_LLM_MODEL to the
+    #   cluster LiteLLM's qwen3.8-27b-int4 alias, vLLM — see ArgoCD ai/tenir).
     cue_backend: str = "off"  # off | stub | openai
-    # The chat-model alias sent to the gateway for cue generation (matches the
-    # LiteLLM route + the deployed API_LLM_MODEL). The gateway owns the real model id.
+    # The chat-model alias sent to the gateway for cue generation. The default
+    # matches this repo's local litellm/config.yaml route; prod overrides it via
+    # API_LLM_MODEL. The gateway owns the real model id.
     llm_model: str = "qwen3.8-27b-dflash"
     # How much recent transcript (finalized turns) to feed the cue model as context.
     cue_context_segments: int = 8
@@ -107,11 +108,12 @@ class Settings(BaseSettings):
     # translation box's dismiss countdown, and cues resume.
     #   "off"    — no translations (default; matches the stripped core).
     #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod: qwen3.8-27b-dflash
-    #   weights behind the dedicated translation alias below).
+    #   "openai" — real chat model via the gateway (prod sets API_TRANSLATION_MODEL
+    #   to milmmt-46-4b-translate with API_TRANSLATION_PROMPT_STYLE=milmmt).
     translation_backend: str = "off"  # off | stub | openai
-    # The chat-model alias sent to the gateway for translations (matches the
-    # LiteLLM route + the deployed API_TRANSLATION_MODEL). Same qwen3.8-27b
+    # The chat-model alias sent to the gateway for translations. The default
+    # matches this repo's local litellm/config.yaml route (prod overrides it via
+    # API_TRANSLATION_MODEL). Same qwen3.8-27b
     # weights as llm_model, on its own alias so translation traffic can be
     # routed independently of the cue route. Qwen has no reasoning_effort dial
     # (thinking is toggled per-request via chat_template_kwargs), so the alias

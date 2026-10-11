@@ -98,6 +98,9 @@ _RECENT_MAX = 500
 # audio is retained and persisted with the rest.
 _STT_FLUSH_TIMEOUT_S = 15.0
 
+# SQLSTATE of a write whose conversation row is gone (deleted while live).
+_FOREIGN_KEY_VIOLATION = "23503"
+
 # A caption.final whose turn's last audio arrived more than this long ago is stored
 # but not pushed live, translated or cued. Finals queue through an STT outage and
 # land as one burst on recovery (XERK-1447); on the glasses that buried the present
@@ -479,6 +482,11 @@ class Session:
         self._unsaved_writes: deque[Callable[[], object]] = deque()
         self._writes_lock = asyncio.Lock()
         self._writer: asyncio.Task[bool] | None = None
+        self._row_gone_logged = False
+        # Set once teardown marked the row ready (_finalize).
+        self._finished = False
+        # Set when _finalize left the row to a later sitting still recording into it.
+        self._handed_off = False
         # Resume support: on a socket drop (not an explicit session.end) the
         # connection is *detached* and the session is kept alive for a grace window
         # so a reconnect carrying the same id rebinds to it — preserving the
@@ -1091,7 +1099,10 @@ class Session:
         are off, while one is already in flight, or inside the fixed rate-limit
         window. Only past those does it spawn a task that calls the model off-loop.
         """
-        if self._cue_generator is None:
+        if self._cue_generator is None or self._closed:
+            # Closed: the STT flush final emitted during teardown must not start a
+            # cue for a recording that is ending — it would land after the row
+            # was marked ready.
             return
         if result.text:
             self._recent_finals.append(result.text)
@@ -1159,6 +1170,11 @@ class Session:
             body = generated.body.strip()
             if not title or not body:
                 return
+            if self._finished:
+                # The row was marked ready while this cue was generating: the
+                # recording is over, so it is neither shown nor stored.
+                metrics.incr("cue.closed_drops")
+                return
             if self._translation_active or self._music_active:
                 # A translation run (XERK-160) or a song (XERK-184) opened while
                 # this cue was generating: it must not appear mid-run. Dropped
@@ -1225,10 +1241,18 @@ class Session:
             if source:
                 metrics.incr("cue.grounded")
             if self._conversations is not None:
-                self._store(
-                    self._conversations.add_cue,
-                    CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms, source=source),
-                )
+                record = CueRecord(cue_id=cue_id, title=title, body=body, at_ms=at_ms, source=source)
+                if self._closed and not self._handed_off:
+                    # Teardown: queue it for _finalize's flush rather than start a
+                    # writer that could store it after finish(). Landing too late for
+                    # that flush, it is stored only if the finalize is deferred.
+                    self._unsaved_writes.append(
+                        functools.partial(
+                            self._conversations.add_cue, self._household, self.session_id, record
+                        )
+                    )
+                else:
+                    self._store(self._conversations.add_cue, record)
         except Exception:
             log.warning("session %s cue generation failed", self.session_id, exc_info=True)
             metrics.incr("cue.errors")
@@ -1914,7 +1938,18 @@ class Session:
                         )
                         metrics.incr("transcript.writes_deferred")
                         return False
-                    log.exception("session %s could not store a transcript write", self.session_id)
+                    if getattr(exc, "sqlstate", None) == _FOREIGN_KEY_VIOLATION:
+                        # The conversation row is gone (deleted while live): every
+                        # later write would fail the same way, so one line, not a
+                        # traceback per segment.
+                        if not self._row_gone_logged:
+                            self._row_gone_logged = True
+                            log.info(
+                                "session %s conversation row is gone; dropping its transcript writes",
+                                self.session_id,
+                            )
+                    else:
+                        log.exception("session %s could not store a transcript write", self.session_id)
                     metrics.incr("transcript.write_errors")
                 self._unsaved_writes.popleft()
         return True
@@ -1933,6 +1968,8 @@ class Session:
             # A later sitting reopened the row and is still recording into it: it
             # finishes the row itself, and doing it now would show it ready with
             # this sitting's ended_at for the rest of that one (XERK-1502).
+            # The row stays live, so a late cue is stored as usual (_generate_cue).
+            self._handed_off = True
             return True
         try:
             await asyncio.to_thread(
@@ -1942,6 +1979,7 @@ class Session:
             if not self._hold(exc):
                 raise
             return False
+        self._finished = True
         return True
 
     def _resumed_live(self) -> bool:

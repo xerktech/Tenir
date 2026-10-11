@@ -525,3 +525,75 @@ def test_an_outage_costs_one_attempt_per_pass_not_one_per_session(
             await _until_ready(name)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "held_write, during",
+    [(False, False), (True, False), (False, True)],
+    ids=["finish-fails", "flush-fails", "during-a-failing-finish"],
+)
+def test_a_cue_finishing_while_the_finalize_is_deferred_still_lands(
+    monkeypatch: pytest.MonkeyPatch, held_write: bool, during: bool
+) -> None:
+    # The row stays live while an outage defers its finalize, so a cue finishing then
+    # must queue ahead of the retry's flush, not be dropped as "after finalize".
+    from api.cue import GeneratedCue
+
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    monkeypatch.setattr(session_mod, "_FINALIZE_RETRY_S", 0.01)
+    db = _outage(monkeypatch, *_WRITES, "add_cue")
+
+    class Gated:
+        def __init__(self) -> None:
+            self.release = __import__("threading").Event()
+
+        def generate(self, transcript, *, avoid_cues=(), evidence=()):
+            self.release.wait(5)
+            return GeneratedCue(title="Sun", body="149.6 million km.")
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        session = Session(send, session_id="conv-cue")
+        await session.start(mic_source="phone-microphone", source_lang=None)
+        gen = Gated()
+        session._cue_generator = gen
+        session._consider_cue(
+            CaptionFinal(
+                type="caption.final",
+                segmentId="s1",
+                text="how far is the sun?",
+                startMs=0,
+                endMs=2000,
+                lang="en",
+            )
+        )
+        tasks = list(session._cue_tasks)
+        db["down"] = True
+        if held_write:  # the finalize then stops at its flush, not at finish()
+            session._store(
+                get_conversation_store().add_segment,
+                Segment(segment_id="s1", text="how far is the sun?", start_ms=0, end_ms=2000),
+            )
+        if during:  # the cue lands while finish() waits out the outage, then fails
+            store = get_conversation_store()
+            failing_finish = store.finish
+
+            def finish_with_cue_landing(*args, **kwargs):
+                if db["down"]:
+                    gen.release.set()
+                    time.sleep(0.2)
+                return failing_finish(*args, **kwargs)
+
+            monkeypatch.setattr(store, "finish", finish_with_cue_landing)
+        await session.close()
+        conv = get_conversation_store().get("default", "conv-cue")
+        assert conv is not None and conv.status == "live"
+        gen.release.set()
+        await asyncio.gather(*tasks)
+        db["down"] = False
+        conv = await _until_ready("conv-cue")
+        assert [c.title for c in conv.cues] == ["Sun"]
+
+    asyncio.run(run())

@@ -287,7 +287,7 @@ async def _database_unavailable(conn: Request | WebSocket, exc: Exception) -> Re
             log.info("ws gone before its 1013 close: %r", close_exc)
         return None
     log.warning(
-        "database unavailable: %s %s -> 503 (%s)",
+        "database unavailable: %s %r -> 503 (%s)",
         conn.method,
         conn.url.path,
         _outage_summary(exc),

@@ -25,10 +25,10 @@ Honors ``response_format`` = ``json`` (default) | ``text`` | ``verbose_json``.
 ``json`` returns ``{"text", "language", "words"}`` — the ``words`` array is a
 superset of the OpenAI schema that ``ParakeetEngine`` already knows how to read
 (``word``/``start``/``end``), so per-word timing flows through when the api points
-straight at this server. ``verbose_json`` adds ``segments`` and ``duration`` for
-LiteLLM's OpenAI transform, which rewrites ``json`` -> ``verbose_json`` to read
-``duration`` for cost accounting (the very rewrite vLLM-Voxtral 400'd on — this
-server supports it, so routing via the ``openai/`` provider works).
+straight at this server. ``verbose_json`` adds ``segments`` and ``duration``:
+LiteLLM's OpenAI transform requests it (to read ``duration`` for cost accounting)
+when the caller sends no ``response_format`` — the request vLLM-Voxtral 400'd on;
+this server supports it, so routing via the ``openai/`` provider works.
 
 A ``timestamps=false`` form field (a Tenir extension, XERK-115) skips word/segment
 timing for callers that only want text — the api's live *partials*, which are most
