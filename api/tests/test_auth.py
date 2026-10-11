@@ -334,12 +334,10 @@ def test_search_terms_split_by_what_full_text_can_tokenise() -> None:
         'plain café -한글 "hello world"',
         ["日本", "テキ"],
     )
-    # Folded both ways: a C-locale lower() leaves non-ASCII case alone.
     assert _split_search_terms(q, utf8=False) == (
         'plain -한글 "hello world"',
-        ["日本", "café", "CAFÉ", "テキ"],
+        ["日本", "café", "テキ"],
     )
-    assert _split_search_terms("CAFÉ", utf8=False) == ("", ["café", "CAFÉ"])
     assert _split_search_terms('"-"', utf8=True) == ('"-"', [])
 
 

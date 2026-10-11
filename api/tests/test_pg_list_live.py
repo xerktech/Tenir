@@ -280,6 +280,14 @@ def test_non_ascii_search_is_case_insensitive_under_a_c_locale(encoded_store, en
     mixed = _one_conversation(store, "Un Café noir")
     for query in ("CAFÉ", "café", "Café", "cAFÉ"):
         assert {c.id for c in store.search(HH, query)} == {lower, upper, mixed}, query
+    # Mixed case across several non-ASCII letters, in the text and in the query.
+    eleonore = _one_conversation(store, "Éléonore arrive")
+    for query in ("éléonore", "ÉLÉONORE", "Éléonore", "éLÉonore"):
+        assert [c.id for c in store.search(HH, query)] == [eleonore], query
+    # Letters whose other case LATIN1 can't hold (micro sign, y-diaeresis) still match.
+    micro = _one_conversation(store, "dose 5 µg daily, naïve ÿes")
+    for query in ("µg", "ÿes"):
+        assert [c.id for c in store.search(HH, query)] == [micro], query
 
 
 def test_search_with_no_terms_lists_everything(store) -> None:

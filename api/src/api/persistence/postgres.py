@@ -572,6 +572,12 @@ _UNSPACED_RANGES = (
 )
 
 
+# The Latin-1 letters with a case pair (× and ÷ excluded), for folding search text where
+# lower() can't: a C-locale non-UTF8 database (XERK-1591).
+_LATIN1_UPPER = "".join(chr(c) for c in range(0xC0, 0xDF) if c != 0xD7)
+_LATIN1_LOWER = _LATIN1_UPPER.lower()
+
+
 def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
     """Split a search into the part full-text search can tokenise and the terms it
     can't, which are matched as substrings instead (as InMemoryConversationStore matches
@@ -592,13 +598,8 @@ def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
         if substring_term(term) and not term.startswith("-"):
             # Quotes mean nothing to a substring.
             bare = term.strip('"')
-            # Case-folded here, in both directions: under a C locale Postgres's lower()
-            # folds only ASCII, so "CAFÉ" missed a stored "café" and "café" a stored
-            # "CAFÉ" (both matched when full-text dropped the É). The SQL side still
-            # lower()s, which covers the ASCII letters around them.
-            for form in (bare.lower(), bare.upper()):
-                if form and form not in substrings:
-                    substrings.append(form)
+            if bare:
+                substrings.append(bare)
         else:
             full_text.append(term)
     return " ".join(full_text), substrings
@@ -993,11 +994,23 @@ class SqlConversationStore:
                     )
                     match_params.append(full_text)
                 if substrings:
+                    if utf8:
+                        text_key, term_key, fold = "lower(s.text)", "lower(t)", ()
+                    else:
+                        # Under a C locale lower() folds only ASCII, so "CAFÉ" missed a
+                        # stored "café" (full-text had dropped the É, matching either).
+                        # Both sides also fold the Latin-1 letters. On SQL_ASCII
+                        # translate() maps bytes: the same mapping on both sides, so a
+                        # real match still matches.
+                        text_key = "translate(lower(s.text), %s, %s)"
+                        term_key = "translate(lower(t), %s, %s)"
+                        fold = (_LATIN1_UPPER, _LATIN1_LOWER)
                     matches.append(
-                        "EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
-                        " WHERE strpos(lower(s.text), lower(t)) > 0)"
+                        f"EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
+                        f" WHERE strpos({text_key}, {term_key}) > 0)"
                     )
-                    match_params.append(substrings)
+                    # Placeholders in order: the term array, then each fold pair.
+                    match_params.extend([substrings, *fold, *fold])
                 exists = " OR ".join(
                     f"EXISTS (SELECT 1 FROM segments s WHERE s.conversation_id = c.id AND {m})"
                     for m in matches
