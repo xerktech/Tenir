@@ -445,6 +445,7 @@ def test_word_frequencies_correct_a_short_word_list_call() -> None:
         "Le match Peña-Muñoz est fini.",
         "C'est la famille García-Muñoz.",
         "Il dit: Peña.",
+        "C'est Jean «—Peña».",
     ],
 )
 def test_names_and_loanwords_are_not_spanish(text: str) -> None:
@@ -474,8 +475,12 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "Dijo: Mañana.",
         "— Peña.",
         "—Mañana iremos.",
-        "Sí. —Mañana.",
         "—«Mañana».",
+        "«—Mañana»",
+        "OK. —Mañana.",
+        "OK.—Mañana.",
+        "—\tMañana.",
+        '« "Mañana" »',
         # A capitalised ñ word counts where the rest of the turn is Spanish anyway.
         "Hola Señor.",
         "Gracias, Señor.",

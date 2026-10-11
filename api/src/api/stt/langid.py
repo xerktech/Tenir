@@ -195,14 +195,17 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
 # "Il dit: Peña." is a name.
 _SENTENCE_END = ".!?¿¡…"
 _DIALOGUE_DASHES = "-–—"
-_OPENERS = "\"'«“("
+# Whitespace and opening quotes/brackets between a sentence start and its first word.
+_LEADING_RE = re.compile(r"[\s\"'«“(]+$")
 
 
 def _sentence_initial(text: str, start: int) -> bool:
-    before = text[:start].rstrip().rstrip(_OPENERS).rstrip()
+    before = _LEADING_RE.sub("", text[:start])
     if before and before[-1] in _DIALOGUE_DASHES:
         before = before[:-1]
-        return not before or before[-1].isspace() or before[-1] in _SENTENCE_END
+        if before and before[-1].isspace():
+            return True
+        before = _LEADING_RE.sub("", before)  # "«—Mañana»"
     return not before or before[-1] in _SENTENCE_END
 
 
