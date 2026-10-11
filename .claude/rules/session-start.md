@@ -44,6 +44,11 @@ paths:
     turns in arrival order, so a lost turn replayed later lands after newer ones (QA).
   - No delivery is ever confirmed, so the replay overlaps what the client has: every client
     (client-core reducer, Even controller) must drop a re-delivered final/translation/cue by id.
+  - The recent window is replayed only to a socket opened with `?dedupe=1` (`WS_DEDUPE_PARAM`,
+    sent by `ApiClient`): builds older than XERK-1771 append re-deliveries as duplicate turns,
+    so without it a resume gets only the buffer (XERK-1789).
+  - Signal a client capability with a `/ws` query flag, never a new `session.start` field:
+    `SessionStart` is `extra='forbid'`, so an older api rejects a newer client that sends one.
   - Never replay `translation.done`: it names no run, so a stale one ends a live run early.
   - Never replay a stored `song`/`song.sync` as-is: the offset is anchored on arrival.
 - Worktree pitfall: the host's pip-installed `api` package may be another worktree's
@@ -57,4 +62,5 @@ paths:
   `::test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume`,
   `::test_warm_resume_replays_what_a_dead_socket_swallowed`,
   `::test_rebind_after_a_detach_replays_lost_frames_ahead_of_the_buffer`,
+  `::test_warm_resume_without_dedupe_flag_does_not_replay_delivered_turns`,
   `api/tests/test_resilience.py::test_start_cancelled_during_create_does_not_leave_the_row_live`.

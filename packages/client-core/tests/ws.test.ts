@@ -113,6 +113,12 @@ describe("ApiClient", () => {
     });
   });
 
+  it("tells the api it drops re-delivered frames, so a warm resume replays them (XERK-1789)", () => {
+    new ApiClient("ws://h/ws").start({ micSource: "g2-microphone" });
+    new ApiClient("ws://h/ws?x=1").start({ micSource: "g2-microphone" });
+    expect(instances.map((ws) => ws.url)).toEqual(["ws://h/ws?dedupe=1", "ws://h/ws?x=1&dedupe=1"]);
+  });
+
   it("resumes a prior session id in session.start", () => {
     const client = new ApiClient("ws://h/ws");
     client.start({ micSource: "phone-microphone" }, "sess-9");

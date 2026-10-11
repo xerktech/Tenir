@@ -720,7 +720,7 @@ class Session:
         if len(self._detached_buffer) > _DETACHED_BUFFER_MAX:
             del self._detached_buffer[: len(self._detached_buffer) - _DETACHED_BUFFER_MAX]
 
-    async def rebind(self, send: Sender) -> None:
+    async def rebind(self, send: Sender, *, replay_recent: bool = False) -> None:
         """Reattach a resumed connection's sender, cancelling any pending grace close.
 
         The live transcriber and buffers are untouched, so captions pick up where
@@ -733,6 +733,10 @@ class Session:
         and no delivery is ever confirmed. Clients drop a final/translation/cue they
         already hold. Done markers aren't replayed (translation.done names no run, so a
         stale one would end a live run): resend_ended_asides repeats the ones that matter.
+
+        ``replay_recent`` is set only for a client that says it drops those re-deliveries
+        (``?dedupe=1``, XERK-1789): a build older than XERK-1771 appends them again, so it
+        gets just the buffer, as before.
         """
         if self._grace_task is not None:
             self._grace_task.cancel()
@@ -743,7 +747,7 @@ class Session:
         self._detached = False
         self.resumed = True
         try:
-            for sent_at, msg in list(self._recent):
+            for sent_at, msg in list(self._recent) if replay_recent else ():
                 if given_up_at - _RECENT_WINDOW_S <= sent_at < given_up_at:
                     await send(msg)
             while self._detached_buffer:
