@@ -246,13 +246,20 @@ def test_unspaced_script_terms_match_as_substrings_beside_full_text(store) -> No
     """The 'simple' parser makes a whole CJK run one token, so "日本" never found
     "日本語のテキスト" on UTF8, and "日本 plain" on SQL_ASCII dropped 日本. Such terms
     now match as substrings, OR'd with the full-text part, as in memory (XERK-1591)."""
+    with store._pool.connection() as conn:
+        if conn.info.parameter_status("server_encoding") != "UTF8":
+            pytest.skip("needs a UTF8 database")
     jp = _one_conversation(store, "日本語のテキスト")
     plain = _one_conversation(store, "plain words here")
-    _one_conversation(store, "nothing relevant")
+    other = _one_conversation(store, "nothing relevant")
     assert [c.id for c in store.search(HH, "日本")] == [jp]
     assert {c.id for c in store.search(HH, "日本 plain")} == {jp, plain}
     assert [c.id for c in store.search(HH, "plain")] == [plain]
     assert store.search(HH, "東京") == []
+    # A negated term still excludes, never matches.
+    assert {c.id for c in store.search(HH, "plain -日本語のテキスト")} == {plain}
+    assert jp not in {c.id for c in store.search(HH, "-日本語のテキスト")}
+    assert other in {c.id for c in store.search(HH, "-日本語のテキスト")}
 
 
 def test_sql_ascii_mixed_search_keeps_both_terms(encoded_store) -> None:

@@ -329,13 +329,14 @@ def test_search_terms_split_by_what_full_text_can_tokenise() -> None:
     from api.persistence.postgres import _split_search_terms
 
     q = 'plain 日本 café "テキ" -한글 "hello world"'
+    # A negated term stays full-text: OR'd in as a substring it would become a match.
     assert _split_search_terms(q, utf8=True) == (
-        'plain café "hello world"',
-        ["日本", "テキ", "한글"],
+        'plain café -한글 "hello world"',
+        ["日本", "テキ"],
     )
     assert _split_search_terms(q, utf8=False) == (
-        'plain "hello world"',
-        ["日本", "café", "テキ", "한글"],
+        'plain -한글 "hello world"',
+        ["日本", "café", "テキ"],
     )
     assert _split_search_terms('"-"', utf8=True) == ('"-"', [])
 

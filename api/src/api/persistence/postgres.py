@@ -587,9 +587,11 @@ def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
     full_text: list[str] = []
     substrings: list[str] = []
     for term in query.split():
-        if substring_term(term):
-            # websearch syntax (quotes, a leading "-") means nothing to a substring.
-            bare = term.strip('"').lstrip("-")
+        # A negated term ("-日本") stays full-text: as a substring it would be OR'd in,
+        # turning an exclusion into a match.
+        if substring_term(term) and not term.startswith("-"):
+            # Quotes mean nothing to a substring.
+            bare = term.strip('"')
             if bare:
                 substrings.append(bare)
         else:
