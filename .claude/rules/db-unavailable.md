@@ -5,6 +5,9 @@ paths:
   - api/src/api/persistence/postgres.py
   - packages/client-core/src/api.ts
   - packages/client-core/src/ws.ts
+  - web/src/App.tsx
+  - mobile/src/lib/controllers.ts
+  - even/src/phone/login.ts
   - api/tests/test_db_unavailable.py
   - api/tests/test_pg_outage_live.py
   - api/tests/test_pg_unreachable.py
@@ -28,6 +31,10 @@ paths:
   would otherwise retry at the base delay for the whole outage.
 - client-core turns a 503 into `ServerUnavailableError`, a `NetworkError` subclass on purpose:
   every client already keeps the session and retries on `NetworkError` (web, Android, Even).
+- Boot (web, Android) confirms the token via client-core `checkSession()`: 401 clears it; any
+  server fault (`isServerFault`: `NetworkError` or any 5xx) keeps it and shows the unreachable
+  state. Even's `resolveBootAuth` follows the same rule. A plain 500 is NOT folded into
+  `NetworkError` in `request()`: a 500 on an ordinary action must still surface as `ApiError`.
 - A session ending mid-outage must not raise out of `Session.close()`, and the client never
   resumes an ended session: `_persist` defers the finish to `_finalize_deferred` (XERK-1531).
   The boot stale sweep only covers a *previous* process's rows, so nothing else would finish it.

@@ -287,6 +287,41 @@ export function me(): Promise<Principal> {
   return request<Principal>("GET", "/auth/me");
 }
 
+/**
+ * The failure is the server's, not the token's: unreachable (`NetworkError`,
+ * including 502/503/504) or any other 5xx. Says nothing about whether the stored
+ * session is still valid. Deliberately NOT folded into `request()`: a 500 on an
+ * ordinary action must still surface as an `ApiError` the caller reports.
+ */
+export function isServerFault(err: unknown): boolean {
+  return err instanceof NetworkError || (err instanceof ApiError && err.status >= 500);
+}
+
+/**
+ * Confirm the stored session at app boot (web + Android share this; XERK-1591).
+ *
+ * - Resolves the principal when the token is good.
+ * - A 401 means the token is dead: clear it (`logout`) and resolve null, so a later
+ *   outage doesn't tell this user they're still signed in.
+ * - A server fault (`isServerFault`) with a stored token rejects with that error:
+ *   the token may be fine, so keep it and let the caller show an unreachable /
+ *   server-error state with Retry instead of a login form.
+ * - Anything else (or a server fault with no stored token — a first run) resolves
+ *   null: show the login form.
+ */
+export async function checkSession(): Promise<Principal | null> {
+  try {
+    return await me();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      logout();
+      return null;
+    }
+    if (isServerFault(err) && getToken() != null) throw err;
+    return null;
+  }
+}
+
 /** What the server advertises about its auth backends (docs/auth-oidc.md §10). */
 export interface ServerAuthConfig {
   /** Built-in username/password is always available; the form is always shown. */

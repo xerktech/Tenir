@@ -246,6 +246,33 @@ describe("returning user (cached device store)", () => {
     expect(els().app.hidden).toBe(false);
     expect(onAuthed).toHaveBeenCalledTimes(1);
   });
+
+  // XERK-1591: a real 500 on /auth/me is a server fault, not a verdict on the token.
+  it("treats a 500 from /auth/me like an outage: keeps the token, shows the app", async () => {
+    const fetchMock = stubApi({ meStatus: 500 });
+    const storage = await cachedStorage();
+    await cfg.initConfig(storage);
+    const onAuthed = vi.fn();
+    await loginMod.initPhoneLogin(storage, els(), { onAuthed });
+
+    expect(els().app.hidden).toBe(false);
+    expect(onAuthed).toHaveBeenCalledTimes(1);
+    expect(core.getToken()).toBe("tok-cached");
+    // No silent re-login against a failing server.
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/auth/login"))).toBe(false);
+  });
+
+  // XERK-1591: a 401 whose silent re-login also fails drops the dead token.
+  it("clears a rejected token when the silent re-login fails", async () => {
+    stubApi({ meStatus: 401, loginStatus: 401 });
+    const storage = await cachedStorage();
+    await cfg.initConfig(storage);
+    await loginMod.initPhoneLogin(storage, els(), {});
+
+    expect(els().login.hidden).toBe(false);
+    expect(core.getToken()).toBeNull();
+    await vi.waitFor(() => expect(storage.map.has(cfg.TOKEN_KEY)).toBe(false));
+  });
 });
 
 

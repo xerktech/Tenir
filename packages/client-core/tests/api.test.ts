@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  checkSession,
   describeLoginError,
   getStatus,
   history,
@@ -137,6 +138,64 @@ describe("auth", () => {
     expect(describeLoginError(new ApiError(401, "unauthorized"))).toMatch(/Incorrect username/);
     expect(describeLoginError(new ApiError(500, "boom"))).toMatch(/Server error \(500\)/);
     expect(describeLoginError(new ApiError(409, "conflict"))).toBe("409: conflict");
+  });
+});
+
+describe("checkSession (boot, XERK-1591)", () => {
+  const PRINCIPAL = { userId: "u1", username: "maya", household: "acme", role: "admin" };
+
+  it("resolves the principal and keeps a good token", async () => {
+    setToken("tok-1");
+    mockFetch(() => json(PRINCIPAL));
+    await expect(checkSession()).resolves.toEqual(PRINCIPAL);
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("clears a dead token on 401 and resolves null (login form)", async () => {
+    setToken("tok-dead");
+    mockFetch(() => json({ detail: "token expired" }, 401));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBeNull();
+  });
+
+  it.each([500, 501, 502, 503, 504])(
+    "keeps the token and rejects on a %i (server fault, not a verdict on the token)",
+    async (status) => {
+      setToken("tok-1");
+      mockFetch(() => json({ detail: "boom" }, status));
+      await expect(checkSession()).rejects.toBeInstanceOf(Error);
+      expect(getToken()).toBe("tok-1");
+    },
+  );
+
+  it("keeps the token and rejects with NetworkError when unreachable", async () => {
+    setToken("tok-1");
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(checkSession()).rejects.toBeInstanceOf(NetworkError);
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("resolves null for a server fault on a first run (no stored token)", async () => {
+    mockFetch(() => json({ detail: "boom" }, 500));
+    await expect(checkSession()).resolves.toBeNull();
+  });
+
+  it("resolves null and keeps the token on a non-auth 4xx", async () => {
+    setToken("tok-1");
+    mockFetch(() => json({ detail: "nope" }, 403));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("a 500 on an ordinary action still surfaces as an ApiError", async () => {
+    setToken("tok-1");
+    mockFetch(() => json({ detail: "boom" }, 500));
+    const err = await history.list().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).not.toBeInstanceOf(NetworkError);
+    expect((err as ApiError).status).toBe(500);
   });
 });
 

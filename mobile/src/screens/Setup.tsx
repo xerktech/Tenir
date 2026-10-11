@@ -16,17 +16,19 @@
 
 import { useEffect, useState } from "react";
 
-import { DISCLOSURE_SUMMARY } from "@tenir/client-core";
+import { ApiError, describeLoginError, DISCLOSURE_SUMMARY } from "@tenir/client-core";
 import { errText } from "../lib/format";
 import { useNotify } from "../lib/notify";
 import { isValidServerUrl, normalizeServerUrl } from "../lib/serverUrl";
-import { Button, Card, Field, Heading, Muted, Screen } from "../ui/components";
+import { Button, Card, Field, Heading, Muted, Row, Screen } from "../ui/components";
 
 export function SetupScreen({
   initialServerUrl,
   onConnect,
   unreachable = false,
+  error,
   onRetry,
+  onSignOut,
   onCheckOidc,
   onOidcConnect,
 }: {
@@ -37,8 +39,12 @@ export function SetupScreen({
   /** The stored session could not be checked because the server is unreachable
    *  — the user may well still be signed in (XERK-236). */
   unreachable?: boolean;
+  /** Why the session check failed (unreachable, database down, or a 5xx). */
+  error?: unknown;
   /** Re-check the stored session. */
   onRetry?: () => void;
+  /** Drop the stored session (token) without the server — shown when unreachable. */
+  onSignOut?: () => void;
   /**
    * Ask whether the given server advertises OIDC (resolves its provider as a side
    * effect). Drives whether the Authentik button is shown; absent ⇒ never shown.
@@ -114,15 +120,27 @@ export function SetupScreen({
 
   return (
     <Screen>
-      <Heading>{unreachable ? "Can't reach your server" : "Set up Tenir"}</Heading>
+      <Heading>
+        {!unreachable
+          ? "Set up Tenir"
+          : error instanceof ApiError
+            ? "Your server hit an error"
+            : "Can't reach your server"}
+      </Heading>
       {unreachable && (
         <Card>
           <Muted>
-            Your Tenir server didn&apos;t answer, so we couldn&apos;t check whether you&apos;re
-            still signed in. If it&apos;s just offline, you don&apos;t need to sign in again —
-            start it and retry.
+            We couldn&apos;t check whether you&apos;re still signed in. If your Tenir server is
+            just offline or restarting, you don&apos;t need to sign in again — retry once
+            it&apos;s back.
           </Muted>
-          {onRetry && <Button title="Retry" onPress={onRetry} />}
+          {error != null && <Muted>{describeLoginError(error)}</Muted>}
+          <Row>
+            {onRetry && <Button title="Retry" kind="primary" onPress={onRetry} />}
+            {/* The only way to drop a stored token while the server is down — on a
+                shared phone that matters (XERK-1591, parity with web). */}
+            {onSignOut && <Button title="Log out" onPress={onSignOut} />}
+          </Row>
         </Card>
       )}
       <Card>
