@@ -95,6 +95,8 @@ class _FakeConn:
     def __init__(self, dict_row: object) -> None:
         self._dict_row = dict_row
         self.row_factory: object = _DEFAULT
+        # The server encoding search reads to pick how it tokenises terms.
+        self.info = types.SimpleNamespace(parameter_status=lambda name: "UTF8")
 
     def execute(self, sql: str, params: object = None) -> _FakeCursor:
         return _FakeCursor(self.row_factory, self._dict_row).execute(sql, params)

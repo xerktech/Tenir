@@ -8,6 +8,7 @@ reset the user-store singleton around each so seeding is clean.
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -262,6 +263,81 @@ def test_new_usernames_refuse_ignorables_controls_and_bare_marks() -> None:
         {"username": "nell", "password": "long\x00password"},
     ):
         assert client.post("/auth/users", **_ascii_json(body)).status_code == 422
+
+
+def test_padding_strip_stops_on_a_lost_database(caplog: pytest.LogCaptureFixture) -> None:
+    """A per-row failure skips only that row, but a lost database is not a row
+    failure: it propagates at once (the boot reports an outage), rather than being
+    logged as an unstrippable name and retried on every later row (XERK-1591)."""
+    import contextlib
+
+    pytest.importorskip("psycopg")
+    from api.auth.sql_users import SqlUserStore
+    from api.persistence.postgres import DatabaseUnavailable
+
+    class _Result:
+        def __init__(self, rows: list) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list:
+            return self._rows
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.updates = 0
+            self.closed = False
+
+        def execute(self, sql: str, params: object = None) -> _Result:
+            if sql.startswith("SELECT id, username"):
+                return _Result([("id-1", " ann"), ("id-2", " bea")])
+            if sql.startswith("UPDATE"):
+                self.updates += 1
+                raise DatabaseUnavailable("server closed the connection")
+            return _Result([])
+
+        def commit(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+        @contextlib.contextmanager
+        def transaction(self):
+            yield
+
+    conn = _Conn()
+
+    class _Pool:
+        @contextlib.contextmanager
+        def connection(self):
+            yield conn
+
+    with caplog.at_level(logging.WARNING, logger="api.auth.sql_users"):
+        with pytest.raises(DatabaseUnavailable):
+            SqlUserStore._strip_padded_usernames(_Pool())
+    assert conn.updates == 1  # stopped at the first row
+    assert conn.closed  # the session (and its schema lock) is dropped
+    assert "could not strip" not in caplog.text
+
+
+def test_search_terms_split_by_what_full_text_can_tokenise() -> None:
+    """Unspaced-script terms (UTF8) or any non-ASCII term (non-UTF8 C-locale
+    databases) are matched as substrings; the rest stays full-text (XERK-1591)."""
+    from api.persistence.postgres import _split_search_terms
+
+    q = 'plain 日本 café "テキ" -한글 "hello world"'
+    assert _split_search_terms(q, utf8=True) == (
+        'plain café "hello world"',
+        ["日本", "テキ", "한글"],
+    )
+    assert _split_search_terms(q, utf8=False) == (
+        'plain "hello world"',
+        ["日本", "café", "テキ", "한글"],
+    )
+    assert _split_search_terms('"-"', utf8=True) == ('"-"', [])
 
 
 def test_unstorable_values_are_recognised() -> None:

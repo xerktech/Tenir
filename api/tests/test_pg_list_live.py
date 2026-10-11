@@ -242,6 +242,27 @@ def test_sql_ascii_search_finds_non_ascii_text(encoded_store) -> None:
     assert [c.id for c in store.search(HH, "hello")] == [cid]
 
 
+def test_unspaced_script_terms_match_as_substrings_beside_full_text(store) -> None:
+    """The 'simple' parser makes a whole CJK run one token, so "日本" never found
+    "日本語のテキスト" on UTF8, and "日本 plain" on SQL_ASCII dropped 日本. Such terms
+    now match as substrings, OR'd with the full-text part, as in memory (XERK-1591)."""
+    jp = _one_conversation(store, "日本語のテキスト")
+    plain = _one_conversation(store, "plain words here")
+    _one_conversation(store, "nothing relevant")
+    assert [c.id for c in store.search(HH, "日本")] == [jp]
+    assert {c.id for c in store.search(HH, "日本 plain")} == {jp, plain}
+    assert [c.id for c in store.search(HH, "plain")] == [plain]
+    assert store.search(HH, "東京") == []
+
+
+def test_sql_ascii_mixed_search_keeps_both_terms(encoded_store) -> None:
+    store = encoded_store("SQL_ASCII")
+    jp = _one_conversation(store, "日本語")
+    plain = _one_conversation(store, "plain text")
+    assert {c.id for c in store.search(HH, "日本 plain")} == {jp, plain}
+    assert [c.id for c in store.search(HH, "日本")] == [jp]
+
+
 def test_search_with_no_terms_lists_everything(store) -> None:
     """As the in-memory store answers: a blank query is the plain list."""
     ids = _seed(store, 2)

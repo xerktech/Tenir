@@ -144,9 +144,10 @@ paths:
   - On LATIN1 etc. an unrepresentable char is 22P05 (and NUL/lone surrogates fail client-side,
     `is_unstorable_value`): a user-store lookup returns "no such user", search returns no
     hits, a write raises `InvalidUserValue` (422; a 401 on the OIDC path), never a 500.
-  - A C-locale non-UTF8 database's text-search parser drops every non-ASCII char, so a query
-    with no lexemes (`numnode` = 0) falls back to a per-term substring match, as the in-memory
-    store searches.
+  - Search terms full-text can't tokenise (`_split_search_terms`: any non-ASCII term on a
+    C-locale non-UTF8 database, whose parser drops it; an unspaced-script term like CJK on UTF8,
+    which parses as one whole-run token) match as substrings, OR'd with the full-text part,
+    as the in-memory store matches any term. A query with no lexemes is all substring terms.
   - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*`, `test_sql_ascii_search_*`
     (live, create their own DB).
 - FastAPI's default 422 echoes the input with `ensure_ascii=False`: a lone surrogate made it a

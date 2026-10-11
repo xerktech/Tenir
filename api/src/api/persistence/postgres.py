@@ -556,6 +556,47 @@ def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
 # lateral join outside the LIMIT would run for every skipped or sorted row. Duration
 # matches Conversation.duration_ms (0 when empty), in bigint so a span past 2^31 ms can't
 # 500 the listing. id breaks started_at ties so paging never repeats or drops a row.
+# Scripts written without spaces between words. The 'simple' text-search parser makes
+# a whole run one token, so "日本" never matched a transcript holding "日本語の..." on a
+# UTF8 database (XERK-1591): Hiragana, Katakana, Hangul, CJK ideographs, halfwidth forms.
+_UNSPACED_RANGES = (
+    (0x1100, 0x11FF),
+    (0x3040, 0x30FF),
+    (0x3130, 0x318F),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xAC00, 0xD7AF),
+    (0xF900, 0xFAFF),
+    (0xFF66, 0xFFDC),
+    (0x20000, 0x3FFFF),
+)
+
+
+def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
+    """Split a search into the part full-text search can tokenise and the terms it
+    can't, which are matched as substrings instead (as InMemoryConversationStore matches
+    every term). Under a C-locale non-UTF8 database (SQL_ASCII, LATIN1) the parser drops
+    every non-ASCII character, so there any term holding one is a substring term; under
+    UTF8, a term holding an unspaced-script character is."""
+
+    def substring_term(term: str) -> bool:
+        if utf8:
+            return any(lo <= ord(ch) <= hi for ch in term for lo, hi in _UNSPACED_RANGES)
+        return not term.isascii()
+
+    full_text: list[str] = []
+    substrings: list[str] = []
+    for term in query.split():
+        if substring_term(term):
+            # websearch syntax (quotes, a leading "-") means nothing to a substring.
+            bare = term.strip('"').lstrip("-")
+            if bare:
+                substrings.append(bare)
+        else:
+            full_text.append(term)
+    return " ".join(full_text), substrings
+
+
 def _summary_page(page_sql: str) -> str:
     return f"""
         SELECT c.*, agg.segment_count, agg.duration_ms
@@ -918,44 +959,52 @@ class SqlConversationStore:
         owner_param: tuple = () if owner is None else (owner,)
         try:
             with self._ensure_pool().connection() as conn:
-                # A query the text-search parser finds no words in falls back to a
-                # substring match per term, as InMemoryConversationStore searches. Under
-                # a C-locale non-UTF8 database (SQL_ASCII, LATIN1) the parser treats
-                # every non-ASCII character as a separator, so "日本" parsed to an empty
-                # query that matched nothing, though the transcript held it (XERK-1591).
-                (lexemes,) = conn.execute(
-                    "SELECT numnode(websearch_to_tsquery('simple', %s))", (query,)
-                ).fetchone()
+                # Terms full-text search can't tokenise (see _split_search_terms) match
+                # as substrings; a conversation matches the full-text part OR any
+                # substring term, as InMemoryConversationStore matches any term. A
+                # query with no tokenisable words at all (only punctuation, say) is all
+                # substring terms (XERK-1591).
+                utf8 = conn.info.parameter_status("server_encoding") == "UTF8"
+                full_text, substrings = _split_search_terms(query, utf8=utf8)
+                lexemes = 0
+                if full_text:
+                    (lexemes,) = conn.execute(
+                        "SELECT numnode(websearch_to_tsquery('simple', %s))", (full_text,)
+                    ).fetchone()
+                if not lexemes and not substrings:
+                    substrings = query.split()
+                matches: list[str] = []
+                match_params: list[object] = []
                 if lexemes:
                     # Match per-row so the functional FTS index on segments
                     # (to_tsvector('simple', text), schema.sql) can serve the query — a
                     # tsvector built over an aggregate (string_agg) can't use that index
                     # and forces a full scan + per-query recompute. Rank by recency of
                     # the matching conversation; relevance ranking can layer on later.
-                    match, match_param = (
-                        "to_tsvector('simple', s.text) @@ websearch_to_tsquery('simple', %s)",
-                        query,
+                    matches.append(
+                        "to_tsvector('simple', s.text) @@ websearch_to_tsquery('simple', %s)"
                     )
-                else:
-                    match, match_param = (
+                    match_params.append(full_text)
+                if substrings:
+                    matches.append(
                         "EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
-                        " WHERE strpos(lower(s.text), lower(t)) > 0)",
-                        query.split(),
+                        " WHERE strpos(lower(s.text), lower(t)) > 0)"
                     )
+                    match_params.append(substrings)
+                exists = " OR ".join(
+                    f"EXISTS (SELECT 1 FROM segments s WHERE s.conversation_id = c.id AND {m})"
+                    for m in matches
+                )
                 cur = conn.cursor(row_factory=dict_row)
                 rows = cur.execute(
                     _summary_page(
                         f"""
                         SELECT c.* FROM conversations c
-                        WHERE c.household = %s {owner_clause}
-                          AND EXISTS (
-                              SELECT 1 FROM segments s
-                              WHERE s.conversation_id = c.id AND {match}
-                          )
+                        WHERE c.household = %s {owner_clause} AND ({exists})
                         ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
                         """
                     ),
-                    (household, *owner_param, match_param, limit, offset),
+                    (household, *owner_param, *match_params, limit, offset),
                 ).fetchall()
                 return [self._row_to_summary(r) for r in rows]
         except Exception as exc:
