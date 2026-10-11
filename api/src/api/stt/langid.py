@@ -140,6 +140,11 @@ _MIN_HITS = 2
 # turn is genuinely mixed/ambiguous and labeling it would be a guess.
 _MIN_MARGIN = 1
 
+# Only a turn's first this many characters are scored. Both entry points run on the event
+# loop, and degenerate STT output (a hallucinated run of "A A A …" or quotes) must stay cheap;
+# a real 24 s turn is a few hundred characters, and its opening is evidence enough.
+_MAX_CHARS = 1000
+
 _TOKEN_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?", re.UNICODE)
 
 
@@ -196,7 +201,7 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
 _SENTENCE_END = ".!?¿¡…"
 _DIALOGUE_DASHES = "-–—"
 # Opening quotes/brackets between a sentence start and its first word.
-_OPENERS = "\"'«“("
+_OPENERS = "\"'«“‘‚„("
 
 
 def _strip_leading(before: str) -> str:
@@ -285,6 +290,7 @@ def leans_english(text: str, versus: str) -> bool:
     skips those. Deliberately strict — a skipped real turn is lost, a translated English
     one is only reworded: at least two English hits, and more than ``versus`` has.
     """
+    text = text[:_MAX_CHARS]
     scored = _scores(text)
     if scored is None:
         return False
@@ -353,6 +359,7 @@ def detect_lang(text: str) -> str | None:
     from the word lists alone; a non-English language from word frequencies when
     they clearly name one (``_frequency_lang``), else from the word lists.
     """
+    text = text[:_MAX_CHARS]
     scored = _scores(text)
     if scored is None:
         return None

@@ -481,6 +481,8 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "OK —Mañana.",
         "OK. (Mañana).",
         "OK. 'Mañana'.",
+        "“ ‘Mañana’",
+        "„Mañana“",
         "OK.—Mañana.",
         "—\tMañana.",
         '« "Mañana" »',
@@ -523,12 +525,26 @@ def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
     assert detect_lang("Hola, I'm here.") is None
 
 
-def test_long_runs_of_spaces_and_quotes_stay_fast() -> None:
-    # detect_lang runs on the event loop; a hallucinated run of blanks or quotes before
-    # capitalised words must not go quadratic per word (QA of XERK-1591).
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hola" + ' "' * 1500 + " Peña" * 300,
+        "A " * 100_000,
+        "Peña " * 40_000,
+        "—Peña " * 30_000,
+        ". Mañana" * 25_000,
+        "Hola" + ' "« ' * 50_000 + "Peña",
+        " ".join(f"Wort{i}" for i in range(25_000)),
+    ],
+)
+def test_degenerate_turns_stay_cheap(text: str) -> None:
+    # Both entry points run on the event loop; only a turn's first _MAX_CHARS are scored,
+    # so hallucinated STT output costs low milliseconds however long it is (QA of XERK-1591;
+    # a quote run before capitalised words once took 8.6 s).
     import time
 
-    text = "Hola" + ' "' * 1500 + " Peña" * 300
+    detect_lang(text)  # warm the frequency caches, as a long-lived process has
     t0 = time.perf_counter()
     detect_lang(text)
-    assert time.perf_counter() - t0 < 1.0
+    leans_english(text, "es")
+    assert time.perf_counter() - t0 < 0.05
