@@ -67,13 +67,16 @@ runs:
     # device" (the GPU/vLLM images are multi-GB). Clear leftover dangling layers
     # and cache from previous runs before we start. Dangling-only so a sibling
     # matrix build sharing this runner keeps its in-use layers and cache.
+    # On the k8x ARC pods (fresh per job) this is a no-op; their dockerd data
+    # shares a volume with $GITHUB_WORKSPACE, so that `df` line is the one that
+    # shows Docker's free space — `/` is the runner container's own root.
     - name: Free leftover disk space
       shell: bash
       run: |
-        echo "Disk before reclaim:"; df -h / || true
+        echo "Disk before reclaim:"; df -h / "$GITHUB_WORKSPACE" || true
         docker image prune -f || true
         docker builder prune -f || true
-        echo "Disk after reclaim:"; df -h / || true
+        echo "Disk after reclaim:"; df -h / "$GITHUB_WORKSPACE" || true
 
     - name: Build and push ${{ inputs.image }}
       id: build
@@ -155,4 +158,4 @@ runs:
         done <<< "${{ inputs.tags }}"
         docker image prune -f || true
         docker builder prune -af || true
-        echo "Disk after release cleanup:"; df -h / || true
+        echo "Disk after release cleanup:"; df -h / "$GITHUB_WORKSPACE" || true
