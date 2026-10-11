@@ -411,6 +411,78 @@ def test_fallback_mode_refuses_a_whitespace_variant_of_a_legacy_name(
     assert store.update_credentials(carol.user_id, username=" Carol").username == "Carol"
 
 
+def test_one_strip_conflict_does_not_roll_back_the_others(make_store, caplog) -> None:
+    """The boot strip commits per row: a create racing it (which doesn't take the
+    schema lock) fails only that row's UPDATE, not every strip in the boot."""
+    make, admin = make_store
+    make()
+    admin.execute(
+        "INSERT INTO users (household, username, password_hash) VALUES"
+        " ('default', ' ok1', 'x'), ('default', ' bad', 'x'), ('default', ' ok2', 'x')"
+    )
+    # Stands in for the racing create: the UPDATE to "bad" hits a unique violation.
+    admin.execute(
+        """
+        CREATE FUNCTION fail_bad() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.username = 'bad' THEN
+                RAISE EXCEPTION 'raced' USING ERRCODE = 'unique_violation';
+            END IF;
+            RETURN NEW;
+        END $$
+        """
+    )
+    admin.execute(
+        "CREATE TRIGGER fail_bad BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION fail_bad()"
+    )
+    with caplog.at_level(logging.WARNING, logger="api.auth.sql_users"):
+        store = make()
+    assert store.get_by_username("ok1").username == "ok1"
+    assert store.get_by_username("ok2").username == "ok2"
+    assert store.get_by_username("bad").username == " bad"
+    assert "' bad'" in caplog.text
+
+
+def _ascii_json(body: dict) -> dict:
+    """Request kwargs sending ``body`` as \\u-escaped JSON: httpx's own json= encoder
+    can't encode a lone surrogate, which a real client can still send escaped."""
+    import json
+
+    return {"content": json.dumps(body), "headers": {"content-type": "application/json"}}
+
+
+def test_nul_and_surrogate_names_are_clean_refusals(store, monkeypatch) -> None:
+    """A NUL (Postgres text can't hold it) or lone surrogate (not UTF-8 encodable)
+    raised out of psycopg: a 500 on login and on create. Now 401 / 422."""
+    import api.auth.users as users
+    from api.auth.users import InvalidUserValue
+
+    monkeypatch.setattr(users, "_store", store)
+    monkeypatch.setattr(users, "_admin_reconciled", True)
+    client = TestClient(app, raise_server_exceptions=False)
+    store.create("nora", "longpassword", household=settings.household_id)
+    for bad in ("no\x00ra", "nora\ud800", "\udfff"):
+        r = client.post("/auth/login", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 401, r.text
+        r = client.post("/auth/users", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 422, r.text
+        assert store.get_by_username(bad) is None
+        assert store.get_by_email(bad + "@example.com") is None
+        assert store.get_by_oidc_sub(bad) is None
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="default")
+    with pytest.raises(InvalidUserValue):
+        store.create("nell", "longpassword", household="default", email="n\x00@example.com")
+    for body in (
+        {"username": "nell", "password": "longpassword", "email": "n\x00@example.com"},
+        {"username": "nell", "password": "long\ud800password"},
+    ):
+        r = client.post("/auth/users", **_ascii_json(body))
+        assert r.status_code == 422, r.text
+    r = client.post("/auth/login", **_ascii_json({"username": "nora", "password": "long\ud800"}))
+    assert r.status_code == 401, r.text
+
+
 def test_norm_index_race_falls_back_instead_of_failing(make_store) -> None:
     """A rolling update: an old replica commits a whitespace duplicate after the DO
     block's duplicate check but before CREATE UNIQUE INDEX, which then failed 23505 and

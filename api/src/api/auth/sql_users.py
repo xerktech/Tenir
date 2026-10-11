@@ -33,6 +33,7 @@ from api.persistence.postgres import (
     PoolOpener,
     apply_boot_schema,
     is_database_unavailable,
+    is_unstorable_value,
     lock_schema,
     unlock_schema,
 )
@@ -148,11 +149,6 @@ _ENSURE_HOUSEHOLD = "INSERT INTO households (id) VALUES (%s) ON CONFLICT (id) DO
 _USER_COLUMNS = "id, household, username, role, password_hash, oidc_sub, email"
 
 
-def _is_unencodable(exc: BaseException) -> bool:
-    """A value holding a character the database's encoding can't represent (22P05,
-    e.g. U+3000 on a LATIN1 database). Connections speak UTF8 (``CONNECT_KWARGS``),
-    so the server reports it at bind time."""
-    return getattr(exc, "sqlstate", None) == "22P05"
 
 
 class SqlUserStore:
@@ -209,22 +205,39 @@ class SqlUserStore:
         and logged when its stripped name is blank or already some other row's key:
         stripping must never create a duplicate. Runs under the schema lock so two
         booting replicas can't each strip a different row onto the same name."""
+        from psycopg.errors import UniqueViolation
+
         skipped: list[str] = []
         with pool.connection() as conn:
             try:
                 lock_schema(conn)
-                rows = conn.execute("SELECT id, username FROM users ORDER BY created_at, id")
-                for user_id, username in rows.fetchall():
+                rows = conn.execute(
+                    "SELECT id, username FROM users ORDER BY created_at, id"
+                ).fetchall()
+                conn.commit()
+                for user_id, username in rows:
                     stripped = username.strip()
                     if stripped == username:
                         continue
-                    # One transaction: a later row sees an earlier row's new name.
-                    if not stripped or conn.execute(_NAME_TAKEN, (stripped, user_id)).fetchone():
+                    # Each row commits on its own, so one conflict (a request-path
+                    # create racing this, which doesn't take the schema lock) skips only
+                    # that row instead of rolling back every strip; a later row still
+                    # sees an earlier row's new name.
+                    try:
+                        with conn.transaction():
+                            if not stripped or conn.execute(
+                                _NAME_TAKEN, (stripped, user_id)
+                            ).fetchone():
+                                skipped.append(username)
+                                continue
+                            conn.execute(
+                                "UPDATE users SET username = %s WHERE id = %s",
+                                (stripped, user_id),
+                            )
+                    except UniqueViolation:
                         skipped.append(username)
                         continue
-                    conn.execute("UPDATE users SET username = %s WHERE id = %s", (stripped, user_id))
                     log.info("stripped padded username %r to %r", username, stripped)
-                conn.commit()
                 unlock_schema(conn)
             except BaseException:
                 # The pool discards a closed connection, ending the session and the
@@ -254,7 +267,7 @@ class SqlUserStore:
             with self._ensure_pool().connection() as conn:
                 row = conn.cursor(row_factory=dict_row).execute(sql, params).fetchone()
         except Exception as exc:
-            if not _is_unencodable(exc):
+            if not is_unstorable_value(exc):
                 raise
             return self._lookup(sql, *fallbacks) if fallbacks else None
         return self._row_to_user(row) if row else None
@@ -304,7 +317,7 @@ class SqlUserStore:
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
         except Exception as exc:
-            if _is_unencodable(exc):
+            if is_unstorable_value(exc):
                 raise InvalidUserValue("the database can't store this username or email") from exc
             raise
         return self._row_to_user(row)
@@ -338,7 +351,7 @@ class SqlUserStore:
         except UniqueViolation as exc:
             raise DuplicateUser(username) from exc
         except Exception as exc:
-            if _is_unencodable(exc):
+            if is_unstorable_value(exc):
                 raise InvalidUserValue("the database can't store this username or email") from exc
             raise
         return self._row_to_user(row)
@@ -490,7 +503,7 @@ class SqlUserStore:
         except UniqueViolation as exc:
             raise DuplicateUser(username or "") from exc
         except Exception as exc:
-            if _is_unencodable(exc):
+            if is_unstorable_value(exc):
                 raise InvalidUserValue("the database can't store this username or email") from exc
             raise
         return self._row_to_user(row)
@@ -538,7 +551,7 @@ class SqlUserStore:
         except UniqueViolation as exc:
             raise DuplicateUser(username or oidc_sub or "") from exc
         except Exception as exc:
-            if _is_unencodable(exc):
+            if is_unstorable_value(exc):
                 raise InvalidUserValue("the database can't store this username or email") from exc
             raise
         if row is None:

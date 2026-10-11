@@ -177,3 +177,72 @@ def test_empty_page_and_owner_scope(store) -> None:
     _seed(store, 2)  # unowned rows a member must never see
     assert {c.id for c in store.list(HH, owner=owner)} == set(mine)
     assert {c.id for c in store.search(HH, "needle", owner=owner)} == set(mine)
+
+
+# --- Search on non-UTF8 databases (XERK-1591) -----------------------------------
+
+
+@pytest.fixture
+def encoded_store():
+    """factory(encoding) -> SqlConversationStore on a fresh database of that server
+    encoding (C locale), dropped afterwards."""
+    from psycopg.conninfo import make_conninfo
+
+    from api.persistence.postgres import SqlConversationStore
+
+    made: list[tuple[str, SqlConversationStore]] = []
+
+    def make(encoding: str) -> SqlConversationStore:
+        name = f"t_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(DSN, autocommit=True) as root:
+            root.execute(
+                f"CREATE DATABASE {name} ENCODING '{encoding}'"
+                " LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+            )
+        s = SqlConversationStore(make_conninfo(DSN, dbname=name))
+        made.append((name, s))
+        s._ensure_pool()
+        return s
+
+    yield make
+    with psycopg.connect(DSN, autocommit=True) as root:
+        for name, s in made:
+            if s._pool is not None:
+                s._pool.close()
+            root.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+def _one_conversation(store, text: str) -> str:
+    cid = str(uuid.uuid4())
+    store.create(HH, cid)
+    store.add_segment(HH, cid, Segment(segment_id=f"{cid}-s", text=text, start_ms=0, end_ms=1))
+    return cid
+
+
+def test_latin1_search_for_text_it_cannot_hold_is_no_hits(encoded_store) -> None:
+    """Japanese can't be in a LATIN1 transcript: GET /conversations?q=日本 500'd (22P05)."""
+    store = encoded_store("LATIN1")
+    cid = _one_conversation(store, "café needle")
+    assert store.search(HH, "日本") == []
+    assert store.search(HH, "needle 日本") == []
+    assert store.search(HH, "a\x00b") == []
+    assert [c.id for c in store.search(HH, "needle")] == [cid]
+
+
+def test_sql_ascii_search_finds_non_ascii_text(encoded_store) -> None:
+    """Under a C-locale SQL_ASCII database the text-search parser treats non-ASCII as
+    separators, so a Japanese query parsed to nothing and matched no transcript. A query
+    with no words falls back to a substring match per term."""
+    store = encoded_store("SQL_ASCII")
+    cid = _one_conversation(store, "日本語の会話 hello")
+    other = _one_conversation(store, "会議")
+    assert [c.id for c in store.search(HH, "日本")] == [cid]
+    assert {c.id for c in store.search(HH, "日本 会議")} == {cid, other}
+    assert store.search(HH, "東京") == []
+    assert [c.id for c in store.search(HH, "hello")] == [cid]
+
+
+def test_search_with_no_terms_lists_everything(store) -> None:
+    """As the in-memory store answers: a blank query is the plain list."""
+    ids = _seed(store, 2)
+    assert {c.id for c in store.search(HH, "   ")} == set(ids)

@@ -119,16 +119,56 @@ def normalize_username(username: str) -> str:
     return unicodedata.normalize("NFKC", username).strip()
 
 
+# Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt) outside Cf: Hangul
+# fillers, variation selectors, the combining grapheme joiner, Mongolian free variation
+# selectors, reserved ignorables. All render as nothing (XERK-1591).
+_IGNORABLE_RANGES = (
+    (0x034F, 0x034F),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2065, 0x2065),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _is_invisible(ch: str) -> bool:
+    """A character that renders as nothing or can't be stored: a control (Cc; NUL
+    can't go in a Postgres text column), a surrogate (Cs; not UTF-8 encodable), a
+    format character (Cf: zero-width space/joiners, BOM...) or another default-ignorable
+    code point."""
+    if unicodedata.category(ch) in ("Cc", "Cs", "Cf"):
+        return True
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _IGNORABLE_RANGES)
+
+
+def is_lookup_safe(value: str) -> bool:
+    """Whether ``value`` can be sent to the database at all: no NUL (Postgres text
+    can't hold it) and no lone surrogate (not UTF-8 encodable). No stored row holds
+    either, so a lookup with one is simply "no such user", never a 500."""
+    return "\x00" not in value and not any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
 def new_username(username: str) -> str:
-    """Normalize a username being created or renamed to, refusing a blank one or one
-    holding a format character (Unicode Cf: zero-width space/joiners, word joiner,
-    BOM...): "carl" + U+200B looked like "carl" but was a different account
+    """Normalize a username being created or renamed to, refusing a blank one, one
+    holding an invisible or unstorable character (``_is_invisible``), or one made only
+    of combining marks: "carl" + U+200B looked like "carl" but was a different account
     (XERK-1591). Legacy rows are not re-validated; only new names pass through here."""
+    if not is_lookup_safe(username):
+        raise InvalidUserValue("username must not contain NUL or unpaired surrogates")
     normalized = normalize_username(username)
     if not normalized:
         raise InvalidUserValue("username must not be blank")
-    if any(unicodedata.category(ch) == "Cf" for ch in normalized):
-        raise InvalidUserValue("username must not contain invisible format characters")
+    if any(_is_invisible(ch) for ch in normalized):
+        raise InvalidUserValue("username must not contain invisible or control characters")
+    if all(unicodedata.category(ch).startswith("M") for ch in normalized):
+        raise InvalidUserValue("username must not be only combining marks")
     return normalized
 
 
@@ -252,8 +292,8 @@ class InMemoryUserStore:
 
     def get_by_username(self, username: str) -> User | None:
         key = username.strip().lower()
-        if not key:
-            return None  # never resolve a blank login to a blank-named row
+        if not key or not is_lookup_safe(username):
+            return None  # never resolve a blank (or unstorable) login to a row
         with self._lock:
             # The name as typed first, then its normalized form (how new names are
             # stored), as SqlUserStore orders them.

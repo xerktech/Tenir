@@ -411,6 +411,19 @@ def database_error_types() -> tuple[type[BaseException], ...]:
     return (DatabaseUnavailable, SchemaLockTimeout, PoolTimeout, psycopg.OperationalError)
 
 
+def is_unstorable_value(exc: BaseException) -> bool:
+    """A query parameter the database can't hold, so it can match no stored row: a
+    character the database encoding can't represent (22P05, e.g. U+3000 on LATIN1;
+    connections speak UTF8 via ``CONNECT_KWARGS``, so the server reports it at bind
+    time), a lone surrogate (psycopg can't UTF-8 encode it) or a NUL (psycopg refuses it
+    client-side: Postgres text can't contain one). XERK-1591."""
+    if isinstance(exc, UnicodeEncodeError):
+        return True
+    if type(exc).__name__ == "DataError" and "NUL (0x00)" in str(exc):
+        return True
+    return getattr(exc, "sqlstate", None) == "22P05"
+
+
 def is_database_unavailable(exc: BaseException) -> bool:
     """True when ``exc`` means "the database can't be reached right now" — a
     retryable outage the API answers with 503 rather than a 500 (XERK-1510).
@@ -898,32 +911,59 @@ class SqlConversationStore:
 
         # Owner scope (XERK-651): owner=None searches the whole household (admin); a member
         # id restricts to rows they own, so search can never surface another user's match.
+        if not query.split():
+            # No terms: the whole list, as InMemoryConversationStore answers.
+            return self.list(household, owner=owner, limit=limit, offset=offset)
         owner_clause = "" if owner is None else "AND c.owner = %s"
         owner_param: tuple = () if owner is None else (owner,)
-        with self._ensure_pool().connection() as conn:
-            # Match per-row so the functional FTS index on segments
-            # (to_tsvector('simple', text), schema.sql) can serve the query — a
-            # tsvector built over an aggregate (string_agg) can't use that index and
-            # forces a full scan + per-query recompute. Rank by recency of the
-            # matching conversation; relevance ranking can layer on later if needed.
-            cur = conn.cursor(row_factory=dict_row)
-            rows = cur.execute(
-                _summary_page(
-                    f"""
-                    SELECT c.* FROM conversations c
-                    WHERE c.household = %s {owner_clause}
-                      AND EXISTS (
-                          SELECT 1 FROM segments s
-                          WHERE s.conversation_id = c.id
-                            AND to_tsvector('simple', s.text)
-                                @@ websearch_to_tsquery('simple', %s)
-                      )
-                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
-                    """
-                ),
-                (household, *owner_param, query, limit, offset),
-            ).fetchall()
-            return [self._row_to_summary(r) for r in rows]
+        try:
+            with self._ensure_pool().connection() as conn:
+                # A query the text-search parser finds no words in falls back to a
+                # substring match per term, as InMemoryConversationStore searches. Under
+                # a C-locale non-UTF8 database (SQL_ASCII, LATIN1) the parser treats
+                # every non-ASCII character as a separator, so "日本" parsed to an empty
+                # query that matched nothing, though the transcript held it (XERK-1591).
+                (lexemes,) = conn.execute(
+                    "SELECT numnode(websearch_to_tsquery('simple', %s))", (query,)
+                ).fetchone()
+                if lexemes:
+                    # Match per-row so the functional FTS index on segments
+                    # (to_tsvector('simple', text), schema.sql) can serve the query — a
+                    # tsvector built over an aggregate (string_agg) can't use that index
+                    # and forces a full scan + per-query recompute. Rank by recency of
+                    # the matching conversation; relevance ranking can layer on later.
+                    match, match_param = (
+                        "to_tsvector('simple', s.text) @@ websearch_to_tsquery('simple', %s)",
+                        query,
+                    )
+                else:
+                    match, match_param = (
+                        "EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
+                        " WHERE strpos(lower(s.text), lower(t)) > 0)",
+                        query.split(),
+                    )
+                cur = conn.cursor(row_factory=dict_row)
+                rows = cur.execute(
+                    _summary_page(
+                        f"""
+                        SELECT c.* FROM conversations c
+                        WHERE c.household = %s {owner_clause}
+                          AND EXISTS (
+                              SELECT 1 FROM segments s
+                              WHERE s.conversation_id = c.id AND {match}
+                          )
+                        ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                        """
+                    ),
+                    (household, *owner_param, match_param, limit, offset),
+                ).fetchall()
+                return [self._row_to_summary(r) for r in rows]
+        except Exception as exc:
+            # A query the database can't hold (e.g. Japanese on LATIN1, a NUL) can't be
+            # in any stored transcript: no hits, not a 500.
+            if is_unstorable_value(exc):
+                return []
+            raise
 
     def delete(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str

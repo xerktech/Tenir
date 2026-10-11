@@ -216,6 +216,68 @@ def test_new_usernames_are_nfkc_and_refuse_format_chars() -> None:
     assert store.update_credentials(carl.user_id, username=" carl ").username == "carl"
 
 
+def _ascii_json(body: dict) -> dict:
+    """Request kwargs sending ``body`` as \\u-escaped JSON: httpx's own json= encoder
+    can't encode a lone surrogate, which a real client can still send escaped."""
+    import json
+
+    return {"content": json.dumps(body), "headers": {"content-type": "application/json"}}
+
+
+INVISIBLE_NAMES = (
+    "ㅤ",  # Hangul filler
+    "ᅟᅠ",  # Hangul choseong/jungseong fillers
+    "aﾠ",  # halfwidth Hangul filler
+    "a️",  # variation selector
+    "a͏b",  # combining grapheme joiner
+    "a\U000e0100",  # variation selector supplement
+    "́̂",  # only combining marks
+    "a\x07b",  # a control character
+    "no\x00ra",  # NUL: Postgres text can't hold it
+    "nora\ud800",  # lone surrogate: not UTF-8 encodable
+)
+
+
+def test_new_usernames_refuse_ignorables_controls_and_bare_marks() -> None:
+    """Default-ignorable code points and Hangul fillers render as nothing, a name of
+    only combining marks has no base character, and NUL/surrogates can't be stored
+    (XERK-1591). A combining mark on a base character is still fine."""
+    store = InMemoryUserStore()
+    for bad in INVISIBLE_NAMES:
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="acme")
+        assert store.get_by_username(bad) is None
+    assert store.create("rémy", "longpassword", household="acme").username == "rémy"
+    client = TestClient(app)
+    for bad in INVISIBLE_NAMES:
+        r = client.post("/auth/users", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 422, r.text
+        r = client.post("/auth/login", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 401, r.text
+    for body in (
+        {"username": "nell", "password": "longpassword", "email": "n\x00@example.com"},
+        {"username": "nell", "password": "long\ud800password"},
+    ):
+        assert client.post("/auth/users", **_ascii_json(body)).status_code == 422
+
+
+def test_unstorable_values_are_recognised() -> None:
+    """What SqlUserStore lookups treat as "no such user" and search as "no hits"."""
+    from api.persistence.postgres import is_unstorable_value
+
+    class DataError(Exception):
+        pass
+
+    class Untranslatable(Exception):
+        sqlstate = "22P05"
+
+    assert is_unstorable_value(UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates"))
+    assert is_unstorable_value(DataError("PostgreSQL text fields cannot contain NUL (0x00) bytes"))
+    assert is_unstorable_value(Untranslatable())
+    assert not is_unstorable_value(DataError("value too long"))
+    assert not is_unstorable_value(RuntimeError("boom"))
+
+
 def test_create_user_endpoint_refuses_format_chars() -> None:
     client = TestClient(app)
     for bad in FORMAT_CHAR_NAMES:

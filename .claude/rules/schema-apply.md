@@ -114,13 +114,15 @@ paths:
   - A `DO $$ ... $$` body can't go in schema.sql: `iter_statements` splits on `;`. Put it in the
     store's `_ENSURE_SCHEMA`.
   - Tests: `test_pg_users_live.py` `test_legacy_case_variant_duplicates_do_not_abort_boot`.
-- Usernames: every create/rename stores `new_username()` (NFKC, `str.strip()`, no Unicode Cf
-  chars); SQL lookups match `_USERNAME_KEY` (`lower(btrim(...))`), the exact expression the norm
-  index is built on, against both the typed and the NFKC name (legacy rows aren't normalized).
+- Usernames: every create/rename stores `new_username()` (NFKC, `str.strip()`, no Cc/Cs/Cf,
+  default-ignorables or bare combining marks); SQL lookups match `_USERNAME_KEY`
+  (`lower(btrim(...))`), the exact expression the norm index is built on, against both the
+  typed and the NFKC name (legacy rows aren't normalized).
   - The btrim set is the ASCII `str.isspace()` chars as E'' escapes: raw non-ASCII in DDL
     can't encode for a non-UTF8 database (every login 500'd). Test: `test_sql_user_store_ddl_is_ascii`.
   - So boot (`_strip_padded_usernames`, under the schema lock) stores legacy names padded with
     non-ASCII whitespace stripped, skipping (and logging) any that would go blank or collide.
+    It commits per row: a request-path create racing it (no schema lock) skips only that row.
   - Validate usernames with `new_username()`: pydantic's `strip_whitespace` keeps `\x1f`, which
     stored an empty username; "carl"+U+200B looked like "carl" (operator decision, XERK-1591).
   - A rename to the row's current name is not re-validated (`renamed_username`): the env admin
@@ -139,6 +141,13 @@ paths:
     `test_norm_index_race_falls_back_instead_of_failing`.
 - Pooled connections set `client_encoding=UTF8` (`CONNECT_KWARGS`): on a SQL_ASCII database
   psycopg otherwise returns text as bytes and no login verifies.
-  - On LATIN1 etc. an unrepresentable char is 22P05: a user-store lookup returns "no such
-    user", a write raises `InvalidUserValue` (422; a 401 on the OIDC path), never a 500.
-  - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*` (live, create their own DB).
+  - On LATIN1 etc. an unrepresentable char is 22P05 (and NUL/lone surrogates fail client-side,
+    `is_unstorable_value`): a user-store lookup returns "no such user", search returns no
+    hits, a write raises `InvalidUserValue` (422; a 401 on the OIDC path), never a 500.
+  - A C-locale non-UTF8 database's text-search parser drops every non-ASCII char, so a query
+    with no lexemes (`numnode` = 0) falls back to a per-term substring match, as the in-memory
+    store searches.
+  - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*`, `test_sql_ascii_search_*`
+    (live, create their own DB).
+- FastAPI's default 422 echoes the input with `ensure_ascii=False`: a lone surrogate made it a
+  500. `main.py` renders it with `json.dumps`. Test: `test_new_usernames_refuse_ignorables_*`.
