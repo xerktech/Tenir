@@ -483,6 +483,7 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "OK. 'Mañana'.",
         "“ ‘Mañana’",
         "„Mañana“",
+        "OK. ‚Mañana‘.",
         "OK.—Mañana.",
         "—\tMañana.",
         '« "Mañana" »',
@@ -535,6 +536,8 @@ def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
         ". Mañana" * 25_000,
         "Hola" + ' "« ' * 50_000 + "Peña",
         " ".join(f"Wort{i}" for i in range(25_000)),
+        "ñ " * 50_000,
+        "Ñ " * 50_000,
     ],
 )
 def test_degenerate_turns_stay_cheap(text: str) -> None:

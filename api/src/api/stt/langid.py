@@ -25,8 +25,18 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 
-from wordfreq import zipf_frequency
+from wordfreq import zipf_frequency as _wordfreq_zipf
+
+
+@lru_cache(maxsize=65536)
+def _zipf(word: str, lang: str) -> float:
+    """wordfreq's "small"-list Zipf frequency, memoised: a turn repeats words, and every
+    lookup costs a normalisation pass inside wordfreq (both entry points run on the
+    event loop)."""
+    return _wordfreq_zipf(word, lang, wordlist="small")
+
 
 # Words that are simultaneously very frequent in their language and rare in the
 # other five. Deliberately NOT exhaustive stopword lists: shared forms (es/pt
@@ -141,8 +151,9 @@ _MIN_HITS = 2
 _MIN_MARGIN = 1
 
 # Only a turn's first this many characters are scored. Both entry points run on the event
-# loop, and degenerate STT output (a hallucinated run of "A A A …" or quotes) must stay cheap;
-# a real 24 s turn is a few hundred characters, and its opening is evidence enough.
+# loop, and degenerate STT output (a hallucinated run of "A A A …" or quotes) must stay cheap
+# (~10 ms worst); a real 24 s turn is a few hundred characters, and its opening is evidence
+# enough.
 _MAX_CHARS = 1000
 
 _TOKEN_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?", re.UNICODE)
@@ -309,9 +320,7 @@ _EN_ONLY_MARGIN = 1.0
 def _english_margin(word: str) -> float:
     """How much more frequent ``word`` is in English than in the most frequent other
     contract language, in Zipf units (log10)."""
-    return zipf_frequency(word, "en", wordlist="small") - max(
-        zipf_frequency(word, code, wordlist="small") for code in _OTHER_LANGS
-    )
+    return _zipf(word, "en") - max(_zipf(word, code) for code in _OTHER_LANGS)
 
 
 # Load the frequency lists now: the first lookup reads them from disk (~0.3 s), which
@@ -450,10 +459,7 @@ _FREQ_MIN_DISTINCT = 4
 
 def _frequency_totals(words: list[str]) -> dict[str, float]:
     """Each contract language's summed Zipf over the turn's words (a unigram log-likelihood)."""
-    return {
-        code: sum(max(zipf_frequency(w, code, wordlist="small"), _FREQ_FLOOR) for w in words)
-        for code in _WORDS
-    }
+    return {code: sum(max(_zipf(w, code), _FREQ_FLOOR) for w in words) for code in _WORDS}
 
 
 def _frequency_lang(

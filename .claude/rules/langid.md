@@ -88,5 +88,6 @@ paths:
 - A capitalised es vocab word still counts ("A guy named Fue." es): skipping mid-sentence
   capitals for vocab would break German "Sie". Accepted as contrived (XERK-1591).
 - `detect_lang`/`leans_english` run on the event loop: they score only the first `_MAX_CHARS`
-  (1000) of a turn, so degenerate STT output stays in low ms. Keep per-word work linear; a
-  `[\s…]+$` regex per capitalised word once took 8.6 s (`test_degenerate_turns_stay_cheap`).
+  (1000) of a turn and memoise wordfreq lookups (`_zipf`), so degenerate STT output costs
+  ~10 ms worst. Keep per-word work linear: a `[\s…]+$` regex per capitalised word once took
+  8.6 s (`test_degenerate_turns_stay_cheap`).
