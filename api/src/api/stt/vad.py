@@ -24,6 +24,15 @@ _MODEL = Path(__file__).with_name("silero_vad.onnx")
 # samples of the frame before it (the context its official wrapper carries).
 _FRAME = 512
 _CONTEXT = 64
+# Most audio one chunk scores: 1 s. Clients send ~100 ms chunks; an oversized one
+# (a 16 MB WS frame is ~8 min of audio) would otherwise hold the event loop for
+# seconds. Only its tail decides the verdict anyway.
+_MAX_SCORED = 16000
+
+
+def preload() -> None:
+    """Load the shared model now (~0.3 s), so the first session.start doesn't pay it."""
+    _session()
 
 
 @functools.cache
@@ -56,6 +65,10 @@ class SileroVad:
         word inside a mostly-quiet chunk still counts. A chunk too short to finish a
         frame repeats the previous score."""
         samples = np.concatenate([self._pending, pcm16_to_float32(pcm)])
+        if len(samples) > _MAX_SCORED:
+            # Keep the frame alignment of the remainder: drop whole frames off the front.
+            drop = (len(samples) - _MAX_SCORED) // _FRAME * _FRAME
+            samples = samples[drop:]
         whole = len(samples) - len(samples) % _FRAME
         best = None
         for i in range(0, whole, _FRAME):

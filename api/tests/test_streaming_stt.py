@@ -942,6 +942,45 @@ def test_real_silero_vad_tells_loud_noise_from_speech_without_losing_it() -> Non
     assert asyncio.run(run(SileroVad())) == (0, 0, True)
 
 
+def test_flush_keeps_a_loud_tail_the_model_called_noise() -> None:
+    """Session end in a loud room: the model scored the in-flight turn as non-speech,
+    but the energy gate heard something, so flush() still decodes it. Real speech at
+    low SNR was lost here before (QA), while a cap close would have decoded it."""
+    from api.stt.vad import SileroVad
+
+    async def run(vad: object | None) -> int:
+        t = StreamingTranscriber(FakeEngine(), partial_interval_ms=100000, vad_model=vad)
+        for chunk in _loud_rumble(10):  # one cap-closed turn, then a 2 s tail
+            await _push(t, chunk)
+        await t.flush()
+        return len(_finals(t))
+
+    assert asyncio.run(run(None)) == 2
+    assert asyncio.run(run(SileroVad())) == 2
+    assert asyncio.run(run(ScriptedVad([0.0]))) == 2
+
+
+def test_a_model_that_raises_falls_back_to_the_energy_gate() -> None:
+    """A runtime model failure must not escape push(): that stopped the turn-close
+    logic for the rest of the session while the buffer grew without bound (QA)."""
+
+    class Raising:
+        def speech_prob(self, pcm: bytes) -> float:
+            raise RuntimeError("onnxruntime blew up")
+
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), partial_interval_ms=100000, max_segment_ms=1000, vad_model=Raising()
+        )
+        for _ in range(25):
+            await _push(t, _pcm(100, amplitude=9000))
+        assert t._vad_model is None
+        assert len(_finals(t)) == 2  # the cap still closes turns
+        assert len(t._buf) < _ms_to_bytes(1000)
+
+    asyncio.run(run())
+
+
 def test_silero_vad_carries_partial_frames_between_chunks() -> None:
     """Clients send chunks that aren't a multiple of the model's 512-sample frame: the
     remainder waits for the next chunk, and a chunk too short to finish a frame repeats
@@ -959,6 +998,80 @@ def test_silero_vad_carries_partial_frames_between_chunks() -> None:
     vad.speech_prob(np.zeros(288, dtype=np.int16).tobytes())  # completes the frame
     assert len(vad._pending) == 0
     assert vad._last != 0.42
+
+
+class FakeOnnx:
+    """Stands in for the onnxruntime session: scores frames from a script and returns a
+    fresh state object per call, recording every input it was given."""
+
+    def __init__(self, scores: list[float]) -> None:
+        self.scores = list(scores)
+        self.inputs: list[dict] = []
+
+    def run(self, _outputs: object, feeds: dict) -> tuple[np.ndarray, np.ndarray]:
+        self.inputs.append(feeds)
+        score = self.scores.pop(0) if self.scores else 0.0
+        return np.array([[score]], dtype=np.float32), np.full((2, 1, 128), len(self.inputs), np.float32)
+
+
+def _vad_with(monkeypatch: pytest.MonkeyPatch, onnx: FakeOnnx) -> object:
+    import api.stt.vad as vad
+
+    monkeypatch.setattr(vad, "_session", lambda: onnx)
+    return vad.SileroVad()
+
+
+def test_silero_vad_threads_state_and_context_and_takes_the_best_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    onnx = FakeOnnx([0.9, 0.1, 0.2])
+    vad = _vad_with(monkeypatch, onnx)
+    ramp = (np.arange(1536) % 1000).astype(np.int16)
+    assert vad.speech_prob(ramp.tobytes()) == pytest.approx(0.9)  # the max, not the last
+    first, second, third = onnx.inputs
+    assert not first["state"].any()
+    assert (second["state"] == 1).all() and (third["state"] == 2).all()  # recurrent state
+    frame0 = ramp[:512].astype(np.float32) / 32768
+    assert first["input"].shape == (1, 576)
+    np.testing.assert_array_equal(second["input"][0, :64], frame0[-64:])  # carried context
+    np.testing.assert_array_equal(second["input"][0, 64:], ramp[512:1024].astype(np.float32) / 32768)
+
+
+def test_silero_vad_scores_at_most_a_second_of_an_oversized_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A huge WS frame held the event loop for seconds while every frame was scored."""
+    onnx = FakeOnnx([])
+    vad = _vad_with(monkeypatch, onnx)
+    vad.speech_prob(_pcm(60_000, amplitude=100))  # a minute of audio in one chunk
+    assert len(onnx.inputs) <= 16000 // 512 + 1  # 1 s, rounded up to whole frames
+    assert len(vad._pending) == 960000 % 512  # remainder alignment kept
+
+
+def test_preload_loads_the_model_once_only_when_it_will_be_used(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import api.stt.vad as vad
+    from api.config import settings
+    from api.stt import preload_vad_model
+
+    calls: list[int] = []
+    monkeypatch.setattr(vad, "_session", lambda: calls.append(1))
+    preload_vad_model()  # stub backend: nothing to load
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    monkeypatch.setattr(settings, "stt_vad_model", False)
+    preload_vad_model()
+    assert calls == []
+    monkeypatch.setattr(settings, "stt_vad_model", True)
+    preload_vad_model()
+    assert calls == [1]
+
+    def broken() -> None:
+        raise RuntimeError("no onnxruntime")
+
+    monkeypatch.setattr(vad, "_session", broken)
+    preload_vad_model()  # logged, never raised: boot must not fail over it
+    assert "Silero VAD failed to load" in caplog.text
 
 
 # ----- factory --------------------------------------------------------------

@@ -59,6 +59,7 @@ from api.readiness import probe_backends
 from api.session import Sender, Session, is_valid_session_id, teardowns_in_flight
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
+from api.stt import preload_vad_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("api")
@@ -160,6 +161,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # connections are lazy and may still be warming up). The probe logs each
     # failure with its full detail itself.
     await asyncio.to_thread(probe_backends)
+    # Load the loud-room VAD model now rather than on the event loop in the first
+    # session.start (XERK-1819).
+    await asyncio.to_thread(preload_vad_model)
     # Only a graceful shutdown finalizes live sessions. An OOM kill, a host
     # reboot or a stop that overruns the grace period leaves rows stuck "live",
     # and nothing ever came back for them — they showed as permanently recording

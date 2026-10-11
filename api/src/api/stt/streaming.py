@@ -226,6 +226,10 @@ class StreamingTranscriber:
         self._vad_model = vad_model
         self._vad_model_floor_rms = vad_model_floor_rms
         self._model_speaking = False
+        # Whether the energy gate heard speech in the in-flight turn, even when the model
+        # overruled it. flush() keeps such a tail: dropping what the model called noise
+        # lost real low-SNR speech at session end (QA), while a cap close decodes it.
+        self._energy_heard = False
 
         # LocalAgreement-2 makes partials grow word by word instead of rewriting the
         # whole line each cadence (XERK-90). One buffer per in-flight segment; reset
@@ -353,6 +357,7 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        self._energy_heard = False
 
     async def _work(self) -> None:
         while True:
@@ -460,7 +465,15 @@ class StreamingTranscriber:
         energy gate decides)."""
         if self._vad_model is None:
             return None
-        prob = self._vad_model.speech_prob(pcm)
+        try:
+            prob = self._vad_model.speech_prob(pcm)
+        except Exception:
+            # Raising out of push() would stop the turn-close logic for the rest of the
+            # session while the buffer grows without bound. Fall back to energy for good.
+            log.exception("Silero VAD failed; this session falls back to the energy gate")
+            metrics.incr("stage.stt.vad_model_errors")
+            self._vad_model = None
+            return None
         cutoff = _VAD_MODEL_OFF if self._model_speaking else _VAD_MODEL_ON
         self._model_speaking = prob >= cutoff
         if min(lvl for _, lvl in self._levels) < self._vad_model_floor_rms:
@@ -469,9 +482,11 @@ class StreamingTranscriber:
 
     def _update_vad(self, pcm: bytes) -> None:
         self._track_level(pcm)
+        energy = self._levels[-1][1] >= self._speech_threshold()
+        self._energy_heard = self._energy_heard or energy
         speech = self._model_says_speech(pcm)
         if speech is None:
-            speech = self._levels[-1][1] >= self._speech_threshold()
+            speech = energy
         if speech:
             self._has_speech = True
             self._trailing_silence = 0
@@ -718,7 +733,7 @@ class StreamingTranscriber:
     async def flush(self) -> None:
         """Finalize the in-flight turn and wait for every queued decode to land.
         Session.close bounds this wait, so a hung upstream can't hold teardown."""
-        if self._buf and self._has_speech:
+        if self._buf and (self._has_speech or self._energy_heard):
             self._close_turn()
         if self._worker is not None:
             await self._jobs.join()

@@ -14,9 +14,22 @@ from api.stt.stub import StubTranscriber
 if TYPE_CHECKING:
     from api.stt.streaming import SpeechModel
 
-__all__ = ["Transcriber", "make_transcriber"]
+__all__ = ["Transcriber", "make_transcriber", "preload_vad_model"]
 
 log = logging.getLogger("api.stt")
+
+
+def preload_vad_model() -> None:
+    """Load the shared Silero model at boot, off the event loop, instead of inside the
+    first session.start. A failure is logged here and again per session (energy only)."""
+    if settings.stt_backend != "parakeet" or not settings.stt_vad_model:
+        return
+    try:
+        from api.stt.vad import preload
+
+        preload()
+    except Exception:
+        log.exception("Silero VAD failed to load; loud rooms fall back to the energy gate")
 
 
 def _vad_model() -> SpeechModel | None:
