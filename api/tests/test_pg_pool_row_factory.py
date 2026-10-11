@@ -66,6 +66,8 @@ class _FakeCursor:
         text = " ".join(sql.split())
         if "DISTINCT household" in text:  # SqlConversationStore.households()
             self._cols, self._rows = ["household"], [["default"]]
+        elif "numnode(" in text:  # SqlConversationStore.search()'s lexeme count
+            self._cols, self._rows = ["numnode"], [[1]]
         elif "GROUP BY ref" in text:  # SqlKnowledgeStore.documents()
             self._cols, self._rows = ["ref", "title", "chunks"], [["r1", "Doc", 3]]
         else:  # reads that build models from a (here empty) result set
