@@ -918,6 +918,16 @@ def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
         assert await asyncio.to_thread(lambda: TestClient(app).delete(url).status_code) == 204
         return await real_offset(self)
 
+    # The retry runs under a fresh id: it must not hold the presented id's start lock,
+    # or a reconnect with that id waits out the whole retry (session-start rules).
+    real_start = Session.start
+    lock_held_in_retry: list[bool] = []
+
+    async def start(self: Session, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        if not self.resumed:
+            lock_held_in_retry.append(sid in registry._start_locks)
+        await real_start(self, **kwargs)
+
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
@@ -926,6 +936,7 @@ def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
             drain_to_pong(ws)
         monkeypatch.setattr(Session, "_resume_offset_ms", deleted_meanwhile)
+        monkeypatch.setattr(Session, "start", start)
 
         with client.websocket_connect("/ws") as ws2:
             ws2.send_text(
@@ -941,6 +952,7 @@ def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
             ws2.send_text(json.dumps({"type": "ping", "t": 2}))
             drain_to_pong(ws2)
 
+        assert lock_held_in_retry == [False]
         assert store.get("default", sid) is None
         assert get_audio_store().get(audio_key("default", sid)) is None
         fresh = store.get("default", ready["sessionId"])
