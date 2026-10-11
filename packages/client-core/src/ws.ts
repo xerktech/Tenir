@@ -112,7 +112,10 @@ export class ApiClient {
     this.handlers.onConnectionChange?.("connecting");
     // Carry the bearer token as ?token= (the browser WS API can't set an
     // Authorization header); the token is absent until login (master plan §7).
-    const ws = new WebSocket(withToken(this.url));
+    // dedupe=1 tells the api this client drops a re-delivered final/translation/cue
+    // by id, so a warm resume may replay what a dead socket swallowed (XERK-1789).
+    const sep = this.url.includes("?") ? "&" : "?";
+    const ws = new WebSocket(withToken(`${this.url}${sep}dedupe=1`));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 

@@ -876,7 +876,7 @@ def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.Mo
                 live._translation_active = False
 
             client.portal.call(dead_window)
-            with client.websocket_connect("/ws") as c:
+            with client.websocket_connect("/ws?dedupe=1") as c:
                 c.send_text(json.dumps({**start, "sessionId": sid}))
                 c.send_text(json.dumps({"type": "ping", "t": 1}))
                 frames = []
@@ -928,7 +928,7 @@ def test_rebind_replays_only_recent_frames_and_no_done_markers_or_ended_songs() 
         )
         session._music_active = False
         await session._send(TranslationDone(type="translation.done"))
-        await session.rebind(send)
+        await session.rebind(send, replay_recent=True)
         assert sent == [new]
 
     asyncio.run(run())
@@ -964,7 +964,7 @@ def test_rebind_after_a_detach_replays_lost_frames_ahead_of_the_buffer() -> None
                 session._remember(live)
                 await session._send(live)
 
-        await session.rebind(send)
+        await session.rebind(send, replay_recent=True)
         assert sent == [lost, buffered, live]
         assert session.current_send is send
 
@@ -1013,10 +1013,70 @@ def test_a_rebind_whose_socket_fails_midway_still_binds_it_for_its_own_detach() 
             raise RuntimeError("socket gone")
 
         with pytest.raises(RuntimeError):
-            await session.rebind(send)
+            await session.rebind(send, replay_recent=True)
         assert session.current_send is send
         session.detach(grace_seconds=60)
         assert session._grace_task is not None
         session._grace_task.cancel()
 
     asyncio.run(run())
+
+
+def test_rebind_without_dedupe_replays_only_the_buffer() -> None:
+    """Regression (XERK-1789): a build older than XERK-1771 appends a re-delivered
+    final as a new turn. A client that doesn't say it dedupes gets only the frames
+    buffered since the drop, as before, never the recent window."""
+
+    async def run() -> None:
+        async def old_send(msg: ServerMessage) -> None:
+            pass
+
+        sent: list[ServerMessage] = []
+
+        async def send(msg: ServerMessage) -> None:
+            sent.append(msg)
+
+        session = Session(old_send)
+        delivered = _final_msg("delivered")
+        session._remember(delivered)
+        await session._send(delivered)
+        session.detach(grace_seconds=60)
+        buffered = _final_msg("buffered")
+        session._remember(buffered)
+        await session._send(buffered)
+        await session.rebind(send)
+        assert sent == [buffered]
+        assert session.current_send is send
+        session._detached = False
+
+    asyncio.run(run())
+
+
+def test_warm_resume_without_dedupe_flag_does_not_replay_delivered_turns() -> None:
+    """Regression (XERK-1789): the api only replays the recent window to a socket
+    opened with ?dedupe=1; an old client resuming without it sees no repeat."""
+    start = {"type": "session.start", "micSource": "g2-microphone"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as b:
+            b.send_text(json.dumps(start))
+            sid = b.receive_json()["sessionId"]
+            live = registry.get(sid)
+            assert live is not None
+
+            async def deliver() -> None:
+                msg = _final_msg("seg-1")
+                live._remember(msg)  # type: ignore[union-attr]
+                await live._send(msg)  # type: ignore[union-attr]
+
+            client.portal.call(deliver)
+            assert b.receive_json()["segmentId"] == "seg-1"
+            for path, replayed in (("/ws", False), ("/ws?dedupe=1", True)):
+                with client.websocket_connect(path) as c:
+                    c.send_text(json.dumps({**start, "sessionId": sid}))
+                    c.send_text(json.dumps({"type": "ping", "t": 1}))
+                    frames = []
+                    while (frame := c.receive_json())["type"] != "pong":
+                        frames.append(frame)
+                types = [f["type"] for f in frames]
+                assert ("caption.final" in types) is replayed, path
+                assert frames[types.index("session.ready")]["warm"] is True

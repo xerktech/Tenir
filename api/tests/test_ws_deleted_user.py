@@ -241,8 +241,8 @@ def test_revoke_during_resume_replay_still_closes_the_socket(
     member_id, member_token = _token("member", "member")
     real_rebind = session_mod.Session.rebind
 
-    async def rebind_then_revoke(self, send):
-        await real_rebind(self, send)
+    async def rebind_then_revoke(self, send, **kwargs):
+        await real_rebind(self, send, **kwargs)
         get_user_store().delete(member_id)
         registry.unregister(self)
         await self.revoke("account deleted")  # what the DELETE does, mid-resume

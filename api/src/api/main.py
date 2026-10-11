@@ -68,6 +68,13 @@ log = logging.getLogger("api")
 # turn, and the two would take the session from each other forever (XERK-1526).
 WS_CLOSE_RESUMED_ELSEWHERE = 4001
 
+# Query flag a client sets on /ws when it drops a re-delivered final/translation/cue
+# by id. Only then does a warm resume replay the recent frames a dead socket may have
+# swallowed: builds older than XERK-1771 append them as duplicate turns (XERK-1789).
+# A query flag, not a session.start field: SessionStart forbids extra fields, so an
+# older api would reject a new client that sent one; every api ignores unknown params.
+WS_DEDUPE_PARAM = "dedupe"
+
 # How to displace each live socket, keyed by its handler's ``send`` — the one
 # handle a Session keeps on the socket it is bound to (``current_send``).
 _displacers: dict[Sender, Callable[[], Awaitable[None]]] = {}
@@ -668,7 +675,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                     await displace()
                                 except Exception:
                                     log.warning("could not close the displaced socket")
-                            await session.rebind(send)
+                            await session.rebind(
+                                send,
+                                replay_recent=ws.query_params.get(WS_DEDUPE_PARAM) == "1",
+                            )
                             # A revoke must drop THIS socket too, not only the one the session
                             # was started on, or a resumed socket outlives its account (XERK-1504).
                             session.on_disconnect(close_removed)
