@@ -578,6 +578,26 @@ _LATIN1_UPPER = "".join(chr(c) for c in range(0xC0, 0xDF) if c != 0xD7)
 _LATIN1_LOWER = _LATIN1_UPPER.lower()
 
 
+def _case_fold_sql(expr: str, server_encoding: str | None) -> tuple[str, tuple[str, ...]]:
+    """``expr`` (already lower()ed) with the Latin-1 letters case-folded too, and its
+    parameters. Under a C locale lower() folds only ASCII, so "CAFÉ" missed a stored
+    "café" (full-text had dropped the É, matching either). UTF8 needs nothing more.
+
+    LATIN1 folds with translate(), which works on characters there. SQL_ASCII treats
+    text as bytes, where translate() would remap UTF-8 continuation bytes and make
+    unrelated characters equal ("本" matched "漬"), so it replaces each whole UTF-8
+    letter instead (XERK-1591)."""
+    if server_encoding == "UTF8":
+        return expr, ()
+    if server_encoding != "SQL_ASCII":
+        return f"translate({expr}, %s, %s)", (_LATIN1_UPPER, _LATIN1_LOWER)
+    params: list[str] = []
+    for upper, lower in zip(_LATIN1_UPPER, _LATIN1_LOWER):
+        expr = f"replace({expr}, %s, %s)"
+        params += [upper, lower]
+    return expr, tuple(params)
+
+
 def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
     """Split a search into the part full-text search can tokenise and the terms it
     can't, which are matched as substrings instead (as InMemoryConversationStore matches
@@ -994,22 +1014,14 @@ class SqlConversationStore:
                     )
                     match_params.append(full_text)
                 if substrings:
-                    if utf8:
-                        text_key, term_key, fold = "lower(s.text)", "lower(t)", ()
-                    else:
-                        # Under a C locale lower() folds only ASCII, so "CAFÉ" missed a
-                        # stored "café" (full-text had dropped the É, matching either).
-                        # Both sides also fold the Latin-1 letters. On SQL_ASCII
-                        # translate() maps bytes: the same mapping on both sides, so a
-                        # real match still matches.
-                        text_key = "translate(lower(s.text), %s, %s)"
-                        term_key = "translate(lower(t), %s, %s)"
-                        fold = (_LATIN1_UPPER, _LATIN1_LOWER)
+                    encoding = conn.info.parameter_status("server_encoding")
+                    text_key, fold = _case_fold_sql("lower(s.text)", encoding)
+                    term_key, _ = _case_fold_sql("lower(t)", encoding)
                     matches.append(
                         f"EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
                         f" WHERE strpos({text_key}, {term_key}) > 0)"
                     )
-                    # Placeholders in order: the term array, then each fold pair.
+                    # Placeholders in order: the term array, then each side's fold.
                     match_params.extend([substrings, *fold, *fold])
                 exists = " OR ".join(
                     f"EXISTS (SELECT 1 FROM segments s WHERE s.conversation_id = c.id AND {m})"

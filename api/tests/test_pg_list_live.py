@@ -290,6 +290,19 @@ def test_non_ascii_search_is_case_insensitive_under_a_c_locale(encoded_store, en
         assert [c.id for c in store.search(HH, query)] == [micro], query
 
 
+def test_sql_ascii_case_fold_never_equates_unrelated_characters(encoded_store) -> None:
+    """translate() maps bytes on SQL_ASCII: folding the Latin-1 pairs that way remapped
+    UTF-8 continuation bytes, so "本" (E6 9C AC) matched "漬" (E6 BC AC)."""
+    store = encoded_store("SQL_ASCII")
+    hon = _one_conversation(store, "日本語")
+    tsuke = _one_conversation(store, "漬物")
+    omega = _one_conversation(store, "Ѡ symbol")
+    assert [c.id for c in store.search(HH, "本")] == [hon]
+    assert [c.id for c in store.search(HH, "漬")] == [tsuke]
+    assert store.search(HH, "р") == []
+    assert [c.id for c in store.search(HH, "Ѡ")] == [omega]
+
+
 def test_search_with_no_terms_lists_everything(store) -> None:
     """As the in-memory store answers: a blank query is the plain list."""
     ids = _seed(store, 2)
