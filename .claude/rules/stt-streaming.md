@@ -95,3 +95,9 @@ paths:
 - Don't run that engine via `asyncio.run`: it joins the default executor on exit, so a hung
   `getaddrinfo` thread outlasts the deadline. `loop.close()` shuts it down without waiting.
   - Tests: `test_stt_backends.py::test_parakeet_deadline_covers_a_hung_dns_lookup`.
+- Clients may send odd-length binary frames (s16le, 2 bytes/sample). `push()` carries a trailing
+  odd byte into the next push; the music window trims and fingerprints whole samples only
+  (XERK-1826). An odd-length WAV data chunk fails in shazamio_core (no ffmpeg in the image).
+  - An odd byte in `_buf` raised from the VAD decode and byte-shifted the rest of the turn.
+  - Tests: `test_streaming_stt.py::test_odd_length_push_carries_byte_into_next_push`,
+    `test_music_session.py::test_music_window_stays_sample_aligned_under_odd_frames`.

@@ -208,6 +208,10 @@ class StreamingTranscriber:
         self._agreement = LocalAgreement() if local_agreement else None
 
         self._buf = bytearray()
+        # A trailing byte from an odd-length push, held until the next push completes
+        # the s16le sample. Without it the odd byte would shift every later sample in
+        # the turn and make the VAD decode raise (XERK-1826).
+        self._carry = b""
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
@@ -279,6 +283,12 @@ class StreamingTranscriber:
         return self._speech_finals_pending > 0 or self._finals_undelivered > 0
 
     async def push(self, pcm: bytes) -> None:
+        if self._carry:
+            pcm = self._carry + pcm
+            self._carry = b""
+        if len(pcm) % 2:
+            self._carry = pcm[-1:]
+            pcm = pcm[:-1]
         if not pcm:
             return
         self._buf.extend(pcm)
