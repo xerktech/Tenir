@@ -369,6 +369,8 @@ def _install_base_pool(monkeypatch) -> type:
             self.configure = configure
             self.lend_check = kw.get("check")
             self.drains = 0
+            self.drain_seconds = 0.0
+            self.check_on_lend = False
             self.lent: list = []
             self.waits: list = []
             self.returned: list = []
@@ -379,7 +381,10 @@ def _install_base_pool(monkeypatch) -> type:
 
         def getconn(self, timeout=None):
             self.waits.append(timeout)
-            return self.lent.pop()
+            conn = self.lent.pop()
+            if self.check_on_lend:
+                self.lend_check(conn)
+            return conn
 
         def putconn(self, conn) -> None:
             # The watchdog must be disarmed before the pool can lend the
@@ -398,6 +403,7 @@ def _install_base_pool(monkeypatch) -> type:
 
         def check(self) -> None:
             self.drains += 1
+            time.sleep(self.drain_seconds)
 
     fake_mod = types.ModuleType("psycopg_pool")
     fake_mod.ConnectionPool = _BasePool
@@ -434,6 +440,24 @@ def test_a_dead_connection_drains_the_idle_pool(monkeypatch) -> None:
     healthy.peer.sendall(b"x")
     pool.lend_check(healthy)
     assert pool.drains == 1
+
+
+def test_a_slow_drain_never_outlasts_the_borrow(monkeypatch) -> None:
+    """Idle connections that are slow but not hung each cost their check up to
+    CHECK_TIMEOUT_SECONDS: three at 1.5s would have held a 1s borrow 4.5s. The
+    borrower waits for the drain at most half its remaining wait, then moves on."""
+    pool = _install_base_pool(monkeypatch)(timeout=5.0)
+    pool.check_on_lend = True
+    pool.drain_seconds = 3 * 1.5
+    dead = _SocketConn()
+    dead.peer.close()
+    pool.lent.append(dead)
+    t0 = time.monotonic()
+    with pytest.raises(OSError, match="closed"):
+        _bounded(lambda: pool.getconn(timeout=1.0))
+    took = time.monotonic() - t0
+    assert pool.drains == 1
+    assert 0.4 < took < 1.0, took
 
 
 def test_a_hung_connection_does_not_drain_the_idle_pool(monkeypatch) -> None:

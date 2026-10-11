@@ -95,6 +95,9 @@ paths:
     them one per backoff step (1+2+4s), so after an idle outage the first request 503'd.
   - A check that hit `CHECK_TIMEOUT_SECONDS` (hung server) doesn't drain: each further check
     would add its bound to the borrower's wait.
+  - The drain runs in a thread; the borrower waits for it at most half its remaining wait
+    (`_borrow.deadline`), so slow-not-hung checks can't push it past its deadline.
+    Test: `test_a_slow_drain_never_outlasts_the_borrow`.
   - Tests: `test_first_request_after_an_idle_outage_succeeds` (live),
     `test_a_dead_connection_drains_the_idle_pool`.
 - A failed apply's deliberate `conn.close()` is registered in `_closed_on_purpose`, and a filter

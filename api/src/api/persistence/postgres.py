@@ -274,6 +274,8 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
             self.unreachable = False
             self._last_ok = time.monotonic()
             self._watchdogs: dict[int, _Watchdog] = {}
+            # The running borrow's deadline, per thread, bounding its drain.
+            self._borrow = threading.local()
             # Pooled connections outlive a Postgres restart; without a check each
             # one fails its next borrower once (AdminShutdown) before it is dropped.
             super().__init__(*args, configure=self._connected, check=self._check_or_drain, **kwargs)
@@ -294,8 +296,29 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
                 check_connection(conn)
             except Exception:
                 if time.monotonic() - t0 < CHECK_TIMEOUT_SECONDS:
-                    self.check()
+                    self._drain()
                 raise
+
+        def _drain(self) -> None:
+            """Run ``pool.check()``, but wait for it at most half of what is left of
+            the borrow's wait. Slow (not hung) idle connections each cost up to
+            CHECK_TIMEOUT_SECONDS, so a drain waited out in full could outlast the
+            request's own deadline. The other half is left to get the fresh
+            connection. ``check()`` takes every idle connection out of the pool at
+            once, so the borrower never retries one the drain still holds; the
+            drain finishes in the background and returns the ones that pass."""
+            deadline = getattr(self._borrow, "deadline", None)
+            if deadline is None:  # a check outside getconn: the pool's own wait
+                deadline = time.monotonic() + self.timeout
+            drain = threading.Thread(target=self._check_quietly, daemon=True)
+            drain.start()
+            drain.join(max(0.0, (deadline - time.monotonic()) / 2))
+
+        def _check_quietly(self) -> None:
+            try:
+                self.check()
+            except Exception as exc:  # noqa: BLE001 - e.g. the pool closed meanwhile
+                log.info("idle connection drain stopped (pool %s): %s", self.name, exc)
 
         def _reachable(self) -> None:
             self._last_ok = time.monotonic()
@@ -316,9 +339,15 @@ def _guard(ConnectionPool):  # noqa: N803 - the class being extended
             super().reconnect_failed()
 
         def getconn(self, timeout: float | None = None):
+            if timeout is None:
+                timeout = self.timeout
             if self.unreachable:
-                timeout = min(self.timeout if timeout is None else timeout, OUTAGE_WAIT_SECONDS)
-            conn = super().getconn(timeout)
+                timeout = min(timeout, OUTAGE_WAIT_SECONDS)
+            self._borrow.deadline = time.monotonic() + timeout
+            try:
+                conn = super().getconn(timeout)
+            finally:
+                self._borrow.deadline = None
             self._reachable()
             if self.borrow_timeout is not None:
                 self._watchdogs[id(conn)] = _Watchdog(conn, self.borrow_timeout, "query")
