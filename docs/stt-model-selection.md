@@ -192,9 +192,9 @@ migration in §5.
   Untestable without the GPU; worth an experiment on the host.
 - **Local attention** (`rel_pos_local_attn`) — only matters past ~24 min of audio. Our
   windows are ≤12 s.
-- **Lowering `stt_silence_ms`** from 700 ms. The single biggest remaining win on
-  time-to-final, but it trades directly against cutting speakers off mid-sentence, and
-  picking the number needs real audio rather than a guess.
+- **Tuning `stt_silence_ms`.** It trades time-to-final directly against cutting speakers
+  off mid-sentence. Since tuned on real session audio: 500 ms (XERK-175), then 800 ms
+  (XERK-1667) once 500 ms proved to split quiet far-field speech mid-phrase.
 - **`parakeet-tdt-0.6b-v2`** (English-only, more accurate in English than v3). Rejected:
   it would lose Spanish and auto-detection.
 

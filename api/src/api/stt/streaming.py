@@ -160,7 +160,7 @@ class StreamingTranscriber:
         partial_window_ms: int = 6000,
         max_segment_ms: int = 8000,
         min_segment_ms: int = 400,
-        silence_ms: int = 500,
+        silence_ms: int = 800,
         silence_rms: float = 0.005,
         local_agreement: bool = True,
         vad_adaptive: bool = True,

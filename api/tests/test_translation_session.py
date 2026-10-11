@@ -443,7 +443,7 @@ def test_slow_final_decode_keeps_the_run_open(monkeypatch: pytest.MonkeyPatch) -
     def transcriber(*_a, **_kw) -> StreamingTranscriber:
         # Partials off: only finals drive the hold, as when intake lags (XERK-1414).
         return StreamingTranscriber(
-            SlowSecondFinal(), partial_interval_ms=60_000, final_words=False
+            SlowSecondFinal(), partial_interval_ms=60_000, final_words=False, silence_ms=500
         )
 
     monkeypatch.setattr(session_mod, "make_transcriber", transcriber)
