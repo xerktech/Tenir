@@ -36,6 +36,14 @@ to `ghcr.io/xerktech/tenir-parakeet-stt`. The dev stack builds it locally
 (`docker compose up --build`); the DockerOps `tenir-gpu` stack runs the published
 image on port **9401**.
 
+## VRAM cap
+
+Set `PARAKEET_VRAM_CLAIM_GIB` to the pod's GPU claim (talos04 DRA: ArgoCD
+`ai/tenir/stt.yaml`) and the server caps torch's allocator at the claim less ~1 GiB of
+CUDA context ([XERK-1400](https://xerktech.atlassian.net/browse/XERK-1400)). A burst that
+outgrows the claim then fails its own request instead of taking VRAM from a card
+co-tenant. Unset (compose, a dedicated card): no cap. Raise it together with the claim.
+
 ## Routing
 
 Where the api can open a socket straight to this server — the single-host compose
