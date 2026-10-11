@@ -190,19 +190,20 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
 
 
 # What may end a sentence, so the next capitalised word starts one. A dash opens a line of
-# dialogue ("— Mañana iremos.") only when a space follows it: in "Marie-Peña" it joins a name.
-# No colon: "Dijo: Mañana." is Spanish by its other words, "Il dit: Peña." is a name.
+# dialogue ("— Mañana iremos.", "—Mañana.") only at the start or after a space: in
+# "Marie-Peña" it joins a name. No colon: "Dijo: Mañana." is Spanish by its other words,
+# "Il dit: Peña." is a name.
 _SENTENCE_END = ".!?¿¡…"
 _DIALOGUE_DASHES = "-–—"
+_OPENERS = "\"'«“("
 
 
 def _sentence_initial(text: str, start: int) -> bool:
-    before = text[:start].rstrip(" \"'«“(")
-    if not before:
-        return True
-    if before[-1] in _DIALOGUE_DASHES:
-        return text[len(before)].isspace()
-    return before[-1] in _SENTENCE_END
+    before = text[:start].rstrip().rstrip(_OPENERS).rstrip()
+    if before and before[-1] in _DIALOGUE_DASHES:
+        before = before[:-1]
+        return not before or before[-1].isspace() or before[-1] in _SENTENCE_END
+    return not before or before[-1] in _SENTENCE_END
 
 
 def _char_evidence(text: str) -> tuple[str, str]:

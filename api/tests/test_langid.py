@@ -473,6 +473,9 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "— Mañana iremos.",
         "Dijo: Mañana.",
         "— Peña.",
+        "—Mañana iremos.",
+        "Sí. —Mañana.",
+        "—«Mañana».",
         # A capitalised ñ word counts where the rest of the turn is Spanish anyway.
         "Hola Señor.",
         "Gracias, Señor.",
