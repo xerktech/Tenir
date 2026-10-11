@@ -80,7 +80,12 @@ class BoundaryProbe(StreamingTranscriber):
         reason = (
             "cap"
             if len(self._buf) >= self._max_segment_bytes
-            else ("silence" if self._trailing_silence >= self._silence_bytes else "flush")
+            else (
+                "silence"
+                if self._trailing_silence >= self._silence_bytes
+                and len(self._buf) >= self._min_segment_bytes
+                else "flush"
+            )
         )
         start = self._segment_start_ms
         end = start + len(self._buf) * 1000 // BYTES_PER_SEC
