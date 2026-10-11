@@ -328,6 +328,26 @@ describe("silent refresh before expiry", () => {
     expect(getOidcSession()?.refreshToken).toBe("refresh-1");
   });
 
+  // XERK-1591: a revoked refresh token is dropped; an unreachable IdP keeps it.
+  it("drops the sidecar when the IdP rejects the refresh token with invalid_grant", async () => {
+    setOidcSession({ refreshToken: "refresh-dead", expiresAt: 0 });
+    mockFetch(() => json({ error: "invalid_grant", error_description: "revoked" }, 400));
+    await expect(refreshOidcSession()).rejects.toMatchObject({ code: "invalid_grant" });
+    expect(getOidcSession()).toBeNull();
+  });
+
+  it("keeps the sidecar when the IdP is unreachable or answers 5xx", async () => {
+    setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("IdP down");
+    }) as unknown as typeof fetch;
+    await expect(refreshOidcSession()).rejects.toBeInstanceOf(Error);
+    expect(getOidcSession()?.refreshToken).toBe("refresh-1");
+    mockFetch(() => json({}, 503));
+    await expect(refreshOidcSession()).rejects.toBeInstanceOf(Error);
+    expect(getOidcSession()?.refreshToken).toBe("refresh-1");
+  });
+
   it("ensureFreshOidcToken refreshes a due token and no-ops a fresh one", async () => {
     let hits = 0;
     mockFetch(() => {

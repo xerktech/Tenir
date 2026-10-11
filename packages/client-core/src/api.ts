@@ -275,6 +275,26 @@ export function describeLoginError(err: unknown): string {
 }
 
 /**
+ * Heading + body for the boot state where the stored session couldn't be checked
+ * (`checkSession` rejected). Shared so web and Android word it identically: a 5xx
+ * answer gets server-error copy, anything else (unreachable, database down) gets
+ * the unreachable copy. The detail line comes from `describeLoginError`.
+ */
+export function describeBootFailure(err: unknown): { heading: string; body: string } {
+  const lead = "We couldn't check whether you're still signed in.";
+  if (err instanceof ApiError) {
+    return {
+      heading: "Your server hit an error",
+      body: `${lead} Your Tenir server answered with an error, which doesn't mean you were signed out — retry in a moment.`,
+    };
+  }
+  return {
+    heading: "Can't reach your server",
+    body: `${lead} If your Tenir server is just offline or restarting, you don't need to sign in again — retry once it's back.`,
+  };
+}
+
+/**
  * Local logout: drop the stored token and any OIDC session sidecar, for either kind
  * of session. For an OIDC session this is only the *local* half — `oidcLogout()`
  * (oidc.ts) additionally ends the IdP session (RP-initiated logout, §10).

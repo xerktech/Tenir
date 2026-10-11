@@ -591,6 +591,30 @@ describe("OIDC callback (returning from Authentik)", () => {
     expect(core.getToken()).toBeNull();
     expect(core.getOidcSession()?.refreshToken).toBe("oidc-refresh-1");
 
+    // An API outage meanwhile: no access token, so the login form — not the app.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("api down");
+      }),
+    );
+    mountDom();
+    await loginMod.initPhoneLogin(storage, els(), {});
+    expect(els().login.hidden).toBe(false);
+    expect(els().app.hidden).toBe(true);
+    expect(core.getOidcSession()?.refreshToken).toBe("oidc-refresh-1");
+
+    stubOidcApi({
+      oidc: true,
+      onToken: () =>
+        new Response(JSON.stringify({ access_token: "oidc-access-2", expires_in: 300 }), {
+          status: 200,
+        }),
+      me: (auth) =>
+        auth === "Bearer oidc-access-2"
+          ? new Response(JSON.stringify(PRINCIPAL), { status: 200 })
+          : new Response(JSON.stringify({ detail: "expired" }), { status: 401 }),
+    });
     idpUp = true;
     mountDom();
     const onAuthed = vi.fn();

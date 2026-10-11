@@ -11,6 +11,7 @@ import {
   ApiError,
   checkSession,
   completeOidcCallback,
+  describeBootFailure,
   describeLoginError,
   getAuthConfig,
   getSessionKind,
@@ -219,16 +220,13 @@ function Unreachable({
   // a server error (status + detail).
   const detail =
     error instanceof NetworkError || error instanceof ApiError ? describeLoginError(error) : null;
+  // Heading + body shared with Android (client-core), so the two can't drift.
+  const copy = describeBootFailure(error);
   return (
     <section>
-      <h2>{error instanceof ApiError ? "Your server hit an error" : "Can't reach your server"}</h2>
+      <h2>{copy.heading}</h2>
       <Card>
-        <p className="muted">
-          We couldn&apos;t check whether you&apos;re still signed in.{" "}
-          {error instanceof ApiError
-            ? "Your Tenir server answered with an error, which doesn't mean you were signed out — retry in a moment."
-            : "If your Tenir server is just offline or restarting, you don't need to sign in again — retry once it's back."}
-        </p>
+        <p className="muted">{copy.body}</p>
         {detail && (
           <p className="field-error" role="alert">
             {detail}

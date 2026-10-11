@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   checkSession,
+  describeBootFailure,
   describeLoginError,
   getStatus,
   history,
@@ -220,6 +221,17 @@ describe("checkSession (boot, XERK-1591)", () => {
     mockFetch(() => json({ detail: "nope" }, 403));
     await expect(checkSession()).resolves.toBeNull();
     expect(getToken()).toBe("tok-1");
+  });
+
+  it("describeBootFailure words a 5xx as a server error and the rest as unreachable", () => {
+    const fault = describeBootFailure(new ApiError(500, "boom"));
+    expect(fault.heading).toBe("Your server hit an error");
+    expect(fault.body).toMatch(/answered with an error/);
+    for (const err of [new NetworkError("down"), new ServerUnavailableError("db")]) {
+      const down = describeBootFailure(err);
+      expect(down.heading).toBe("Can't reach your server");
+      expect(down.body).toMatch(/offline or restarting/);
+    }
   });
 
   it("a 500 on an ordinary action still surfaces as an ApiError", async () => {

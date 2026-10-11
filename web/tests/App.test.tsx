@@ -16,17 +16,8 @@ const oidcLogout = core.oidcLogout as unknown as Mock;
 const logout = core.logout as unknown as Mock;
 const describeLoginError = core.describeLoginError as unknown as Mock;
 
-const { me, getToken, captureStats, ApiErrorMock, NetworkErrorMock } = vi.hoisted(() => ({
+const { me, getToken, captureStats } = vi.hoisted(() => ({
   me: vi.fn(),
-  ApiErrorMock: class ApiError extends Error {
-    constructor(
-      readonly status: number,
-      message: string,
-    ) {
-      super(message);
-    }
-  },
-  NetworkErrorMock: class NetworkError extends Error {},
   // A stored session by default; the boot-unreachable tests flip it to none.
   getToken: vi.fn((): string | null => "stored-token"),
   // Instrumentation for the capture session so a test can prove the session is
@@ -35,7 +26,14 @@ const { me, getToken, captureStats, ApiErrorMock, NetworkErrorMock } = vi.hoiste
   captureStats: { constructed: 0, stops: 0, running: false },
 }));
 
-vi.mock("@tenir/client-core", () => ({
+vi.mock("@tenir/client-core", async (importOriginal) => {
+  // The real error classes + boot copy, so the UI is tested against client-core's
+  // actual wording and `instanceof` checks (XERK-1591); everything else is mocked.
+  const actual = await importOriginal<typeof import("@tenir/client-core")>();
+  return {
+  ApiError: actual.ApiError,
+  NetworkError: actual.NetworkError,
+  describeBootFailure: actual.describeBootFailure,
   configureApi: vi.fn(),
   // config.ts (pulled in transitively) wires the browser OIDC primitives at import.
   configureOidc: vi.fn(),
@@ -50,12 +48,12 @@ vi.mock("@tenir/client-core", () => ({
       return await me();
     } catch (err) {
       const core = await import("@tenir/client-core");
-      if (err instanceof ApiErrorMock && err.status === 401) {
+      if (err instanceof actual.ApiError && err.status === 401) {
         if (core.getSessionKind() === "oidc") core.clearToken();
         else core.logout();
         return null;
       }
-      const fault = err instanceof NetworkErrorMock || (err instanceof ApiErrorMock && err.status >= 500);
+      const fault = err instanceof actual.NetworkError || (err instanceof actual.ApiError && err.status >= 500);
       if (fault && getToken() != null) throw err;
       return null;
     }
@@ -73,8 +71,6 @@ vi.mock("@tenir/client-core", () => ({
   startOidcLogin: vi.fn(async () => {}),
   completeOidcCallback: vi.fn(),
   oidcLogout: vi.fn(async () => {}),
-  ApiError: ApiErrorMock,
-  NetworkError: NetworkErrorMock,
   getStatus: vi.fn(async () => ({ overall: "ready", generatedAt: "x", reasons: [], components: [] })),
   history: { list: vi.fn(async () => []), get: vi.fn(), remove: vi.fn(), audioUrl: () => "" },
   users: { list: vi.fn(async () => []), create: vi.fn(), remove: vi.fn() },
@@ -115,7 +111,8 @@ vi.mock("@tenir/client-core", () => ({
     stop() { captureStats.stops += 1; return Promise.resolve(); }
     togglePause() {}
   },
-}));
+  };
+});
 
 function renderApp() {
   return render(

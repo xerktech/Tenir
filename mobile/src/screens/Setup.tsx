@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from "react";
 
-import { ApiError, describeLoginError, DISCLOSURE_SUMMARY } from "@tenir/client-core";
+import { describeBootFailure, describeLoginError, DISCLOSURE_SUMMARY } from "@tenir/client-core";
 import { errText } from "../lib/format";
 import { useNotify } from "../lib/notify";
 import { isValidServerUrl, normalizeServerUrl } from "../lib/serverUrl";
@@ -120,21 +120,11 @@ export function SetupScreen({
 
   return (
     <Screen>
-      <Heading>
-        {!unreachable
-          ? "Set up Tenir"
-          : error instanceof ApiError
-            ? "Your server hit an error"
-            : "Can't reach your server"}
-      </Heading>
+      <Heading>{unreachable ? describeBootFailure(error).heading : "Set up Tenir"}</Heading>
       {unreachable && (
         <Card>
-          <Muted>
-            We couldn&apos;t check whether you&apos;re still signed in.{" "}
-            {error instanceof ApiError
-              ? "Your Tenir server answered with an error, which doesn't mean you were signed out — retry in a moment."
-              : "If your Tenir server is just offline or restarting, you don't need to sign in again — retry once it's back."}
-          </Muted>
+          {/* Heading + body shared with web (client-core), so the two can't drift. */}
+          <Muted>{describeBootFailure(error).body}</Muted>
           {error != null && <Muted>{describeLoginError(error)}</Muted>}
           <Row>
             {onRetry && <Button title="Retry" kind="primary" onPress={onRetry} />}

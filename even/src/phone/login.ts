@@ -196,7 +196,9 @@ async function resolveBootAuth(storage: KeyValueStorage): Promise<Principal | "o
     } catch (err) {
       // Unreachable, or any 5xx (a real 500 included): says nothing about the token
       // — keep it and show the app best-effort, as for a network failure (XERK-1591).
-      if (isServerFault(err)) return hadSession ? "offline" : null;
+      // With no access token (only a refresh sidecar) there is nothing to show the app
+      // on — the login form, as web/Android show for a missing token in an outage.
+      if (isServerFault(err)) return hadSession && getToken() !== null ? "offline" : null;
       // 401: token expired/revoked. Any other rejection says nothing definite about
       // the token, so it is kept (web/Android parity: only a 401 clears it).
       tokenRejected = err instanceof ApiError && err.status === 401;
