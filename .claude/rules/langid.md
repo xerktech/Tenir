@@ -70,11 +70,15 @@ paths:
 - New es vocab must be ≥10× rarer (wordfreq) in pt/it: pt `vamos`/`estás`, it `tengo`/`ella`
   are Spanish-looking but native there, so they stay out.
 - A `_CHARS` letter (ñ) in a capitalised mid-sentence word is a name, not es evidence ("C'est
-  Peña." went es); a sentence-initial capital still counts ("Mañana."). es only: German
-  capitalises nouns ("Fußball") and pt names are pt turns ("Japão") — skipping them lost ~40.
+  Peña." went es), unless the rest of the turn leans es by frequency ("Hola Señor." stays es).
+  Sentence-initial capitals (after `.!?:` or a dialogue dash) always count ("Mañana.").
+- es only: German capitalises nouns ("Fußball") and pt names are pt turns ("Japão") —
+  name-skipping ß/ã/õ lost ~40 of 20k Tatoeba sentences.
 - A `_CHARS` letter beside English (`_english_evidence`) and no word hit of its own scores
   nothing ("It's a piñata.", "No jalapeños please."); ¿/¡ still count — the STT wrote Spanish.
-  Capitalised words count as English only if in the en vocab: wordfreq calls "Tom" English.
+  English evidence includes `_SHARED_EN` words except against their own language
+  (`_SHARED_EN_LANGS`): "the" vs es ("Order the piña colada."), but de "was" beside ß made
+  "Niemand weiß, was in …" en. Homographs never count: de "in" beside "großen" lost German.
 - A word-list call left by a `_FOREIGN_CHARS` veto needs frequencies to back it
   (`_frequencies_back`): a lowercased name ("la musique de maría.") otherwise crowns es.
   Both its tests are needed; either alone lost 6–10 real Spanish of 20k Tatoeba.

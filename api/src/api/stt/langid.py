@@ -101,7 +101,15 @@ _ENGLISH_HOMOGRAPHS = frozenset(
 # English vocab that is also an everyday word of another contract language, ASR-spelled
 # (no accents): de "was"/"is"(ist)/"so"/"in", es "has", pt "to"(tô)/"for", it "be"/"so"/"in",
 # fr "but"/"the"(thé). Found by QA of XERK-1423 with the real translation model.
-_SHARED_EN = frozenset("was is so in has to for be but the".split())
+# Mapped to the languages they are native to.
+_SHARED_EN_LANGS: dict[str, frozenset[str]] = {
+    w: frozenset(langs.split())
+    for w, langs in {
+        "was": "de", "is": "de", "so": "de it", "in": "de it", "has": "es",
+        "to": "pt", "for": "pt", "be": "it", "but": "fr", "the": "fr",
+    }.items()
+}  # fmt: skip
+_SHARED_EN = frozenset(_SHARED_EN_LANGS)
 
 # Characters that pin a language on their own (strong evidence — they are typed
 # by the STT model's own orthography, not by chance).
@@ -166,14 +174,13 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
         if code != "en" and scores[code]:
             scores[code] += sum(1 for w in words if w in vocab and w in _ENGLISH_HOMOGRAPHS)
     letters, punctuation = _char_evidence(text)
-    english = _english_evidence(text)
     for code, chars in _CHARS.items():
         # German capitalises every noun ("Fußball"), and pt names are pt evidence ("Japão").
         written = letters if code == "es" else lowered
         # A letter beside English and no word of its own is a loanword or a name, not
         # evidence: "It's a piñata.", "No jalapeños please." went es (XERK-1591). ¿/¡ are
         # the STT model writing Spanish punctuation, never a loanword, so they still count.
-        if english and not scores[code]:
+        if not scores[code] and _english_evidence(text, code):
             hit = any(c in punctuation for c in chars)
         else:
             hit = any(c in written + punctuation for c in chars)
@@ -182,8 +189,9 @@ def _scores(text: str) -> tuple[dict[str, int], list[str]] | None:
     return scores, words
 
 
-# What may end a sentence, so the next capitalised word starts one.
-_SENTENCE_END = ".!?¿¡…"
+# What may end a sentence, so the next capitalised word starts one: a colon opens quoted
+# speech ("Dijo: Mañana."), a dash a line of dialogue ("— Mañana iremos.").
+_SENTENCE_END = ".!?¿¡…:-–—"
 
 
 def _sentence_initial(text: str, start: int) -> bool:
@@ -192,26 +200,47 @@ def _sentence_initial(text: str, start: int) -> bool:
 
 
 def _char_evidence(text: str) -> tuple[str, str]:
-    """What ``_CHARS`` may score, lowercased: the letters of every word except a capitalised
-    one mid-sentence — that is a name ("Le chanteur Peña est venu." went es, XERK-1591;
-    a sentence-initial capital still counts: "Mañana."), and the punctuation."""
-    letters = "".join(
-        m.group()
-        for m in _TOKEN_RE.finditer(text)
-        if not m.group()[0].isupper() or _sentence_initial(text, m.start())
-    )
+    """What ``_CHARS`` may score, lowercased: the letters of the turn's words, and its
+    punctuation. A capitalised word mid-sentence is a name ("Le chanteur Peña est venu."
+    went es, XERK-1591), so its letters count only when the rest of the turn leans Spanish
+    by frequency anyway ("Hola Señor.", "Viva España."); a sentence-initial capital always
+    counts ("Mañana.")."""
+    kept, names, rest = [], [], []
+    for m in _TOKEN_RE.finditer(text):
+        word = m.group()
+        if word[0].isupper() and not _sentence_initial(text, m.start()):
+            names.append(word)
+        else:
+            kept.append(word)
+            rest.append(word.lower())
+    if names and _leans_spanish(rest):
+        kept += names
     punctuation = "".join(ch for ch in text if not ch.isalpha())
-    return letters.lower(), punctuation
+    return "".join(kept).lower(), punctuation
 
 
-def _english_evidence(text: str) -> bool:
-    """Whether the turn holds a word that can only be English (``is_english_word``): any
-    English vocab word, or a lowercase word by frequency — a capitalised one is likely a
-    name ("Tom", "Cookie") that wordfreq counts as English."""
+def _leans_spanish(words: list[str]) -> bool:
+    """Whether Spanish is the most likely language of ``words`` by frequency."""
+    if not words:
+        return False
+    totals = _frequency_totals(words)
+    return all(totals["es"] > n for code, n in totals.items() if code != "es")
+
+
+def _english_evidence(text: str, versus: str) -> bool:
+    """Whether the turn holds a word that is English evidence against ``versus``: English
+    vocab that isn't an ``_ENGLISH_HOMOGRAPHS`` word or a ``_SHARED_EN`` word of ``versus``
+    ("the" counts against es: "Order the piña colada."; "was" not against de: "Niemand
+    weiß, was …" went en), or a word ten times as frequent in English (``is_english_word``:
+    "please", "two")."""
     return any(
-        is_english_word(t.lower())
-        for t in _TOKEN_RE.findall(text)
-        if not t[0].isupper() or t.lower() in _WORDS["en"]
+        (
+            w in _WORDS["en"]
+            and w not in _ENGLISH_HOMOGRAPHS
+            and versus not in _SHARED_EN_LANGS.get(w, ())
+        )
+        or is_english_word(w)
+        for w in _TOKEN_RE.findall(text.lower())
     )
 
 

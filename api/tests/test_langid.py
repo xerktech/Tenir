@@ -430,6 +430,12 @@ def test_word_frequencies_correct_a_short_word_list_call() -> None:
         "We met Peña.",
         "Peña is here.",
         "My friend Muñoz.",
+        # ...including a sentence-initial or shared English word (QA).
+        "Two jalapeños.",
+        "The jalapeño.",
+        "Order the piña colada.",
+        "Yeah, mañana.",
+        "Ask Mrs. Peña.",
         # A lowercased name doesn't hand a French turn to Spanish by ruling French out.
         "la musique de maría.",
         "le chien de maría.",
@@ -457,9 +463,21 @@ def test_names_keep_the_turn_in_its_language() -> None:
         "Niño.",
         "Sí, señor.",
         "Señor, ¿dónde está?",
+        # A dash or colon starts a sentence (dialogue, quoted speech).
+        "- Mañana.",
+        "— Mañana iremos.",
+        "Dijo: Mañana.",
+        # A capitalised ñ word counts where the rest of the turn is Spanish anyway.
+        "Hola Señor.",
+        "Gracias, Señor.",
+        "Buenos días, Señora.",
+        "Bienvenidos a España.",
+        "Hasta Mañana.",
         # ¿/¡ count beside an English-looking word: the STT model wrote Spanish.
         "¿Has ido a Boston alguna vez?",
         "¡Cuánto has crecido!",
+        "¡Happy birthday!",
+        "¿Really?",
         # The letters still break an es/fr tie when the frequencies agree (Tatoeba).
         "Habló de música.",
         "Era un inútil.",
@@ -477,6 +495,9 @@ def test_other_languages_letters_count_in_capitalised_words() -> None:
     assert detect_lang("Tom spielt gerade Fußball.") == "de"
     assert detect_lang("Die Straße war voller Werbung.") == "de"
     assert detect_lang("Bem-vindo ao Japão.") == "pt"
+    # A shared word of German ("was") is no English evidence against German's ß (QA).
+    assert detect_lang("Niemand weiß genau, was in jener Winternacht geschah.") is None
+    assert detect_lang("Has estado fuera tantos años.") == "es"
 
 
 def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
