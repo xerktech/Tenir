@@ -898,6 +898,55 @@ def test_resuming_a_deleted_recording_starts_fresh_instead_of_recreating_it() ->
         assert fresh is not None and fresh.status == "ready"
 
 
+def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DELETE lands after the handler's existence check, while start() reads the
+    resume offset (QA's widened window). start() reopens with an UPDATE only, so the
+    row stays gone, and the socket still gets a session, under a fresh server id."""
+
+    def drain_to_pong(ws) -> None:
+        while ws.receive_json()["type"] != "pong":
+            pass
+
+    store = get_conversation_store()
+    real_offset = Session._resume_offset_ms
+
+    async def deleted_meanwhile(self: Session) -> int:
+        await asyncio.sleep(0.2)
+        url = f"/conversations/{self.session_id}"
+        assert await asyncio.to_thread(lambda: TestClient(app).delete(url).status_code) == 204
+        return await real_offset(self)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            sid = ws.receive_json()["sessionId"]
+            ws.send_text(json.dumps({"type": "session.end"}))
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            drain_to_pong(ws)
+        monkeypatch.setattr(Session, "_resume_offset_ms", deleted_meanwhile)
+
+        with client.websocket_connect("/ws") as ws2:
+            ws2.send_text(
+                json.dumps(
+                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                )
+            )
+            ready = ws2.receive_json()
+            assert ready["type"] == "session.ready"
+            assert ready["sessionId"] != sid and ready["resumed"] is False
+            ws2.send_bytes(_voice_chunk())
+            ws2.send_text(json.dumps({"type": "session.end"}))
+            ws2.send_text(json.dumps({"type": "ping", "t": 2}))
+            drain_to_pong(ws2)
+
+        assert store.get("default", sid) is None
+        assert get_audio_store().get(audio_key("default", sid)) is None
+        fresh = store.get("default", ready["sessionId"])
+        assert fresh is not None and fresh.status == "ready"
+
+
 class _OneSongMusic:
     """Music service that recognizes one song on every scan."""
 

@@ -810,6 +810,23 @@ class SqlConversationStore:
         assert got is not None
         return got
 
+    def reopen(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str
+    ) -> Conversation | None:
+        with self._ensure_pool().connection() as conn:
+            # UPDATE only, so a row deleted since the resume's check stays deleted.
+            # One statement, so a DELETE either lands first (no row: None) or after
+            # (a recording deleted while live, which the session already handles).
+            reopened = conn.execute(
+                """
+                UPDATE conversations SET status = 'live', ended_at = NULL
+                 WHERE id = %s AND household = %s
+             RETURNING id
+                """,
+                (conversation_id, household),
+            ).fetchone()
+        return self.get(household, conversation_id) if reopened is not None else None
+
     def add_segment(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, segment: Segment
     ) -> None:

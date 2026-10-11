@@ -60,7 +60,13 @@ from api.persistence.postgres import (
 )
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Sender, Session, is_valid_session_id, teardowns_in_flight
+from api.session import (
+    RecordingGone,
+    Sender,
+    Session,
+    is_valid_session_id,
+    teardowns_in_flight,
+)
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 from api.stt import preload_vad_model
@@ -826,16 +832,37 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     # it as an error frame instead of aborting the socket so a transient
                     # backend outage doesn't 500 the connection.
                     try:
-                        new_session = Session(
-                            send,
-                            session_id=requested_id,
-                            household=principal.household,
-                            user_id=principal.user_id,
-                        )
-                        await new_session.start(
-                            mic_source=msg.micSource,
-                            source_lang=msg.sourceLang,
-                        )
+                        try:
+                            new_session = Session(
+                                send,
+                                session_id=requested_id,
+                                household=principal.household,
+                                user_id=principal.user_id,
+                                reopen=True,
+                            )
+                            await new_session.start(
+                                mic_source=msg.micSource,
+                                source_lang=msg.sourceLang,
+                            )
+                        except RecordingGone:
+                            # Deleted between the check above and start() reopening it:
+                            # it stays deleted, and this start goes on under a server id.
+                            log.info(
+                                "resumed recording deleted mid-start in household %s; "
+                                "starting fresh",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.unknown_resume_id")
+                            await start_guard.aclose()
+                            new_session = Session(
+                                send,
+                                household=principal.household,
+                                user_id=principal.user_id,
+                            )
+                            await new_session.start(
+                                mic_source=msg.micSource,
+                                source_lang=msg.sourceLang,
+                            )
                     except Exception:
                         log.exception("session.start failed for household %s", principal.household)
                         metrics.incr("sessions.start_errors")

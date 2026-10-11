@@ -36,6 +36,10 @@ paths:
 - A cold resume of an id with no row starts fresh under a server id, like a foreign id: every
   id the server issues has its row from `start()`, so no row means the recording was deleted,
   and `create()` is an upsert that would bring it back. Clients adopt the id in session.ready.
+- That check can't close the window alone (a DELETE can land after it): the handler starts the
+  resume with `reopen=True`, so `start()` reopens with one UPDATE (`ConversationStore.reopen`),
+  never the upsert. No row raises `RecordingGone` and the handler retries under a server id.
+  Tests: `test_pg_resume_live.py::test_a_cold_resume_whose_recording_is_deleted_mid_start_*`.
 - Once a start knows it runs under a fresh server id, it releases the presented id's start lock
   before `start()`: holding it let anyone who knew a victim's id stall that victim's resume.
 - A cold resume of a persisted id also reports `resumed=True`; only `warm` (true solely from the

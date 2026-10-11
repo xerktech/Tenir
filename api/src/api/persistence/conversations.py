@@ -38,6 +38,12 @@ class ConversationStore(Protocol):
         mic_source: str | None = None,
         source_lang: str | None = None,
     ) -> Conversation: ...
+    def reopen(self, household: str, conversation_id: str) -> Conversation | None:
+        """Mark an existing recording live again for a cold resume; None when it is gone.
+
+        Never inserts: a recording deleted after the resume's existence check must stay
+        deleted, which the create() upsert would undo."""
+        ...
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None: ...
     def set_segment_translation(
         self, household: str, conversation_id: str, segment_id: str, translation: str
@@ -118,6 +124,14 @@ class InMemoryConversationStore:
                 source_lang=source_lang,
             )
             convs[conversation_id] = conv
+            return conv
+
+    def reopen(self, household: str, conversation_id: str) -> Conversation | None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is not None:
+                conv.status = "live"
+                conv.ended_at = None
             return conv
 
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None:

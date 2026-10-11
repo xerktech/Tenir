@@ -313,6 +313,10 @@ def is_valid_session_id(value: str) -> bool:
         return False
 
 
+class RecordingGone(Exception):
+    """A cold resume's recording was deleted before start() could reopen it."""
+
+
 class Session:
     def __init__(
         self,
@@ -321,10 +325,14 @@ class Session:
         session_id: str | None = None,
         household: str | None = None,
         user_id: str | None = None,
+        reopen: bool = False,
     ) -> None:
         self._send = send
         self.session_id = session_id or str(uuid.uuid4())
         self.resumed = bool(session_id)
+        # A cold resume of a recording the caller found stored: start() only reopens
+        # its row, and raises RecordingGone if it was deleted since (never recreates it).
+        self._reopen = reopen and self.resumed
         self.mic_source: MicSource | None = None
         self.source_lang: Lang | None = None
         self._transcriber: Transcriber | None = None
@@ -607,26 +615,35 @@ class Session:
             # Set before the call: a create that raises may still have written the
             # live row, which close() then finishes.
             self._row_opened = True
-            # Idempotent: a resumed session keeps appending to its existing record.
             # Offloaded: a real (Postgres) store blocks, and this is on the connect
             # path — never run a blocking store call on the event loop. Kept as a
             # shielded future: a cancel here leaves the thread running, and its
             # INSERT committing 'live' after close() finished the row left it live
             # until the next boot's stale sweep (XERK-1529); _persist waits on it.
-            self._create = asyncio.ensure_future(
-                asyncio.to_thread(
-                    self._conversations.create,
-                    self._household,
-                    self.session_id,
-                    # Per-user ownership (XERK-651): stamp the recording with the principal
-                    # that opened the socket. Idempotent create keeps a resumed row's
-                    # original owner, so a resume never re-owns another user's recording.
-                    owner=self.user_id,
-                    mic_source=_enum_str(mic_source),
-                    source_lang=_enum_str(source_lang),
+            if self._reopen:
+                # A resume keeps appending to its existing record, and only reopens it:
+                # the create() upsert would bring back a recording deleted since the
+                # handler checked it was there.
+                self._create = asyncio.ensure_future(
+                    asyncio.to_thread(
+                        self._conversations.reopen, self._household, self.session_id
+                    )
                 )
-            )
-            await asyncio.shield(self._create)
+            else:
+                self._create = asyncio.ensure_future(
+                    asyncio.to_thread(
+                        self._conversations.create,
+                        self._household,
+                        self.session_id,
+                        # Per-user ownership (XERK-651): stamp the recording with the
+                        # principal that opened the socket.
+                        owner=self.user_id,
+                        mic_source=_enum_str(mic_source),
+                        source_lang=_enum_str(source_lang),
+                    )
+                )
+            if await asyncio.shield(self._create) is None:
+                raise RecordingGone(self.session_id)
         self._pump = asyncio.create_task(self._pump_results())
         # Warm the transcriber's per-session startup cost now, off the caption path,
         # so the first spoken words don't wait behind it (XERK-128). Best-effort and
