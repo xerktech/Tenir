@@ -237,6 +237,14 @@ class SqlUserStore:
                     except UniqueViolation:
                         skipped.append(username)
                         continue
+                    except Exception as exc:
+                        # Any other per-row failure skips only that row, so it can't
+                        # hold back every later row on every boot.
+                        if is_database_unavailable(exc):
+                            raise
+                        log.warning("could not strip username %r: %s", username, exc)
+                        skipped.append(username)
+                        continue
                     log.info("stripped padded username %r to %r", username, stripped)
                 unlock_schema(conn)
             except BaseException:

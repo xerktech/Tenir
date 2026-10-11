@@ -235,6 +235,7 @@ INVISIBLE_NAMES = (
     "a\x07b",  # a control character
     "no\x00ra",  # NUL: Postgres text can't hold it
     "nora\ud800",  # lone surrogate: not UTF-8 encodable
+    "a\u2028b",  # line separator
 )
 
 
@@ -257,6 +258,8 @@ def test_new_usernames_refuse_ignorables_controls_and_bare_marks() -> None:
     for body in (
         {"username": "nell", "password": "longpassword", "email": "n\x00@example.com"},
         {"username": "nell", "password": "long\ud800password"},
+        # PBKDF2's HMAC zero-pads the key: "pw" and "pw\x00" would hash alike.
+        {"username": "nell", "password": "long\x00password"},
     ):
         assert client.post("/auth/users", **_ascii_json(body)).status_code == 422
 

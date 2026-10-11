@@ -142,7 +142,7 @@ def _is_invisible(ch: str) -> bool:
     can't go in a Postgres text column), a surrogate (Cs; not UTF-8 encodable), a
     format character (Cf: zero-width space/joiners, BOM...) or another default-ignorable
     code point."""
-    if unicodedata.category(ch) in ("Cc", "Cs", "Cf"):
+    if unicodedata.category(ch) in ("Cc", "Cs", "Cf", "Zl", "Zp"):
         return True
     cp = ord(ch)
     return any(lo <= cp <= hi for lo, hi in _IGNORABLE_RANGES)

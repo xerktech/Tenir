@@ -417,16 +417,23 @@ def test_one_strip_conflict_does_not_roll_back_the_others(make_store, caplog) ->
     make, admin = make_store
     make()
     admin.execute(
-        "INSERT INTO users (household, username, password_hash) VALUES"
-        " ('default', ' ok1', 'x'), ('default', ' bad', 'x'), ('default', ' ok2', 'x')"
+        "INSERT INTO users (household, username, password_hash, created_at) VALUES"
+        " ('default', ' boom', 'x', now() - interval '4 s'),"
+        " ('default', ' ok1', 'x', now() - interval '3 s'),"
+        " ('default', ' bad', 'x', now() - interval '2 s'),"
+        " ('default', ' ok2', 'x', now() - interval '1 s')"
     )
     # Stands in for the racing create: the UPDATE to "bad" hits a unique violation.
+    # "boom" (stripped first) fails some other way; neither holds back later rows.
     admin.execute(
         """
         CREATE FUNCTION fail_bad() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
             IF NEW.username = 'bad' THEN
                 RAISE EXCEPTION 'raced' USING ERRCODE = 'unique_violation';
+            END IF;
+            IF NEW.username = 'boom' THEN
+                RAISE EXCEPTION 'some other failure';
             END IF;
             RETURN NEW;
         END $$
@@ -440,7 +447,8 @@ def test_one_strip_conflict_does_not_roll_back_the_others(make_store, caplog) ->
     assert store.get_by_username("ok1").username == "ok1"
     assert store.get_by_username("ok2").username == "ok2"
     assert store.get_by_username("bad").username == " bad"
-    assert "' bad'" in caplog.text
+    assert store.get_by_username("boom").username == " boom"
+    assert "' bad'" in caplog.text and "some other failure" in caplog.text
 
 
 def _ascii_json(body: dict) -> dict:

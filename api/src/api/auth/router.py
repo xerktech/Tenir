@@ -49,8 +49,9 @@ def _validated_email(value: str | None) -> str | None:
 
 
 def _hashable_password(value: str | None) -> str | None:
-    """A lone surrogate can't be UTF-8 encoded for hashing: a 422, not a 500."""
-    if value is not None and not is_lookup_safe(value.replace("\x00", "")):
+    """A lone surrogate can't be UTF-8 encoded for hashing: a 422, not a 500. A NUL is
+    refused too: PBKDF2's HMAC zero-pads the key, so "pw" and "pw\\x00" hash alike."""
+    if value is not None and not is_lookup_safe(value):
         raise ValueError("must be valid text")
     return value
 
