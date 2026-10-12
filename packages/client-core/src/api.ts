@@ -13,7 +13,9 @@ import {
   clearToken,
   getSessionKind,
   getToken,
+  noteNewSignIn,
   setToken,
+  tokenGenerations,
   tryOidcRefresh,
 } from "./auth";
 import { apiBaseUrl } from "./config";
@@ -66,6 +68,12 @@ interface RequestOptions {
    * OIDC session that still 401s surfaces the error instead of looping forever.
    */
   retried?: boolean;
+  /**
+   * Present this bearer token instead of the stored one — a token not yet adopted
+   * (see `login`). Never refreshed or retried, and its renewal header is ignored:
+   * it is not the session's token.
+   */
+  token?: string;
 }
 
 async function request<T>(
@@ -74,7 +82,14 @@ async function request<T>(
   body?: unknown,
   opts: RequestOptions = {},
 ): Promise<T> {
-  const headers: Record<string, string> = opts.auth === false ? {} : { ...authHeader() };
+  const presented = opts.token !== undefined;
+  const headers: Record<string, string> =
+    opts.auth === false
+      ? {}
+      : presented
+        ? { Authorization: `Bearer ${opts.token}` }
+        : { ...authHeader() };
+  const sentGen = tokenGenerations();
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
@@ -95,8 +110,18 @@ async function request<T>(
   // built-in session (its token rides X-Renewed-Token instead) and when no OIDC is
   // configured, so this path is inert for the built-in flow. The retry flag stops a
   // still-401 (revoked/invalid refresh) from looping — it falls through to throw.
-  if (res.status === 401 && opts.auth !== false && !opts.retried) {
-    if (await tryOidcRefresh()) {
+  //
+  // XERK-1591:
+  // - If the sign-in changed while this request was in flight (logout, a new login),
+  //   neither retry nor refresh: the 401 belongs to a session that no longer exists,
+  //   and replaying it would send one user's request as another's.
+  // - A 401 for a token that a refresh has since replaced (a concurrent request's
+  //   refresh landed meanwhile) just retries with the current token — a second
+  //   refresh would reuse a rotated refresh token.
+  if (res.status === 401 && opts.auth !== false && !opts.retried && !presented) {
+    const gen = tokenGenerations();
+    const sameSignIn = gen.epoch === sentGen.epoch;
+    if (sameSignIn && (gen.refresh !== sentGen.refresh || (await tryOidcRefresh()))) {
       return request<T>(method, path, body, { ...opts, retried: true });
     }
   }
@@ -111,7 +136,10 @@ async function request<T>(
   // quietly broke the renewal above: the api's middleware runs after the route
   // with no status check, so an aged-but-valid token is renewed on authenticated
   // 404s and 422s too, and those renewals must still be taken.
-  if (opts.auth !== false) {
+  // Only for the session's own token, and only if the sign-in hasn't changed since
+  // the request went out — a renewal of the previous user's token must not replace
+  // the new sign-in's (XERK-1591).
+  if (opts.auth !== false && !presented && tokenGenerations().epoch === sentGen.epoch) {
     const renewed = res.headers.get("x-renewed-token");
     if (renewed) setToken(renewed);
   }
@@ -238,19 +266,21 @@ export async function login(username: string, password: string): Promise<Princip
     { username, password },
     { auth: false },
   );
-  const previous = getToken();
+  // Confirm the new token by presenting it explicitly, without adopting it first
+  // (XERK-1591): the stored session — and any OIDC refresh of it — is untouched until
+  // the new sign-in is confirmed, a 401 here can't trigger a refresh of the previous
+  // session (and sign in as that user), and nothing needs restoring on failure.
+  const principal = await request<Principal>("GET", "/auth/me", undefined, {
+    token: out.token,
+  });
+  // A new sign-in: work in flight under the previous one must not adopt this token,
+  // and a refresh of the previous session must not overwrite it.
+  noteNewSignIn();
   setToken(out.token);
-  try {
-    const principal = await me();
-    // A confirmed built-in login supersedes any prior OIDC session, so the session
-    // kind reverts to built-in (no more silent-refresh attempts on this token).
-    clearOidcSession();
-    return principal;
-  } catch (err) {
-    if (previous) setToken(previous);
-    else clearToken();
-    throw err;
-  }
+  // A confirmed built-in login supersedes any prior OIDC session, so the session
+  // kind reverts to built-in (no more silent-refresh attempts on this token).
+  clearOidcSession();
+  return principal;
 }
 
 /**

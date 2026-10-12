@@ -84,7 +84,33 @@ export function setToken(token: string): void {
 }
 
 export function clearToken(): void {
+  signInEpoch++;
   store.clear();
+}
+
+// Token generations (XERK-1591).
+// - `epoch` moves whenever the sign-in changes: a token clear (logout, failed login)
+//   or a new sign-in (`login`, OIDC callback). Work started under one epoch — a 401
+//   retry, a refresh — must never act on another: it would replay one user's request
+//   as another's, or store an ended session over a new one.
+// - `refresh` moves when an OIDC refresh stores a new access token, so a late 401 for
+//   the replaced token can just retry instead of refreshing (rotation) again.
+let refreshGeneration = 0;
+let signInEpoch = 0;
+
+/** Note that an OIDC refresh just stored a new access token (called by `oidc.ts`). */
+export function noteTokenRefreshed(): void {
+  refreshGeneration++;
+}
+
+/** Note that a new sign-in is about to store its token (built-in login, OIDC callback). */
+export function noteNewSignIn(): void {
+  signInEpoch++;
+}
+
+/** Snapshot of the counters; compare two snapshots to see what changed. */
+export function tokenGenerations(): { refresh: number; epoch: number } {
+  return { refresh: refreshGeneration, epoch: signInEpoch };
 }
 
 /** Authorization header for REST calls, or an empty object when there's no token. */

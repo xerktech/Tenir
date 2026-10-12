@@ -32,6 +32,8 @@ import {
   clearToken,
   getOidcSession,
   getOidcTransaction,
+  noteNewSignIn,
+  noteTokenRefreshed,
   registerOidcRefresher,
   setOidcSession,
   setOidcTransaction,
@@ -288,7 +290,8 @@ export async function completeOidcCallback(
   // omit it — but that path re-uses an already-bound session, not this one.)
   if (!tokens.id_token) throw new OidcError("OIDC token response missing id_token");
   assertNonce(tokens.id_token, tx.nonce);
-  storeSession(tokens);
+  noteNewSignIn(); // a new sign-in: in-flight work of the previous one must not adopt it
+  storeSession(tokens, "sign-in");
   try {
     return await me();
   } catch (err) {
@@ -309,9 +312,36 @@ interface TokenResponse {
   token_type?: string;
 }
 
+/** How long a token-endpoint request may take before it fails as a `NetworkError`. */
+export const OIDC_TOKEN_TIMEOUT_MS = 30_000;
+
 async function exchangeToken(
   prov: OidcProvider,
   params: Record<string, string>,
+): Promise<TokenResponse> {
+  // Bounded end to end — headers AND body: a refresh is single-flight, so a token
+  // request that never settles would hold every later refresh hostage (XERK-1591).
+  // Abort where supported, and race a timer regardless in case the platform's fetch
+  // ignores the signal or the body stalls after the headers.
+  const abort = typeof AbortController === "function" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      abort?.abort();
+      reject(new NetworkError("the OIDC token endpoint did not answer in time"));
+    }, OIDC_TOKEN_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([postToken(prov, params, abort?.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function postToken(
+  prov: OidcProvider,
+  params: Record<string, string>,
+  signal: AbortSignal | undefined,
 ): Promise<TokenResponse> {
   const body = new URLSearchParams({ ...params, client_id: prov.clientId });
   let res: Response;
@@ -320,6 +350,7 @@ async function exchangeToken(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal,
     });
   } catch (cause) {
     throw new NetworkError("could not reach the OIDC token endpoint", cause);
@@ -340,10 +371,12 @@ async function exchangeToken(
 }
 
 /** Persist an access token + its refresh sidecar from a token response. */
-function storeSession(tokens: TokenResponse): void {
+function storeSession(tokens: TokenResponse, kind: "sign-in" | "refresh"): void {
   setToken(tokens.access_token);
-  // Authentik may rotate the refresh token; keep the prior one if none came back.
-  const previous = getOidcSession();
+  // A refresh that didn't rotate keeps the prior refresh token. A new sign-in never
+  // inherits one: it would belong to the previous user, and the first refresh would
+  // silently turn this sign-in into theirs (XERK-1591).
+  const previous = kind === "refresh" ? getOidcSession() : null;
   setOidcSession({
     refreshToken: tokens.refresh_token ?? previous?.refreshToken ?? null,
     expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
@@ -354,8 +387,24 @@ function storeSession(tokens: TokenResponse): void {
  * Silently exchange the stored refresh token for a fresh access token. Throws if
  * there is no OIDC session or no refresh token; the caller decides whether that
  * surfaces as re-login.
+ *
+ * Single-flight: concurrent callers (parallel REST 401s, a WS 1008, a proactive
+ * refresh) share one in-flight exchange. Authentik rotates refresh tokens and
+ * rejects a reused one with invalid_grant, so independent refreshes would race and
+ * all but one would fail even though a valid new token exists (XERK-1591).
  */
-export async function refreshOidcSession(): Promise<void> {
+export function refreshOidcSession(): Promise<void> {
+  if (!inFlightRefresh) {
+    inFlightRefresh = exchangeRefreshToken().finally(() => {
+      inFlightRefresh = null;
+    });
+  }
+  return inFlightRefresh;
+}
+
+let inFlightRefresh: Promise<void> | null = null;
+
+async function exchangeRefreshToken(): Promise<void> {
   const { prov } = requireReady();
   const session = getOidcSession();
   if (!session?.refreshToken) throw new OidcError("no OIDC refresh token available");
@@ -381,7 +430,16 @@ export async function refreshOidcSession(): Promise<void> {
     }
     throw err;
   }
-  storeSession(tokens);
+  // The user may have logged out or signed in afresh while the IdP answered: storing
+  // now would resurrect the ended session or overwrite the new one, so drop the
+  // result (XERK-1591). Every such change replaces or clears the sidecar in the same
+  // synchronous step that adopts the new token (logout, `login`, the OIDC callback —
+  // which never inherits the previous refresh token, see `storeSession`).
+  if (getOidcSession()?.refreshToken !== session.refreshToken) {
+    throw new OidcError("the OIDC session ended while it was being refreshed");
+  }
+  storeSession(tokens, "refresh");
+  noteTokenRefreshed();
 }
 
 /** Whether the current OIDC access token is expired or within the refresh skew window. */
