@@ -229,7 +229,7 @@ def test_concurrent_first_use_of_both_stores_on_an_empty_database() -> None:
                 admin.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
-def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -> None:
+def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch, caplog) -> None:
     """XERK-1603: one idle-in-transaction session that read ``conversations`` made the
     boot ALTER wait forever, and every request on the table queued behind it (>8s,
     until the reader ended). The apply must give up within its lock timeout, so a
@@ -274,6 +274,10 @@ def test_boot_apply_does_not_stall_requests_behind_an_idle_reader(monkeypatch) -
             assert waited < 2, f"request stalled {waited:.1f}s behind the boot DDL"
             assert len(errors) == 1 and isinstance(errors[0], pg.SchemaLockTimeout)
             assert store._pool is None
+            # Each failed attempt closes its connection on purpose: only our own retry
+            # warning is logged, not psycopg_pool's "discarding closed connection".
+            assert "discarding closed connection" not in caplog.text
+            assert "retrying" in caplog.text
 
             # Within the window a re-open shares that verdict instead of re-running the
             # apply (XERK-1607); after it, the reader having ended lets the attempt through.

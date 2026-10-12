@@ -249,6 +249,20 @@ def test_outage_fails_fast_then_recovers_promptly(rig) -> None:
     assert not store._pool.unreachable
 
 
+def test_first_request_after_an_idle_outage_succeeds(rig) -> None:
+    """A pool idle through a restart still holds every dead connection. The first
+    request must not spend its wait failing their checks one by one on psycopg's
+    backoff (1+2+4s, past the 5s wait): it 503'd while the database was back
+    (XERK-1591 QA)."""
+    store, proxy = rig
+    proxy.down()  # every pooled connection dies; nothing borrows during the outage
+    time.sleep(1)
+    proxy.up()
+    outcome, took = _bounded(lambda: _timed(lambda: store.list("h")), 20)
+    assert outcome == "ok", (outcome, took)
+    assert took < postgres.OPEN_TIMEOUT_SECONDS, took
+
+
 def test_one_unrefillable_slot_does_not_trip_the_breaker(rig) -> None:
     """At max_connections a dropped connection's replacement fails while the rest still
     serve. That is not an outage: requests keep their full wait and succeed."""
