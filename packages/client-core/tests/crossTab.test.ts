@@ -147,6 +147,33 @@ describe("cross-tab sign-in epoch", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+    // The fault heals on the next good write: the shared epoch is trusted again, so
+    // another tab's sign-in is seen.
+    tab1.noteNewSignIn();
+    const tab2 = await openTab();
+    tab2.clearToken();
+    expect(tab1.tokenGenerations().epoch).toBe(localStorage.getItem("tenir.token.epoch"));
+  });
+
+  it("a newly configured store's epoch is trusted even after the old one faulted", async () => {
+    const tab1 = await openTab();
+    tab1.configureTokenStore({
+      get: () => null,
+      set: () => {},
+      clear: () => {},
+      getEpoch: () => "stuck",
+      setEpoch: () => {}, // never takes
+    });
+    tab1.noteNewSignIn(); // trips the fault
+    expect(tab1.tokenGenerations().epoch).not.toBe("stuck");
+    tab1.configureTokenStore({
+      get: () => null,
+      set: () => {},
+      clear: () => {},
+      getEpoch: () => "fresh-store-epoch",
+      setEpoch: () => {},
+    });
+    expect(tab1.tokenGenerations().epoch).toBe("fresh-store-epoch");
   });
 });
 

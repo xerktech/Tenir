@@ -61,6 +61,17 @@ describe("deviceTokenStore", () => {
     expect(cfg.deviceTokenStore(storage, null, "e1").getEpoch?.()).toBe("e1");
   });
 
+  it("initConfig keeps the token when the epoch read fails", async () => {
+    const storage = new MemStorage();
+    storage.map.set(cfg.TOKEN_KEY, "cached-token");
+    const realGet = storage.get.bind(storage);
+    storage.get = (key: string) =>
+      key === "tenir.token.epoch" ? Promise.reject(new Error("bridge read failed")) : realGet(key);
+    await cfg.initConfig(storage);
+    const core = await import("@tenir/client-core");
+    expect(core.getToken()).toBe("cached-token");
+  });
+
   it("initConfig hydrates the epoch so client-core reads the persisted one", async () => {
     const storage = new MemStorage();
     storage.map.set("tenir.token.epoch", "persisted-epoch");

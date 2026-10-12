@@ -129,9 +129,10 @@ export function clearToken(): void {
 let refreshGeneration = 0;
 let lastRefreshedToken: string | null = null;
 let memoryEpoch = "initial";
-// Set once a stored epoch failed to take a write (e.g. a full localStorage): from then
-// on this context trusts only its in-memory epoch, which still moves on every change —
-// otherwise the stale stored id would win and this context would lose its own guard.
+// Set while the stored epoch failed to take this context's last write (e.g. a full
+// localStorage): meanwhile this context trusts only its in-memory epoch, which still
+// moves on every change — otherwise the stale stored id would win and this context
+// would lose its own guard.
 let storedEpochBroken = false;
 
 function newEpoch(): void {
@@ -142,7 +143,8 @@ function newEpoch(): void {
   memoryEpoch = id;
   if (store.setEpoch) {
     store.setEpoch(id);
-    if (store.getEpoch?.() !== id) storedEpochBroken = true;
+    // Re-evaluated on every write, so a transient fault heals on the next good one.
+    storedEpochBroken = store.getEpoch?.() !== id;
   }
 }
 
