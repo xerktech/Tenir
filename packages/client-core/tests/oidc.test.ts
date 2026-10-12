@@ -339,7 +339,8 @@ describe("silent refresh before expiry", () => {
 
   it("keeps a concurrently rotated session when the losing refresh gets invalid_grant", async () => {
     // Authentik rotates: the first use of refresh-1 wins (→ refresh-2), a reuse is
-    // rejected. The loser must not wipe the winner's fresh sidecar.
+    // rejected. In one context the refresh is single-flight, so both callers share
+    // the winning exchange.
     setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
     let used = false;
     mockFetch(() => {
@@ -348,8 +349,24 @@ describe("silent refresh before expiry", () => {
       return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 });
     });
     const results = await Promise.allSettled([refreshOidcSession(), refreshOidcSession()]);
-    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
     expect(getToken()).toBe("access-2");
+    expect(getOidcSession()?.refreshToken).toBe("refresh-2");
+  });
+
+  it("an invalid_grant loser never wipes a session another writer (tab) already rotated", async () => {
+    // Single-flight can't span tabs sharing the sidecar: another tab wins with
+    // refresh-1 (→ refresh-2) while this tab's exchange of refresh-1 is in flight and
+    // comes back invalid_grant. The winner's sidecar must survive.
+    setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
+    let answer!: (r: Response) => void;
+    mockFetch(() => new Promise<Response>((r) => (answer = r)));
+    const losing = refreshOidcSession();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    setToken("access-2"); // the other tab's refresh landed in shared storage
+    setOidcSession({ refreshToken: "refresh-2", expiresAt: Date.now() + 300_000 });
+    answer(json({ error: "invalid_grant" }, 400));
+    await expect(losing).rejects.toMatchObject({ code: "invalid_grant" });
     expect(getOidcSession()?.refreshToken).toBe("refresh-2");
   });
 
