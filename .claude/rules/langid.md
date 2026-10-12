@@ -69,3 +69,25 @@ paths:
   ñ (+2) plus "a" beat English on "It is a piñata." (XERK-1419 QA).
 - New es vocab must be ≥10× rarer (wordfreq) in pt/it: pt `vamos`/`estás`, it `tengo`/`ella`
   are Spanish-looking but native there, so they stay out.
+- A `_CHARS` letter (ñ) in a capitalised mid-sentence word is a name, not es evidence ("C'est
+  Peña." went es), unless the rest of the turn leans es by frequency ("Hola Señor." stays es).
+  Sentence-initial capitals (after `.!?`, or a dash at the start or after a space) count.
+  A hyphen joins names ("Marie-Peña") and a colon precedes them ("Il dit: Peña."): no start.
+- es only: German capitalises nouns ("Fußball") and pt names are pt turns ("Japão") —
+  name-skipping ß/ã/õ lost ~40 of 20k Tatoeba sentences.
+- A `_CHARS` letter beside English (`_english_evidence`) and no word hit of its own scores
+  nothing ("It's a piñata.", "No jalapeños please."); ¿/¡ still count — the STT wrote Spanish.
+  English evidence includes `_SHARED_EN` words except against their own language
+  (`_SHARED_EN_LANGS`): "the" vs es ("Order the piña colada."), but de "was" beside ß made
+  "Niemand weiß, was in …" en. Homographs never count: de "in" beside "großen" lost German.
+- A word-list call left by a `_FOREIGN_CHARS` veto needs frequencies to back it
+  (`_frequencies_back`): a lowercased name ("la musique de maría.") otherwise crowns es.
+  Both its tests are needed; either alone lost 6–10 real Spanish of 20k Tatoeba.
+- `_DOUBT_WORDS` keeps Spanish loanwords (hola/gracias/bueno): "Hola, I'm here." is None on
+  purpose — a code-switched greeting must neither open nor close a run (XERK-1591).
+- A capitalised es vocab word still counts ("A guy named Fue." es): skipping mid-sentence
+  capitals for vocab would break German "Sie". Accepted as contrived (XERK-1591).
+- `detect_lang`/`leans_english` run on the event loop: they score only the first `_MAX_CHARS`
+  (1000) of a turn and memoise wordfreq lookups (`_zipf`), so degenerate STT output costs
+  ~10 ms worst. Keep per-word work linear: a `[\s…]+$` regex per capitalised word once took
+  8.6 s (`test_degenerate_turns_stay_cheap`).
