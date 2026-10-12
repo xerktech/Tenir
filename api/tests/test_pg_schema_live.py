@@ -30,7 +30,7 @@ import uuid
 
 import pytest
 
-from api.persistence.postgres import apply_schema, find_schema_file, lock_schema
+from api.persistence.postgres import apply_schema, find_schema_file, iter_statements, lock_schema
 
 DSN = os.environ.get("TENIR_TEST_PG_DSN", "")
 psycopg = pytest.importorskip("psycopg") if DSN else None
@@ -95,6 +95,35 @@ def test_schema_upgrades_a_pre_ownership_data_dir_and_backfills(conn) -> None:
     owner = conn.execute("SELECT owner FROM conversations WHERE id = 'legacy-1'").fetchone()[0]
     # Stored as the admin's id rendered as text: what the code compares it against.
     assert owner == str(admin)
+
+
+def test_owner_backfill_skips_rows_another_transaction_holds(conn) -> None:
+    """XERK-1591: the boot backfill waited on row locks: behind another replica's
+    stale sweep it hit the boot lock_timeout or deadlocked (40P01), and either one
+    aborted startup. It leaves a held row for a later boot instead."""
+    sql = _schema_sql()
+    apply_schema(conn, sql)
+    schema = conn.execute("SELECT current_schema()").fetchone()[0]
+    admin = conn.execute(
+        "INSERT INTO users (household, username, role, is_env_admin) "
+        "VALUES ('default', 'admin', 'admin', true) RETURNING id"
+    ).fetchone()[0]
+    for cid in ("held", "free"):
+        conn.execute("INSERT INTO conversations (id, household) VALUES (%s, 'default')", (cid,))
+    conn.execute("SET lock_timeout = '300ms'")  # as the boot apply runs
+    (backfill,) = [s for s in iter_statements(sql) if s.startswith("UPDATE conversations SET owner")]
+
+    def owners() -> dict[str, str | None]:
+        return dict(conn.execute("SELECT id, owner FROM conversations").fetchall())
+
+    with psycopg.connect(DSN) as other:
+        other.execute(f"SET search_path TO {schema}, public")
+        other.execute("SELECT 1 FROM conversations WHERE id = 'held' FOR UPDATE")
+        # Just the backfill: the table lock alone already holds up the ALTERs (XERK-1603).
+        conn.execute(backfill)
+        assert owners() == {"held": None, "free": str(admin)}
+    apply_schema(conn, sql)  # the next boot backfills the row once it is free
+    assert owners() == {"held": str(admin), "free": str(admin)}
 
 
 def test_concurrent_boot_applies_do_not_collide(conn) -> None:

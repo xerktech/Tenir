@@ -2003,14 +2003,36 @@ class Session:
             # The row stays live, so a late cue is stored as usual (_generate_cue).
             self._handed_off = True
             return True
+        # Our sitting's token: a resume can reopen the row after the check above,
+        # while this finish waits on a connection, and must not be closed by it.
+        create = self._create
+        created = (
+            create.result()
+            if create is not None
+            and create.done()
+            and not create.cancelled()
+            and create.exception() is None
+            else None
+        )
+        opened_at = getattr(created, "opened_at", None)
         try:
-            await asyncio.to_thread(
-                self._conversations.finish, self._household, self.session_id, status="ready"
+            done = await asyncio.to_thread(
+                self._conversations.finish,
+                self._household,
+                self.session_id,
+                status="ready",
+                # None (create raised or never ran) finishes unconditionally.
+                opened_at=opened_at,
             )
         except Exception as exc:
             if not self._hold(exc):
                 raise
             return False
+        if opened_at is not None and done is not None and done.status == "live":
+            # The later sitting owns the row now: as in the check above, a late cue
+            # is still stored rather than dropped as if the recording were over.
+            self._handed_off = True
+            return True
         self._finished = True
         return True
 

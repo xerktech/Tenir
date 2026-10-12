@@ -17,6 +17,8 @@ import uuid
 
 import pytest
 
+from api.persistence.models import Segment
+
 DSN = os.environ.get("TENIR_TEST_PG_DSN", "")
 psycopg = pytest.importorskip("psycopg") if DSN else None
 
@@ -154,3 +156,160 @@ def test_a_cold_resume_whose_recording_is_deleted_mid_start_does_not_recreate_it
 
     asyncio.run(run())
     assert store.get("default", cid) is None
+
+
+def test_stale_sweep_never_ends_a_resumed_recording_before_its_last_sitting(store) -> None:
+    """XERK-1591: a resumed recording's segments are on its audio timeline, which
+    leaves out the gap between sittings. The sweep's started_at + MAX(end_ms) put
+    the crashed sitting's end yesterday, before the first sitting's own ended_at."""
+    cid = str(uuid.uuid4())
+    store.create("default", cid)
+    store.add_segment("default", cid, Segment(f"{cid}-1", "first sitting", 0, 60_000))
+    with store._ensure_pool().connection() as conn:
+        # The first sitting started yesterday and finished just now.
+        conn.execute(
+            "UPDATE conversations SET started_at = now() - INTERVAL '1 day' WHERE id = %s",
+            (cid,),
+        )
+    first_end = store.finish("default", cid).ended_at
+    resumed = store.create("default", cid)  # a cold resume, then the process crashes
+    store.add_segment("default", cid, Segment(f"{cid}-2", "second sitting", 60_000, 90_000))
+
+    assert store.finish_stale() == [("default", cid)]
+    swept = store.get("default", cid)
+    assert swept.status == "ready"
+    assert swept.ended_at >= first_end
+    assert swept.ended_at >= resumed.opened_at
+
+
+def test_stale_sweep_still_ends_a_single_sitting_at_its_last_segment(store) -> None:
+    cid = str(uuid.uuid4())
+    created = store.create("default", cid)
+    store.add_segment("default", cid, Segment(f"{cid}-1", "words", 0, 90_000))
+    store.finish_stale()
+    swept = store.get("default", cid)
+    assert (swept.ended_at - created.started_at).total_seconds() == 90
+
+
+def test_a_late_finish_from_an_earlier_sitting_leaves_the_reopened_row_live(store) -> None:
+    """XERK-1591: an earlier sitting's finish() that lands after a resume reopened
+    the row must not flip it back to ready; the current sitting's finish closes it."""
+    cid = str(uuid.uuid4())
+    first = store.create("default", cid)
+    second = store.create("default", cid)  # the resume commits first
+    assert second.opened_at != first.opened_at
+
+    late = store.finish("default", cid, opened_at=first.opened_at)
+    assert late.status == "live" and late.ended_at is None
+
+    done = store.finish("default", cid, opened_at=second.opened_at)
+    assert done.status == "ready" and done.ended_at is not None
+
+
+def test_create_returns_its_own_token_when_a_resume_reopens_before_the_read(store) -> None:
+    """XERK-1591 QA: create() read its token back with a separate get(); a sitting
+    reopening the row in between handed the earlier sitting the later one's token,
+    so the earlier sitting's late finish closed the live row."""
+    cid = str(uuid.uuid4())
+    store.create("default", cid)
+    real_get = store.get
+    later = []
+
+    def get(*args, **kwargs):
+        store.get = real_get
+        later.append(store.create("default", cid))  # another sitting's reopen
+        return real_get(*args, **kwargs)
+
+    store.get = get
+    try:
+        first = store.create("default", cid)
+    finally:
+        store.get = real_get
+    assert first.opened_at != later[0].opened_at
+    assert store.finish("default", cid, opened_at=first.opened_at).status == "live"
+    assert store.finish("default", cid, opened_at=later[0].opened_at).status == "ready"
+
+
+def test_reopen_stamps_its_own_token_so_an_earlier_late_finish_leaves_it_live(store) -> None:
+    """XERK-1591: a cold resume reopens through reopen(), not create(). It must
+    stamp a new sitting token and return it, or the earlier sitting's late
+    finish() closes the reopened row (and the resumed sitting's own finish has
+    no token)."""
+    cid = str(uuid.uuid4())
+    first = store.create("default", cid)
+    reopened = store.reopen("default", cid)
+    assert reopened.opened_at is not None and reopened.opened_at != first.opened_at
+    assert store.finish("default", cid, opened_at=first.opened_at).status == "live"
+    assert store.finish("default", cid, opened_at=reopened.opened_at).status == "ready"
+
+
+def test_reopen_returns_its_own_token_when_another_reopen_lands_before_the_read(store) -> None:
+    cid = str(uuid.uuid4())
+    store.create("default", cid)
+    real_get = store.get
+    later = []
+
+    def get(*args, **kwargs):
+        store.get = real_get
+        later.append(store.reopen("default", cid))  # another sitting's reopen
+        return real_get(*args, **kwargs)
+
+    store.get = get
+    try:
+        mine = store.reopen("default", cid)
+    finally:
+        store.get = real_get
+    assert mine.opened_at != later[0].opened_at
+    assert store.finish("default", cid, opened_at=mine.opened_at).status == "live"
+
+
+def test_a_cold_resumes_reopen_survives_the_earlier_sittings_late_finish(store) -> None:
+    """End to end on Postgres: sitting A's finish() is held after it passed
+    _resumed_live; sitting B cold-resumes through reopen() meanwhile. A's late
+    finish leaves B's row live, and B's own finish (its reopen token) closes it."""
+    import asyncio
+    import threading
+
+    from api.contract import MicSource
+    from api.session import Session
+
+    cid = str(uuid.uuid4())
+    entered, release = threading.Event(), threading.Event()
+    real_finish = store.finish
+
+    def held_finish(*args, **kwargs):
+        if not release.is_set():
+            entered.set()
+            release.wait(10)
+        return real_finish(*args, **kwargs)
+
+    async def sent(_msg: object) -> None:
+        pass
+
+    def bound(session: Session) -> Session:
+        session._conversations = store
+        session._audio_store = None
+        return session
+
+    async def run() -> None:
+        a = bound(Session(sent, session_id=cid, household="default", user_id="alice"))
+        await a.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+        store.finish = held_finish
+        try:
+            closing = asyncio.create_task(a.close())
+            assert await asyncio.to_thread(entered.wait, 10)
+            b = bound(
+                Session(sent, session_id=cid, household="default", user_id="alice", reopen=True)
+            )
+            await b.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+            release.set()
+            await closing
+        finally:
+            release.set()
+            store.finish = real_finish
+        row = store.get("default", cid)
+        assert row.status == "live" and row.ended_at is None
+        await b.close()
+        assert store.get("default", cid).status == "ready"
+
+    asyncio.run(run())

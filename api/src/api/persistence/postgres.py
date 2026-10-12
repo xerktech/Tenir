@@ -22,6 +22,7 @@ import socket
 import threading
 import time
 import weakref
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
@@ -776,6 +777,7 @@ class SqlConversationStore:
             # on read rather than handing a stale value up the stack (XERK-58).
             status=coerce_status(row["status"], ended=row["ended_at"] is not None),
             audio_key=row["audio_key"],
+            opened_at=row.get("opened_at"),
             segments=segments,
             cues=cues,
             songs=songs,
@@ -795,19 +797,28 @@ class SqlConversationStore:
             # re-owns a recording) but reopens it: a finished recording being
             # recorded again reads live, not 'ready' with its old ended_at
             # (XERK-1502). Mirrors the in-memory store. The household guard keeps
-            # an id collision from touching another household's row.
-            conn.execute(
+            # an id collision from touching another household's row. opened_at
+            # marks this sitting: finish() and the stale sweep key off it.
+            now = utcnow()
+            row = conn.execute(
                 """
                 INSERT INTO conversations
-                    (id, household, owner, mic_source, source_lang, started_at, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'live')
-                ON CONFLICT (id) DO UPDATE SET status = 'live', ended_at = NULL
+                    (id, household, owner, mic_source, source_lang, started_at, status,
+                     opened_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'live', %s)
+                ON CONFLICT (id) DO UPDATE
+                   SET status = 'live', ended_at = NULL, opened_at = EXCLUDED.opened_at
                  WHERE conversations.household = EXCLUDED.household
+             RETURNING opened_at
                 """,
-                (conversation_id, household, owner, mic_source, source_lang, utcnow()),
-            )
+                (conversation_id, household, owner, mic_source, source_lang, now, now),
+            ).fetchone()
         got = self.get(household, conversation_id)
         assert got is not None
+        if row is not None:
+            # This statement's token: a later sitting may reopen the row before the
+            # get() above reads it, and its token must not become ours.
+            got.opened_at = row[0]
         return got
 
     def reopen(  # pragma: no cover - requires a live database
@@ -817,15 +828,22 @@ class SqlConversationStore:
             # UPDATE only, so a row deleted since the resume's check stays deleted.
             # One statement, so a DELETE either lands first (no row: None) or after
             # (a recording deleted while live, which the session already handles).
+            # opened_at marks this sitting, as in create(): finish() keys off it.
             reopened = conn.execute(
                 """
-                UPDATE conversations SET status = 'live', ended_at = NULL
+                UPDATE conversations SET status = 'live', ended_at = NULL, opened_at = %s
                  WHERE id = %s AND household = %s
-             RETURNING id
+             RETURNING opened_at
                 """,
-                (conversation_id, household),
+                (utcnow(), conversation_id, household),
             ).fetchone()
-        return self.get(household, conversation_id) if reopened is not None else None
+        if reopened is None:
+            return None
+        got = self.get(household, conversation_id)
+        if got is not None:
+            # This statement's token, not whatever a later reopen left for get().
+            got.opened_at = reopened[0]
+        return got
 
     def add_segment(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, segment: Segment
@@ -907,12 +925,17 @@ class SqlConversationStore:
         conversation_id: str,
         *,
         status: ConversationStatus = "ready",
+        opened_at: datetime | None = None,
     ) -> Conversation | None:
+        # With the caller's opened_at, a sitting whose finish lands after a resume
+        # reopened the row (it can pass Session._resumed_live and then wait on a
+        # connection) leaves it live for that later sitting (XERK-1591).
         with self._ensure_pool().connection() as conn:
             conn.execute(
                 "UPDATE conversations SET ended_at = %s, status = %s "
-                "WHERE id = %s AND household = %s",
-                (utcnow(), status, conversation_id, household),
+                "WHERE id = %s AND household = %s "
+                "AND (%s::timestamptz IS NULL OR opened_at = %s)",
+                (utcnow(), status, conversation_id, household, opened_at, opened_at),
             )
         return self.get(household, conversation_id)
 
@@ -1170,6 +1193,11 @@ class SqlConversationStore:
         every client's history. `ended_at` falls back to the last segment's
         wall-clock end, else the row's own start, so the duration a client
         renders is the best available truth rather than "now".
+
+        A resumed recording's segments are on its audio timeline, which leaves out
+        the gap between sittings, so `started_at + MAX(end_ms)` can land before the
+        crashed sitting even began — before the previous sitting's own end. The
+        sitting's `opened_at` is the floor (GREATEST skips a NULL one).
         """
         with self._ensure_pool().connection() as conn:
             rows = conn.execute(
@@ -1178,10 +1206,13 @@ class SqlConversationStore:
                    SET status = 'ready',
                        ended_at = COALESCE(
                            ended_at,
-                           started_at + (
-                               (SELECT MAX(end_ms) FROM segments
-                                 WHERE segments.conversation_id = conversations.id)
-                               * INTERVAL '1 millisecond'
+                           GREATEST(
+                               started_at + (
+                                   (SELECT MAX(end_ms) FROM segments
+                                     WHERE segments.conversation_id = conversations.id)
+                                   * INTERVAL '1 millisecond'
+                               ),
+                               opened_at
                            ),
                            started_at
                        )

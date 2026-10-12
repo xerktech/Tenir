@@ -8,6 +8,9 @@ Everything is scoped to the caller's household.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
@@ -28,6 +31,7 @@ from api.persistence import (
 )
 
 router = APIRouter(tags=["history"])
+log = logging.getLogger("api.history")
 
 
 class SegmentOut(BaseModel):
@@ -173,6 +177,35 @@ def _require(household: str, conversation_id: str, *, owner: str | None = None) 
     return conv
 
 
+def _with_stored_audio(conv: Conversation) -> Conversation:
+    """Link a finished recording's WAV that its row never recorded.
+
+    Rows the stale sweep closed before it linked audio (PR #227), or whose link
+    failed during an outage, are 'ready' with no audio_key while the WAV sits at
+    its deterministic key: History hid the player and the audio route 404'd
+    (XERK-1591). Heal on read; a failed write still serves the audio."""
+    audio = get_audio_store()
+    if conv.audio_key is not None or conv.status == "live" or audio is None:
+        return conv
+    try:
+        key = audio_key(conv.household, conv.id)
+    except ValueError:
+        return conv  # not a key-safe id, so no WAV can have been stored under it
+    try:
+        stored = audio.exists(key)
+    except OSError as exc:
+        # A broken audio mount must not 500 the transcript: read it as "no audio".
+        log.warning("could not check stored audio for conversation %s: %s", conv.id, exc)
+        return conv
+    if not stored:
+        return conv
+    try:
+        _store().set_audio_key(conv.household, conv.id, key)
+    except Exception as exc:  # noqa: BLE001 - the next read retries the link
+        log.warning("could not link stored audio for conversation %s: %s", conv.id, exc)
+    return dataclasses.replace(conv, audio_key=key)
+
+
 @router.get("/conversations", response_model=list[ConversationSummaryOut])
 def list_conversations(
     q: str | None = Query(None, description="Keyword search over conversation transcripts."),
@@ -196,7 +229,9 @@ def get_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
     return ConversationOut.of(
-        _require(principal.household, conversation_id, owner=_owner_scope(principal))
+        _with_stored_audio(
+            _require(principal.household, conversation_id, owner=_owner_scope(principal))
+        )
     )
 
 
@@ -206,7 +241,9 @@ def export_conversation(
 ) -> ConversationOut:
     # Per-record export for the privacy controls; same shape as the detail view.
     return ConversationOut.of(
-        _require(principal.household, conversation_id, owner=_owner_scope(principal))
+        _with_stored_audio(
+            _require(principal.household, conversation_id, owner=_owner_scope(principal))
+        )
     )
 
 
@@ -277,7 +314,9 @@ def get_conversation_audio(
 ) -> Response:
     # Owner-scoped: a member cannot fetch another user's audio even with a direct
     # link (the token can ride in ?token=, but ownership still gates the row).
-    conv = _require(principal.household, conversation_id, owner=_owner_scope(principal))
+    conv = _with_stored_audio(
+        _require(principal.household, conversation_id, owner=_owner_scope(principal))
+    )
     store = get_audio_store()
     data = store.get(conv.audio_key) if (store is not None and conv.audio_key) else None
     if data is None:

@@ -128,6 +128,9 @@ class Conversation:
     ended_at: datetime | None = None
     status: ConversationStatus = "live"
     audio_key: str | None = None
+    # When the latest sitting opened (or reopened) the row: that sitting's token for
+    # finish(), and the stale sweep's floor for a resumed recording's ended_at.
+    opened_at: datetime | None = None
     segments: list[Segment] = field(default_factory=list)
     cues: list[Cue] = field(default_factory=list)
     songs: list[Song] = field(default_factory=list)
