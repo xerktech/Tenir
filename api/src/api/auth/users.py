@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import unicodedata
 import uuid
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -102,6 +103,84 @@ class DuplicateUser(Exception):
     """Raised when creating or renaming a user to a username/email already taken."""
 
 
+class InvalidUserValue(ValueError):
+    """Raised when a new username or email can't be stored: a username holding a
+    format character, or a value the database's encoding can't represent."""
+
+
+def normalize_username(username: str) -> str:
+    """The form a username is stored and looked up by: NFKC, then ``str.strip()``.
+
+    NFKC folds compatibility variants (a fullwidth "carl", U+FF43..., is "carl";
+    NBSP/U+3000 padding becomes a space and is stripped), so a new name can't sit beside
+    an existing one that only renders differently. Lookups apply it too, so a name
+    created through it logs in by whichever spelling was typed. Cross-script confusables
+    (a Cyrillic U+0430 for "a") stay distinct by design (XERK-1591)."""
+    return unicodedata.normalize("NFKC", username).strip()
+
+
+# Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt) outside Cf: Hangul
+# fillers, variation selectors, the combining grapheme joiner, Mongolian free variation
+# selectors, reserved ignorables. All render as nothing (XERK-1591).
+_IGNORABLE_RANGES = (
+    (0x034F, 0x034F),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2065, 0x2065),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _is_invisible(ch: str) -> bool:
+    """A character that renders as nothing or can't be stored: a control (Cc; NUL
+    can't go in a Postgres text column), a surrogate (Cs; not UTF-8 encodable), a
+    format character (Cf: zero-width space/joiners, BOM...) or another default-ignorable
+    code point."""
+    if unicodedata.category(ch) in ("Cc", "Cs", "Cf", "Zl", "Zp"):
+        return True
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _IGNORABLE_RANGES)
+
+
+def is_lookup_safe(value: str) -> bool:
+    """Whether ``value`` can be sent to the database at all: no NUL (Postgres text
+    can't hold it) and no lone surrogate (not UTF-8 encodable). No stored row holds
+    either, so a lookup with one is simply "no such user", never a 500."""
+    return "\x00" not in value and not any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
+def new_username(username: str) -> str:
+    """Normalize a username being created or renamed to, refusing a blank one, one
+    holding an invisible or unstorable character (``_is_invisible``), or one made only
+    of combining marks: "carl" + U+200B looked like "carl" but was a different account
+    (XERK-1591). Legacy rows are not re-validated; only new names pass through here."""
+    if not is_lookup_safe(username):
+        raise InvalidUserValue("username must not contain NUL or unpaired surrogates")
+    normalized = normalize_username(username)
+    if not normalized:
+        raise InvalidUserValue("username must not be blank")
+    if any(_is_invisible(ch) for ch in normalized):
+        raise InvalidUserValue("username must not contain invisible or control characters")
+    if all(unicodedata.category(ch).startswith("M") for ch in normalized):
+        raise InvalidUserValue("username must not be only combining marks")
+    return normalized
+
+
+def renamed_username(current: str, requested: str | None) -> str:
+    """The username a rename stores: ``current`` when nothing (or the same name) is
+    requested, so re-applying a legacy name (e.g. the env admin's, every boot) is not
+    re-validated; otherwise ``new_username(requested)``."""
+    if requested is None or requested.strip() == current:
+        return current
+    return new_username(requested)
+
+
 def _norm(value: str | None) -> str | None:
     """Lower-case a non-empty string for case-insensitive indexing; else ``None``."""
     if value is None:
@@ -157,7 +236,10 @@ class InMemoryUserStore:
         is_env_admin: bool = False,
         email: str | None = None,
     ) -> User:
-        key = username.strip().lower()
+        # Stored normalized, as SqlUserStore does, so what is listed is what logs in
+        # (XERK-1548, XERK-1591).
+        username = new_username(username)
+        key = username.lower()
         email_key = _norm(email)
         with self._lock:
             if key in self._by_username:
@@ -166,9 +248,7 @@ class InMemoryUserStore:
                 raise DuplicateUser(email or "")
             user = User(
                 user_id=str(uuid.uuid4()),
-                # Stored stripped, as SqlUserStore does, so what is listed is what
-                # logs in (XERK-1548).
-                username=username.strip(),
+                username=username,
                 household=household,
                 role=role,
                 password_hash=hash_password(password),
@@ -188,7 +268,8 @@ class InMemoryUserStore:
         household: str,
         role: Role,
     ) -> User:
-        key = username.strip().lower()
+        username = new_username(username)
+        key = username.lower()
         email_key = _norm(email)
         with self._lock:
             if key in self._by_username:
@@ -199,7 +280,7 @@ class InMemoryUserStore:
                 raise DuplicateUser(email or "")
             user = User(
                 user_id=str(uuid.uuid4()),
-                username=username.strip(),
+                username=username,
                 household=household,
                 role=role,
                 password_hash=None,  # OIDC-only: no local password
@@ -211,10 +292,14 @@ class InMemoryUserStore:
 
     def get_by_username(self, username: str) -> User | None:
         key = username.strip().lower()
-        if not key:
-            return None  # never resolve a blank login to a blank-named row
+        if not key or not is_lookup_safe(username):
+            return None  # never resolve a blank (or unstorable) login to a row
         with self._lock:
-            return self._by_username.get(key)
+            # The name as typed first, then its normalized form (how new names are
+            # stored), as SqlUserStore orders them.
+            return self._by_username.get(key) or self._by_username.get(
+                normalize_username(username).lower()
+            )
 
     def get_by_id(self, user_id: str) -> User | None:
         with self._lock:
@@ -271,7 +356,7 @@ class InMemoryUserStore:
             user = self._by_id.get(user_id)
             if user is None:
                 raise KeyError(user_id)
-            new_username = user.username if username is None else username.strip()
+            new_username = renamed_username(user.username, username)
             new_key = new_username.strip().lower()
             if new_key != user.username.strip().lower() and new_key in self._by_username:
                 raise DuplicateUser(new_username)
@@ -313,7 +398,7 @@ class InMemoryUserStore:
             user = self._by_id.get(user_id)
             if user is None:
                 raise KeyError(user_id)
-            new_username = user.username if username is None else username.strip()
+            new_username = renamed_username(user.username, username)
             new_key = new_username.strip().lower()
             if new_key != user.username.strip().lower() and new_key in self._by_username:
                 raise DuplicateUser(new_username)
@@ -552,14 +637,23 @@ def _refresh_login(store: UserStore, user: User, token: Principal) -> User:
     env_admin = store.get_env_admin()
     is_env_admin = env_admin is not None and env_admin.user_id == user.user_id
     role: Role = "admin" if is_env_admin else token.role
-    username = user.username if is_env_admin else (token.username.strip() or user.username)
+    # Compared normalized, as the store would store it: else a non-NFKC
+    # preferred_username rewrote the row on every login.
+    username = (
+        user.username if is_env_admin else (normalize_username(token.username) or user.username)
+    )
     if username == user.username and role == user.role:
         return user
     try:
         return store.update_oidc(user.user_id, username=username, role=role)
-    except DuplicateUser:
-        # Username taken by another row — keep ours, still apply the role change.
-        return store.update_oidc(user.user_id, username=user.username, role=role)
+    except (DuplicateUser, InvalidUserValue):
+        # Username taken by another row, or one the store refuses (a format character,
+        # or unencodable for the database) — keep ours, still apply a role change.
+        # No write when the role is unchanged: else such a token rewrote the row on
+        # every authenticated request.
+        if role == user.role:
+            return user
+        return store.update_oidc(user.user_id, role=role)
 
 
 def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
@@ -577,11 +671,11 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
         sub,
     ]
     seen: set[str] = set()
-    last_exc: DuplicateUser | None = None
+    last_exc: DuplicateUser | InvalidUserValue | None = None
     for candidate in candidates:
-        # Stripped as the store will store it, so e.g. a "\x1f" local-part is skipped
+        # Normalized as the store will store it, so e.g. a "\x1f" local-part is skipped
         # rather than provisioned as an empty username (XERK-1548).
-        candidate = candidate.strip()
+        candidate = normalize_username(candidate)
         if not candidate or candidate.lower() in seen:
             continue
         seen.add(candidate.lower())
@@ -593,10 +687,12 @@ def _jit_create(store: UserStore, token: Principal, email: str | None) -> User:
                 household=household,
                 role=token.role,
             )
-        except DuplicateUser as exc:
+        except (DuplicateUser, InvalidUserValue) as exc:
+            # Taken, or refused (a format character, or a character the database
+            # encoding can't hold): try the next candidate.
             last_exc = exc
             continue
-    # Every candidate collided (only reachable if the sub itself is somehow taken).
+    # Every candidate collided or was refused (e.g. the email itself can't be stored).
     raise last_exc or DuplicateUser(sub)
 
 

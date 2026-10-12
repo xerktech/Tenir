@@ -114,15 +114,46 @@ paths:
   - A `DO $$ ... $$` body can't go in schema.sql: `iter_statements` splits on `;`. Put it in the
     store's `_ENSURE_SCHEMA`.
   - Tests: `test_pg_users_live.py` `test_legacy_case_variant_duplicates_do_not_abort_boot`.
-- Usernames: both stores store `username.strip()` on every write; SQL lookups match
-  `_USERNAME_KEY` (`lower(btrim(...))`), the exact expression the norm index is built on.
+- Usernames: every create/rename stores `new_username()` (NFKC, `str.strip()`, no Cc/Cs/Cf,
+  default-ignorables or bare combining marks); SQL lookups match `_USERNAME_KEY`
+  (`lower(btrim(...))`), the exact expression the norm index is built on, against both the
+  typed and the NFKC name (legacy rows aren't normalized).
   - The btrim set is the ASCII `str.isspace()` chars as E'' escapes: raw non-ASCII in DDL
     can't encode for a non-UTF8 database (every login 500'd). Test: `test_sql_user_store_ddl_is_ascii`.
-  - Validate usernames with `str.strip()`: pydantic's `strip_whitespace` keeps `\x1f`, which
-    stored an empty username.
+  - So boot (`_strip_padded_usernames`, under the schema lock) stores legacy names padded with
+    non-ASCII whitespace stripped, skipping (and logging) any that would go blank or collide.
+    It commits per row: a request-path create racing it (no schema lock) skips only that row.
+  - Validate usernames with `new_username()`: pydantic's `strip_whitespace` keeps `\x1f`, which
+    stored an empty username; "carl"+U+200B looked like "carl" (operator decision, XERK-1591).
+  - A rename to the row's current name is not re-validated (`renamed_username`): the env admin
+    re-applies its name every boot.
   - Storing the raw name while looking up the stripped one let " alice" be created beside
     "alice" and never log in (XERK-1548).
   - The case-only `users_username_lower_idx` is dropped once the norm index exists, and kept
     as a fallback while whitespace-only duplicates block it.
+  - So every SQL username write first checks `_NAME_TAKEN`: the fallback index let "bob" be
+    created beside a legacy " bob\t" and take over its login.
+  - The DO block catches `unique_violation` per CREATE: an old replica committing a duplicate
+    between its check and the CREATE failed the apply (SchemaApplyError).
   - Tests: `test_whitespace_variant_usernames_are_duplicates`,
-    `test_legacy_whitespace_duplicates_keep_case_uniqueness`.
+    `test_legacy_whitespace_duplicates_keep_case_uniqueness`,
+    `test_fallback_mode_refuses_a_whitespace_variant_of_a_legacy_name`,
+    `test_norm_index_race_falls_back_instead_of_failing`.
+- Pooled connections set `client_encoding=UTF8` (`CONNECT_KWARGS`): on a SQL_ASCII database
+  psycopg otherwise returns text as bytes and no login verifies.
+  - On LATIN1 etc. an unrepresentable char is 22P05 (and NUL/lone surrogates fail client-side,
+    `is_unstorable_value`): a user-store lookup returns "no such user", search returns no
+    hits, a write raises `InvalidUserValue` (422; a 401 on the OIDC path), never a 500.
+  - Search terms full-text can't tokenise (`_split_search_terms`: any non-ASCII term on a
+    C-locale non-UTF8 database, whose parser drops it; an unspaced-script term like CJK on UTF8,
+    which parses as one whole-run token) match as substrings, OR'd with the full-text part,
+    as the in-memory store matches any term. A query with no lexemes is all substring terms.
+  - Negated terms stay full-text: OR'd in as substrings they turned "-日本" into a match.
+  - A C-locale lower() folds only ASCII, so `_case_fold_sql` also folds the Latin-1 letters on
+    both sides: translate() on LATIN1, a whole-character replace() per letter on SQL_ASCII
+    (translate() maps bytes there and made "本" equal "漬"). Never send Python upper/lower
+    forms: LATIN1 can't hold some (µ -> Greek Mu) and the whole search went empty.
+  - Tests: `test_sql_ascii_database_logs_in`, `test_latin1_*`, `test_sql_ascii_search_*`
+    (live, create their own DB).
+- FastAPI's default 422 echoes the input with `ensure_ascii=False`: a lone surrogate made it a
+  500. `main.py` renders it with `json.dumps`. Test: `test_new_usernames_refuse_ignorables_*`.

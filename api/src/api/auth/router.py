@@ -17,7 +17,13 @@ from pydantic import BaseModel, Field, field_validator
 from api import registry
 from api.auth.deps import current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
-from api.auth.users import DuplicateUser, get_user_store
+from api.auth.users import (
+    DuplicateUser,
+    InvalidUserValue,
+    get_user_store,
+    is_lookup_safe,
+    new_username,
+)
 from api.config import settings
 
 log = logging.getLogger(__name__)
@@ -37,9 +43,17 @@ def _validated_email(value: str | None) -> str | None:
     if value is None:
         return None
     stripped = value.strip()
-    if not _EMAIL_RE.match(stripped):
+    if not _EMAIL_RE.match(stripped) or not is_lookup_safe(stripped):
         raise ValueError("must be a valid email address")
     return stripped
+
+
+def _hashable_password(value: str | None) -> str | None:
+    """A lone surrogate can't be UTF-8 encoded for hashing: a 422, not a 500. A NUL is
+    refused too: PBKDF2's HMAC zero-pads the key, so "pw" and "pw\\x00" hash alike."""
+    if value is not None and not is_lookup_safe(value):
+        raise ValueError("must be valid text")
+    return value
 
 
 class LoginIn(BaseModel):
@@ -83,17 +97,15 @@ class CreateUserIn(BaseModel):
     email: str | None = None
 
     _check_email = field_validator("email")(staticmethod(_validated_email))
+    _check_password = field_validator("password")(staticmethod(_hashable_password))
 
     @field_validator("username")
     @classmethod
-    def _strip_username(cls, value: str) -> str:
-        # The stores strip with str.strip(), so validate with it too: pydantic's
+    def _normalize_username(cls, value: str) -> str:
+        # The stores' own check (NFKC + str.strip(), no format characters): pydantic's
         # strip_whitespace misses e.g. \x1f, which then stored an empty username
-        # (XERK-1548).
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("must not be blank")
-        return stripped
+        # (XERK-1548, XERK-1591). A refusal is a 422.
+        return new_username(value)
 
 
 class UpdateUserIn(BaseModel):
@@ -113,6 +125,7 @@ class UpdateUserIn(BaseModel):
     role: Role | None = None
 
     _check_email = field_validator("email")(staticmethod(_validated_email))
+    _check_password = field_validator("password")(staticmethod(_hashable_password))
 
 
 class UserSummaryOut(BaseModel):
@@ -242,6 +255,9 @@ def create_user(
         raise HTTPException(
             status_code=409, detail="username or email already taken"
         ) from exc
+    except InvalidUserValue as exc:
+        # e.g. a character the database's encoding can't hold.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return PrincipalOut.of(
         Principal(
             user_id=user.user_id,
@@ -295,6 +311,8 @@ def update_user(
             updated = store.update_oidc(user_id, role=body.role)
     except DuplicateUser as exc:
         raise HTTPException(status_code=409, detail="email already in use") from exc
+    except InvalidUserValue as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KeyError as exc:
         # The row was deleted between the get_by_id above and the update (a concurrent
         # DELETE); the store raises KeyError. Report it as 404, not a 500.

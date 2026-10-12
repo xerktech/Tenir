@@ -8,6 +8,7 @@ reset the user-store singleton around each so seeding is clean.
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -23,7 +24,7 @@ from api.auth import (
     verify_password,
 )
 from api.auth.tokens import AuthError
-from api.auth.users import DuplicateUser, InMemoryUserStore
+from api.auth.users import DuplicateUser, InMemoryUserStore, InvalidUserValue, User
 from conftest import TEST_AUTH_SECRET
 from api.config import DEFAULT_AUTH_SECRET, settings
 from api.main import app
@@ -174,10 +175,217 @@ def test_blank_login_never_matches_a_blank_username() -> None:
     """str.strip() reduces e.g. "\\x1f" to "", so a blank login must not resolve to a
     row whose name stripped to nothing (XERK-1548)."""
     store = InMemoryUserStore()
-    store.create("\x1f", "longpassword", household="acme")
+    # A legacy row: new names can't be blank (InvalidUserValue).
+    store._index(
+        User(user_id="legacy", username="\x1f", household="acme", role="member",
+             password_hash=hash_password("longpassword"))
+    )
     for blank in ("", " ", "\t", "\x1c"):
         assert store.get_by_username(blank) is None
         assert store.authenticate(blank, "longpassword") is None
+    with pytest.raises(InvalidUserValue):
+        store.create("\x1f", "longpassword", household="acme")
+
+
+FORMAT_CHAR_NAMES = ("carl​", "c‍arl", "⁠carl", "carl﻿", "carl­")
+
+
+def test_new_usernames_are_nfkc_and_refuse_format_chars() -> None:
+    """Operator decision (XERK-1591): "carl" + a zero-width char was a separate account
+    that looks like "carl". New names are NFKC-normalised and may not hold Unicode
+    format (Cf) characters; a lookup normalises too, so either spelling logs in."""
+    store = InMemoryUserStore()
+    carl = store.create("carl", "longpassword", household="acme")
+    for bad in FORMAT_CHAR_NAMES:
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="acme")
+        with pytest.raises(InvalidUserValue):
+            store.create_oidc(
+                oidc_sub="s", email=None, username=bad, household="acme", role="member"
+            )
+        with pytest.raises(InvalidUserValue):
+            store.update_credentials(carl.user_id, username=bad)
+        with pytest.raises(InvalidUserValue):
+            store.update_oidc(carl.user_id, username=bad)
+    wide = store.create("ｅｍｍａ", "longpassword", household="acme")
+    assert wide.username == "emma"
+    for login in ("emma", "ｅｍｍａ", "EMMA", "　emma "):
+        assert store.authenticate(login, "longpassword") is wide
+    with pytest.raises(DuplicateUser):
+        store.create("Emma", "longpassword", household="acme")
+    # Re-applying the current name is not a rename, so it is not re-validated.
+    assert store.update_credentials(carl.user_id, username=" carl ").username == "carl"
+
+
+def _ascii_json(body: dict) -> dict:
+    """Request kwargs sending ``body`` as \\u-escaped JSON: httpx's own json= encoder
+    can't encode a lone surrogate, which a real client can still send escaped."""
+    import json
+
+    return {"content": json.dumps(body), "headers": {"content-type": "application/json"}}
+
+
+INVISIBLE_NAMES = (
+    "ㅤ",  # Hangul filler
+    "ᅟᅠ",  # Hangul choseong/jungseong fillers
+    "aﾠ",  # halfwidth Hangul filler
+    "a️",  # variation selector
+    "a͏b",  # combining grapheme joiner
+    "a\U000e0100",  # variation selector supplement
+    "́̂",  # only combining marks
+    "a\x07b",  # a control character
+    "no\x00ra",  # NUL: Postgres text can't hold it
+    "nora\ud800",  # lone surrogate: not UTF-8 encodable
+    "a\u2028b",  # line separator
+)
+
+
+def test_new_usernames_refuse_ignorables_controls_and_bare_marks() -> None:
+    """Default-ignorable code points and Hangul fillers render as nothing, a name of
+    only combining marks has no base character, and NUL/surrogates can't be stored
+    (XERK-1591). A combining mark on a base character is still fine."""
+    store = InMemoryUserStore()
+    for bad in INVISIBLE_NAMES:
+        with pytest.raises(InvalidUserValue):
+            store.create(bad, "longpassword", household="acme")
+        assert store.get_by_username(bad) is None
+    assert store.create("rémy", "longpassword", household="acme").username == "rémy"
+    client = TestClient(app)
+    for bad in INVISIBLE_NAMES:
+        r = client.post("/auth/users", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 422, r.text
+        r = client.post("/auth/login", **_ascii_json({"username": bad, "password": "longpassword"}))
+        assert r.status_code == 401, r.text
+    for body in (
+        {"username": "nell", "password": "longpassword", "email": "n\x00@example.com"},
+        {"username": "nell", "password": "long\ud800password"},
+        # PBKDF2's HMAC zero-pads the key: "pw" and "pw\x00" would hash alike.
+        {"username": "nell", "password": "long\x00password"},
+    ):
+        assert client.post("/auth/users", **_ascii_json(body)).status_code == 422
+
+
+def test_padding_strip_stops_on_a_lost_database(caplog: pytest.LogCaptureFixture) -> None:
+    """A per-row failure skips only that row, but a lost database is not a row
+    failure: it propagates at once (the boot reports an outage), rather than being
+    logged as an unstrippable name and retried on every later row (XERK-1591)."""
+    import contextlib
+
+    pytest.importorskip("psycopg")
+    from api.auth.sql_users import SqlUserStore
+    from api.persistence.postgres import DatabaseUnavailable
+
+    class _Result:
+        def __init__(self, rows: list) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list:
+            return self._rows
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.updates = 0
+            self.closed = False
+
+        def execute(self, sql: str, params: object = None) -> _Result:
+            if sql.startswith("SELECT id, username"):
+                return _Result([("id-1", " ann"), ("id-2", " bea")])
+            if sql.startswith("UPDATE"):
+                self.updates += 1
+                raise DatabaseUnavailable("server closed the connection")
+            return _Result([])
+
+        def commit(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+        @contextlib.contextmanager
+        def transaction(self):
+            yield
+
+    conn = _Conn()
+
+    class _Pool:
+        @contextlib.contextmanager
+        def connection(self):
+            yield conn
+
+    with caplog.at_level(logging.WARNING, logger="api.auth.sql_users"):
+        with pytest.raises(DatabaseUnavailable):
+            SqlUserStore._strip_padded_usernames(_Pool())
+    assert conn.updates == 1  # stopped at the first row
+    assert conn.closed  # the session (and its schema lock) is dropped
+    assert "could not strip" not in caplog.text
+
+
+def test_search_terms_split_by_what_full_text_can_tokenise() -> None:
+    """Unspaced-script terms (UTF8) or any non-ASCII term (non-UTF8 C-locale
+    databases) are matched as substrings; the rest stays full-text (XERK-1591)."""
+    from api.persistence.postgres import _split_search_terms
+
+    q = 'plain 日本 café "テキ" -한글 "hello world"'
+    # A negated term stays full-text: OR'd in as a substring it would become a match.
+    assert _split_search_terms(q, utf8=True) == (
+        'plain café -한글 "hello world"',
+        ["日本", "テキ"],
+    )
+    assert _split_search_terms(q, utf8=False) == (
+        'plain -한글 "hello world"',
+        ["日本", "café", "テキ"],
+    )
+    assert _split_search_terms('"-"', utf8=True) == ('"-"', [])
+
+
+def test_unstorable_values_are_recognised() -> None:
+    """What SqlUserStore lookups treat as "no such user" and search as "no hits"."""
+    from api.persistence.postgres import is_unstorable_value
+
+    class DataError(Exception):
+        pass
+
+    class Untranslatable(Exception):
+        sqlstate = "22P05"
+
+    assert is_unstorable_value(UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates"))
+    assert is_unstorable_value(DataError("PostgreSQL text fields cannot contain NUL (0x00) bytes"))
+    assert is_unstorable_value(Untranslatable())
+    assert not is_unstorable_value(DataError("value too long"))
+    assert not is_unstorable_value(RuntimeError("boom"))
+
+
+def test_create_user_endpoint_refuses_format_chars() -> None:
+    client = TestClient(app)
+    for bad in FORMAT_CHAR_NAMES:
+        r = client.post("/auth/users", json={"username": bad, "password": "longpassword"})
+        assert r.status_code == 422, r.text
+    r = client.post("/auth/users", json={"username": "ｎｉａ", "password": "longpassword"})
+    assert r.status_code == 201, r.text
+    assert r.json()["username"] == "nia"
+
+
+def test_store_refusals_are_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A value the database encoding can't hold (SqlUserStore on LATIN1) is the
+    store's InvalidUserValue: a 422, not a 500."""
+    import api.auth.users as users
+
+    client = TestClient(app)
+    store = users.get_user_store()
+    member = store.create("mia", "longpassword", household=settings.household_id)
+
+    def refuse(*args, **kwargs):
+        raise InvalidUserValue("the database can't store this username or email")
+
+    monkeypatch.setattr(store, "create", refuse)
+    monkeypatch.setattr(store, "update_credentials", refuse)
+    r = client.post("/auth/users", json={"username": "nico", "password": "longpassword"})
+    assert r.status_code == 422, r.text
+    r = client.patch(f"/auth/users/{member.user_id}", json={"email": "m@example.com"})
+    assert r.status_code == 422, r.text
 
 
 def test_sql_user_store_ddl_is_ascii() -> None:
@@ -1482,15 +1690,17 @@ def test_sql_user_store_authenticate_round_trips_password(fake_psycopg) -> None:
 def test_sql_user_store_create_and_update_scope_dict_row_to_cursor(
     fake_psycopg,
 ) -> None:
-    # The households upsert runs first (XERK-1508), then the user INSERT.
-    conn = _FakeConn([None, _ADMIN_ROW])
+    # The name check (XERK-1591) and households upsert (XERK-1508) run first, then
+    # the user INSERT.
+    conn = _FakeConn([None, None, _ADMIN_ROW])
     created = _store_with(conn).create(
         "ada", _ADMIN_PASSWORD, household="default", role="admin"
     )
     assert created.username == "ada"
-    assert "INSERT INTO households" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("default",)
-    assert conn.calls[1][2] is fake_psycopg.dict_row
+    assert conn.calls[0][1] == ("ada", None)
+    assert "INSERT INTO households" in conn.calls[1][0]
+    assert conn.calls[1][1] == ("default",)
+    assert conn.calls[2][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
 
     conn2 = _FakeConn([_ADMIN_ROW])
@@ -1534,8 +1744,9 @@ _OIDC_ROW = {
 
 
 def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -> None:
-    # The households upsert runs first (XERK-1508), then the user INSERT.
-    conn = _FakeConn([None, _OIDC_ROW])
+    # The name check (XERK-1591) and households upsert (XERK-1508) run first, then
+    # the user INSERT.
+    conn = _FakeConn([None, None, _OIDC_ROW])
     user = _store_with(conn).create_oidc(
         oidc_sub="authentik-sub-1",
         email="maya@household.test",
@@ -1545,9 +1756,18 @@ def test_sql_user_store_create_oidc_maps_row_and_scopes_dict_row(fake_psycopg) -
     )
     assert user.oidc_sub == "authentik-sub-1" and user.email == "maya@household.test"
     assert user.password_hash is None  # OIDC-only row read back cleanly
-    assert "INSERT INTO households" in conn.calls[0][0]
-    assert conn.calls[1][2] is fake_psycopg.dict_row
+    assert "INSERT INTO households" in conn.calls[1][0]
+    assert conn.calls[2][2] is fake_psycopg.dict_row
     assert conn.row_factory is None
+
+
+def test_sql_user_store_create_refuses_a_name_another_row_holds(fake_psycopg) -> None:
+    """The explicit name check (XERK-1591): with only the fallback case-only index, the
+    INSERT itself would have succeeded beside a legacy padded row."""
+    conn = _FakeConn([(1,)])
+    with pytest.raises(DuplicateUser):
+        _store_with(conn).create("bob", _ADMIN_PASSWORD, household="default")
+    assert len(conn.calls) == 1  # nothing inserted
 
 
 def test_sql_user_store_update_oidc_links_and_scopes_dict_row(fake_psycopg) -> None:

@@ -76,7 +76,12 @@ OUTAGE_WAIT_SECONDS = 0.5
 # libpq kwargs every pooled connection gets. Keepalives and tcp_user_timeout bound a
 # blackholed network at ~QUERY_TIMEOUT_SECONDS instead of the kernel's ~15 minute
 # retransmission limit; libpq ignores them on a Unix socket.
-CONNECT_KWARGS: dict[str, int] = {
+CONNECT_KWARGS: dict[str, int | str] = {
+    # Speak UTF8 whatever the server encoding. Left to default, a SQL_ASCII database's
+    # client encoding is SQL_ASCII too, for which psycopg returns every text column as
+    # bytes: no password hash ever verified, so every login 401'd (XERK-1591). On
+    # LATIN1 etc. the server converts, and refuses an unrepresentable char as 22P05.
+    "client_encoding": "UTF8",
     # Closing a pool that timed out waits for its in-flight connects, which
     # against a blackholed host never return.
     "connect_timeout": int(OPEN_TIMEOUT_SECONDS),
@@ -406,6 +411,19 @@ def database_error_types() -> tuple[type[BaseException], ...]:
     return (DatabaseUnavailable, SchemaLockTimeout, PoolTimeout, psycopg.OperationalError)
 
 
+def is_unstorable_value(exc: BaseException) -> bool:
+    """A query parameter the database can't hold, so it can match no stored row: a
+    character the database encoding can't represent (22P05, e.g. U+3000 on LATIN1;
+    connections speak UTF8 via ``CONNECT_KWARGS``, so the server reports it at bind
+    time), a lone surrogate (psycopg can't UTF-8 encode it) or a NUL (psycopg refuses it
+    client-side: Postgres text can't contain one). XERK-1591."""
+    if isinstance(exc, UnicodeEncodeError):
+        return True
+    if type(exc).__name__ == "DataError" and "NUL (0x00)" in str(exc):
+        return True
+    return getattr(exc, "sqlstate", None) == "22P05"
+
+
 def is_database_unavailable(exc: BaseException) -> bool:
     """True when ``exc`` means "the database can't be reached right now" — a
     retryable outage the API answers with 503 rather than a 500 (XERK-1510).
@@ -538,6 +556,75 @@ def _apply_boot_schema_once(pool, sql: str, extra: Sequence[str], path) -> None:
 # lateral join outside the LIMIT would run for every skipped or sorted row. Duration
 # matches Conversation.duration_ms (0 when empty), in bigint so a span past 2^31 ms can't
 # 500 the listing. id breaks started_at ties so paging never repeats or drops a row.
+# Scripts written without spaces between words. The 'simple' text-search parser makes
+# a whole run one token, so "日本" never matched a transcript holding "日本語の..." on a
+# UTF8 database (XERK-1591): Hiragana, Katakana, Hangul, CJK ideographs, halfwidth forms.
+_UNSPACED_RANGES = (
+    (0x1100, 0x11FF),
+    (0x3040, 0x30FF),
+    (0x3130, 0x318F),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xAC00, 0xD7AF),
+    (0xF900, 0xFAFF),
+    (0xFF66, 0xFFDC),
+    (0x20000, 0x3FFFF),
+)
+
+
+# The Latin-1 letters with a case pair (× and ÷ excluded), for folding search text where
+# lower() can't: a C-locale non-UTF8 database (XERK-1591).
+_LATIN1_UPPER = "".join(chr(c) for c in range(0xC0, 0xDF) if c != 0xD7)
+_LATIN1_LOWER = _LATIN1_UPPER.lower()
+
+
+def _case_fold_sql(expr: str, server_encoding: str | None) -> tuple[str, tuple[str, ...]]:
+    """``expr`` (already lower()ed) with the Latin-1 letters case-folded too, and its
+    parameters. Under a C locale lower() folds only ASCII, so "CAFÉ" missed a stored
+    "café" (full-text had dropped the É, matching either). UTF8 needs nothing more.
+
+    LATIN1 folds with translate(), which works on characters there. SQL_ASCII treats
+    text as bytes, where translate() would remap UTF-8 continuation bytes and make
+    unrelated characters equal ("本" matched "漬"), so it replaces each whole UTF-8
+    letter instead (XERK-1591)."""
+    if server_encoding == "UTF8":
+        return expr, ()
+    if server_encoding != "SQL_ASCII":
+        return f"translate({expr}, %s, %s)", (_LATIN1_UPPER, _LATIN1_LOWER)
+    params: list[str] = []
+    for upper, lower in zip(_LATIN1_UPPER, _LATIN1_LOWER):
+        expr = f"replace({expr}, %s, %s)"
+        params += [upper, lower]
+    return expr, tuple(params)
+
+
+def _split_search_terms(query: str, *, utf8: bool) -> tuple[str, list[str]]:
+    """Split a search into the part full-text search can tokenise and the terms it
+    can't, which are matched as substrings instead (as InMemoryConversationStore matches
+    every term). Under a C-locale non-UTF8 database (SQL_ASCII, LATIN1) the parser drops
+    every non-ASCII character, so there any term holding one is a substring term; under
+    UTF8, a term holding an unspaced-script character is."""
+
+    def substring_term(term: str) -> bool:
+        if utf8:
+            return any(lo <= ord(ch) <= hi for ch in term for lo, hi in _UNSPACED_RANGES)
+        return not term.isascii()
+
+    full_text: list[str] = []
+    substrings: list[str] = []
+    for term in query.split():
+        # A negated term ("-日本") stays full-text: as a substring it would be OR'd in,
+        # turning an exclusion into a match.
+        if substring_term(term) and not term.startswith("-"):
+            # Quotes mean nothing to a substring.
+            bare = term.strip('"')
+            if bare:
+                substrings.append(bare)
+        else:
+            full_text.append(term)
+    return " ".join(full_text), substrings
+
+
 def _summary_page(page_sql: str) -> str:
     return f"""
         SELECT c.*, agg.segment_count, agg.duration_ms
@@ -893,32 +980,71 @@ class SqlConversationStore:
 
         # Owner scope (XERK-651): owner=None searches the whole household (admin); a member
         # id restricts to rows they own, so search can never surface another user's match.
+        if not query.split():
+            # No terms: the whole list, as InMemoryConversationStore answers.
+            return self.list(household, owner=owner, limit=limit, offset=offset)
         owner_clause = "" if owner is None else "AND c.owner = %s"
         owner_param: tuple = () if owner is None else (owner,)
-        with self._ensure_pool().connection() as conn:
-            # Match per-row so the functional FTS index on segments
-            # (to_tsvector('simple', text), schema.sql) can serve the query — a
-            # tsvector built over an aggregate (string_agg) can't use that index and
-            # forces a full scan + per-query recompute. Rank by recency of the
-            # matching conversation; relevance ranking can layer on later if needed.
-            cur = conn.cursor(row_factory=dict_row)
-            rows = cur.execute(
-                _summary_page(
-                    f"""
-                    SELECT c.* FROM conversations c
-                    WHERE c.household = %s {owner_clause}
-                      AND EXISTS (
-                          SELECT 1 FROM segments s
-                          WHERE s.conversation_id = c.id
-                            AND to_tsvector('simple', s.text)
-                                @@ websearch_to_tsquery('simple', %s)
-                      )
-                    ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
-                    """
-                ),
-                (household, *owner_param, query, limit, offset),
-            ).fetchall()
-            return [self._row_to_summary(r) for r in rows]
+        try:
+            with self._ensure_pool().connection() as conn:
+                # Terms full-text search can't tokenise (see _split_search_terms) match
+                # as substrings; a conversation matches the full-text part OR any
+                # substring term, as InMemoryConversationStore matches any term. A
+                # query with no tokenisable words at all (only punctuation, say) is all
+                # substring terms (XERK-1591).
+                utf8 = conn.info.parameter_status("server_encoding") == "UTF8"
+                full_text, substrings = _split_search_terms(query, utf8=utf8)
+                lexemes = 0
+                if full_text:
+                    (lexemes,) = conn.execute(
+                        "SELECT numnode(websearch_to_tsquery('simple', %s))", (full_text,)
+                    ).fetchone()
+                if not lexemes and not substrings:
+                    substrings = query.split()
+                matches: list[str] = []
+                match_params: list[object] = []
+                if lexemes:
+                    # Match per-row so the functional FTS index on segments
+                    # (to_tsvector('simple', text), schema.sql) can serve the query — a
+                    # tsvector built over an aggregate (string_agg) can't use that index
+                    # and forces a full scan + per-query recompute. Rank by recency of
+                    # the matching conversation; relevance ranking can layer on later.
+                    matches.append(
+                        "to_tsvector('simple', s.text) @@ websearch_to_tsquery('simple', %s)"
+                    )
+                    match_params.append(full_text)
+                if substrings:
+                    encoding = conn.info.parameter_status("server_encoding")
+                    text_key, fold = _case_fold_sql("lower(s.text)", encoding)
+                    term_key, _ = _case_fold_sql("lower(t)", encoding)
+                    matches.append(
+                        f"EXISTS (SELECT 1 FROM unnest(%s::text[]) t"
+                        f" WHERE strpos({text_key}, {term_key}) > 0)"
+                    )
+                    # Placeholders in order: the term array, then each side's fold.
+                    match_params.extend([substrings, *fold, *fold])
+                exists = " OR ".join(
+                    f"EXISTS (SELECT 1 FROM segments s WHERE s.conversation_id = c.id AND {m})"
+                    for m in matches
+                )
+                cur = conn.cursor(row_factory=dict_row)
+                rows = cur.execute(
+                    _summary_page(
+                        f"""
+                        SELECT c.* FROM conversations c
+                        WHERE c.household = %s {owner_clause} AND ({exists})
+                        ORDER BY c.started_at DESC, c.id LIMIT %s OFFSET %s
+                        """
+                    ),
+                    (household, *owner_param, *match_params, limit, offset),
+                ).fetchall()
+                return [self._row_to_summary(r) for r in rows]
+        except Exception as exc:
+            # A query the database can't hold (e.g. Japanese on LATIN1, a NUL) can't be
+            # in any stored transcript: no hits, not a 500.
+            if is_unstorable_value(exc):
+                return []
+            raise
 
     def delete(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str

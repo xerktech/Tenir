@@ -12,7 +12,12 @@ from fastapi import Depends, Header, HTTPException
 
 from api.auth.oidc import OidcVerifier
 from api.auth.tokens import AuthError, Principal, decode_token
-from api.auth.users import DuplicateUser, get_user_store, resolve_oidc_principal
+from api.auth.users import (
+    DuplicateUser,
+    InvalidUserValue,
+    get_user_store,
+    resolve_oidc_principal,
+)
 from api.config import DEFAULT_AUTH_SECRET, settings
 
 
@@ -143,8 +148,9 @@ def principal_from_bearer(token: str) -> Principal:
         principal = get_oidc_verifier().verify(token)
         try:
             return resolve_oidc_principal(principal)
-        except (DuplicateUser, KeyError) as exc:
-            # Provisioning/linking hit a unique-constraint clash or a row that
+        except (DuplicateUser, InvalidUserValue, KeyError) as exc:
+            # Provisioning/linking hit a unique-constraint clash, a claim the store
+            # can't hold (e.g. a non-Latin-1 email on a LATIN1 database), or a row that
             # vanished under a concurrent delete. The auth layer fails closed: turn
             # it into a 401 (like every other rejection) rather than let it escape as
             # a 500. Denies access — never grants it.

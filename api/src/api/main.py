@@ -9,12 +9,15 @@ conversation store, full audio in the audio store.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -302,6 +305,25 @@ async def _database_unavailable(conn: Request | WebSocket, exc: Exception) -> Re
 
 for _exc_type in database_error_types():
     app.add_exception_handler(_exc_type, _database_unavailable)
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_error(request: Request, exc: RequestValidationError) -> Response:
+    """FastAPI's own 422, rendered so it can't fail to encode (XERK-1591).
+
+    The default handler echoes the offending input back with ensure_ascii=False, so a
+    body field holding a lone surrogate (valid escaped JSON, not UTF-8 encodable) turned
+    the 422 into a 500. ``json.dumps`` escapes it instead. A login body that isn't
+    valid text is a failed login (401), like any other unknown username."""
+    if request.url.path == "/auth/login" and any(
+        err.get("type") == "string_unicode" for err in exc.errors()
+    ):
+        return JSONResponse(status_code=401, content={"detail": "invalid username or password"})
+    return Response(
+        status_code=422,
+        content=json.dumps({"detail": jsonable_encoder(exc.errors())}),
+        media_type="application/json",
+    )
 
 # Sliding token renewal (XERK-168): the header a renewed bearer token rides back
 # on. Clients adopt it in their shared request path, so an actively-used device
