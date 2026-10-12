@@ -540,14 +540,18 @@ def test_spanish_loanword_greetings_cast_doubt_on_one_english_hit() -> None:
         "Ñ " * 50_000,
     ],
 )
+@pytest.mark.no_cover  # the coverage tracer makes these ~5x slower: time untraced code
 def test_degenerate_turns_stay_cheap(text: str) -> None:
     # Both entry points run on the event loop; only a turn's first _MAX_CHARS are scored,
     # so hallucinated STT output costs ~10 ms however long it is (QA of XERK-1591; a quote
-    # run before capitalised words once took 8.6 s). Measured as the best of five runs in
-    # CPU time, so a loaded host doesn't flake it: wall time at load 12 reached 85 ms. The
-    # budget is ~10x the real cost, and uncapped scoring costs 0.7-2 s on these shapes (only
-    # the first, short one needs the old regex too). Memoisation has its own test below.
+    # run before capitalised words once took 8.6 s). Measured untraced, as the best of five
+    # runs in CPU time, so a loaded host doesn't flake it: wall time at load 12 reached 85 ms.
+    # The budget is ~10x the real cost, and uncapped scoring costs 0.7-2 s on these shapes
+    # (only the first, short one needs the old regex too). Memoisation has its own test below.
+    import sys
     import time
+
+    assert sys.gettrace() is None, "a tracer (coverage?) is on: the timing would be ~5x off"
 
     detect_lang(text)  # warm the frequency caches, as a long-lived process has
     best = float("inf")
