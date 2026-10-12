@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, getAuthConfig, me } from "../src/api";
+import { ApiError, getAuthConfig, login, logout, me, NetworkError } from "../src/api";
 import {
   clearOidcSession,
   clearOidcTransaction,
@@ -26,6 +26,7 @@ import {
   OidcError,
   oidcReady,
   oidcTokenDue,
+  OIDC_TOKEN_TIMEOUT_MS,
   type OidcPrimitives,
   type OidcProvider,
   prepareOidc,
@@ -40,7 +41,7 @@ type FetchCall = { url: string; init: RequestInit };
 let calls: FetchCall[];
 
 /** Route a mock fetch by URL; the responder returns a Response (or throws for a network error). */
-function mockFetch(responder: (call: FetchCall) => Response): void {
+function mockFetch(responder: (call: FetchCall) => Response | Promise<Response>): void {
   calls = [];
   globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const call = { url: String(url), init: init ?? {} };
@@ -419,6 +420,395 @@ describe("401 → refresh → retry", () => {
     const meCalls = calls.filter((c) => c.url.endsWith("/auth/me"));
     expect(meCalls).toHaveLength(2);
     expect((meCalls[1].init.headers as Record<string, string>).Authorization).toBe("Bearer access-2");
+  });
+
+  // XERK-1591: concurrent 401s share one refresh. Authentik rotates refresh tokens
+  // and rejects a reused one, so a second, independent refresh would lose with
+  // invalid_grant and its request would surface a 401 despite a valid new token.
+  it("shares one refresh across concurrent 401s, and every request retries with the new token", async () => {
+    const used = new Set<string>();
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) {
+        const rt = form(call).get("refresh_token") ?? "";
+        if (used.has(rt)) return json({ error: "invalid_grant" }, 400); // reuse → revoked
+        used.add(rt);
+        return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 });
+      }
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer access-2"
+        ? json({ userId: "u1", username: "ada", household: "h", role: "member" })
+        : json({ detail: "expired" }, 401);
+    });
+
+    const results = await Promise.allSettled([me(), me(), me()]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+    expect(calls.filter((c) => c.url === PROVIDER.tokenEndpoint)).toHaveLength(1);
+    expect(getToken()).toBe("access-2");
+    expect(getOidcSession()?.refreshToken).toBe("refresh-2");
+  });
+
+  /** A promise plus its resolver, to hold a response until the test releases it. */
+  function gate<T>(): { promise: Promise<T>; release: (v: T) => void } {
+    let release!: (v: T) => void;
+    const promise = new Promise<T>((r) => (release = r));
+    return { promise, release };
+  }
+  const PRINCIPAL = { userId: "u1", username: "ada", household: "h", role: "member" };
+
+  it("retries without refreshing when a refresh replaced the token under a stale 401", async () => {
+    // Request A is in flight with access-1 while another caller's refresh lands; A's
+    // late 401 is for the old token, so it retries with access-2 — no second refresh.
+    setToken("access-1");
+    const held = gate<Response>();
+    let tokenHits = 0;
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) {
+        tokenHits++;
+        return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 });
+      }
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer access-1" ? held.promise : json(PRINCIPAL);
+    });
+    const pending = me();
+    await refreshOidcSession();
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).resolves.toMatchObject({ userId: "u1" });
+    expect(tokenHits).toBe(1);
+  });
+
+  it("does not retry when the user logged out while the request was in flight", async () => {
+    setToken("access-1");
+    const held = gate<Response>();
+    mockFetch(() => held.promise);
+    const pending = me();
+    logout();
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(calls.filter((c) => c.url.endsWith("/auth/me"))).toHaveLength(1);
+  });
+
+  it("never replays one sign-in's request as another (logout + re-login mid-flight)", async () => {
+    clearOidcSession(); // built-in user A
+    setToken("token-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer token-a" ? held.promise : json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const pending = me();
+    logout();
+    setToken("token-b"); // user B signed in meanwhile
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(calls.filter((c) => c.url.endsWith("/auth/me"))).toHaveLength(1);
+  });
+
+  it("does not resurrect a session the user logged out of during the refresh", async () => {
+    setToken("access-1");
+    const held = gate<Response>();
+    mockFetch((call) =>
+      call.url === PROVIDER.tokenEndpoint ? held.promise : json({ detail: "expired" }, 401),
+    );
+    const pending = me();
+    await vi.waitFor(() => expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(true));
+    logout();
+    held.release(json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(getToken()).toBeNull();
+    expect(getOidcSession()).toBeNull();
+  });
+
+  it("does not overwrite a new sign-in with a refresh of the old session", async () => {
+    setToken("access-1");
+    const held = gate<Response>();
+    mockFetch((call) =>
+      call.url === PROVIDER.tokenEndpoint ? held.promise : json({ detail: "expired" }, 401),
+    );
+    const refreshing = refreshOidcSession();
+    await vi.waitFor(() => expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(true));
+    // A new OIDC sign-in lands while the old refresh is in flight.
+    setToken("access-new");
+    setOidcSession({ refreshToken: "refresh-new", expiresAt: Date.now() + 300_000 });
+    held.release(json({ access_token: "access-old-2", refresh_token: "refresh-old-2", expires_in: 300 }));
+    await expect(refreshing).rejects.toBeInstanceOf(Error);
+    expect(getToken()).toBe("access-new");
+    expect(getOidcSession()?.refreshToken).toBe("refresh-new");
+  });
+
+  it("a built-in login over A (no logout) stops A's in-flight 401 from retrying as B", async () => {
+    clearOidcSession(); // built-in A
+    setToken("token-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url.endsWith("/auth/login")) return json({ token: "token-b" });
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer token-a" ? held.promise : json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const pending = me();
+    await login("b", "pw"); // no logout() first
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("a refresh followed by logout + re-login still never retries the old request", async () => {
+    setToken("access-1");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) {
+        return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 });
+      }
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer access-1" ? held.promise : json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const pending = me();
+    await refreshOidcSession(); // the refresh generation moves...
+    logout(); // ...but so does the sign-in
+    clearOidcSession();
+    setToken("token-b");
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("never refreshes or replays as another OIDC sign-in (real callback, no logout)", async () => {
+    setToken("access-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) {
+        return form(call).get("grant_type") === "authorization_code"
+          ? json({
+              access_token: "access-b",
+              refresh_token: "refresh-b",
+              id_token: fakeJwt({ nonce: "s2" }),
+              expires_in: 300,
+            })
+          : json({ access_token: "access-b2", refresh_token: "refresh-b2", expires_in: 300 });
+      }
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer access-a" ? held.promise : json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const pending = me();
+    // User B completes a real (native-shape) OIDC sign-in while A's request is out.
+    configureOidc(fakePrimitives(async () => ({ code: "auth-code", state: "s1" })));
+    await startOidcLogin();
+    expect(getToken()).toBe("access-b");
+    held.release(json({ detail: "expired" }, 401));
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(calls.some((c) => form(c).get("grant_type") === "refresh_token")).toBe(false);
+    expect(getOidcSession()?.refreshToken).toBe("refresh-b");
+  });
+
+  /** Tokens for B's OIDC code exchange, with no refresh_token (no offline_access). */
+  function codeExchangeWithoutRefresh(call: FetchCall): Response | undefined {
+    if (call.url === PROVIDER.tokenEndpoint && form(call).get("grant_type") === "authorization_code") {
+      return json({ access_token: "access-b", id_token: fakeJwt({ nonce: "s2" }), expires_in: 300 });
+    }
+    return undefined;
+  }
+
+  it("a new OIDC sign-in never inherits the previous user's refresh token", async () => {
+    setToken("access-a"); // A's sidecar holds refresh-1
+    mockFetch(
+      (call) =>
+        codeExchangeWithoutRefresh(call) ??
+        (call.url === PROVIDER.tokenEndpoint
+          ? json({ access_token: "access-from-refresh-1", expires_in: 300 })
+          : json({ ...PRINCIPAL, userId: "uB" })),
+    );
+    configureOidc(fakePrimitives(async () => ({ code: "auth-code", state: "s1" })));
+    await startOidcLogin();
+    expect(getToken()).toBe("access-b");
+    expect(getOidcSession()?.refreshToken).toBeNull();
+    await expect(refreshOidcSession()).rejects.toBeInstanceOf(OidcError); // nothing to refresh
+    expect(getToken()).toBe("access-b");
+  });
+
+  it("A's in-flight refresh never overwrites B's new OIDC sign-in", async () => {
+    setToken("access-a");
+    const held = gate<Response>();
+    mockFetch(
+      (call) =>
+        codeExchangeWithoutRefresh(call) ??
+        (call.url === PROVIDER.tokenEndpoint ? held.promise : json({ ...PRINCIPAL, userId: "uB" })),
+    );
+    const refreshing = refreshOidcSession();
+    await vi.waitFor(() => expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(true));
+    configureOidc(fakePrimitives(async () => ({ code: "auth-code", state: "s1" })));
+    await startOidcLogin();
+    held.release(json({ access_token: "access-a2", refresh_token: "refresh-a2", expires_in: 300 }));
+    await expect(refreshing).rejects.toBeInstanceOf(OidcError);
+    expect(getToken()).toBe("access-b");
+    expect(getOidcSession()?.refreshToken).toBeNull();
+  });
+
+  it("a failed login never adopts a renewal header for the token it was confirming", async () => {
+    setToken("access-a");
+    mockFetch((call) =>
+      call.url.endsWith("/auth/login")
+        ? json({ token: "token-b" })
+        : new Response(JSON.stringify({ detail: "forbidden" }), {
+            status: 403,
+            headers: { "Content-Type": "application/json", "X-Renewed-Token": "token-b-renewed" },
+          }),
+    );
+    await expect(login("bob", "pw")).rejects.toMatchObject({ status: 403 });
+    expect(getToken()).toBe("access-a");
+  });
+
+  it("a login whose /auth/me 401s never refreshes the leftover OIDC session into it", async () => {
+    setToken("access-a"); // A's OIDC sidecar (refresh-1) is still stored
+    mockFetch((call) => {
+      if (call.url.endsWith("/auth/login")) return json({ token: "token-b" });
+      if (call.url === PROVIDER.tokenEndpoint) {
+        return json({ access_token: "access-a2", refresh_token: "refresh-a2", expires_in: 300 });
+      }
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer token-b" ? json({ detail: "nope" }, 401) : json(PRINCIPAL);
+    });
+    await expect(login("bob", "pw")).rejects.toMatchObject({ status: 401 });
+    expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(false);
+    expect(getToken()).toBe("access-a"); // A's session untouched
+    expect(getOidcSession()?.refreshToken).toBe("refresh-1");
+  });
+
+  it("a failed login during A's in-flight refresh keeps A's rotated session", async () => {
+    setToken("access-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) return held.promise;
+      if (call.url.endsWith("/auth/login")) return json({ token: "token-b" });
+      return json({ detail: "nope" }, 401); // /auth/me rejects B's token
+    });
+    const refreshing = refreshOidcSession();
+    await vi.waitFor(() => expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(true));
+    await expect(login("bob", "pw")).rejects.toMatchObject({ status: 401 });
+    held.release(json({ access_token: "access-a2", refresh_token: "refresh-a2", expires_in: 300 }));
+    await refreshing;
+    expect(getToken()).toBe("access-a2");
+    expect(getOidcSession()?.refreshToken).toBe("refresh-a2");
+  });
+
+  it("ignores a renewal header for the previous sign-in's token", async () => {
+    clearOidcSession();
+    setToken("token-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url.endsWith("/auth/login")) return json({ token: "token-b" });
+      const auth = (call.init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer token-a" ? held.promise : json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const pending = me();
+    await login("b", "pw");
+    held.release(
+      new Response(JSON.stringify(PRINCIPAL), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "X-Renewed-Token": "token-a-renewed" },
+      }),
+    );
+    await pending;
+    expect(getToken()).toBe("token-b");
+  });
+
+  it("drops A's in-flight refresh when B signs in with a password without logging out", async () => {
+    setToken("access-a");
+    const held = gate<Response>();
+    mockFetch((call) => {
+      if (call.url === PROVIDER.tokenEndpoint) return held.promise;
+      if (call.url.endsWith("/auth/login")) return json({ token: "token-b" });
+      return json({ ...PRINCIPAL, userId: "uB" });
+    });
+    const refreshing = refreshOidcSession();
+    await vi.waitFor(() => expect(calls.some((c) => c.url === PROVIDER.tokenEndpoint)).toBe(true));
+    await login("b", "pw");
+    held.release(json({ access_token: "access-a2", refresh_token: "refresh-a2", expires_in: 300 }));
+    await expect(refreshing).rejects.toBeInstanceOf(OidcError);
+    expect(getToken()).toBe("token-b");
+    expect(getSessionKind()).toBe("builtin");
+  });
+
+  describe("token request timeout", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("aborts the request, rejects with NetworkError and leaves no timer behind", async () => {
+      vi.useFakeTimers();
+      let signal: AbortSignal | undefined;
+      mockFetch(
+        (call) =>
+          new Promise<Response>((_, reject) => {
+            signal = call.init.signal ?? undefined;
+            signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+      );
+      const outcome = refreshOidcSession().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(OIDC_TOKEN_TIMEOUT_MS + 1);
+      expect(await outcome).toBeInstanceOf(NetworkError);
+      expect(signal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("leaves no timer behind after a successful or failed exchange", async () => {
+      vi.useFakeTimers();
+      mockFetch(() => json({ access_token: "access-2", expires_in: 300 }));
+      await refreshOidcSession();
+      expect(vi.getTimerCount()).toBe(0);
+      mockFetch(() => json({}, 503));
+      await expect(refreshOidcSession()).rejects.toBeInstanceOf(OidcError);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("times out a body that stalls after the headers", async () => {
+      vi.useFakeTimers();
+      mockFetch(
+        () =>
+          new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode('{"acc')) }), {
+            status: 200,
+          }),
+      );
+      const outcome = refreshOidcSession().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(OIDC_TOKEN_TIMEOUT_MS + 1);
+      expect(await outcome).toBeInstanceOf(NetworkError);
+    });
+
+    it("still times out on a platform without AbortController", async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("AbortController", undefined);
+      try {
+        mockFetch(() => new Promise<Response>(() => {}));
+        const outcome = refreshOidcSession().catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(OIDC_TOKEN_TIMEOUT_MS + 1);
+        expect(await outcome).toBeInstanceOf(NetworkError);
+        expect(calls[0].init.signal).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
+  it("a token request that never answers times out, so later refreshes aren't wedged", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch(() => new Promise<Response>(() => {})); // hangs forever
+      const hung = refreshOidcSession();
+      const outcome = hung.then(
+        () => "resolved",
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(OIDC_TOKEN_TIMEOUT_MS + 1);
+      expect(await outcome).toBeInstanceOf(NetworkError);
+      expect(getOidcSession()?.refreshToken).toBe("refresh-1"); // an outage keeps it
+    } finally {
+      vi.useRealTimers();
+    }
+    mockFetch(() => json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }));
+    await refreshOidcSession();
+    expect(getToken()).toBe("access-2");
+  });
+
+  it("a fresh refresh can start once the shared one has settled", async () => {
+    mockFetch(() => json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }));
+    await refreshOidcSession();
+    mockFetch(() => json({ access_token: "access-3", refresh_token: "refresh-3", expires_in: 300 }));
+    await refreshOidcSession();
+    expect(getToken()).toBe("access-3");
   });
 
   it("surfaces the 401 as re-login when the refresh itself fails", async () => {
