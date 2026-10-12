@@ -439,7 +439,7 @@ async function exchangeRefreshToken(): Promise<void> {
     throw new OidcError("the OIDC session ended while it was being refreshed");
   }
   storeSession(tokens, "refresh");
-  noteTokenRefreshed();
+  noteTokenRefreshed(tokens.access_token);
 }
 
 /** Whether the current OIDC access token is expired or within the refresh skew window. */
