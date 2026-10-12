@@ -34,7 +34,19 @@ export interface TokenStore {
   get(): string | null;
   set(token: string): void;
   clear(): void;
+  /**
+   * The sign-in epoch stored beside the token (XERK-1591) — an opaque id replaced on
+   * every sign-in and every clear. Persisting it in the same shared storage as the
+   * token is what lets every tab (or process) sharing that token see the same epoch.
+   * Optional: a store without it keeps the epoch in memory, which is only correct
+   * when one JS context owns the store.
+   */
+  getEpoch?(): string | null;
+  setEpoch?(epoch: string): void;
 }
+
+/** Where the default and native stores persist the sign-in epoch. */
+export const TOKEN_EPOCH_KEY = "tenir.token.epoch";
 
 /** The default `localStorage`-backed store, used by the browser frontends. */
 function localStorageTokenStore(): TokenStore {
@@ -58,6 +70,20 @@ function localStorageTokenStore(): TokenStore {
         localStorage.removeItem(TOKEN_KEY);
       } catch {
         /* ignore */
+      }
+    },
+    getEpoch() {
+      try {
+        return localStorage.getItem(TOKEN_EPOCH_KEY);
+      } catch {
+        return null;
+      }
+    },
+    setEpoch(epoch) {
+      try {
+        localStorage.setItem(TOKEN_EPOCH_KEY, epoch);
+      } catch {
+        /* storage unavailable — the in-memory epoch still covers this tab */
       }
     },
   };
@@ -84,33 +110,68 @@ export function setToken(token: string): void {
 }
 
 export function clearToken(): void {
-  signInEpoch++;
+  newEpoch();
   store.clear();
 }
 
-// Token generations (XERK-1591).
-// - `epoch` moves whenever the sign-in changes: a token clear (logout, failed login)
-//   or a new sign-in (`login`, OIDC callback). Work started under one epoch — a 401
-//   retry, a refresh — must never act on another: it would replay one user's request
-//   as another's, or store an ended session over a new one.
-// - `refresh` moves when an OIDC refresh stores a new access token, so a late 401 for
-//   the replaced token can just retry instead of refreshing (rotation) again.
-let refreshGeneration = 0;
-let signInEpoch = 0;
+/**
+ * Compare-and-clear: drop the stored token only if it is still `expected`. Another
+ * tab sharing the store may have replaced it (a refresh, a new sign-in) since the
+ * caller checked it, and that token must survive (XERK-1591).
+ */
+export function clearTokenIf(expected: string): boolean {
+  if (store.get() !== expected) return false;
+  clearToken();
+  return true;
+}
 
-/** Note that an OIDC refresh just stored a new access token (called by `oidc.ts`). */
-export function noteTokenRefreshed(): void {
+// Token generations (XERK-1591).
+// - `epoch` changes whenever the sign-in changes: a token clear (logout, failed
+//   login) or a new sign-in (`login`, OIDC callback). It lives in the token's own
+//   shared storage, so every tab sees every other tab's sign-in changes. Work started
+//   under one epoch — a 401 retry, a refresh — must never act under another: it would
+//   replay one user's request as another's, or store an ended session over a new one.
+//   An opaque unique id rather than a counter, so two tabs changing it at once can
+//   never land on the same value.
+// - `refresh` moves when an OIDC refresh in THIS context stores a new access token,
+//   so a late 401 for the replaced token can just retry instead of refreshing
+//   (rotation) again.
+let refreshGeneration = 0;
+let lastRefreshedToken: string | null = null;
+let memoryEpoch = "initial";
+
+function newEpoch(): void {
+  const id =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  memoryEpoch = id;
+  store.setEpoch?.(id);
+}
+
+function currentEpoch(): string {
+  return store.getEpoch?.() ?? memoryEpoch;
+}
+
+/** Note that an OIDC refresh just stored `token` (called by `oidc.ts`). */
+export function noteTokenRefreshed(token: string): void {
   refreshGeneration++;
+  lastRefreshedToken = token;
+}
+
+/** The token this context's most recent OIDC refresh stored, if any. */
+export function lastOwnRefreshedToken(): string | null {
+  return lastRefreshedToken;
 }
 
 /** Note that a new sign-in is about to store its token (built-in login, OIDC callback). */
 export function noteNewSignIn(): void {
-  signInEpoch++;
+  newEpoch();
 }
 
-/** Snapshot of the counters; compare two snapshots to see what changed. */
-export function tokenGenerations(): { refresh: number; epoch: number } {
-  return { refresh: refreshGeneration, epoch: signInEpoch };
+/** Snapshot of the generations; compare two snapshots to see what changed. */
+export function tokenGenerations(): { refresh: number; epoch: string } {
+  return { refresh: refreshGeneration, epoch: currentEpoch() };
 }
 
 /** Authorization header for REST calls, or an empty object when there's no token. */

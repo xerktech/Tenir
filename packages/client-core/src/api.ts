@@ -14,6 +14,7 @@ import {
   getSessionKind,
   getToken,
   noteNewSignIn,
+  lastOwnRefreshedToken,
   setToken,
   tokenGenerations,
   tryOidcRefresh,
@@ -361,10 +362,26 @@ export function isServerFault(err: unknown): boolean {
  *   null: show the login form.
  */
 export async function checkSession(): Promise<Principal | null> {
+  return checkSessionOnce(true);
+}
+
+async function checkSessionOnce(mayRecheck: boolean): Promise<Principal | null> {
+  const checked = getToken();
+  const sentGen = tokenGenerations();
   try {
     return await me();
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
+      // Compare-and-clear (XERK-1591): only the token this check proved dead — the one
+      // it sent, or the one this context's own refresh stored and the retry sent. If
+      // another tab replaced the token meanwhile (its refresh, a new sign-in), that
+      // token is unchecked and must survive: check it instead, once.
+      const now = getToken();
+      const ownRefresh =
+        tokenGenerations().refresh !== sentGen.refresh && now === lastOwnRefreshedToken();
+      if (now !== checked && !ownRefresh) {
+        return mayRecheck && now !== null ? checkSessionOnce(false) : null;
+      }
       // An OIDC session keeps its refresh sidecar: `request()` already tried a silent
       // refresh, and it may have failed only because the IdP is briefly unreachable.
       // With the access token gone, the next `me()` 401s and refreshes again, so the

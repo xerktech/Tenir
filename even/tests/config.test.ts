@@ -48,6 +48,26 @@ describe("deviceTokenStore", () => {
     const store = cfg.deviceTokenStore(new MemStorage(), "cached");
     expect(store.get()).toBe("cached");
   });
+
+  // XERK-1591: the sign-in epoch rides beside the token in the same device store.
+  it("persists the sign-in epoch beside the token and restores it", async () => {
+    const storage = new MemStorage();
+    const store = cfg.deviceTokenStore(storage, null);
+    expect(store.getEpoch?.()).toBeNull();
+    store.setEpoch?.("e1");
+    expect(store.getEpoch?.()).toBe("e1");
+    await settle();
+    expect(storage.map.get("tenir.token.epoch")).toBe("e1");
+    expect(cfg.deviceTokenStore(storage, null, "e1").getEpoch?.()).toBe("e1");
+  });
+
+  it("initConfig hydrates the epoch so client-core reads the persisted one", async () => {
+    const storage = new MemStorage();
+    storage.map.set("tenir.token.epoch", "persisted-epoch");
+    await cfg.initConfig(storage);
+    const core = await import("@tenir/client-core");
+    expect(core.tokenGenerations().epoch).toBe("persisted-epoch");
+  });
 });
 
 describe("initConfig", () => {

@@ -36,6 +36,10 @@ paths:
   server fault (`isServerFault`: `NetworkError` or any 5xx) keeps it and shows the unreachable
   state. Even's `resolveBootAuth` follows the same rule. A plain 500 is NOT folded into
   `NetworkError` in `request()`: a 500 on an ordinary action must still surface as `ApiError`.
+- `checkSession` clears compare-and-clear: only the token it proved dead. Tabs share the token
+  store, so another tab's fresh token must survive (it is re-checked once instead).
+- The sign-in epoch lives in the token store (`TOKEN_EPOCH_KEY`), not in memory: every tab
+  must see every sign-in/clear, or a 401 retry/refresh in one tab acts as another tab's user.
 - A session ending mid-outage must not raise out of `Session.close()`, and the client never
   resumes an ended session: `_persist` defers the finish to `_finalize_deferred` (XERK-1531).
   The boot stale sweep only covers a *previous* process's rows, so nothing else would finish it.

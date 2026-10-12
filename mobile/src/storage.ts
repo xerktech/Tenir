@@ -13,7 +13,7 @@
  * than importing a native module) so it can be unit-tested with an in-memory store.
  */
 
-import type { TokenStore } from "@tenir/client-core";
+import { TOKEN_EPOCH_KEY, type TokenStore } from "@tenir/client-core";
 
 /** A minimal async key/value store — the shape of `@react-native-async-storage`. */
 export interface KeyValueStore {
@@ -64,6 +64,9 @@ export function createMirroredTokenStore(
   onError?: (err: unknown) => void,
 ): MirroredTokenStore {
   let cached: string | null = null;
+  // The sign-in epoch rides beside the token in the same store (XERK-1591), so the
+  // app shares client-core's one model with the web tabs and Even.
+  let cachedEpoch: string | null = null;
   const swallow = (err: unknown) => onError?.(err);
 
   return {
@@ -77,10 +80,16 @@ export function createMirroredTokenStore(
         cached = null;
         kv.removeItem(TOKEN_KEY).catch(swallow);
       },
+      getEpoch: () => cachedEpoch,
+      setEpoch: (epoch) => {
+        cachedEpoch = epoch;
+        kv.setItem(TOKEN_EPOCH_KEY, epoch).catch(swallow);
+      },
     },
     async hydrate() {
       try {
         cached = await kv.getItem(TOKEN_KEY);
+        cachedEpoch = await kv.getItem(TOKEN_EPOCH_KEY);
       } catch (err) {
         swallow(err);
         cached = null;

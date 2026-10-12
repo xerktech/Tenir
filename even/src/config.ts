@@ -21,6 +21,7 @@ import {
   configureOidcStore,
   configureTokenStore,
   httpBaseFromWs,
+  TOKEN_EPOCH_KEY,
   type OidcStore,
   type TokenStore,
 } from "@tenir/client-core";
@@ -58,8 +59,15 @@ let currentHttpUrl = HTTP_OVERRIDE ?? httpBaseFromWs(currentWsUrl);
  * persisting writes to the device store in the background (master plan §8.5's
  * native-store pattern). Exported for tests.
  */
-export function deviceTokenStore(store: KeyValueStorage, initial: string | null): TokenStore {
+export function deviceTokenStore(
+  store: KeyValueStorage,
+  initial: string | null,
+  initialEpoch: string | null = null,
+): TokenStore {
   let current = initial;
+  // The sign-in epoch rides beside the token in the same store (XERK-1591), the one
+  // model client-core uses on every platform.
+  let epoch = initialEpoch;
   return {
     get: () => current,
     set: (token) => {
@@ -69,6 +77,11 @@ export function deviceTokenStore(store: KeyValueStorage, initial: string | null)
     clear: () => {
       current = null;
       void store.remove(TOKEN_KEY);
+    },
+    getEpoch: () => epoch,
+    setEpoch: (next) => {
+      epoch = next;
+      void store.set(TOKEN_EPOCH_KEY, next);
     },
   };
 }
@@ -149,7 +162,9 @@ export async function initConfig(store: KeyValueStorage): Promise<void> {
   // while running on the seed (dev proxying), so a user-chosen server stays consistent.
   currentHttpUrl = saved ? httpBaseFromWs(currentWsUrl) : (HTTP_OVERRIDE ?? httpBaseFromWs(currentWsUrl));
   configureApi({ httpBaseUrl: currentHttpUrl });
-  configureTokenStore(deviceTokenStore(store, await store.get(TOKEN_KEY)));
+  configureTokenStore(
+    deviceTokenStore(store, await store.get(TOKEN_KEY), await store.get(TOKEN_EPOCH_KEY)),
+  );
 
   // Optional OIDC path (XERK-656): wire the sidecar store (seeded from the device
   // store so a restart keeps the session AND the in-flight authorize redirect can
