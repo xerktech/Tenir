@@ -133,18 +133,18 @@ def test_traversal_resume_id_cannot_touch_another_households_audio(
 
     # Household alpha records a session under a normal, server-shaped id.
     _as_household(monkeypatch, "alpha")
-    _capture(client, household="alpha", session_id=VICTIM_ID, freq=200)
-    victim_key = audio_key("alpha", VICTIM_ID)
+    victim_id = _capture(client, household="alpha", session_id=None, freq=200)["sessionId"]
+    victim_key = audio_key("alpha", victim_id)
     victim_audio = audio.get(victim_key)
     assert victim_audio, "alpha's audio should have been retained"
 
     # Household beta tries to resume onto it by traversing out of its own namespace.
     _as_household(monkeypatch, "beta")
-    ready = _capture(client, household="beta", session_id=f"../alpha/{VICTIM_ID}", freq=900)
+    ready = _capture(client, household="beta", session_id=f"../alpha/{victim_id}", freq=900)
 
     # The traversal id is not echoed back, not treated as a resume, and beta's
     # audio landed under beta — alpha's recording is byte-identical.
-    assert ready["sessionId"] != f"../alpha/{VICTIM_ID}"
+    assert ready["sessionId"] != f"../alpha/{victim_id}"
     assert is_valid_session_id(ready["sessionId"])
     assert ready.get("resumed") is not True
     assert audio.get(victim_key) == victim_audio

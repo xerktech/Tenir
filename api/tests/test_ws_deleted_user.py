@@ -20,6 +20,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from api import registry
 from api.auth import Principal, get_user_store, issue_token, reset_user_store
+from api.contract import Pong
 from api.main import WS_CLOSE_RESUMED_ELSEWHERE, app
 from conftest import TEST_AUTH_SECRET
 
@@ -443,6 +444,10 @@ def test_revoked_socket_gets_its_1008_even_with_a_frame_queued() -> None:
                     ws.send_text(ping)
                     ws.receive_json()
             assert exc.value.code == 1008
+            # The handler returns after the close is out, once it stops draining.
+            deadline = time.monotonic() + 5
+            while "handler returned" not in events and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert events == ["1008 sent", "handler returned"]
 
 
@@ -520,3 +525,45 @@ def test_resume_does_not_wait_on_the_displaced_sockets_close_handshake(
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws1.receive_json()
             assert exc.value.code == WS_CLOSE_RESUMED_ELSEWHERE
+
+
+@pytest.mark.real_auth
+def test_delete_leaves_a_socket_whose_peer_is_gone_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A revoke skips a socket already disconnected, not only one already closing.
+    A session's send to a vanished peer fails (starlette marks the socket
+    DISCONNECTED) while its handler still waits in receive(): that socket was not
+    removed by the delete and must not be counted or closed as such."""
+    caplog.set_level(logging.INFO, logger="api")
+    _, admin_token = _token("admin", "admin")
+    member_id, member_token = _token("member", "member")
+    peer_gone = threading.Event()
+
+    async def vanishing_peer(scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        async def guarded(message) -> None:  # type: ignore[no-untyped-def]
+            if peer_gone.is_set() and message["type"] == "websocket.send":
+                raise OSError("peer gone")
+            await send(message)
+
+        await app(scope, receive, guarded if scope["type"] == "websocket" else send)
+
+    with TestClient(vanishing_peer) as client:
+        with client.websocket_connect(f"/ws?token={member_token}") as ws:
+            ws.send_text(START)
+            sid = ws.receive_json()["sessionId"]
+            session = registry.get(sid)
+            assert session is not None
+            peer_gone.set()
+
+            async def session_sends() -> None:
+                with pytest.raises(WebSocketDisconnect):
+                    await session.current_send(Pong(type="pong", t=1))
+
+            assert client.portal is not None
+            client.portal.call(session_sends)
+            headers = {"Authorization": f"Bearer {admin_token}"}
+            assert client.delete(f"/auth/users/{member_id}", headers=headers).status_code == 204
+            assert session.is_closed
+            assert "ws closed: account no longer exists" not in caplog.text
+            assert "ws gone before its" not in caplog.text

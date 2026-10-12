@@ -9,6 +9,7 @@ conversation store, full audio in the audio store.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -59,7 +60,13 @@ from api.persistence.postgres import (
 )
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
-from api.session import Sender, Session, is_valid_session_id, teardowns_in_flight
+from api.session import (
+    RecordingGone,
+    Sender,
+    Session,
+    is_valid_session_id,
+    teardowns_in_flight,
+)
 from api.status import probe_loop, refresh
 from api.status import snapshot as status_snapshot
 from api.stt import preload_vad_model
@@ -124,7 +131,12 @@ class ShutdownCancelMiddleware:
             log.info(
                 "%s %r cancelled at the graceful-shutdown deadline", scope["type"], scope["path"]
             )
-            if scope["type"] == "http" and not started:
+            if scope["type"] == "http" and started:
+                # The response is cut short: uvicorn closes the connection, as it should,
+                # but also logs it as an ERROR. This request's cancel is already logged
+                # above, so mute that one line (_MuteCutShortResponse).
+                _cut_short_at_shutdown.set(True)
+            elif scope["type"] == "http":
                 # Unanswered, uvicorn sends a 500. 503 tells the client to retry, which
                 # reaches a pod that isn't shutting down. A response already under way
                 # can't be fixed: uvicorn closes the connection on it, as it should.
@@ -136,6 +148,30 @@ class ShutdownCancelMiddleware:
                     }
                 )
                 await send({"type": "http.response.body", "body": b""})
+
+
+# Set (in the request's own task context, which uvicorn logs from) when the shutdown
+# cancel cut a response short that had already started.
+_cut_short_at_shutdown: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "cut_short_at_shutdown", default=False
+)
+_UVICORN_INCOMPLETE_RESPONSE = "ASGI callable returned without completing response."
+
+
+class _MuteCutShortResponse(logging.Filter):
+    """Drop uvicorn's "returned without completing response" ERROR for a response the
+    graceful-shutdown cancel cut short. There is no clean way to end it from the app:
+    a closing body frame either raises (Content-Length unmet) or passes a truncated
+    chunked body off as complete, so the connection close uvicorn does is right. Any
+    other incomplete response is a bug and still logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.msg == _UVICORN_INCOMPLETE_RESPONSE and _cut_short_at_shutdown.get())
+
+
+_uvicorn_error_log = logging.getLogger("uvicorn.error")
+if not any(isinstance(f, _MuteCutShortResponse) for f in _uvicorn_error_log.filters):
+    _uvicorn_error_log.addFilter(_MuteCutShortResponse())
 
 
 @asynccontextmanager
@@ -772,6 +808,18 @@ async def ws_endpoint(ws: WebSocket) -> None:
                             )
                             metrics.incr("sessions.cross_user_resume")
                             requested_id = None
+                        elif existing is None and convs is not None:
+                            # Every id the server issues has its row from start(), so
+                            # no row means the recording was deleted (or the id was
+                            # never ours). create() is an upsert: honoring the id would
+                            # bring a deleted recording back. Start fresh instead; the
+                            # client adopts the id in session.ready.
+                            log.info(
+                                "resume id has no recording in household %s; starting fresh",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.unknown_resume_id")
+                            requested_id = None
                     # Starting fresh under a server id has nothing to race on: let go of
                     # the presented id's lock now, or anyone who knows another user's id
                     # could hold that id's owner off a resume for a whole start() each.
@@ -784,16 +832,37 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     # it as an error frame instead of aborting the socket so a transient
                     # backend outage doesn't 500 the connection.
                     try:
-                        new_session = Session(
-                            send,
-                            session_id=requested_id,
-                            household=principal.household,
-                            user_id=principal.user_id,
-                        )
-                        await new_session.start(
-                            mic_source=msg.micSource,
-                            source_lang=msg.sourceLang,
-                        )
+                        try:
+                            new_session = Session(
+                                send,
+                                session_id=requested_id,
+                                household=principal.household,
+                                user_id=principal.user_id,
+                                reopen=True,
+                            )
+                            await new_session.start(
+                                mic_source=msg.micSource,
+                                source_lang=msg.sourceLang,
+                            )
+                        except RecordingGone:
+                            # Deleted between the check above and start() reopening it:
+                            # it stays deleted, and this start goes on under a server id.
+                            log.info(
+                                "resumed recording deleted mid-start in household %s; "
+                                "starting fresh",
+                                principal.household,
+                            )
+                            metrics.incr("sessions.unknown_resume_id")
+                            await start_guard.aclose()
+                            new_session = Session(
+                                send,
+                                household=principal.household,
+                                user_id=principal.user_id,
+                            )
+                            await new_session.start(
+                                mic_source=msg.micSource,
+                                source_lang=msg.sourceLang,
+                            )
                     except Exception:
                         log.exception("session.start failed for household %s", principal.household)
                         metrics.incr("sessions.start_errors")
@@ -859,7 +928,31 @@ async def ws_endpoint(ws: WebSocket) -> None:
             # first lets the server drop the transport and the close frame with it; the
             # client then sees 1006 and reconnects (a displaced one with the same id,
             # displacing the new socket).
-            await close_task
+            await _drain_while(ws, close_task)
+
+
+async def _drain_while(ws: WebSocket, close_task: asyncio.Task[None]) -> None:
+    """Await the socket's background close, discarding frames the client still sends.
+
+    uvicorn's legacy websockets backend stops reading the transport once its frame
+    queue is full, so a client's close echo stuck behind queued audio went unread and
+    the close waited out its timeout (~10 s) before the TCP connection closed. Reading
+    lets the echo through. Bounded by the close itself: the drain stops when it does.
+    """
+
+    async def drain() -> None:
+        try:
+            while (await ws.receive())["type"] != "websocket.disconnect":
+                pass
+        except Exception:  # already disconnected, or the server gave up: nothing to read
+            pass
+
+    drainer = asyncio.create_task(drain())
+    try:
+        await close_task
+    finally:
+        drainer.cancel()
+        await asyncio.wait({drainer})
 
 
 def _err(code: str, message: str, *, fatal: bool = False) -> ErrorMessage:

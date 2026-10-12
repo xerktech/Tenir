@@ -509,3 +509,61 @@ def test_shutdown_cancel_log_line_cannot_be_forged_through_the_path(
     with caplog.at_level("INFO", logger="api"):
         _run_cancelled_http(False, _UVICORN_SHUTDOWN_CANCEL, path="/a\nINFO api FORGED")
     assert "\n" not in caplog.records[-1].getMessage()
+
+
+# uvicorn's own wording (protocols/http/*_impl.py), spelled out so a test run against
+# code without the filter fails on the log line, not on an import.
+_UVICORN_INCOMPLETE_RESPONSE = "ASGI callable returned without completing response."
+
+
+def _uvicorn_run_asgi(msg: str | None) -> None:
+    """Mimic uvicorn's run_asgi: await the app in one task, which the shutdown cancels,
+    then log the response the app left incomplete from that same task."""
+    import logging
+
+    from api.main import ShutdownCancelMiddleware
+
+    async def send(message: dict[str, object]) -> None:
+        pass
+
+    async def streaming_route(scope: object, receive: object, send: object) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+        await asyncio.Event().wait()
+
+    async def run_asgi() -> None:
+        try:
+            await ShutdownCancelMiddleware(streaming_route)(_http_scope(), _never, send)
+        finally:
+            logging.getLogger("uvicorn.error").error(_UVICORN_INCOMPLETE_RESPONSE)
+
+    async def run() -> None:
+        task = asyncio.create_task(run_asgi())
+        await asyncio.sleep(0)
+        task.cancel(msg=msg)
+        await asyncio.wait([task], timeout=2)
+
+    asyncio.run(run())
+
+
+def test_a_response_cut_short_by_the_shutdown_cancel_logs_no_uvicorn_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """XERK-1591: a streamed response (a large StaticFiles download) cut short by the
+    shutdown cancel logged the middleware's INFO line and then uvicorn's "ASGI callable
+    returned without completing response" ERROR for the same expected event."""
+    from api.main import _UVICORN_SHUTDOWN_CANCEL
+
+    with caplog.at_level("INFO"):
+        _uvicorn_run_asgi(_UVICORN_SHUTDOWN_CANCEL)
+    assert "cancelled at the graceful-shutdown deadline" in caplog.text
+    assert _UVICORN_INCOMPLETE_RESPONSE not in caplog.text
+
+
+def test_an_incomplete_response_without_the_shutdown_cancel_still_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Only the shutdown cancel mutes it; any other incomplete response is a bug to see.
+
+    with caplog.at_level("INFO"):
+        _uvicorn_run_asgi(None)
+    assert _UVICORN_INCOMPLETE_RESPONSE in caplog.text

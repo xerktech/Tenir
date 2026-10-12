@@ -90,3 +90,67 @@ def test_set_audio_key_reports_whether_the_row_exists(store) -> None:
     assert store.get("default", cid).audio_key == f"default/{cid}.wav"
     store.delete("default", cid)
     assert store.set_audio_key("default", cid, f"default/{cid}.wav") is False
+
+
+def test_reopen_reopens_a_finished_row_and_never_inserts(store) -> None:
+    """A cold resume reopens with an UPDATE only: a recording deleted since the
+    resume's existence check must stay deleted (XERK-1591)."""
+    cid = str(uuid.uuid4())
+    assert store.reopen("default", cid) is None
+    assert store.get("default", cid) is None
+    first = store.create("default", cid, owner="alice")
+    store.finish("default", cid)
+    reopened = store.reopen("default", cid)
+    assert reopened is not None and reopened.status == "live" and reopened.ended_at is None
+    assert reopened.owner == "alice" and reopened.started_at == first.started_at
+    store.delete("default", cid)
+    assert store.reopen("default", cid) is None
+    assert store.get("default", cid) is None
+
+
+def test_reopen_never_touches_another_households_row(store) -> None:
+    cid = str(uuid.uuid4())
+    with store._ensure_pool().connection() as conn:
+        for hh in ("hh-a", "hh-b"):
+            conn.execute("INSERT INTO households (id) VALUES (%s) ON CONFLICT DO NOTHING", (hh,))
+    store.create("hh-a", cid)
+    store.finish("hh-a", cid)
+    assert store.reopen("hh-b", cid) is None
+    assert store.get("hh-a", cid).status == "ready"
+
+
+def test_a_cold_resume_whose_recording_is_deleted_mid_start_does_not_recreate_it(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DELETE lands while start() reads the resume offset, after the handler's
+    existence check: the start fails with RecordingGone and the row stays gone."""
+    import asyncio
+
+    from api.contract import MicSource
+    from api.session import Session
+
+    cid = str(uuid.uuid4())
+    store.create("default", cid, owner="alice")
+    store.finish("default", cid)
+
+    async def deleted_meanwhile(self: Session) -> int:
+        await asyncio.sleep(0.2)  # QA's widened window
+        await asyncio.to_thread(store.delete, "default", cid)
+        return 0
+
+    monkeypatch.setattr(Session, "_resume_offset_ms", deleted_meanwhile)
+
+    async def sent(_msg: object) -> None:
+        pass
+
+    async def run() -> None:
+        session = Session(
+            sent, session_id=cid, household="default", user_id="alice", reopen=True
+        )
+        session._conversations = store
+        session._audio_store = None
+        with pytest.raises(Exception, match=cid):  # RecordingGone
+            await session.start(mic_source=MicSource("phone-microphone"), source_lang=None)
+
+    asyncio.run(run())
+    assert store.get("default", cid) is None
