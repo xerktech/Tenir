@@ -65,6 +65,21 @@ describe("createMirroredTokenStore", () => {
     expect(restarted.store.getEpoch?.()).toBe("e1");
   });
 
+  it("keeps a valid token when only the epoch read fails", async () => {
+    const kv = memoryKeyValue({ "tenir.token": "good" });
+    const failingEpoch = {
+      ...kv,
+      getItem: (k: string) =>
+        k === "tenir.token.epoch" ? Promise.reject(new Error("boom")) : kv.getItem(k),
+    };
+    const errors: unknown[] = [];
+    const m = createMirroredTokenStore(failingEpoch, (e) => errors.push(e));
+    await m.hydrate();
+    expect(m.store.get()).toBe("good");
+    expect(m.store.getEpoch?.()).toBeNull();
+    expect(errors).toHaveLength(1);
+  });
+
   it("reports background persistence failures via onError", async () => {
     const failing = {
       getItem: () => Promise.reject(new Error("boom")),

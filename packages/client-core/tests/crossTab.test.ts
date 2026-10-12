@@ -123,6 +123,31 @@ describe("cross-tab sign-in epoch", () => {
     await tab2.login("bo", "pw");
     expect(tab1.tokenGenerations().epoch).not.toBe(e1);
   });
+
+  it("keeps moving its own epoch when the stored epoch can't be written", async () => {
+    const tab1 = await openTab();
+    tab1.clearToken(); // a stored epoch now exists
+    const before = tab1.tokenGenerations().epoch;
+    const real = localStorage;
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => real.getItem(k),
+      setItem: (k: string, v: string) => {
+        if (k === "tenir.token.epoch") throw new Error("QuotaExceededError");
+        real.setItem(k, v);
+      },
+      removeItem: (k: string) => real.removeItem(k),
+      clear: () => real.clear(),
+    });
+    try {
+      tab1.noteNewSignIn();
+      const after = tab1.tokenGenerations().epoch;
+      expect(after).not.toBe(before);
+      tab1.clearToken();
+      expect(tab1.tokenGenerations().epoch).not.toBe(after);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("cross-tab compare-and-clear in checkSession", () => {
@@ -156,6 +181,35 @@ describe("cross-tab compare-and-clear in checkSession", () => {
     // Tab 1 must keep tab 2's fresh token, check it, and come up signed in.
     await expect(checking).resolves.toMatchObject({ userId: "uA" });
     expect(localStorage.getItem("tenir.token")).toBe("access-2");
+    expect(JSON.parse(localStorage.getItem("tenir.oidc.session") ?? "{}").refreshToken).toBe("refresh-2");
+  });
+
+  it("re-checks a replaced token at most once, even if other tabs keep replacing it", async () => {
+    const tab1 = await openTab();
+    tab1.setToken("t0");
+    let n = 0;
+    stubFetch(() => {
+      // Another tab swaps in a new (also dead) token while each check is in flight.
+      localStorage.setItem("tenir.token", `t${++n}`);
+      return json({ detail: "expired" }, 401);
+    });
+    await expect(tab1.checkSession()).resolves.toBeNull();
+    expect(calls.filter((c) => c.url.endsWith("/auth/me"))).toHaveLength(2);
+    expect(localStorage.getItem("tenir.token")).toBe("t2"); // the other tab's, unchecked
+  });
+
+  it("clears the token its own refresh minted when the api rejects that too", async () => {
+    const tab1 = await openTab();
+    tab1.setToken("access-1");
+    tab1.setOidcSession({ refreshToken: "refresh-1", expiresAt: 0 });
+    stubFetch((c) =>
+      c.url === PROVIDER.tokenEndpoint
+        ? json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 })
+        : json({ detail: "rejected" }, 401),
+    );
+    await expect(tab1.checkSession()).resolves.toBeNull();
+    expect(calls.filter((c) => c.url === PROVIDER.tokenEndpoint)).toHaveLength(1);
+    expect(localStorage.getItem("tenir.token")).toBeNull(); // the proven-dead access-2
     expect(JSON.parse(localStorage.getItem("tenir.oidc.session") ?? "{}").refreshToken).toBe("refresh-2");
   });
 

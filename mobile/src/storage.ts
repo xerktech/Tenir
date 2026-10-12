@@ -89,10 +89,17 @@ export function createMirroredTokenStore(
     async hydrate() {
       try {
         cached = await kv.getItem(TOKEN_KEY);
-        cachedEpoch = await kv.getItem(TOKEN_EPOCH_KEY);
       } catch (err) {
         swallow(err);
         cached = null;
+      }
+      // Separate: a failed epoch read must never sign out a valid token. client-core
+      // then starts a fresh epoch in memory on the next sign-in/clear.
+      try {
+        cachedEpoch = await kv.getItem(TOKEN_EPOCH_KEY);
+      } catch (err) {
+        swallow(err);
+        cachedEpoch = null;
       }
     },
   };

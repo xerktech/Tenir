@@ -98,6 +98,7 @@ let store: TokenStore = localStorageTokenStore();
  */
 export function configureTokenStore(custom: TokenStore): void {
   store = custom;
+  storedEpochBroken = false;
 }
 
 /** The stored bearer token, or null when not logged in yet. */
@@ -114,17 +115,6 @@ export function clearToken(): void {
   store.clear();
 }
 
-/**
- * Compare-and-clear: drop the stored token only if it is still `expected`. Another
- * tab sharing the store may have replaced it (a refresh, a new sign-in) since the
- * caller checked it, and that token must survive (XERK-1591).
- */
-export function clearTokenIf(expected: string): boolean {
-  if (store.get() !== expected) return false;
-  clearToken();
-  return true;
-}
-
 // Token generations (XERK-1591).
 // - `epoch` changes whenever the sign-in changes: a token clear (logout, failed
 //   login) or a new sign-in (`login`, OIDC callback). It lives in the token's own
@@ -139,6 +129,10 @@ export function clearTokenIf(expected: string): boolean {
 let refreshGeneration = 0;
 let lastRefreshedToken: string | null = null;
 let memoryEpoch = "initial";
+// Set once a stored epoch failed to take a write (e.g. a full localStorage): from then
+// on this context trusts only its in-memory epoch, which still moves on every change —
+// otherwise the stale stored id would win and this context would lose its own guard.
+let storedEpochBroken = false;
 
 function newEpoch(): void {
   const id =
@@ -146,10 +140,14 @@ function newEpoch(): void {
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   memoryEpoch = id;
-  store.setEpoch?.(id);
+  if (store.setEpoch) {
+    store.setEpoch(id);
+    if (store.getEpoch?.() !== id) storedEpochBroken = true;
+  }
 }
 
 function currentEpoch(): string {
+  if (storedEpochBroken) return memoryEpoch;
   return store.getEpoch?.() ?? memoryEpoch;
 }
 
