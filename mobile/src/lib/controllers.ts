@@ -7,12 +7,12 @@
  */
 
 import {
+  checkSession,
   getSessionKind,
   getStatus,
   history,
   login,
   logout,
-  me,
   NetworkError,
   oidcLogout,
   startOidcLogin,
@@ -46,13 +46,10 @@ export function useAuth(): AuthController {
   // hint that the server was down — their token was fine all along, and
   // relaunching once the server was back signed them straight in. It reads as
   // the app forgetting the login, and trains people to retype their password
-  // (XERK-236). Let a transport failure surface as an error instead.
-  const state = useAsync<Principal | null>(() =>
-    me().catch((e) => {
-      if (e instanceof NetworkError) throw e;
-      return null;
-    }),
-  );
+  // (XERK-236). `checkSession` (shared with web) lets a server fault — unreachable
+  // or any 5xx — surface as an error with the token kept, and drops a dead token on
+  // a 401 so a later outage can't claim the user is still signed in (XERK-1591).
+  const state = useAsync<Principal | null>(checkSession);
   const signIn = useCallback(
     async (username: string, password: string) => {
       await login(username, password);

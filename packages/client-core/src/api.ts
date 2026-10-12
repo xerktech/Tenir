@@ -11,6 +11,7 @@ import {
   authHeader,
   clearOidcSession,
   clearToken,
+  getSessionKind,
   getToken,
   setToken,
   tryOidcRefresh,
@@ -274,6 +275,26 @@ export function describeLoginError(err: unknown): string {
 }
 
 /**
+ * Heading + body for the boot state where the stored session couldn't be checked
+ * (`checkSession` rejected). Shared so web and Android word it identically: a 5xx
+ * answer gets server-error copy, anything else (unreachable, database down) gets
+ * the unreachable copy. The detail line comes from `describeLoginError`.
+ */
+export function describeBootFailure(err: unknown): { heading: string; body: string } {
+  const lead = "We couldn't check whether you're still signed in.";
+  if (err instanceof ApiError) {
+    return {
+      heading: "Your server hit an error",
+      body: `${lead} Your Tenir server answered with an error, which doesn't mean you were signed out — retry in a moment.`,
+    };
+  }
+  return {
+    heading: "Can't reach your server",
+    body: `${lead} If your Tenir server is just offline or restarting, you don't need to sign in again — retry once it's back.`,
+  };
+}
+
+/**
  * Local logout: drop the stored token and any OIDC session sidecar, for either kind
  * of session. For an OIDC session this is only the *local* half — `oidcLogout()`
  * (oidc.ts) additionally ends the IdP session (RP-initiated logout, §10).
@@ -285,6 +306,46 @@ export function logout(): void {
 
 export function me(): Promise<Principal> {
   return request<Principal>("GET", "/auth/me");
+}
+
+/**
+ * The failure is the server's, not the token's: unreachable (`NetworkError`,
+ * including 502/503/504) or any other 5xx. Says nothing about whether the stored
+ * session is still valid. Deliberately NOT folded into `request()`: a 500 on an
+ * ordinary action must still surface as an `ApiError` the caller reports.
+ */
+export function isServerFault(err: unknown): boolean {
+  return err instanceof NetworkError || (err instanceof ApiError && err.status >= 500);
+}
+
+/**
+ * Confirm the stored session at app boot (web + Android share this; XERK-1591).
+ *
+ * - Resolves the principal when the token is good.
+ * - A 401 means the token is dead: clear it and resolve null, so a later outage
+ *   doesn't tell this user they're still signed in (an OIDC refresh sidecar is kept).
+ * - A server fault (`isServerFault`) with a stored token rejects with that error:
+ *   the token may be fine, so keep it and let the caller show an unreachable /
+ *   server-error state with Retry instead of a login form.
+ * - Anything else (or a server fault with no stored token — a first run) resolves
+ *   null: show the login form.
+ */
+export async function checkSession(): Promise<Principal | null> {
+  try {
+    return await me();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      // An OIDC session keeps its refresh sidecar: `request()` already tried a silent
+      // refresh, and it may have failed only because the IdP is briefly unreachable.
+      // With the access token gone, the next `me()` 401s and refreshes again, so the
+      // session recovers once the IdP is back; a built-in token has nothing to keep.
+      if (getSessionKind() === "oidc") clearToken();
+      else logout();
+      return null;
+    }
+    if (isServerFault(err) && getToken() != null) throw err;
+    return null;
+  }
 }
 
 /** What the server advertises about its auth backends (docs/auth-oidc.md §10). */

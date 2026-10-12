@@ -26,15 +26,41 @@ const { me, getToken, captureStats } = vi.hoisted(() => ({
   captureStats: { constructed: 0, stops: 0, running: false },
 }));
 
-vi.mock("@tenir/client-core", () => ({
+vi.mock("@tenir/client-core", async (importOriginal) => {
+  // The real error classes + boot copy, so the UI is tested against client-core's
+  // actual wording and `instanceof` checks (XERK-1591); everything else is mocked.
+  const actual = await importOriginal<typeof import("@tenir/client-core")>();
+  return {
+  ApiError: actual.ApiError,
+  NetworkError: actual.NetworkError,
+  describeBootFailure: actual.describeBootFailure,
   configureApi: vi.fn(),
   // config.ts (pulled in transitively) wires the browser OIDC primitives at import.
   configureOidc: vi.fn(),
   browserOidcPrimitives: vi.fn((redirectUri: string) => ({ redirectUri })),
   me,
   getToken,
+  // The boot contract lives (and is tested against real fetch) in client-core; this
+  // stand-in follows it over the mocked `me`/`getToken`/`logout` so the suites
+  // below drive boot through `me` (XERK-1591).
+  checkSession: async () => {
+    try {
+      return await me();
+    } catch (err) {
+      const core = await import("@tenir/client-core");
+      if (err instanceof actual.ApiError && err.status === 401) {
+        if (core.getSessionKind() === "oidc") core.clearToken();
+        else core.logout();
+        return null;
+      }
+      const fault = err instanceof actual.NetworkError || (err instanceof actual.ApiError && err.status >= 500);
+      if (fault && getToken() != null) throw err;
+      return null;
+    }
+  },
   login: vi.fn(),
   logout: vi.fn(),
+  clearToken: vi.fn(),
   describeLoginError: vi.fn((err: unknown) => (err instanceof Error ? err.message : String(err))),
   // OIDC surface (docs/auth-oidc.md §10). Default: server advertises OIDC off, so
   // the existing suites see the login form + dashboard exactly as before.
@@ -45,8 +71,6 @@ vi.mock("@tenir/client-core", () => ({
   startOidcLogin: vi.fn(async () => {}),
   completeOidcCallback: vi.fn(),
   oidcLogout: vi.fn(async () => {}),
-  ApiError: class ApiError extends Error {},
-  NetworkError: class NetworkError extends Error {},
   getStatus: vi.fn(async () => ({ overall: "ready", generatedAt: "x", reasons: [], components: [] })),
   history: { list: vi.fn(async () => []), get: vi.fn(), remove: vi.fn(), audioUrl: () => "" },
   users: { list: vi.fn(async () => []), create: vi.fn(), remove: vi.fn() },
@@ -87,7 +111,8 @@ vi.mock("@tenir/client-core", () => ({
     stop() { captureStats.stops += 1; return Promise.resolve(); }
     togglePause() {}
   },
-}));
+  };
+});
 
 function renderApp() {
   return render(
@@ -540,8 +565,10 @@ describe("boot with the server unreachable", () => {
     });
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("button", { name: "Log out" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
   it("shows the unreachable state when a re-boot fails after an earlier one succeeded", async () => {
@@ -562,5 +589,50 @@ describe("boot with the server unreachable", () => {
     renderApp();
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Can't reach your server" })).not.toBeInTheDocument();
+  });
+
+  // XERK-1591: a real 500 on /auth/me is a server fault too — keep the token.
+  it("shows the server-error state, not the login form, on a 500 from /auth/me", async () => {
+    me.mockRejectedValue(new core.ApiError(500, "Internal Server Error"));
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "Your server hit an error" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Internal Server Error");
+    expect(screen.getByText(/answered with an error/)).toBeInTheDocument();
+    expect(screen.queryByText(/offline or restarting/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  // XERK-1591: on a shared machine during an outage, Log out must drop the token.
+  it("offers Log out in the unreachable state; it clears the token and shows the login form", async () => {
+    me.mockRejectedValue(new core.NetworkError("down"));
+    logout.mockImplementation(() => getToken.mockImplementation(() => null));
+    renderApp();
+    await screen.findByRole("heading", { name: "Can't reach your server" });
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(logout).toHaveBeenCalledTimes(1);
+    logout.mockReset();
+  });
+
+  it("ends an OIDC session via RP-initiated logout from the unreachable state", async () => {
+    me.mockRejectedValue(new core.NetworkError("down"));
+    getSessionKind.mockReturnValue("oidc");
+    oidcLogout.mockClear();
+    renderApp();
+    await screen.findByRole("heading", { name: "Can't reach your server" });
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(oidcLogout).toHaveBeenCalledTimes(1));
+    getSessionKind.mockReturnValue("builtin");
+  });
+
+  // XERK-1591: a 401 at boot drops the dead token, so a later outage can't claim
+  // the user is still signed in.
+  it("clears a dead token on a 401 at boot and shows the login form", async () => {
+    logout.mockClear();
+    me.mockRejectedValue(new core.ApiError(401, "token expired"));
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(logout).toHaveBeenCalledTimes(1);
   });
 });

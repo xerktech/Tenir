@@ -359,10 +359,28 @@ export async function refreshOidcSession(): Promise<void> {
   const { prov } = requireReady();
   const session = getOidcSession();
   if (!session?.refreshToken) throw new OidcError("no OIDC refresh token available");
-  const tokens = await exchangeToken(prov, {
-    grant_type: "refresh_token",
-    refresh_token: session.refreshToken,
-  });
+  let tokens: TokenResponse;
+  try {
+    tokens = await exchangeToken(prov, {
+      grant_type: "refresh_token",
+      refresh_token: session.refreshToken,
+    });
+  } catch (err) {
+    // The IdP rejected the refresh token outright (revoked/expired): it can never work
+    // again, so drop the sidecar instead of retrying it every boot (XERK-1591). An
+    // unreachable IdP (NetworkError) or any other failure keeps it for a later retry.
+    // Only if the sidecar still holds the token we sent: a concurrent refresh may have
+    // rotated it already (Authentik revokes a used refresh token, so the loser of that
+    // race gets invalid_grant) and the winner's fresh session must survive.
+    if (
+      err instanceof OidcError &&
+      err.code === "invalid_grant" &&
+      getOidcSession()?.refreshToken === session.refreshToken
+    ) {
+      clearOidcSession();
+    }
+    throw err;
+  }
   storeSession(tokens);
 }
 

@@ -155,7 +155,9 @@ function Root({ initialWsUrl, initialTab }: { initialWsUrl: string; initialTab: 
         // no session to have lost, and telling a brand-new user they may still
         // be signed in is wrong on the first screen they ever see.
         unreachable={auth.error != null && getToken() != null}
+        error={auth.error}
         onRetry={auth.reload}
+        onSignOut={auth.signOut}
       />
     );
   }

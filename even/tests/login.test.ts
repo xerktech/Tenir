@@ -246,6 +246,44 @@ describe("returning user (cached device store)", () => {
     expect(els().app.hidden).toBe(false);
     expect(onAuthed).toHaveBeenCalledTimes(1);
   });
+
+  // XERK-1591: a real 500 on /auth/me is a server fault, not a verdict on the token.
+  it("treats a 500 from /auth/me like an outage: keeps the token, shows the app", async () => {
+    const fetchMock = stubApi({ meStatus: 500 });
+    const storage = await cachedStorage();
+    await cfg.initConfig(storage);
+    const onAuthed = vi.fn();
+    await loginMod.initPhoneLogin(storage, els(), { onAuthed });
+
+    expect(els().app.hidden).toBe(false);
+    expect(onAuthed).toHaveBeenCalledTimes(1);
+    expect(core.getToken()).toBe("tok-cached");
+    // No silent re-login against a failing server.
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/auth/login"))).toBe(false);
+  });
+
+  // XERK-1591: a 401 whose silent re-login also fails drops the dead token.
+  it("clears a rejected token when the silent re-login fails", async () => {
+    stubApi({ meStatus: 401, loginStatus: 401 });
+    const storage = await cachedStorage();
+    await cfg.initConfig(storage);
+    await loginMod.initPhoneLogin(storage, els(), {});
+
+    expect(els().login.hidden).toBe(false);
+    expect(core.getToken()).toBeNull();
+    await vi.waitFor(() => expect(storage.map.has(cfg.TOKEN_KEY)).toBe(false));
+  });
+
+  // Only a 401 is a verdict on the token (parity with web/Android checkSession).
+  it("keeps the token on a non-401 rejection such as 404", async () => {
+    stubApi({ meStatus: 404, loginStatus: 404 });
+    const storage = await cachedStorage();
+    await cfg.initConfig(storage);
+    await loginMod.initPhoneLogin(storage, els(), {});
+
+    expect(els().login.hidden).toBe(false);
+    expect(core.getToken()).toBe("tok-cached");
+  });
 });
 
 
@@ -488,6 +526,99 @@ describe("OIDC callback (returning from Authentik)", () => {
     const onAuthed = vi.fn();
     await loginMod.initPhoneLogin(storage, els(), { onAuthed });
 
+    expect(els().app.hidden).toBe(false);
+    expect(onAuthed).toHaveBeenCalledTimes(1);
+    expect(core.getToken()).toBe("oidc-access-2");
+  });
+
+  function staleOidcStorage(): MemStorage {
+    return serverConfigured((s) => {
+      s.map.set(cfg.TOKEN_KEY, "oidc-access-stale");
+      s.map.set(
+        OIDC_SESSION_KEY,
+        JSON.stringify({ refreshToken: "oidc-refresh-1", expiresAt: Date.now() - 1000 }),
+      );
+    });
+  }
+
+  // XERK-1591: a 5xx right after a good refresh is a server fault — keep the session.
+  it("keeps a freshly refreshed session when /auth/me then answers 500", async () => {
+    stubOidcApi({
+      oidc: true,
+      onToken: () =>
+        new Response(
+          JSON.stringify({ access_token: "oidc-access-2", refresh_token: "oidc-refresh-2", expires_in: 300 }),
+          { status: 200 },
+        ),
+      me: (auth) =>
+        auth === "Bearer oidc-access-2"
+          ? new Response(JSON.stringify({ detail: "boom" }), { status: 500 })
+          : new Response(JSON.stringify({ detail: "expired" }), { status: 401 }),
+    });
+    const storage = staleOidcStorage();
+    await cfg.initConfig(storage);
+    const onAuthed = vi.fn();
+    await loginMod.initPhoneLogin(storage, els(), { onAuthed });
+
+    expect(els().app.hidden).toBe(false);
+    expect(onAuthed).toHaveBeenCalledTimes(1);
+    expect(core.getToken()).toBe("oidc-access-2");
+    expect(core.getOidcSession()?.refreshToken).toBe("oidc-refresh-2");
+  });
+
+  // XERK-1591: an IdP outage must not cost the refresh token — only the dead access
+  // token goes, and the next boot (IdP back) recovers without an interactive login.
+  it("drops only the dead access token when the IdP is unreachable, and recovers next boot", async () => {
+    let idpUp = false;
+    stubOidcApi({
+      oidc: true,
+      onToken: () => {
+        if (!idpUp) throw new TypeError("IdP down");
+        return new Response(JSON.stringify({ access_token: "oidc-access-2", expires_in: 300 }), {
+          status: 200,
+        });
+      },
+      me: (auth) =>
+        auth === "Bearer oidc-access-2"
+          ? new Response(JSON.stringify(PRINCIPAL), { status: 200 })
+          : new Response(JSON.stringify({ detail: "expired" }), { status: 401 }),
+    });
+    const storage = staleOidcStorage();
+    await cfg.initConfig(storage);
+    await loginMod.initPhoneLogin(storage, els(), {});
+
+    expect(els().login.hidden).toBe(false);
+    expect(core.getToken()).toBeNull();
+    expect(core.getOidcSession()?.refreshToken).toBe("oidc-refresh-1");
+
+    // An API outage meanwhile: no access token, so the login form — not the app.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("api down");
+      }),
+    );
+    mountDom();
+    await loginMod.initPhoneLogin(storage, els(), {});
+    expect(els().login.hidden).toBe(false);
+    expect(els().app.hidden).toBe(true);
+    expect(core.getOidcSession()?.refreshToken).toBe("oidc-refresh-1");
+
+    stubOidcApi({
+      oidc: true,
+      onToken: () =>
+        new Response(JSON.stringify({ access_token: "oidc-access-2", expires_in: 300 }), {
+          status: 200,
+        }),
+      me: (auth) =>
+        auth === "Bearer oidc-access-2"
+          ? new Response(JSON.stringify(PRINCIPAL), { status: 200 })
+          : new Response(JSON.stringify({ detail: "expired" }), { status: 401 }),
+    });
+    idpUp = true;
+    mountDom();
+    const onAuthed = vi.fn();
+    await loginMod.initPhoneLogin(storage, els(), { onAuthed });
     expect(els().app.hidden).toBe(false);
     expect(onAuthed).toHaveBeenCalledTimes(1);
     expect(core.getToken()).toBe("oidc-access-2");

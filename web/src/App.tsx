@@ -9,14 +9,14 @@
 
 import {
   ApiError,
+  checkSession,
   completeOidcCallback,
+  describeBootFailure,
   describeLoginError,
   getAuthConfig,
   getSessionKind,
-  getToken,
   login,
   logout,
-  me,
   NetworkError,
   oidcLogout,
   oidcReady,
@@ -117,17 +117,14 @@ async function boot(): Promise<BootState> {
   // code — clear it so the login screen isn't stuck on that URL.
   if (onOidcCallbackPath()) clearOidcCallbackUrl();
 
-  // Only an AUTH failure means "logged out". A NetworkError — the server is
-  // unreachable, or it answered 503 because it can't reach its database
-  // (ServerUnavailableError, XERK-1510) — says nothing about the stored token,
-  // so rethrow it and let App show an unreachable/retry state instead of a login
-  // form asking for a password the server can't check (XERK-1528, mirroring
-  // Android's XERK-236). With no stored token there is no session to have lost,
-  // so a first visit still gets the login form.
-  const principal = await me().catch((err) => {
-    if (err instanceof NetworkError && getToken() != null) throw err;
-    return null;
-  });
+  // Only an AUTH failure means "logged out" — and a 401 also drops the dead token,
+  // so a later outage can't tell this user they're still signed in (XERK-1591).
+  // A server fault — unreachable, a 502/503/504, or any other 5xx — says nothing
+  // about the stored token: checkSession rethrows it so App shows the
+  // unreachable/retry state instead of a login form asking for a password the
+  // server can't check (XERK-1528, mirroring Android's XERK-236). With no stored
+  // token there is no session to have lost, so a first visit still gets the form.
+  const principal = await checkSession();
   return { principal, authConfig, oidcError: null };
 }
 
@@ -142,12 +139,12 @@ export function App(): JSX.Element {
     );
   }
 
-  // Boot only rejects for a transport failure with a stored session (see boot()).
+  // Boot only rejects for a server fault with a stored session (see boot()).
   if (error != null || !data) {
     return (
       <main className="container">
         <Header principal={null} onAuthChange={reload} />
-        <Unreachable error={error} onRetry={reload} />
+        <Unreachable error={error} onRetry={reload} onSignOut={() => signOut(reload)} />
       </main>
     );
   }
@@ -164,6 +161,19 @@ export function App(): JSX.Element {
   );
 }
 
+/**
+ * Sign-out covers both session kinds: an OIDC session additionally ends the IdP
+ * session (RP-initiated logout, which navigates away and returns here), while a
+ * built-in session is a purely local token clear (docs/auth-oidc.md §10).
+ */
+function signOut(onDone: () => void): void {
+  void (async () => {
+    if (getSessionKind() === "oidc") await oidcLogout();
+    else logout();
+    onDone();
+  })();
+}
+
 function Header({
   principal,
   onAuthChange,
@@ -171,16 +181,6 @@ function Header({
   principal: Principal | null;
   onAuthChange: () => void;
 }): JSX.Element {
-  // Sign-out covers both session kinds: an OIDC session additionally ends the
-  // IdP session (RP-initiated logout, which navigates away and returns here),
-  // while a built-in session is a purely local token clear (docs/auth-oidc.md §10).
-  const signOut = () => {
-    void (async () => {
-      if (getSessionKind() === "oidc") await oidcLogout();
-      else logout();
-      onAuthChange();
-    })();
-  };
   return (
     <header className="app-header">
       <h1 className="wordmark">
@@ -190,7 +190,7 @@ function Header({
       <span className="header-spacer" />
       <ThemeToggle />
       {principal && (
-        <Button variant="ghost" onClick={signOut}>
+        <Button variant="ghost" onClick={() => signOut(onAuthChange)}>
           Log out
         </Button>
       )}
@@ -199,31 +199,47 @@ function Header({
 }
 
 /**
- * The server didn't answer (or can't reach its database), so the stored session
- * couldn't be checked. Parity with Android's "Can't reach your server" setup
- * state (XERK-236). Deliberate difference: web omits the login form here — it is
- * same-origin, so there is no server address to change, and a password the
- * server can't check would only fail.
+ * The server didn't answer, can't reach its database, or failed with a 5xx, so the
+ * stored session couldn't be checked. Parity with Android's "Can't reach your
+ * server" setup state (XERK-236). Deliberate difference: web omits the login form
+ * here — it is same-origin, so there is no server address to change, and a password
+ * the server can't check would only fail. Log out lives here because the header has
+ * no principal to show its own (XERK-1591): on a shared machine it is the only way
+ * to drop the stored token during an outage.
  */
-function Unreachable({ error, onRetry }: { error: unknown; onRetry: () => void }): JSX.Element {
-  // describeLoginError words both cases for people: unreachable vs database down.
-  const detail = error instanceof NetworkError ? describeLoginError(error) : null;
+function Unreachable({
+  error,
+  onRetry,
+  onSignOut,
+}: {
+  error: unknown;
+  onRetry: () => void;
+  onSignOut: () => void;
+}): JSX.Element {
+  // describeLoginError words each case for people: unreachable, database down, or
+  // a server error (status + detail).
+  const detail =
+    error instanceof NetworkError || error instanceof ApiError ? describeLoginError(error) : null;
+  // Heading + body shared with Android (client-core), so the two can't drift.
+  const copy = describeBootFailure(error);
   return (
     <section>
-      <h2>Can&apos;t reach your server</h2>
+      <h2>{copy.heading}</h2>
       <Card>
-        <p className="muted">
-          We couldn&apos;t check whether you&apos;re still signed in. If your Tenir server is just
-          offline or restarting, you don&apos;t need to sign in again — retry once it&apos;s back.
-        </p>
+        <p className="muted">{copy.body}</p>
         {detail && (
           <p className="field-error" role="alert">
             {detail}
           </p>
         )}
-        <Button variant="primary" onClick={onRetry}>
-          Retry
-        </Button>
+        <div className="row">
+          <Button variant="primary" onClick={onRetry}>
+            Retry
+          </Button>
+          <Button variant="ghost" onClick={onSignOut}>
+            Log out
+          </Button>
+        </div>
       </Card>
     </section>
   );

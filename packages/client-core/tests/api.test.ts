@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  checkSession,
+  describeBootFailure,
   describeLoginError,
   getStatus,
   history,
@@ -12,7 +14,15 @@ import {
   type SystemStatus,
   users,
 } from "../src/api";
-import { clearToken, getToken, setToken } from "../src/auth";
+import {
+  clearOidcSession,
+  clearToken,
+  getOidcSession,
+  getToken,
+  registerOidcRefresher,
+  setOidcSession,
+  setToken,
+} from "../src/auth";
 import { configureApi } from "../src/config";
 
 type FetchCall = { url: string; init: RequestInit };
@@ -137,6 +147,100 @@ describe("auth", () => {
     expect(describeLoginError(new ApiError(401, "unauthorized"))).toMatch(/Incorrect username/);
     expect(describeLoginError(new ApiError(500, "boom"))).toMatch(/Server error \(500\)/);
     expect(describeLoginError(new ApiError(409, "conflict"))).toBe("409: conflict");
+  });
+});
+
+describe("checkSession (boot, XERK-1591)", () => {
+  const PRINCIPAL = { userId: "u1", username: "maya", household: "acme", role: "admin" };
+
+  it("resolves the principal and keeps a good token", async () => {
+    setToken("tok-1");
+    mockFetch(() => json(PRINCIPAL));
+    await expect(checkSession()).resolves.toEqual(PRINCIPAL);
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("clears a dead token on 401 and resolves null (login form)", async () => {
+    setToken("tok-dead");
+    mockFetch(() => json({ detail: "token expired" }, 401));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBeNull();
+  });
+
+  it("keeps an OIDC refresh sidecar on a 401 so the session recovers once the IdP is back", async () => {
+    // The IdP is unreachable: request()'s silent refresh fails, /auth/me 401s.
+    setToken("oidc-stale");
+    setOidcSession({ refreshToken: "rt-1", expiresAt: 0 });
+    registerOidcRefresher(async () => false);
+    mockFetch(() => json({ detail: "expired" }, 401));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBeNull(); // the dead access token is gone
+    expect(getOidcSession()?.refreshToken).toBe("rt-1"); // the refresh token is not
+
+    // Next boot, IdP back: the 401 refreshes and the retry signs straight in.
+    registerOidcRefresher(async () => {
+      setToken("oidc-fresh");
+      return true;
+    });
+    mockFetch(({ init }) =>
+      (init.headers as Record<string, string>).Authorization === "Bearer oidc-fresh"
+        ? json(PRINCIPAL)
+        : json({ detail: "expired" }, 401),
+    );
+    await expect(checkSession()).resolves.toEqual(PRINCIPAL);
+    registerOidcRefresher(null);
+    clearOidcSession();
+  });
+
+  it.each([500, 501, 502, 503, 504])(
+    "keeps the token and rejects on a %i (server fault, not a verdict on the token)",
+    async (status) => {
+      setToken("tok-1");
+      mockFetch(() => json({ detail: "boom" }, status));
+      await expect(checkSession()).rejects.toBeInstanceOf(Error);
+      expect(getToken()).toBe("tok-1");
+    },
+  );
+
+  it("keeps the token and rejects with NetworkError when unreachable", async () => {
+    setToken("tok-1");
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(checkSession()).rejects.toBeInstanceOf(NetworkError);
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("resolves null for a server fault on a first run (no stored token)", async () => {
+    mockFetch(() => json({ detail: "boom" }, 500));
+    await expect(checkSession()).resolves.toBeNull();
+  });
+
+  it("resolves null and keeps the token on a non-auth 4xx", async () => {
+    setToken("tok-1");
+    mockFetch(() => json({ detail: "nope" }, 403));
+    await expect(checkSession()).resolves.toBeNull();
+    expect(getToken()).toBe("tok-1");
+  });
+
+  it("describeBootFailure words a 5xx as a server error and the rest as unreachable", () => {
+    const fault = describeBootFailure(new ApiError(500, "boom"));
+    expect(fault.heading).toBe("Your server hit an error");
+    expect(fault.body).toMatch(/answered with an error/);
+    for (const err of [new NetworkError("down"), new ServerUnavailableError("db")]) {
+      const down = describeBootFailure(err);
+      expect(down.heading).toBe("Can't reach your server");
+      expect(down.body).toMatch(/offline or restarting/);
+    }
+  });
+
+  it("a 500 on an ordinary action still surfaces as an ApiError", async () => {
+    setToken("tok-1");
+    mockFetch(() => json({ detail: "boom" }, 500));
+    const err = await history.list().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).not.toBeInstanceOf(NetworkError);
+    expect((err as ApiError).status).toBe(500);
   });
 });
 

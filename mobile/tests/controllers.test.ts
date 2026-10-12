@@ -6,6 +6,7 @@ import { useAuth, useHistory, useStatus } from "../src/lib/controllers";
 
 const api = vi.hoisted(() => ({
   me: vi.fn(),
+  checkSession: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
   getStatus: vi.fn(),
@@ -23,6 +24,7 @@ const { NetworkError } = vi.hoisted(() => ({
 
 vi.mock("@tenir/client-core", () => ({
   me: api.me,
+  checkSession: api.checkSession,
   login: api.login,
   logout: api.logout,
   getStatus: api.getStatus,
@@ -41,6 +43,14 @@ vi.mock("@tenir/client-core", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   api.getSessionKind.mockReturnValue("builtin");
+  // checkSession's contract (401 clears, server fault rethrows) is tested against
+  // real fetch in client-core; here it follows `me` so the suites drive boot via `me`.
+  api.checkSession.mockImplementation(() =>
+    api.me().catch((e: unknown) => {
+      if (e instanceof NetworkError) throw e;
+      return null;
+    }),
+  );
 });
 
 describe("useAuth", () => {
@@ -124,6 +134,38 @@ describe("useAuth", () => {
     expect(api.oidcLogout).toHaveBeenCalledTimes(1);
     expect(api.logout).not.toHaveBeenCalled();
     await waitFor(() => expect(result.current.data).toBeNull());
+  });
+});
+
+describe("useAuth boot (XERK-1591)", () => {
+  it("boots through client-core's checkSession (shared with web)", async () => {
+    api.checkSession.mockResolvedValue({ userId: "u", username: "ada", household: "h", role: "member" });
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.data?.userId).toBe("u"));
+    expect(api.checkSession).toHaveBeenCalledTimes(1);
+    expect(api.me).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a server fault at boot as an error (keep the token, show unreachable)", async () => {
+    const fault = Object.assign(new Error("Internal Server Error"), { status: 500 });
+    api.checkSession.mockRejectedValue(fault);
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe(fault);
+    expect(result.current.data).toBeNull();
+    expect(api.logout).not.toHaveBeenCalled();
+  });
+
+  it("signs out from the unreachable state: clears the token and re-checks", async () => {
+    api.checkSession.mockRejectedValueOnce(new NetworkError("down")).mockResolvedValue(null);
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(NetworkError));
+
+    act(() => result.current.signOut());
+
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.error).toBeNull());
+    expect(result.current.data).toBeNull();
   });
 });
 
