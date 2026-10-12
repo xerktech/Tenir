@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import numpy as np
 import pytest
@@ -377,6 +378,71 @@ def test_prior_sitting_finishing_late_leaves_the_resumed_row_live() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("reopen", [False, True], ids=["create", "cold-reopen"])
+def test_prior_finish_waiting_on_the_store_leaves_a_resume_live(reopen: bool) -> None:
+    """XERK-1591: the old sitting passes _resumed_live, then its finish() waits on
+    a connection; a resume reopens the row in that gap — through create(), or a
+    cold resume's reopen(). The late finish must not flip the row back to ready
+    under the live sitting."""
+
+    async def run() -> None:
+        async def send(_msg) -> None:
+            pass
+
+        store = get_conversation_store()
+        sid = "conv-finish-race"
+        leg1 = Session(send, session_id=sid)
+        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        for _ in range(5):
+            await leg1.on_audio(_voice_chunk())
+        entered, release = threading.Event(), threading.Event()
+        real_finish = store.finish
+
+        def held_finish(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return real_finish(*args, **kwargs)
+
+        store.finish = held_finish
+        try:
+            closing = asyncio.create_task(leg1.close())
+            assert await asyncio.to_thread(entered.wait, 5)
+            leg2 = Session(send, session_id=sid, reopen=reopen)
+            await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+            assert store.get("default", sid).status == "live"
+            release.set()
+            await closing
+        finally:
+            release.set()
+            store.finish = real_finish
+        conv = store.get("default", sid)
+        assert conv.status == "live" and conv.ended_at is None
+        # Handed off, not finished: a late cue of leg1's is still stored.
+        assert leg1._handed_off and not leg1._finished
+
+        await leg2.close()
+        conv = store.get("default", sid)
+        assert conv.status == "ready" and conv.ended_at is not None
+
+    asyncio.run(run())
+
+
+def test_a_held_create_result_keeps_its_own_sittings_token() -> None:
+    """The in-memory store returns a snapshot like the SQL store: a later reopen
+    must not move the token an earlier sitting holds (XERK-1591)."""
+    store = get_conversation_store()
+    created = store.create("default", "conv-token")  # the first create's snapshot
+    created.segments.append(None)
+    assert store.get("default", "conv-token").segments == []
+    store.create("default", "conv-token")
+    assert store.finish("default", "conv-token", opened_at=created.opened_at).status == "live"
+    first = store.create("default", "conv-token")  # a reopen returns a snapshot too
+    store.create("default", "conv-token")
+    assert store.finish("default", "conv-token", opened_at=first.opened_at).status == "live"
+    first.segments.append(None)  # nor does the stored row share its lists
+    assert store.get("default", "conv-token").segments == []
+
+
 def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
     """A later sitting that closed before the old one finishes (e.g. a start that
     failed after opening the row) leaves the conversation ready, not live."""
@@ -548,12 +614,16 @@ def test_resume_during_prior_teardown_keeps_order_when_prior_retain_fails() -> N
             # leg2's own flush isn't held behind leg1's stalled teardown: its tail
             # final gets stored while leg1 still flushes, so a shutdown deadline
             # can't drop it. (leg1's failing put runs in a thread: poll, don't tick.)
-            conv = get_conversation_store().get("default", "conv-retry")
+            # get() returns a snapshot (as SQL does): re-read on every poll.
+            def stored_end() -> int:
+                conv = get_conversation_store().get("default", "conv-retry")
+                return max(s.end_ms for s in conv.segments)
+
             for _ in range(200):
-                if max(s.end_ms for s in conv.segments) == 3500:
+                if stored_end() == 3500:
                     break
                 await asyncio.sleep(0.01)
-            assert max(s.end_ms for s in conv.segments) == 3500
+            assert stored_end() == 3500
             assert not closing.done()
             release.set()
             await closing

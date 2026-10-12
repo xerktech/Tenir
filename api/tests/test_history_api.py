@@ -184,6 +184,73 @@ def test_delete_removes_audio_whose_key_was_never_recorded() -> None:
         assert get_audio_store().exists(other)
 
 
+def test_unlinked_stored_audio_is_linked_and_served_on_read() -> None:
+    """XERK-1591: rows swept before the sweep linked audio (PR #227) are 'ready'
+    with no audio_key while the WAV is stored: History hid the player and the
+    audio route 404'd. Reading the recording links it."""
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        _make_conversation(cid, "swept before the link")
+        get_audio_store().put(f"default/{cid}.wav", pcm16_to_wav(b"\x00\x01" * 1600))
+
+        assert client.get(f"/conversations/{cid}").json()["hasAudio"] is True
+        assert client.get(f"/conversations/{cid}/export").json()["hasAudio"] is True
+        assert get_conversation_store().get("default", cid).audio_key == f"default/{cid}.wav"
+        r = client.get(f"/conversations/{cid}/audio")
+        assert r.status_code == 200 and r.content.startswith(b"RIFF")
+
+
+def test_unlinked_stored_audio_is_served_when_linking_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        _make_conversation(cid, "link write fails")
+        get_audio_store().put(f"default/{cid}.wav", pcm16_to_wav(b"\x00\x01" * 1600))
+
+        def fail(*_args) -> bool:
+            raise ConnectionError("database down")
+
+        monkeypatch.setattr(get_conversation_store(), "set_audio_key", fail)
+        assert client.get(f"/conversations/{cid}/audio").status_code == 200
+        # One line per failed read, not a traceback on every one.
+        failed = [r for r in caplog.records if "could not link stored audio" in r.getMessage()]
+        assert len(failed) == 1 and failed[0].exc_info is None
+
+
+def test_unreadable_audio_store_does_not_break_the_detail_view(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """XERK-1591: the heal-on-read check must not turn an audio-store I/O error
+    (a broken mount) into a 500 on the transcript; it reads as "no audio"."""
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        _make_conversation(cid, "audio mount is broken")
+
+        def broken(_key: str) -> bool:
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(get_audio_store(), "exists", broken)
+        detail = client.get(f"/conversations/{cid}")
+        assert detail.status_code == 200 and detail.json()["hasAudio"] is False
+        assert client.get(f"/conversations/{cid}/export").status_code == 200
+        assert client.get(f"/conversations/{cid}/audio").status_code == 404
+        failed = [r for r in caplog.records if "could not check stored audio" in r.getMessage()]
+        assert len(failed) == 3 and all(r.exc_info is None for r in failed)
+
+
+def test_live_recording_audio_is_not_linked_on_read() -> None:
+    """A live row's own session links its WAV; a read must not do it for it."""
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        get_conversation_store().create("default", cid)
+        get_audio_store().put(f"default/{cid}.wav", pcm16_to_wav(b"\x00\x01" * 1600))
+
+        assert client.get(f"/conversations/{cid}").json()["hasAudio"] is False
+        assert client.get(f"/conversations/{cid}/audio").status_code == 404
+        assert get_conversation_store().get("default", cid).audio_key is None
+
+
 def test_legacy_status_row_does_not_break_the_listing() -> None:
     """A conversation stored by an older build (status 'processing', from the
     re-process pipeline that no longer exists) used to fail response validation and

@@ -14,7 +14,9 @@ the real backend uses. Keeps the API contract identical across backends.
 
 from __future__ import annotations
 
+import copy
 import threading
+from datetime import datetime
 from typing import Protocol
 
 from api.persistence.models import (
@@ -56,7 +58,11 @@ class ConversationStore(Protocol):
         conversation_id: str,
         *,
         status: ConversationStatus = "ready",
-    ) -> Conversation | None: ...
+        opened_at: datetime | None = None,
+    ) -> Conversation | None:
+        """Close the row. With ``opened_at`` (the caller's create()/reopen().opened_at), only
+        while no later sitting has reopened it since."""
+        ...
     def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> bool:
         """Point the row at its WAV; returns False when there is no such row."""
         ...
@@ -115,7 +121,10 @@ class InMemoryConversationStore:
             if existing is not None:
                 existing.status = "live"
                 existing.ended_at = None
-                return existing
+                existing.opened_at = utcnow()
+                # A copy, as the SQL store returns: the caller's opened_at is its
+                # token and must not move when a later sitting reopens the row.
+                return copy.deepcopy(existing)
             conv = Conversation(
                 id=conversation_id,
                 household=household,
@@ -123,16 +132,20 @@ class InMemoryConversationStore:
                 mic_source=mic_source,
                 source_lang=source_lang,
             )
+            conv.opened_at = conv.started_at
             convs[conversation_id] = conv
-            return conv
+            return copy.deepcopy(conv)
 
     def reopen(self, household: str, conversation_id: str) -> Conversation | None:
         with self._lock:
             conv = self._conversations(household).get(conversation_id)
-            if conv is not None:
-                conv.status = "live"
-                conv.ended_at = None
-            return conv
+            if conv is None:
+                return None
+            conv.status = "live"
+            conv.ended_at = None
+            # A new sitting, as in create(): its token for finish(), returned as a copy.
+            conv.opened_at = utcnow()
+            return copy.deepcopy(conv)
 
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None:
         with self._lock:
@@ -191,14 +204,17 @@ class InMemoryConversationStore:
         conversation_id: str,
         *,
         status: ConversationStatus = "ready",
+        opened_at: datetime | None = None,
     ) -> Conversation | None:
         with self._lock:
             conv = self._conversations(household).get(conversation_id)
             if conv is None:
                 return None
+            if opened_at is not None and conv.opened_at != opened_at:
+                return copy.deepcopy(conv)  # a later sitting reopened it; that one finishes it
             conv.ended_at = utcnow()
             conv.status = status
-            return conv
+            return copy.deepcopy(conv)
 
     def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> bool:
         with self._lock:
@@ -231,7 +247,9 @@ class InMemoryConversationStore:
             conv = self._conversations(household).get(conversation_id)
             if conv is None or not self._owned(conv, owner):
                 return None
-            return conv
+            # A copy, as the SQL store returns: a caller changing what it read must
+            # not change the stored row behind the store's back.
+            return copy.deepcopy(conv)
 
     def list(
         self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0

@@ -61,6 +61,13 @@ paths:
     `SessionStart` is `extra='forbid'`, so an older api rejects a newer client that sends one.
   - Never replay `translation.done`: it names no run, so a stale one ends a live run early.
   - Never replay a stored `song`/`song.sync` as-is: the offset is anchored on arrival.
+- `_finalize` passes its own `create()`/`reopen()` `opened_at` to `finish()`, which closes the
+  row only while no later sitting has reopened it. `_resumed_live()` alone can't cover it: the
+  finish may pass that check and then wait on a pool connection while a resume reopens the row
+  (XERK-1591).
+  - Test: `test_session_persistence.py::test_prior_finish_waiting_on_the_store_leaves_a_resume_live`.
+  - Both stamp a fresh `opened_at` and return their own statement's value (`RETURNING`), never a
+    later `get()`'s: a token read back after another sitting's reopen is that sitting's token.
 - Worktree pitfall: the host's pip-installed `api` package may be another worktree's
   editable install. Check `python -c "import api; print(api.__file__)"`, and run tests
   with `PYTHONPATH=src` from `api/`, or you test someone else's code.

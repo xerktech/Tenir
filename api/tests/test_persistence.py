@@ -38,7 +38,25 @@ def test_store_create_is_idempotent_and_upserts_segments() -> None:
     store = InMemoryConversationStore()
     a = store.create("h", "c1", mic_source="phone-microphone", source_lang="en")
     b = store.create("h", "c1")  # same id -> same record (resume)
-    assert a is b and a.mic_source == "phone-microphone"
+    # Snapshots, as the SQL store returns: same record, its original fields kept.
+    assert a.id == b.id and b.mic_source == "phone-microphone"
+    assert len(store.list("h")) == 1
+
+
+def test_store_get_returns_a_copy_like_the_sql_store() -> None:
+    """XERK-1591: get() handed out the stored row itself, so a caller changing
+    what it read changed the store; the SQL store returns an independent copy."""
+    store = InMemoryConversationStore()
+    store.create("h", "c1")
+    store.add_segment("h", "c1", _seg("s1", "kept", 0, 1000))
+    read = store.get("h", "c1")
+    read.status = "ready"
+    read.segments.clear()
+    stored = store.get("h", "c1")
+    assert stored.status == "live" and [s.text for s in stored.segments] == ["kept"]
+    done = store.finish("h", "c1")
+    done.segments.clear()
+    assert len(store.get("h", "c1").segments) == 1
 
     store.add_segment("h", "c1", _seg("s1", "first", 0, 1000))
     store.add_segment("h", "c1", _seg("s1", "first (revised)", 0, 1000))  # upsert

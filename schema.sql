@@ -86,8 +86,16 @@ CREATE INDEX IF NOT EXISTS conversations_owner_idx
 -- does not exist yet (fresh volume, or admin not reconciled) — the subquery is NULL and
 -- nothing changes; a later boot with the admin present backfills. Until then a NULL
 -- owner is read as admin-only, so no recording is orphaned or leaked to a member.
+-- SKIP LOCKED: a row another replica holds (its stale sweep, a live write) is left for a
+-- later boot. Waiting on it hit the boot lock_timeout, or deadlocked (40P01) with a
+-- multi-row finish_stale, and either one aborts startup (XERK-1591).
 UPDATE conversations SET owner = (SELECT id FROM users WHERE is_env_admin)
-    WHERE owner IS NULL AND EXISTS (SELECT 1 FROM users WHERE is_env_admin);
+    WHERE id IN (SELECT id FROM conversations WHERE owner IS NULL FOR UPDATE SKIP LOCKED)
+      AND EXISTS (SELECT 1 FROM users WHERE is_env_admin);
+-- When the latest sitting opened (or reopened) the row. A sitting's finish() only closes
+-- the row while it is still the one that opened it, and the stale sweep never sets a
+-- resumed recording's ended_at before it (XERK-1591). NULL on rows from older builds.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ;
 
 -- One finalized transcript turn (mirrors the caption.final contract).
 CREATE TABLE IF NOT EXISTS segments (

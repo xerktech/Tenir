@@ -54,6 +54,10 @@ paths:
   - Tests: `test_boot_lock_timeout_is_retried`, `test_boot_fails_when_a_table_lock_never_frees`;
     live `test_boot_apply_does_not_stall_requests_behind_an_idle_reader` (also checks no pooled
     connection keeps the timeout).
+- schema.sql's owner backfill takes its rows `FOR UPDATE SKIP LOCKED`; never let a boot statement
+  wait on row locks. Behind another replica's stale sweep it hit the lock_timeout or deadlocked
+  (40P01), aborting startup; a skipped row is backfilled by a later boot (XERK-1591).
+  - Test: `test_pg_schema_live.py::test_owner_backfill_skips_rows_another_transaction_holds`.
 - Both stores apply through `apply_boot_schema`: the user store runs schema.sql before its own
   DDL, since the users DDL references households (empty DB → UndefinedTable, XERK-1430).
 - `get_user_store` retries `reconcile_admin` only while `_reconcile_is_retryable` (DB unavailable,

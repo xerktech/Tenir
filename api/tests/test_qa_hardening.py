@@ -95,8 +95,8 @@ def test_finish_stale_closes_rows_left_live_by_a_previous_run() -> None:
     store = get_conversation_store()
     store.create("hh", "crashed")
     store.create("hh", "also-crashed")
-    done = store.create("hh", "clean")
-    store.finish("hh", "clean")
+    store.create("hh", "clean")
+    done = store.finish("hh", "clean")
 
     assert sorted(store.finish_stale()) == [("hh", "also-crashed"), ("hh", "crashed")]
     assert store.get("hh", "crashed").status == "ready"
@@ -342,6 +342,35 @@ def test_sweep_links_the_other_rows_when_one_audio_lookup_fails(
     assert store.get("hh", "bad").status == "ready"
     assert store.get("hh", "bad").audio_key is None
     assert store.get("hh", "good").audio_key == audio_key("hh", "good")
+
+
+def test_sweep_stops_linking_audio_at_the_first_database_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-1591: Postgres dropping after finish_stale made every swept row's
+    set_audio_key wait out the pool timeout in turn, stalling startup ~5s per row.
+    The first outage ends the loop; History links the rest on read."""
+    from api.persistence import stale
+    from api.persistence.postgres import DatabaseUnavailable
+
+    monkeypatch.setattr(stale, "_pending", None)
+    store = get_conversation_store()
+    audio = get_audio_store()
+    for cid in ("a", "b", "c"):
+        store.create("hh", cid)
+        audio.put(audio_key("hh", cid), b"RIFF")
+    calls: list[str] = []
+
+    def set_audio_key(household: str, conversation_id: str, key: str) -> bool:
+        calls.append(conversation_id)
+        raise DatabaseUnavailable("database unavailable")
+
+    monkeypatch.setattr(store, "set_audio_key", set_audio_key)
+    stale.arm(store)
+    stale.sweep_if_pending(store, audio)
+
+    assert not stale.is_pending(store)  # the sweep itself succeeded
+    assert len(calls) == 1
 
 
 # --- a boot sweep that fails must be retried, never dropped (XERK-1428) ------

@@ -23,6 +23,7 @@ import threading
 
 from api.persistence.audio import AudioStore, audio_key
 from api.persistence.conversations import ConversationStore
+from api.persistence.postgres import is_database_unavailable
 
 log = logging.getLogger("api.persistence")
 
@@ -49,13 +50,21 @@ def _link_stored_audio(
 ) -> None:
     """Point each swept row at its WAV when one is stored. Best effort per row:
     the sweep itself already succeeded, and a row left unlinked is no worse off
-    than before."""
+    than before — History links it on its next read (history._with_stored_audio).
+    An outage stops the loop: every further row would wait out the pool timeout
+    in turn, stalling startup by that times the rows left (XERK-1591)."""
     for household, conversation_id in swept:
         try:
             key = audio_key(household, conversation_id)
             if audio.exists(key):
                 store.set_audio_key(household, conversation_id, key)
-        except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
+            if is_database_unavailable(exc):
+                log.warning(
+                    "database unavailable; leaving swept conversations' audio unlinked: %s",
+                    exc,
+                )
+                return
             log.warning(
                 "could not link stored audio for swept conversation %s",
                 conversation_id,
