@@ -146,6 +146,7 @@
         "endMs": { "type": "integer", "minimum": 0 },
         "words": {
           "type": "array",
+          "description": "Per-word timing, sent only with API_STT_FINAL_WORD_TIMESTAMPS on and an engine that returns it (Parakeet; Whisper on vLLM sends none). Not aligned to text.split(): the engine can split a token the text fuses (\"like'cause\" -> \"like\", \"'cause\"), so never index one by the other.",
           "items": { "$ref": "#/$defs/Word" }
         }
       }

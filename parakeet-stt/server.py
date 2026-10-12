@@ -33,7 +33,9 @@ this server supports it, so routing via the ``openai/`` provider works.
 A ``timestamps=false`` form field (a Tenir extension, XERK-115) skips word/segment
 timing for callers that only want text — the api's live *partials*, which are most
 of the request volume. It defaults to on, so any caller that doesn't know the field
-keeps the old response.
+keeps the old response. It is honoured for every format: an explicit ``false`` with
+``verbose_json`` (which the api sends for vLLM-Whisper's detected language) returns empty
+``words``/``segments`` rather than paying for timing nobody reads.
 
 Two things to verify on first real run against the model card (guarded here, not
 guessed): the per-hypothesis **language** field name, and the **word-timestamp**
@@ -338,8 +340,8 @@ async def transcribe(
     response_format: str = Form(default="json"),
     # Tenir extension (XERK-115): "false" skips word/segment timing for callers that
     # only want the text — the api's live *partials*, which are most of the traffic.
-    # Defaults on, so an OpenAI client that never heard of it still gets timestamps,
-    # and so does verbose_json below.
+    # Defaults on, so an OpenAI client that never heard of it — LiteLLM's json ->
+    # verbose_json rewrite included — still gets timestamps.
     timestamps: bool = Form(default=True),
     # Accepted for OpenAI-client compatibility; unused by this ASR path.
     prompt: str | None = Form(default=None),
@@ -352,9 +354,11 @@ async def transcribe(
     samples = _decode_audio(raw)
     duration = round(len(samples) / TARGET_SR, 3)
 
-    # verbose_json's contract includes segments, so never skip timing for that format
-    # however the caller set the flag.
-    want_timestamps = timestamps or (response_format or "").lower() == "verbose_json"
+    # Honoured for verbose_json too: the api asks for verbose_json on every partial (it
+    # is where vLLM-Whisper reports the language) and sends false there; computing
+    # timing anyway cost ~16 ms a partial on Parakeet. Only an explicit false skips it,
+    # so a plain verbose_json request still gets segments.
+    want_timestamps = timestamps
 
     t0 = time.perf_counter()
     result = await asyncio.to_thread(_transcribe_sync, samples, language, want_timestamps)

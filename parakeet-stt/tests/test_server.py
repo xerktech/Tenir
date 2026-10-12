@@ -143,11 +143,18 @@ def test_timestamps_false_skips_timing_work(client: TestClient, model: FakeModel
     assert body["words"] == []
 
 
-def test_verbose_json_keeps_timing_even_if_asked_to_skip(
-    client: TestClient, model: FakeModel
-) -> None:
-    # verbose_json's contract includes segments, so the format wins over the flag.
+def test_verbose_json_honours_timestamps_false(client: TestClient, model: FakeModel) -> None:
+    # The api's partials ask for verbose_json (vLLM-Whisper's language) with
+    # timestamps=false; timing them anyway cost ~16 ms a partial on Parakeet (XERK-1591).
     body = _post(client, timestamps="false", response_format="verbose_json").json()
+    assert model.calls[-1]["timestamps"] is False
+    assert body["text"] == "hello world"
+    assert body["words"] == [] and body["segments"] == []
+
+
+def test_verbose_json_without_the_flag_keeps_timing(client: TestClient, model: FakeModel) -> None:
+    # LiteLLM's json -> verbose_json rewrite never sends the flag: it still gets segments.
+    body = _post(client, response_format="verbose_json").json()
     assert model.calls[-1]["timestamps"] is True
     assert body["segments"]
 

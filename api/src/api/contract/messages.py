@@ -145,7 +145,10 @@ class CaptionFinal(BaseModel):
     lang: Lang | None = None
     startMs: conint(ge=0)
     endMs: conint(ge=0)
-    words: list[Word] | None = None
+    words: list[Word] | None = Field(
+        None,
+        description='Per-word timing, sent only with API_STT_FINAL_WORD_TIMESTAMPS on and an engine that returns it (Parakeet; Whisper on vLLM sends none). Not aligned to text.split(): the engine can split a token the text fuses ("like\'cause" -> "like", "\'cause"), so never index one by the other.',
+    )
 
 
 class Cue(BaseModel):
