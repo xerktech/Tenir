@@ -2311,3 +2311,41 @@ def test_a_final_that_fails_as_a_brief_outage_ends_still_lands(_outage) -> None:
         await t.close()
 
     asyncio.run(run())
+
+
+def test_capped_turn_is_cut_at_the_quietest_gap_and_the_tail_opens_the_next_turn() -> None:
+    """A turn that hits max_segment_ms ends in the quietest stretch of its last 2 s, not
+    mid-word at the cap; the audio after the gap carries into the next turn, so no audio
+    is lost and the timeline stays contiguous."""
+
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=10000, max_segment_ms=3000
+        )
+        # 2.4 s speech, a 200 ms inter-word gap (too short to close on silence), speech on.
+        for chunk in (_pcm(2400, amplitude=4000), _pcm(200, amplitude=0)):
+            await _push(t, chunk)
+        for _ in range(8):
+            await _push(t, _pcm(100, amplitude=4000))
+        await t.flush()
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 2
+        assert 2400 <= finals[0].endMs <= 2600  # inside the gap, not at the 3000 ms cap
+        assert finals[1].startMs == finals[0].endMs
+        assert finals[1].endMs == 3400  # the tail plus the rest: nothing dropped
+
+    asyncio.run(run())
+
+
+def test_quietest_cut_falls_back_to_the_cap_without_a_clear_dip() -> None:
+    from api.stt.streaming import _quietest_cut
+
+    steady = _pcm(3000, amplitude=4000)
+    assert _quietest_cut(steady) == len(steady)
+    assert _quietest_cut(_pcm(3000, amplitude=0)) == len(steady)
+    short = _pcm(40, amplitude=4000)
+    assert _quietest_cut(short) == len(short)
+    # A shallow wobble (10 % quieter) is no gap either.
+    wobble = _pcm(2000, amplitude=4000) + _pcm(200, amplitude=3800) + _pcm(800, amplitude=4000)
+    assert _quietest_cut(wobble) == len(wobble)

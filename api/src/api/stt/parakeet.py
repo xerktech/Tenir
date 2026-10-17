@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import unicodedata
 
 import numpy as np
 
@@ -51,6 +52,11 @@ _NON_SPEECH = frozenset(
         "soustitrage st 501",
         "ご視聴ありがとうございました",
         "продолжение следует",
+        # Recorded sessions, Oct 2026: whole decodes over noise, music or silence. Every one of
+        # the 15 stored (12 + 3) sat between turns or inside lyrics; none was said. Bare "I'm
+        # going to go." is left alone: people say it when leaving.
+        "im going to go to the next one",
+        "im going to go to the restaurant",
     }
 )
 _SOUND_EVENT = re.compile(r"\*[^*]*\*|\[[^\]]*\]|\([^)]*\)")
@@ -58,7 +64,14 @@ _SOUND_EVENT = re.compile(r"\*[^*]*\*|\[[^\]]*\]|\([^)]*\)")
 
 def _non_speech(text: str) -> bool:
     bare = re.sub(r"[^\w\s]|_", "", _SOUND_EVENT.sub(" ", text).lower())
-    return " ".join(bare.split()) in _NON_SPEECH
+    if " ".join(bare.split()) in _NON_SPEECH:
+        return True
+    # Every contract language (Lang: en es fr de pt it) is written in Latin script, so a decode
+    # whose letters are all in another script ("はい", "ありがとうございました。", "Это сейчас
+    # не...") cannot be a turn Tenir captions or translates. On recorded sessions all ~25
+    # stored CJK decodes were Whisper output on noise or English speech, Oct 2026.
+    letters = [ch for ch in bare if ch.isalpha()]
+    return bool(letters) and not any(unicodedata.name(ch, "").startswith("LATIN") for ch in letters)
 
 
 class ParakeetEngine:

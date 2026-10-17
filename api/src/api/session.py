@@ -67,7 +67,7 @@ from api.persistence import (
 from api.persistence.postgres import is_database_unavailable, is_retryable_write
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
-from api.stt.langid import is_english_word, is_shared_english_word
+from api.stt.langid import detect_lang, is_english_word, is_shared_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -981,6 +981,18 @@ class Session:
         if self._translator is None:
             return
         lang = result.lang.value if result.lang is not None else None
+        if (
+            lang is not None
+            and lang != "en"
+            and not self._translation_active
+            and self.source_lang is None
+            and detect_lang(result.text) in (None, "en")
+        ):
+            # Only the engine calls this turn foreign; its text doesn't read that way. Whisper
+            # guesses a language for noise, lyrics and laughter too ("Ha ha ha" it, "Amém." pt,
+            # "Denn..." de): on Oct 2026 recordings every such run opener was one, while every
+            # real Spanish opener had text langid agree. It can still join an open run.
+            return
         if lang is not None and lang != "en":
             assert self._translation_queue is not None
             self._translation_active = True

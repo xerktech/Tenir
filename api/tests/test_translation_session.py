@@ -13,6 +13,7 @@ import pytest
 from api.config import settings
 from api.contract import (
     CaptionFinal,
+    Lang,
     Cue,
     MicSource,
     ServerMessage,
@@ -109,7 +110,7 @@ def test_no_translation_when_backend_off() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         assert session._translator is None
-        session._consider_translation(_final("hola", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", lang="es"))
         await session.close()
         assert _translations(sent) == []
         assert _dones(sent) == []
@@ -141,7 +142,7 @@ def test_english_turn_closes_the_run_after_its_translations(
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", segment_id="a", lang="es"))
         session._consider_translation(_final("¿cómo estás?", segment_id="b", lang="es"))
         session._consider_translation(_final("I'm fine, thanks", segment_id="c", lang="en"))
         await _drain_translations(session)
@@ -252,7 +253,7 @@ def test_echoed_translation_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> No
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         session._translator = EchoTranslator()
-        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", segment_id="a", lang="es"))
         session._consider_translation(_final("what is happening", segment_id="b", lang=None))
         await _drain_translations(session)
         await session.close()
@@ -269,7 +270,7 @@ def test_silence_hold_expiry_closes_the_run(monkeypatch: pytest.MonkeyPatch) -> 
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("hola", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", lang="es"))
         # The 0ms hold fires on the next loop turns; wait for it to close the run.
         for _ in range(50):
             if not session._translation_active:
@@ -290,7 +291,7 @@ def test_partial_activity_restarts_the_hold(monkeypatch: pytest.MonkeyPatch) -> 
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("hola", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", lang="es"))
         first_hold = session._translation_hold
         assert first_hold is not None
         # Speech still flowing (a partial) replaces the pending hold with a fresh one.
@@ -311,7 +312,7 @@ def test_cues_suppressed_during_run_and_resume_after(monkeypatch: pytest.MonkeyP
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         # Open the run, then a cue-worthy final lands mid-run: no cue.
-        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", segment_id="a", lang="es"))
         session._consider_cue(_final("how far is the sun?", segment_id="b"))
         await asyncio.gather(*list(session._cue_tasks))
         assert _cues(sent) == []
@@ -341,7 +342,7 @@ def test_inflight_cue_dropped_when_run_opens(monkeypatch: pytest.MonkeyPatch) ->
         session._cue_generator = SlowGenerator()
         session._consider_cue(_final("how far is the sun?", segment_id="a"))
         # The run opens while the cue model is still generating.
-        session._consider_translation(_final("hola", segment_id="b", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", segment_id="b", lang="es"))
         await asyncio.gather(*list(session._cue_tasks))
         await _drain_translations(session)
         await session.close()
@@ -364,7 +365,7 @@ def test_translator_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> Non
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         session._translator = ExplodingTranslator()
-        session._consider_translation(_final("hola", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", lang="es"))
         await _drain_translations(session)
         await session.close()
         assert _translations(sent) == []
@@ -393,7 +394,7 @@ def test_close_drains_pending_translations(monkeypatch: pytest.MonkeyPatch) -> N
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("hasta luego", segment_id="tail", lang="es"))
+        session._consider_translation(_final("¿cómo estás?", segment_id="tail", lang="es"))
         # Close immediately: the pending translation still goes out, then the
         # still-open run is closed as part of teardown.
         await session.close()
@@ -495,7 +496,7 @@ def test_dead_pump_does_not_hold_the_run_open(monkeypatch: pytest.MonkeyPatch) -
         await session._pump
         real = session._transcriber
         session._transcriber = StuckFinalizing()  # type: ignore[assignment]
-        session._consider_translation(_final("hola", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", lang="es"))
         for _ in range(50):
             if not session._translation_active:
                 break
@@ -621,17 +622,69 @@ def test_reworded_translation_is_suppressed(
         def translate(
             self, text: str, *, source_lang: str | None = None, run_lang: str | None = None
         ) -> str | None:
-            return "Hello" if text == "hola" else translated
+            return "Hello" if text == "hola, ¿qué tal?" else translated
 
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
         session._translator = Fixed()
-        session._consider_translation(_final("hola", segment_id="a", lang="es"))
+        session._consider_translation(_final("hola, ¿qué tal?", segment_id="a", lang="es"))
         session._consider_translation(_final(source, segment_id="b", lang=None))
         await _drain_translations(session)
         await session.close()
         texts = [t.text for t in _translations(sent)]
         assert texts == (["Hello"] if dropped else ["Hello", translated])
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("text", ["Ha ha ha", "Amém.", "I didn't."])
+def test_engine_only_foreign_tag_does_not_open_a_run(
+    monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    # Whisper tags noise, laughter and lyrics with a language; text langid reading the
+    # turn as undecided or English keeps it from opening a run (Oct 2026 recordings).
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final(text, lang="it"))
+        await _drain_translations(session)
+        assert not session._translation_active
+        await session.close()
+        assert _translations(sent) == []
+        assert _dones(sent) == []
+
+    asyncio.run(run())
+
+
+def test_engine_only_foreign_tag_still_joins_an_open_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("¿cómo estás?", segment_id="a", lang="es"))
+        session._consider_translation(_final("Adiós.", segment_id="b", lang="es"))
+        await _drain_translations(session)
+        await session.close()
+        assert [t.segmentId for t in _translations(sent)] == ["a", "b"]
+
+    asyncio.run(run())
+
+
+def test_pinned_source_language_opens_a_run_on_any_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A session pinned to a language tags every turn with it; text langid gets no veto.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session.source_lang = Lang.es
+        session._consider_translation(_final("Adiós.", segment_id="a", lang="es"))
+        await _drain_translations(session)
+        await session.close()
+        assert [t.segmentId for t in _translations(sent)] == ["a"]
 
     asyncio.run(run())

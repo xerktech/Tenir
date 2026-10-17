@@ -227,6 +227,13 @@ def test_parakeet_requests_verbose_json_for_the_detected_language(
         "Sous-titrage ST' 501",
         "¡Gracias por ver!",
         "Subtítulos realizados por la comunidad de Amara.org",
+        "I'm going to go to the next one.",
+        "I'm going to go to the restaurant.",
+        # No Latin letters: no contract language is written that way.
+        "はい",
+        "ありがとうございました。",
+        "Это сейчас не...",
+        "所以我來超常中間的身邊",
     ],
 )
 def test_whisper_non_speech_output_reads_as_blank(
@@ -254,6 +261,11 @@ def test_whisper_non_speech_output_reads_as_blank(
         "Merci.",
         "Sous-titres?",
         "[Music] hola",
+        "I'm going to go.",
+        "I'm going to go to the next one, then home.",
+        "13.",
+        "Ça va, Zoë?",
+        "Sushi, はい",
     ],
 )
 def test_real_short_turns_are_not_taken_for_non_speech(
