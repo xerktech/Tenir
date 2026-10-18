@@ -53,3 +53,13 @@ paths:
   concurrency of 1. A `replay.py` run prints nothing until it ends (no `-u`, no progress line).
 - Count good AND bad cues. A value bar that halves the bad cues also loses good ones, and a
   blanket "no advice" rule suppresses answers to questions the speakers actually asked.
+
+## Kiwix (XERK-2066)
+
+- kiwix-serve runs searches serially and never cancels an abandoned one, so Tenir allows one
+  `/search` in flight per event loop (`_KIWIX_SEARCHING` in `cue/retrieval/live.py`).
+- Keep that slot per loop, not one process-wide `asyncio.Lock`: replay runs a loop per worker
+  thread, and a late search parked in a finished thread's loop held a global lock forever.
+- A cold search (fresh pod, NFS-backed ZIMs) takes seconds to tens of seconds; time any Kiwix
+  measurement twice, so the second run shows warm-cache figures.
+- `/search` ignores `books.filter.flavour`, and both Wikipedia ZIMs are named `wikipedia_en_all`.

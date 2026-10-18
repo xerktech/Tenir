@@ -35,6 +35,7 @@ import asyncio
 import html
 import logging
 import re
+import weakref
 from collections.abc import Sequence
 
 from api.cue.retrieval.base import Evidence
@@ -80,6 +81,22 @@ _CACHE_MAX = 32
 # "tenir-cue-rag/1.0" was on the wrong side of that line (XERK-124).
 # https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
 _USER_AGENT = "tenir-cue-rag/1.0 (https://github.com/xerktech/tenir)"
+# kiwix-serve runs full-text searches one at a time and does not cancel one when
+# its client disconnects (XERK-2066). A cold search over the NFS-backed Wikipedia
+# ZIMs measured 2-25s; a burst of 8 finished ~0.5s apart over 0.6-4.9s. So every
+# search Tenir abandoned at the retrieval deadline still ran, and queued ahead of
+# the next one. Hence: at most one Kiwix search in flight per process (the API
+# runs a single uvicorn worker), a search that finds the slot taken is skipped
+# rather than queued, and the one in flight gets long enough to finish — past the
+# deadline it settles into the topic cache (see retrieve) instead of being thrown
+# away, and the timeout covers the worst cold search measured.
+#
+# The slot is per event loop, not one process-wide lock: the cue-eval replay
+# harness runs a loop per worker thread, and a late search parked in a loop that
+# never runs again would otherwise hold a global slot forever. Production has
+# exactly one loop, so there it is the same thing.
+_KIWIX_SEARCHING: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
+_KIWIX_SEARCH_TIMEOUT_S = 30.0
 
 
 class LiveEvidenceRetriever:
@@ -206,17 +223,29 @@ class LiveEvidenceRetriever:
         navigational cruft ("'RPi' redirects here. For the dessert, see
         Raspberry pie."), useless as evidence — so the article itself is
         fetched and its first real paragraph used, like live Wikipedia's
-        ``exintro``. All local: search ~50-250ms + ~30-110ms per article.
+        ``exintro``. Search ~50-250ms warm but seconds cold (see
+        ``_KIWIX_SEARCHING``) + ~30-110ms per article.
         """
-        resp = await self._http().get(
-            f"{self._kiwix}/search",
-            params={
-                "books.filter.name": self._kiwix_book,
-                "pattern": " ".join(keywords),
-                "pageLength": str(_WIKI_LIMIT),
-                "format": "xml",
-            },
-        )
+        # Never wait for the slot: a queued search would land after the deadline
+        # anyway, and the one already running settles its topic into the cache.
+        loop = asyncio.get_running_loop()
+        if loop in _KIWIX_SEARCHING:
+            metrics.incr("cue.retrieval.kiwix_busy")
+            return []
+        _KIWIX_SEARCHING.add(loop)
+        try:
+            resp = await self._http().get(
+                f"{self._kiwix}/search",
+                params={
+                    "books.filter.name": self._kiwix_book,
+                    "pattern": " ".join(keywords),
+                    "pageLength": str(_WIKI_LIMIT),
+                    "format": "xml",
+                },
+                timeout=_KIWIX_SEARCH_TIMEOUT_S,
+            )
+        finally:
+            _KIWIX_SEARCHING.discard(loop)
         resp.raise_for_status()
         # De-dupe by title before fetching leads: when several ZIM books match
         # the name filter (e.g. an old and a refreshed Wikipedia mirror side by
