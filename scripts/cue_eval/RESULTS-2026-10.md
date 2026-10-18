@@ -193,3 +193,39 @@ Output guards (same change):
 - Leaked `[n]` / `【n】` citations are stripped: 2 of 1,619.
 - An overlong body ends at its last full sentence rather than clipping mid-sentence: 14 of
   1,619 clipped.
+
+## Encyclopedia fact check (2026-10-18)
+
+Wrong facts were the one class the value bar didn't move: about 11% of shown cues. On the 369
+production cues of the four reviewed sessions, two Claude graders labelled 39 wrong, 274
+correct, 18 unsure and 38 with no factual claim.
+
+Design (`api/cue/factcheck.py`): each cue about to be shown is checked like this.
+- The model names up to 3 encyclopedia articles that would state its facts.
+- Kiwix returns each article's lead plus the paragraphs (and infobox cells) that contain the
+  cue's own words.
+- The model answers one question: does this text explicitly contradict a specific claim?
+- "Not mentioned" and overlapping estimates are not contradictions, and the conflicting words
+  (2 to 40 words) must actually appear in the text.
+- Cues citing live news, or about recent events, are not checked: the mirror is older.
+- It fails open.
+
+| version | wrong dropped | correct dropped | note |
+|---|---|---|---|
+| first paragraph of a title search | 7 / 39 | 2 / 74 good | retrieval found the wrong article |
+| + thinking on | 7 / 39 | 4 / 74 good | the model isn't the bottleneck |
+| v2: model-proposed titles, keyword passages | 9 / 39 | 4 / 274 | dropped recent events and estimate nitpicks |
+| **v3 (shipped): skip recent, allow overlaps, near-verbatim quote** | **10 / 39** | **2 / 274** | 1 "unsure" drop was right (40th, not 70th, anniversary) |
+
+Findings:
+- It drops the worst confabulations: an actor cast in a role he never played, a wrong Pokémon
+  type, the wrong film cast, the wrong source work, a wrong team league.
+- Compare the self-check (no reference), which lost 16 good cues to remove 2 wrong ones.
+- Residual: about three quarters of wrong cues survive. Scripture details are the largest group,
+  because Kiwix has no Bible text. Niche or edge-of-knowledge specifics are next.
+- Latency: 1.2-3.3 s per checked cue when the cue server is free, and only shown cues are
+  checked. The cue server serves one request at a time, so a check queued behind another cue
+  call can take longer. Past `cue_fact_check_timeout_s` (6 s) the cue is shown unchecked.
+- An early run took 11 s because the model pasted a whole paragraph as its "conflicting words".
+  Capping the quote at 20 words (and the reply at 150 tokens) fixed both the latency and that
+  weakness in the quote check.

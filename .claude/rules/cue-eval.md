@@ -53,3 +53,18 @@ paths:
   concurrency of 1. A `replay.py` run prints nothing until it ends (no `-u`, no progress line).
 - Count good AND bad cues. A value bar that halves the bad cues also loses good ones, and a
   blanket "no advice" rule suppresses answers to questions the speakers actually asked.
+
+## Fact check (`api/cue/factcheck.py`)
+
+- Judge against text, never memory: the earlier self-check lost 16 good cues per 2 wrong.
+  Contradiction-only with a quote that must appear in the Kiwix text measured 10/39 wrong
+  dropped for 2/274 correct.
+- Retrieval, not the model, limits recall. Thinking on caught nothing more. A title search's
+  first paragraph rarely holds the fact, so the cue's own words pick the paragraphs.
+- Never check cues citing live news or about recent events: the mirror lags, and the 2026
+  Hurricane Isaias got "corrected" to the 2020 one.
+- Cap the quote length: a pasted paragraph passes any overlap test and costs seconds to decode.
+- Live Wikipedia rate-limits a host that hammers it (429 within ~400 lookups); evaluate against
+  Kiwix (`kiwix.cloud.svc.cluster.local:8080`).
+- Session restarts wipe the scratchpad: put the labelled set and results in the repo or report
+  them as you go, or a multi-hour eval is lost.
