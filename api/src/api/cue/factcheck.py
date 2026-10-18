@@ -21,10 +21,12 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 
 from api.cue.base import GeneratedCue
 from api.cue.retrieval.live import _parse_kiwix_search
+from api.metrics import metrics
 
 log = logging.getLogger("api.cue.factcheck")
 
@@ -50,8 +52,15 @@ _MAX_PASSAGES = 8
 _MAX_FACTS = 8
 _MAX_FACT_CHARS = 400  # a cast line with its description runs ~280
 _MAX_QUOTE_WORDS = 40
-# Kiwix answers in ~50-250 ms; a lookup past this is a hung search, not a slow one.
+# Kiwix answers warm searches in ~50-250 ms, but a cold one over the NFS-backed ZIMs takes
+# seconds (XERK-2066). The check sits on the cue's path, so it doesn't wait for one: a search
+# past this trips the backoff below, which keeps further cold searches off Kiwix for a while.
 _KIWIX_TIMEOUT_S = 2.0
+# kiwix-serve runs searches one at a time and finishes one whose client gave up (XERK-2066),
+# so concurrent checks only queue up work nobody reads. One check search in flight per process;
+# a check that finds it taken goes ahead with what it has, or shows the cue unchecked. A plain
+# non-blocking lock is safe here: the check is synchronous and every request has a timeout.
+_KIWIX_SEARCH_SLOT = threading.Lock()
 # How long a failed Kiwix lookup switches the check off.
 _KIWIX_BACKOFF_S = 60.0
 # The encyclopedia snapshot lags the news: a cue about a recent event or "the latest" thing
@@ -253,17 +262,23 @@ class FactChecker:
         parts: list[str] = []
         seen: set[str] = set()
         for title in titles:
+            if not _KIWIX_SEARCH_SLOT.acquire(blocking=False):
+                metrics.incr("cue.fact_check.kiwix_busy")
+                break
             try:
-                resp = client.get(
-                    f"{self._kiwix}/search",
-                    params={
-                        "books.filter.name": self._book,
-                        "pattern": title,
-                        "pageLength": "1",
-                        "format": "xml",
-                    },
-                    timeout=self._kiwix_timeout(deadline),
-                )
+                try:
+                    resp = client.get(
+                        f"{self._kiwix}/search",
+                        params={
+                            "books.filter.name": self._book,
+                            "pattern": title,
+                            "pageLength": "1",
+                            "format": "xml",
+                        },
+                        timeout=self._kiwix_timeout(deadline),
+                    )
+                finally:
+                    _KIWIX_SEARCH_SLOT.release()
                 resp.raise_for_status()
                 for found, link in _parse_kiwix_search(resp.text)[:1]:
                     if found in seen:

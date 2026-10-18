@@ -16,6 +16,7 @@ from api.cue.retrieval import build_query, make_evidence_retriever
 from api.cue.retrieval.base import Evidence
 from api.cue.retrieval.live import LiveEvidenceRetriever
 from api.cue.retrieval.stub import StubEvidenceRetriever
+from api.metrics import metrics
 from api.persistence.news import InMemoryNewsStore, NewsItem
 
 # ---- query builder ----------------------------------------------------------
@@ -558,6 +559,121 @@ def test_kiwix_fallback_dedupes_hits_across_books() -> None:
     assert [e.title for e in evidence] == ["Eiffel Tower", "Champ de Mars"]
     assert len(fetched) == 2  # the duplicate title cost no extra article fetch
     asyncio.run(r.close())
+
+
+def _slow_kiwix(release: asyncio.Event, searches: list[httpx.Request]):
+    """Live Wikipedia 429s; each Kiwix search blocks until ``release`` is set."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "wiki.test":
+            return httpx.Response(429)
+        if request.url.path == "/search":
+            searches.append(request)
+            await release.wait()
+        return _kiwix_dispatch(request)
+
+    return handler
+
+
+def test_kiwix_runs_one_search_at_a_time_and_skips_the_rest() -> None:
+    # XERK-2066: kiwix-serve runs searches serially and never cancels one whose
+    # client went away, so a second concurrent search would only queue on the
+    # server behind the first. It is skipped instead — no request leaves Tenir.
+    async def scenario() -> tuple[list[Evidence], list[Evidence], int, int]:
+        release, searches = asyncio.Event(), []
+        handler = _slow_kiwix(release, searches)
+        kw = dict(searxng_endpoint="", kiwix_endpoint="https://kiwix.test", deadline_ms=50)
+        first, second = _retriever(handler, **kw), _retriever(handler, **kw)
+        busy_before = metrics.snapshot()["counters"].get("cue.retrieval.kiwix_busy", 0)
+        a = await first.retrieve(["Talking about the Eiffel Tower today."])
+        b = await second.retrieve(["Talking about the Eiffel Tower today."])
+        busy = metrics.snapshot()["counters"].get("cue.retrieval.kiwix_busy", 0) - busy_before
+        release.set()
+        await first.close()
+        await second.close()
+        return a, b, len(searches), busy
+
+    a, b, searches, busy = asyncio.run(scenario())
+    assert a == [] and b == []  # both missed the 50ms deadline
+    assert searches == 1  # the second session never reached the server
+    assert busy == 1
+
+
+def test_kiwix_search_past_the_deadline_settles_into_the_topic_cache() -> None:
+    # The one in-flight search is given long enough to finish (a cold search
+    # measured up to ~25s), and its result serves the next cue on the topic.
+    async def scenario() -> tuple[list[Evidence], list[Evidence], httpx.Request]:
+        release, searches = asyncio.Event(), []
+        r = _retriever(
+            _slow_kiwix(release, searches),
+            searxng_endpoint="",
+            kiwix_endpoint="https://kiwix.test",
+            deadline_ms=50,
+        )
+        turns = ["Talking about the Eiffel Tower today."]
+        first = await r.retrieve(turns)
+        release.set()
+        await asyncio.gather(*r._late_tasks)
+        second = await r.retrieve(turns)
+        await r.close()
+        return first, second, searches[0]
+
+    first, second, search = asyncio.run(scenario())
+    assert first == []
+    assert [e.title for e in second] == ["Eiffel Tower", "Champ de Mars"]
+    assert search.extensions["timeout"]["read"] == 30.0
+
+
+def test_kiwix_slot_stuck_in_an_abandoned_loop_does_not_block_other_loops() -> None:
+    # The replay harness runs one event loop per worker thread; a late search
+    # parked in a loop that never runs again must not hold the slot for others.
+    release, searches = asyncio.Event(), []
+    kw = dict(searxng_endpoint="", kiwix_endpoint="https://kiwix.test", deadline_ms=50)
+    abandoned = asyncio.new_event_loop()
+    stuck = _retriever(_slow_kiwix(release, searches), **kw)
+    abandoned.run_until_complete(stuck.retrieve(["Talking about the Eiffel Tower today."]))
+    # The abandoned loop's search is still in flight and never resumes.
+
+    async def other_loop() -> list[Evidence]:
+        r = _retriever(_slow_kiwix(asyncio.Event(), searches), **kw)
+        evidence = await r.retrieve(["Talking about the Eiffel Tower today."])
+        await r.close()
+        return evidence
+
+    asyncio.run(other_loop())
+    assert len(searches) == 2  # the second loop searched instead of reading busy
+    abandoned.run_until_complete(stuck.close())
+    abandoned.close()
+
+
+def test_kiwix_slot_is_released_after_each_search_even_when_it_fails() -> None:
+    # A slot that leaked would switch the fallback off for the rest of the process.
+    async def scenario() -> tuple[int, int]:
+        searches: list[str] = []
+        fail = [True]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "wiki.test":
+                return httpx.Response(429)
+            if request.url.path == "/search":
+                searches.append(request.url.params["pattern"])
+                if fail[0]:
+                    raise httpx.ConnectError("kiwix down")
+            return _kiwix_dispatch(request)
+
+        kw = dict(searxng_endpoint="", kiwix_endpoint="https://kiwix.test")
+        busy_before = metrics.snapshot()["counters"].get("cue.retrieval.kiwix_busy", 0)
+        for turn in ("The Eiffel Tower in Paris.", "The Champ de Mars lawns."):
+            r = _retriever(handler, **kw)
+            await r.retrieve([turn])
+            await r.close()
+            fail[0] = False
+        busy = metrics.snapshot()["counters"].get("cue.retrieval.kiwix_busy", 0) - busy_before
+        return len(searches), busy
+
+    searches, busy = asyncio.run(scenario())
+    assert searches == 2  # the search after a failed one still reached Kiwix
+    assert busy == 0
 
 
 def test_parse_kiwix_search_is_defensive() -> None:

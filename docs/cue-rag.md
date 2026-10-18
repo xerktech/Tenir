@@ -368,6 +368,24 @@ Verified with live Wikipedia pointed at a dead host: fallback retrieval in
 stale evidence did not cover, the bar stayed silent. Degradation is to
 caution, never to stale confident answers.
 
+Cold searches are far slower than the table (XERK-2066). Once the ZIMs moved to
+NFS-backed storage, a cold full-text search over both Wikipedia books took
+2–25s, and kiwix-serve runs searches one at a time without cancelling one whose
+client disconnected. A burst of 8 novel searches finished ~0.5s apart over
+0.6–4.9s, so most missed the 2s retrieval deadline, and each abandoned search
+still ran and delayed the next. The tier therefore allows one Kiwix search in
+flight per event loop (one per process in production, which runs a single
+loop; the replay harness runs a loop per worker thread): a fallback that finds
+it busy contributes nothing at once instead of queuing on the server. The search
+in flight has a 30s timeout, so a slow one settles into the topic cache for the next cue instead of being dropped.
+The encyclopedia fact check (`api/cue/factcheck.py`) searches Kiwix for every
+shown cue, so it holds its own one-search slot. A check that finds it busy goes
+ahead with what it already has, or shows the cue unchecked. It keeps its 2s
+per-search cap because the cue waits on it. A cold search trips its 60s backoff,
+which also keeps further cold searches off Kiwix.
+Narrowing the search to one book does not help: kiwix-serve 3.8's `/search`
+ignores `books.filter.flavour`, and both books share the name `wikipedia_en_all`.
+
 ## The enrichment calibration: cues must add, not echo
 
 The first sustained real-world deployment (July 2026: 87 conversations, 1,966
