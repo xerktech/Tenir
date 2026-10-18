@@ -22,9 +22,10 @@ import json
 import logging
 import re
 import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 from api.cue.base import GeneratedCue
-from api.cue.retrieval.live import _parse_kiwix_search
 
 log = logging.getLogger("api.cue.factcheck")
 
@@ -50,8 +51,8 @@ _MAX_PASSAGES = 8
 _MAX_FACTS = 8
 _MAX_FACT_CHARS = 400  # a cast line with its description runs ~280
 _MAX_QUOTE_WORDS = 40
-# Kiwix answers in ~50-250 ms; a lookup past this is a hung search, not a slow one.
-_KIWIX_TIMEOUT_S = 2.0
+# A direct article read takes 0.3-0.9 s, a cold one on the NFS-backed ZIM can pass 2 s.
+_KIWIX_TIMEOUT_S = 2.5
 # How long a failed Kiwix lookup switches the check off.
 _KIWIX_BACKOFF_S = 60.0
 # The encyclopedia snapshot lags the news: a cue about a recent event or "the latest" thing
@@ -74,6 +75,8 @@ _NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
 _REFERENCES = re.compile(r'<ol\b[^>]*class="[^"]*\breferences\b[^"]*"[^>]*>.*?</ol>', re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_CONTENT_ROOT = re.compile(r'href="(/content/[^"/]+)"')
+_SNAPSHOT = re.compile(r"\d{4}-\d{2}")
 _STOP = frozenset(
     "the a an and or of to in on for with is are was were that this it as by at from be has "
     "have had not but its their they them which who".split()
@@ -186,6 +189,7 @@ class FactChecker:
         # this monotonic time, so each shown cue doesn't wait out the timeout behind it.
         self._kiwix_down_until = 0.0
         self._last_timeout = _KIWIX_TIMEOUT_S
+        self._content: str | None = None  # "/content/<book>", resolved on first use
 
     def _payload(self, system: str, user: str) -> dict:
         # Thinking off: on the labelled set thinking caught no more wrong cues and dropped more
@@ -247,45 +251,79 @@ class FactChecker:
         log.info("kiwix lookup for %r failed; skipping checks for a while", title)
         self._kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
 
+    def _book_path(self, client, deadline: float) -> str:
+        """The content root of the newest ZIM matching the book filter ("/content/<book>"),
+        read once from the Kiwix catalog (~10 ms) and cached."""
+        if self._content is None:
+            resp = client.get(
+                f"{self._kiwix}/catalog/v2/entries",
+                params={"name": self._book},
+                timeout=self._kiwix_timeout(deadline),
+            )
+            resp.raise_for_status()
+            roots = _CONTENT_ROOT.findall(resp.text)
+            if not roots:
+                raise LookupError(f"no Kiwix book matches {self._book!r}")
+            # Several flavours can match (maxi_2026-08, nopic_2026-06): take the newest snapshot.
+            self._content = max(roots, key=lambda r: (_SNAPSHOT.findall(r)[-1:], r))
+        return self._content
+
     def _reference(self, client, titles: list[str], note: str, deadline: float) -> str:
+        """Each proposed article, fetched straight by title and in parallel. Kiwix's full-text
+        search and title suggestions take 2-15 s on a cold NFS-backed ZIM (XERK-2065) while a
+        direct read takes 0.3-0.9 s; one after another, three reads left the model too little
+        of the budget. Redirects resolve aliases ("Super Saiyan" -> "Dragon Ball"). A title the
+        mirror doesn't have is skipped; a failing Kiwix switches the check off for a while."""
         import httpx
 
+        try:
+            root = self._book_path(client, deadline)
+        except (httpx.HTTPError, LookupError) as exc:
+            self._kiwix_failed(exc, "catalog")
+            return ""
+        timeout = self._kiwix_timeout(deadline)
+
+        def fetch(title: str):
+            try:
+                path = urllib.parse.quote(title.strip().replace(" ", "_"))
+                page = client.get(f"{self._kiwix}{root}/{path}", timeout=timeout, follow_redirects=True)
+                page.raise_for_status()
+                return page
+            except httpx.HTTPError as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=_MAX_TITLES) as pool:
+            results = list(pool.map(fetch, titles))
+        failures = [
+            r
+            for r in results
+            if isinstance(r, Exception)
+            and not (isinstance(r, httpx.HTTPStatusError) and r.response.status_code < 500)
+        ]
+        if failures and len(failures) == len(results):
+            # Nothing answered: Kiwix is failing. One slow read among answers is just skipped
+            # (a cold article on the NFS-backed ZIM can take over 2 s).
+            self._kiwix_failed(failures[0], titles[0])
+            return ""
         parts: list[str] = []
         seen: set[str] = set()
-        for title in titles:
-            try:
-                resp = client.get(
-                    f"{self._kiwix}/search",
-                    params={
-                        "books.filter.name": self._book,
-                        "pattern": title,
-                        "pageLength": "1",
-                        "format": "xml",
-                    },
-                    timeout=self._kiwix_timeout(deadline),
-                )
-                resp.raise_for_status()
-                for found, link in _parse_kiwix_search(resp.text)[:1]:
-                    if found in seen:
-                        continue
-                    seen.add(found)
-                    page = client.get(self._kiwix + link, timeout=self._kiwix_timeout(deadline))
-                    page.raise_for_status()
-                    text = passages(page.text, note, article_title=found)
-                    if text:
-                        parts.append(f"[{found}] {text}")
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code < 500:
-                    continue  # one missing article, not a failing Kiwix
-                self._trip(title)
-                return ""
-            except httpx.TimeoutException:
-                # Only a timeout at Kiwix's own full limit means Kiwix is hanging; a request
-                # cut short by the check's deadline (a slow model ate the budget) is not.
-                if self._last_timeout >= _KIWIX_TIMEOUT_S:
-                    self._trip(title)
-                return ""
-            except httpx.HTTPError:
-                self._trip(title)
-                return ""
+        for result in results:
+            if isinstance(result, Exception):
+                continue  # a missing or slow article
+            found = urllib.parse.unquote(result.url.path.rsplit("/", 1)[-1]).replace("_", " ")
+            if found in seen:
+                continue
+            seen.add(found)
+            text = passages(result.text, note, article_title=found)
+            if text:
+                parts.append(f"[{found}] {text}")
         return "\n\n".join(parts)
+
+    def _kiwix_failed(self, exc: Exception, what: str) -> None:
+        import httpx
+
+        # Only a timeout at Kiwix's own full limit means Kiwix is hanging; a request cut short
+        # by the check's deadline (a slow model ate the budget) is not Kiwix's fault.
+        if isinstance(exc, httpx.TimeoutException) and self._last_timeout < _KIWIX_TIMEOUT_S:
+            return
+        self._trip(what)

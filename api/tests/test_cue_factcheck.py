@@ -160,10 +160,7 @@ def test_payload_runs_without_thinking_and_short() -> None:
 # ---- the live path, against a mock transport ----------------------------------------
 
 
-_KIWIX_SEARCH = (
-    "<rss><channel><item><title>Cubone</title><link>/content/b/Cubone</link></item>"
-    "</channel></rss>"
-)
+_KIWIX_CATALOG = '<feed><entry><link type="text/html" href="/content/b"/></entry></feed>'
 _KIWIX_PAGE = (
     "<html><head><style>.x{}</style></head><body>"
     "<p>Cubone is a Pokémon species in Nintendo and Game Freak's Pokémon franchise.</p>"
@@ -196,8 +193,8 @@ def _transport(
             raise httpx.ConnectError("kiwix down")
         if kiwix_error is not None:
             raise kiwix_error
-        if request.url.path == "/search":
-            return httpx.Response(200, text=_KIWIX_SEARCH)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
         return httpx.Response(page_status, text=_KIWIX_PAGE)
 
     return httpx.MockTransport(handle)
@@ -219,8 +216,11 @@ def test_a_quoted_contradiction_drops_the_cue() -> None:
     assert _checker(_transport(verdict, calls=calls)).contradiction(_GHOST) == (
         "a Ground type Pokémon"
     )
-    # Duplicate and non-string titles are filtered before any lookup: one search, one page.
-    assert calls.count("/search") == 1
+    # Duplicate and non-string titles are filtered before any lookup: one article read, by title
+    # (Kiwix full-text search takes seconds), after one catalog read for the book.
+    assert calls.count("/content/b/Cubone") == 1
+    assert calls.count("/catalog/v2/entries") == 1
+    assert "/search" not in calls
 
 
 @pytest.mark.parametrize(
@@ -265,12 +265,8 @@ def test_the_check_prompt_gets_the_cast_line_past_title_repeating_citations() ->
                 prompts.append(msgs[1]["content"])
                 answer = {"contradiction": False}
             return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
-        if request.url.path == "/search":
-            return httpx.Response(
-                200,
-                text="<rss><channel><item><title>Batman &amp; Robin (film)</title>"
-                "<link>/content/b/Batman_Robin</link></item></channel></rss>",
-            )
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
         return httpx.Response(200, text=page)
 
     cue = GeneratedCue(
@@ -327,7 +323,100 @@ def test_the_lookup_stops_at_the_first_kiwix_failure() -> None:
     checker = _checker(_transport({"contradiction": True}, kiwix_fails=True, calls=calls))
     checker._ask = lambda *a: {"titles": ["A", "B", "C"]}  # three titles to look up
     assert checker.contradiction(_GHOST) is None
-    assert calls.count("/search") == 1
+    assert len([c for c in calls if not c.endswith("/chat/completions")]) == 1
+
+
+def test_one_slow_article_among_answers_is_skipped_without_switching_the_check_off() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" in msgs[0]["content"]:
+                answer = {"titles": ["Slow", "Cubone"]}
+            else:
+                prompts.append(msgs[1]["content"])
+                answer = {"contradiction": False}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
+        if path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        if path.endswith("/Slow"):
+            raise httpx.ReadTimeout("cold article")
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until == 0.0
+    assert prompts and "[Cubone]" in prompts[0]
+
+
+def test_the_newest_snapshot_is_read_and_cached() -> None:
+    import httpx
+
+    calls: list = []
+    catalog = (
+        '<feed><link href="/content/wikipedia_en_all_maxi_2026-08"/>'
+        '<link href="/content/wikipedia_en_all_nopic_2026-06"/></feed>'
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=catalog)
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    checker = _checker(httpx.MockTransport(handle))
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    deadline = factcheck.time.monotonic() + 5
+    assert checker._book_path(client, deadline) == "/content/wikipedia_en_all_maxi_2026-08"
+    assert checker._book_path(client, deadline) == "/content/wikipedia_en_all_maxi_2026-08"
+    assert calls.count("/catalog/v2/entries") == 1
+
+
+def test_a_redirect_names_the_article_it_landed_on() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" in msgs[0]["content"]:
+                answer = {"titles": ["Super Saiyan"]}
+            else:
+                prompts.append(msgs[1]["content"])
+                answer = {"contradiction": False}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
+        if path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        if path == "/content/b/Super_Saiyan":
+            return httpx.Response(302, headers={"location": "/content/b/Dragon_Ball"})
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    assert _checker(httpx.MockTransport(handle)).contradiction(_GHOST) is None
+    assert prompts and prompts[0].startswith("REFERENCE TEXT:\n[Dragon Ball]")
+
+
+def test_a_catalog_without_the_book_switches_the_check_off() -> None:
+    import httpx
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": '{"titles": ["Cubone"]}'}}]}
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, text="<feed></feed>")
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until > 0.0
 
 
 def test_the_factory_budget_stops_inside_the_sessions_wait(
