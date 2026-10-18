@@ -377,6 +377,11 @@ still ran and delayed the next. The tier therefore allows one Kiwix search in
 flight per process: a fallback that finds it busy contributes nothing at once
 instead of queuing on the server. The search in flight has a 30s timeout, so a
 slow one settles into the topic cache for the next cue instead of being dropped.
+The encyclopedia fact check (`api/cue/factcheck.py`) searches Kiwix for every
+shown cue, so it holds its own one-search slot. A check that finds it busy goes
+ahead with what it already has, or shows the cue unchecked. It keeps its 2s
+per-search cap because the cue waits on it. A cold search trips its 60s backoff,
+which also keeps further cold searches off Kiwix.
 Narrowing the search to one book does not help: kiwix-serve 3.8's `/search`
 ignores `books.filter.flavour`, and both books share the name `wikipedia_en_all`.
 

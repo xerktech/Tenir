@@ -247,6 +247,13 @@ class Settings(BaseSettings):
     # Wikipedia ZIM regardless of flavour/date suffix, so a refreshed download
     # needs no config change.
     cue_kiwix_book: str = "wikipedia_en_all"
+    # Encyclopedia fact check of each cue about to be shown (api/cue/factcheck.py): the cue is
+    # dropped only when the Kiwix mirror explicitly contradicts it. Needs the openai cue backend
+    # and cue_kiwix_endpoint; fails open. Measured on 369 labelled production cues: 10 of 39
+    # wrong cues dropped, 2 of 274 correct (scripts/cue_eval/RESULTS-2026-10.md).
+    cue_fact_check: bool = True
+    # Ceiling on the check (two short model calls + Kiwix). Past it the cue is shown unchecked.
+    cue_fact_check_timeout_s: float = 6.0
     # Self-hosted SearXNG root for the web tier ("" disables the tier — there is no
     # public default on purpose; point it at your own instance).
     cue_searxng_endpoint: str = ""

@@ -62,4 +62,22 @@ paths:
   thread, and a late search parked in a finished thread's loop held a global lock forever.
 - A cold search (fresh pod, NFS-backed ZIMs) takes seconds to tens of seconds; time any Kiwix
   measurement twice, so the second run shows warm-cache figures.
+- The fact check (sync, in a worker thread) has its own one-search slot: a non-blocking
+  `threading.Lock` in `cue/factcheck.py`. That is safe there because every request times out.
+  The two slots are separate, so prod can have one retrieval and one fact-check search in flight.
 - `/search` ignores `books.filter.flavour`, and both Wikipedia ZIMs are named `wikipedia_en_all`.
+
+## Fact check (`api/cue/factcheck.py`)
+
+- Judge against text, never memory: the earlier self-check lost 16 good cues per 2 wrong.
+  Contradiction-only with a quote that must appear in the Kiwix text measured 10/39 wrong
+  dropped for 2/274 correct.
+- Retrieval, not the model, limits recall. Thinking on caught nothing more. A title search's
+  first paragraph rarely holds the fact, so the cue's own words pick the paragraphs.
+- Never check cues citing live news or about recent events: the mirror lags, and the 2026
+  Hurricane Isaias got "corrected" to the 2020 one.
+- Cap the quote length: a pasted paragraph passes any overlap test and costs seconds to decode.
+- Live Wikipedia rate-limits a host that hammers it (429 within ~400 lookups); evaluate against
+  Kiwix (`kiwix.cloud.svc.cluster.local:8080`).
+- Session restarts wipe the scratchpad: put the labelled set and results in the repo or report
+  them as you go, or a multi-hour eval is lost.

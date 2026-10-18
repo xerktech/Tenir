@@ -35,7 +35,13 @@ from api.contract import (
     Translation,
     TranslationDone,
 )
-from api.cue import CueGenerator, make_cue_generator, min_interval_ms, normalize_cue_title
+from api.cue import (
+    CueGenerator,
+    make_cue_generator,
+    make_fact_checker,
+    min_interval_ms,
+    normalize_cue_title,
+)
 from api.cue.base import (
     CUE_SUBSTANCE_MIN_TOKENS,
     GeneratedCue,
@@ -43,6 +49,7 @@ from api.cue.base import (
     cue_substance_similarity,
     cue_substance_tokens,
 )
+from api.cue.factcheck import FactChecker
 from api.cue.retrieval import EvidenceRetriever, make_evidence_retriever
 from api.metrics import metrics
 from api.music import (
@@ -353,6 +360,7 @@ class Session:
         # Evidence retrieval (XERK-120): live-source grounding for cue facts. None
         # when retrieval is off — cues then run ungrounded exactly as before.
         self._cue_retriever: EvidenceRetriever | None = None
+        self._cue_fact_checker: FactChecker | None = None
         self._recent_finals: deque[str] = deque(maxlen=max(1, settings.cue_context_segments))
         # De-dupe cues for the WHOLE conversation, not a short rolling window
         # (XERK-102): a cue surfaced once must not pop up again later, however far
@@ -603,6 +611,7 @@ class Session:
         # And its evidence retriever (XERK-120); only meaningful with cues on.
         if self._cue_generator is not None:
             self._cue_retriever = make_evidence_retriever()
+            self._cue_fact_checker = make_fact_checker()
         # The translator (XERK-160); None when API_TRANSLATION_BACKEND=off, so the
         # stripped core does no translation work at all.
         self._translator = make_translator()
@@ -1199,6 +1208,26 @@ class Session:
         self._cue_tasks.add(task)
         task.add_done_callback(self._cue_tasks.discard)
 
+    async def _cue_contradicted(self, cue: GeneratedCue) -> bool:
+        """Whether the encyclopedia check contradicts the cue. Fails open: an error or a check
+        past cue_fact_check_timeout_s shows the cue unchecked."""
+        assert self._cue_fact_checker is not None
+        try:
+            with metrics.timer("cue.fact_check_ms"):
+                conflict = await asyncio.wait_for(
+                    asyncio.to_thread(self._cue_fact_checker.contradiction, cue),
+                    timeout=settings.cue_fact_check_timeout_s,
+                )
+        except Exception:
+            log.warning("session %s cue fact check failed", self.session_id, exc_info=True)
+            metrics.incr("cue.fact_check.errors")
+            return False
+        if conflict:
+            log.info("session %s cue %r contradicted: %s", self.session_id, cue.title, conflict)
+            metrics.incr("cue.fact_check_drops")
+            return True
+        return False
+
     async def _generate_cue(self, at_ms: int) -> None:
         """Run the cue model over the recent transcript and, on a hit, deliver +
         persist the cue. Best-effort throughout: any failure is logged/counted and
@@ -1282,6 +1311,15 @@ class Session:
             if subject & self._surfaced_cue_subjects:
                 metrics.incr("cue.subject_drops")
                 return
+            if self._cue_fact_checker is not None:
+                if await self._cue_contradicted(GeneratedCue(title, body, generated.source)):
+                    # Never offered again: the model would re-propose the same wrong fact.
+                    self._surfaced_cue_norms.add(norm)
+                    return
+                if self._finished or self._translation_active or self._music_active:
+                    # The check awaited: the recording ended or a run opened meanwhile.
+                    metrics.incr("cue.closed_drops" if self._finished else "cue.translation_drops")
+                    return
             self._surfaced_cue_subjects |= subject
             self._surfaced_cue_norms.add(norm)
             self._surfaced_cues.append(GeneratedCue(title=title, body=body))
