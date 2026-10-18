@@ -695,8 +695,16 @@ def test_pinned_source_language_opens_a_run_on_any_turn(monkeypatch: pytest.Monk
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "first, second, lang",
+    [
+        ("Buenas noches.", "Vamos a comer.", "es"),
+        ("Hola.", "Mira.", "es"),  # real short openers just above the lean threshold
+        ("Obrigada.", "Sim.", "pt"),
+    ],
+)
 def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, first: str, second: str, lang: str
 ) -> None:
     # A short-turn Spanish speaker: no turn's text is decidable, but two in a row confirm
     # the run, and the held first turn is translated ahead of the second (QA, Oct 2026).
@@ -705,12 +713,12 @@ def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
     async def run() -> None:
         sent: list[ServerMessage] = []
         session = await _fresh_session(sent)
-        session._consider_translation(_final("Buenas noches.", segment_id="a", lang="es"))
+        session._consider_translation(_final(first, segment_id="a", lang=lang))
         session._consider_translation(
-            _final("Vamos a comer.", segment_id="b", lang="es", start_ms=3000, end_ms=4500)
+            _final(second, segment_id="b", lang=lang, start_ms=3000, end_ms=4500)
         )
         session._consider_translation(
-            _final("Bueno.", segment_id="c", lang="es", start_ms=5000, end_ms=5600)
+            _final("Bueno.", segment_id="c", lang=lang, start_ms=5000, end_ms=5600)
         )
         await _drain_translations(session)
         await session.close()

@@ -2390,3 +2390,21 @@ def test_capped_turn_cut_before_its_speech_does_not_flag_the_silent_head() -> No
         assert t._speech_finals_pending == 0
 
     asyncio.run(run())
+
+
+def test_flush_does_not_decode_a_silent_tail_left_by_a_cap_cut() -> None:
+    # Energy heard in a capped turn's head must not carry into a silent tail: flush then
+    # decoded pure silence (QA, Oct 2026).
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=10000, max_segment_ms=3000
+        )
+        await _push(t, _pcm(2500, amplitude=4000))
+        for _ in range(5):  # the cap lands in silence: the cut keeps a silent tail
+            await _push(t, _pcm(100, amplitude=0))
+        await t.flush()
+        await _drain(t)
+        assert len(eng.sizes) == 1  # the head only
+
+    asyncio.run(run())
