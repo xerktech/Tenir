@@ -275,6 +275,7 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        self._speech_from = 0
         # The most recent non-empty partial text shown to the client for the in-flight
         # turn. If the whole-turn final decode comes back empty for a turn the user
         # already watched being captioned word by word, this is surfaced as the final
@@ -396,15 +397,21 @@ class StreamingTranscriber:
         start = self._segment_start_ms
         # Advance by the turn's exact end so the carried tail's timeline stays aligned.
         self._segment_start_ms = start + _bytes_to_ms(cut)
-        if self._has_speech:
-            self._speech_finals_pending += 1
-        self._submit("final", bytes(self._buf[:cut]), start, self._has_speech)
         tail = len(self._buf) - cut
+        # The head holds speech only if the turn's speech started before the cut; a carried
+        # tail only if the last speech frame falls inside it.
+        head_speech = self._has_speech and self._speech_from < cut
+        tail_speech = self._has_speech and self._trailing_silence < tail
+        if head_speech:
+            self._speech_finals_pending += 1
+        self._submit("final", bytes(self._buf[:cut]), start, head_speech)
         del self._buf[:cut]
         self._since_partial = 0
-        # A carried tail heard speech only if the last speech frame falls inside it.
-        self._has_speech = self._has_speech and self._trailing_silence < tail
-        self._energy_heard = self._has_speech
+        self._has_speech = tail_speech
+        self._speech_from = max(0, self._speech_from - cut)
+        # Keep what the energy gate heard for flush(): a loud tail the model overruled still
+        # decodes if the session ends right after the cut.
+        self._energy_heard = self._has_speech or (self._energy_heard and tail > 0)
         self._trailing_silence = min(self._trailing_silence, tail)
 
     async def _work(self) -> None:
@@ -536,6 +543,10 @@ class StreamingTranscriber:
         if speech is None:
             speech = energy
         if speech:
+            if not self._has_speech:
+                # Where the turn's speech starts, so a capped turn cut before it can tell
+                # its silent head from speech (_close_turn).
+                self._speech_from = len(self._buf) - len(pcm)
             self._has_speech = True
             self._trailing_silence = 0
         else:

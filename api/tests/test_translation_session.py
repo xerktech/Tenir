@@ -27,13 +27,18 @@ from api.session import Session
 
 
 def _final(
-    text: str, *, segment_id: str = "s1", lang: str | None = "en", end_ms: int = 2000
+    text: str,
+    *,
+    segment_id: str = "s1",
+    lang: str | None = "en",
+    end_ms: int = 2000,
+    start_ms: int = 0,
 ) -> CaptionFinal:
     return CaptionFinal(
         type="caption.final",
         segmentId=segment_id,
         text=text,
-        startMs=0,
+        startMs=start_ms,
         endMs=end_ms,
         lang=lang,
     )
@@ -639,7 +644,7 @@ def test_reworded_translation_is_suppressed(
 
 
 @pytest.mark.parametrize("text", ["Ha ha ha", "Amém.", "I didn't."])
-def test_engine_only_foreign_tag_does_not_open_a_run(
+def test_lone_engine_only_foreign_turn_does_not_open_a_run(
     monkeypatch: pytest.MonkeyPatch, text: str
 ) -> None:
     # Whisper tags noise, laughter and lyrics with a language; text langid reading the
@@ -686,5 +691,79 @@ def test_pinned_source_language_opens_a_run_on_any_turn(monkeypatch: pytest.Monk
         await _drain_translations(session)
         await session.close()
         assert [t.segmentId for t in _translations(sent)] == ["a"]
+
+    asyncio.run(run())
+
+
+def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A short-turn Spanish speaker: no turn's text is decidable, but two in a row confirm
+    # the run, and the held first turn is translated ahead of the second (QA, Oct 2026).
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("Buenas noches.", segment_id="a", lang="es"))
+        session._consider_translation(
+            _final("Vamos a comer.", segment_id="b", lang="es", start_ms=3000, end_ms=4500)
+        )
+        session._consider_translation(
+            _final("Bueno.", segment_id="c", lang="es", start_ms=5000, end_ms=5600)
+        )
+        await _drain_translations(session)
+        await session.close()
+        assert [t.segmentId for t in _translations(sent)] == ["a", "b", "c"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "between, second",
+    [
+        (None, _final("Vamos a comer.", segment_id="b", lang="pt", start_ms=3000, end_ms=4500)),
+        (None, _final("Vamos a comer.", segment_id="b", lang="es", start_ms=11000, end_ms=12000)),
+        (
+            _final("okay sure", segment_id="en", lang="en", start_ms=2500, end_ms=2900),
+            _final("Vamos a comer.", segment_id="b", lang="es", start_ms=3000, end_ms=4500),
+        ),
+    ],
+    ids=["other-language", "too-late", "english-between"],
+)
+def test_held_opener_is_not_confirmed_across_a_language_change_gap_or_english_turn(
+    monkeypatch: pytest.MonkeyPatch, between: CaptionFinal | None, second: CaptionFinal
+) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("Buenas noches.", segment_id="a", lang="es"))
+        if between is not None:
+            session._consider_translation(between)
+        session._consider_translation(second)
+        await _drain_translations(session)
+        await session.close()
+        assert _translations(sent) == []
+
+    asyncio.run(run())
+
+
+def test_decidable_turn_confirms_a_held_opener_and_translates_it_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("Buenas noches.", segment_id="a", lang="es"))
+        session._consider_translation(
+            _final("¿cómo estás?", segment_id="b", lang="es", start_ms=2500, end_ms=3500)
+        )
+        await _drain_translations(session)
+        await session.close()
+        assert [t.segmentId for t in _translations(sent)] == ["a", "b"]
 
     asyncio.run(run())

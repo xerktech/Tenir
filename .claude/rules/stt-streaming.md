@@ -129,6 +129,7 @@ paths:
     re-decode fell 17.5→16.8 %, 12.2→10.4 %, 18.5→14.8 %.
   - No dip below half the window's median energy means no gap: cut at the cap. Without that
     guard steady audio (music, flat test tones) cut at the window's first frame every turn.
-  - The carried tail keeps `_has_speech` only if the last speech frame lies inside it.
+  - The head keeps `has_speech` only if speech started before the cut (`_speech_from`), the
+    carried tail only if the last speech frame lies inside it.
   - Tests: `test_streaming_stt.py::test_capped_turn_is_cut_at_the_quietest_gap_and_the_tail_opens_the_next_turn`,
     `::test_quietest_cut_falls_back_to_the_cap_without_a_clear_dip`.

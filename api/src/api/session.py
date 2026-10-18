@@ -192,6 +192,9 @@ def teardowns_in_flight() -> list[asyncio.Task[None]]:
 # it only limits how many the model is explicitly reminded of.
 _CUE_AVOID_PROMPT_LIMIT = 40
 
+# The longest gap between two engine-only foreign turns that still confirms a run
+# (_consider_translation): about one caption turn of pause.
+_PENDING_OPENER_MS = 8000
 # How often an expired translation hold re-checks a final decode still in flight.
 _HOLD_RECHECK_S = 0.05
 
@@ -393,6 +396,9 @@ class Session:
         self._translation_active = False
         # The language of the turn that last opened or extended the live run.
         self._translation_run_lang: str | None = None
+        # An engine-only foreign turn waiting for a second one to confirm a run (see
+        # _consider_translation): (final, its lang).
+        self._translation_pending: tuple[CaptionFinal, str] | None = None
         # Music ID (XERK-184): when a song is playing, the session periodically
         # fingerprints a short window of the live audio, identifies the track, and
         # shows its time-synced lyrics in the cue box, auto-scrolling as the song
@@ -986,25 +992,47 @@ class Session:
             and lang != "en"
             and not self._translation_active
             and self.source_lang is None
-            and detect_lang(result.text) in (None, "en")
         ):
-            # Only the engine calls this turn foreign; its text doesn't read that way. Whisper
-            # guesses a language for noise, lyrics and laughter too ("Ha ha ha" it, "Amém." pt,
-            # "Denn..." de): on Oct 2026 recordings every such run opener was one, while every
-            # real Spanish opener had text langid agree. It can still join an open run.
-            return
+            # Whisper's engine language also tags noise, lyrics and laughter ("Ha ha ha" it,
+            # "Amém." pt, "Denn..." de): on Oct 2026 recordings those were isolated turns
+            # between English ones. So a turn whose text reads English never opens a run, and
+            # one text langid can't decide opens it only once a second same-language turn
+            # follows within _PENDING_OPENER_MS. Real short-turn speakers ("Buenas noches." /
+            # "Vamos a comer.", both undecidable) still get translated, a turn late.
+            text_lang = detect_lang(result.text)
+            if text_lang == "en":
+                return
+            pending = self._translation_pending
+            confirms = (
+                pending is not None
+                and pending[1] == lang
+                and result.startMs - pending[0].endMs <= _PENDING_OPENER_MS
+            )
+            if text_lang is None and not confirms:
+                self._translation_pending = (result, lang)
+                return
+            if confirms:
+                assert pending is not None
+                self._open_translation_run(pending[0], lang)
         if lang is not None and lang != "en":
-            assert self._translation_queue is not None
-            self._translation_active = True
-            self._translation_run_lang = lang
-            self._touch_translation_hold()
-            self._translation_queue.put_nowait(("translate", result, lang))
-        elif lang == "en" and self._translation_active:
-            self._end_translation_run()
+            self._open_translation_run(result, lang)
+        elif lang == "en":
+            self._translation_pending = None
+            if self._translation_active:
+                self._end_translation_run()
         elif lang is None and self._translation_active:
             assert self._translation_queue is not None
             self._touch_translation_hold()
             self._translation_queue.put_nowait(("translate", result, self._translation_run_lang))
+
+    def _open_translation_run(self, result: CaptionFinal, lang: str) -> None:
+        """(Re)open the run in ``lang`` and queue ``result``'s translation."""
+        assert self._translation_queue is not None
+        self._translation_pending = None
+        self._translation_active = True
+        self._translation_run_lang = lang
+        self._touch_translation_hold()
+        self._translation_queue.put_nowait(("translate", result, lang))
 
     def _touch_translation_hold(self) -> None:
         """Restart the run's silence hold: any speech activity (a partial or a
