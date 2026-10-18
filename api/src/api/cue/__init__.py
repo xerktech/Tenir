@@ -11,6 +11,7 @@ __all__ = [
     "GeneratedCue",
     "cue_guidance",
     "make_cue_generator",
+    "make_fact_checker",
     "min_interval_ms",
     "normalize_cue_title",
 ]
@@ -42,3 +43,21 @@ def make_cue_generator() -> CueGenerator | None:
             disable_thinking=settings.cue_disable_thinking,
         )
     raise ValueError(f"unknown cue backend: {backend!r} (expected 'off', 'stub' or 'openai')")
+
+
+def make_fact_checker():
+    """The encyclopedia fact check (api/cue/factcheck.py), or None when it can't or shouldn't
+    run: cues not on the openai backend, no Kiwix mirror configured, or API_CUE_FACT_CHECK off."""
+    if settings.cue_backend != "openai" or not settings.cue_fact_check:
+        return None
+    if not settings.cue_kiwix_endpoint:
+        return None
+    from api.cue.factcheck import FactChecker
+
+    return FactChecker(
+        endpoint=settings.litellm_endpoint,
+        model=settings.llm_model,
+        api_key=settings.litellm_api_key,
+        kiwix_endpoint=settings.cue_kiwix_endpoint,
+        kiwix_book=settings.cue_kiwix_book,
+    )
