@@ -226,12 +226,22 @@ Findings:
 - Latency: 1.2-3.3 s per checked cue when the cue server is free, and only shown cues are
   checked. The cue server serves one request at a time, so a check queued behind another cue
   call can take longer. Past `cue_fact_check_timeout_s` (6 s) the cue is shown unchecked.
-- QA then found the paragraph pattern matched `<link>` in the page head, so on real Kiwix pages
-  the "lead" was kilobytes of CSS that crowded out the keyword passages. The 10/39 above was
-  measured with that bug. The shipped version strips head, style and script, and matches
-  whole table rows so infobox facts ("Type Ground") survive. It is likely better, but it was
-  not re-measured: Kiwix was crash-looping (XERK-2065) and the labelled set was lost to a
-  scratchpad wipe.
+- QA then found three reference-building bugs, all now fixed:
+  - The paragraph pattern matched `<link>` in the page head, so the "lead" was CSS.
+  - Navigation boxes and the references list out-ranked infobox rows and cast lines.
+  - Every citation repeats the article title, which the production "title: body" note also
+    carries.
+- After Kiwix stopped crash-looping (XERK-2065, ArgoCD #762), its full-text search still took
+  2-15 s on the NFS-backed ZIM. Articles are now read straight by the model's proposed titles,
+  in parallel (0.3-0.9 s each).
+- Final re-measure on a fresh labelling of the same 369 cues (41 wrong, 277 correct), checks
+  run one at a time against live Kiwix and the real model:
+  - 17 of 41 wrong cues dropped (was 10/39), including 2 scripture confabulations.
+  - 2 of 277 correct cues dropped: "inflection point" (business vs maths sense, fixed by a
+    prompt rule and verified live) and Jehoshaphat "alongside Ahab" (open).
+  - Latency p50 2.9 s, p90 4.0 s; 5 of 358 checks went past 5.5 s and showed unchecked.
+  - Run two checks at once and most time out, because the cue server serves one request at a
+    time. Live, a check queued behind other cue traffic fails open.
 - An early run took 11 s because the model pasted a whole paragraph as its "conflicting words".
   Capping the quote at 20 words (and the reply at 150 tokens) fixed both the latency and that
   weakness in the quote check.

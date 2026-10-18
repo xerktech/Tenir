@@ -41,7 +41,8 @@ _CHECK = (
     "role, category, place, or outcome. If the reference text does not mention the claim, is "
     "about a different subject, or is merely less specific, that is NOT a contradiction. A "
     'different but overlapping estimate, range, or approximation ("2-8 players" vs "2-10") '
-    "is NOT a contradiction either. "
+    "is NOT a contradiction either, and neither is a term defined in a different sense from "
+    "the reference's (a business \"inflection point\" vs the mathematical one). "
     'Reply with JSON only: {"contradiction": true|false, "claim": "<the note\'s claim, short>", '
     '"reference": "<at most 20 conflicting words copied exactly from the reference text>"}'
 )

@@ -149,6 +149,16 @@ def test_json_reads_the_first_object_and_tolerates_junk() -> None:
     assert _json("[1, 2]") == {}
 
 
+def test_check_prompt_spares_estimates_other_senses_and_unmentioned_claims() -> None:
+    # Measured false drops each rule removed: "2-8 players" vs "2-10", a business
+    # "inflection point" vs the mathematical one (Oct 2026 labelled set).
+    prompt = factcheck._CHECK.lower()
+    assert "does not mention the claim" in prompt
+    assert "overlapping estimate" in prompt
+    assert "different sense" in prompt
+    assert "at most 20 conflicting words" in prompt
+
+
 def test_payload_runs_without_thinking_and_short() -> None:
     checker = FactChecker(endpoint="http://m/v1", model="m", kiwix_endpoint="http://k", kiwix_book="b")
     payload = checker._payload("sys", "user")
