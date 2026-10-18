@@ -91,3 +91,16 @@ paths:
   (1000) of a turn and memoise wordfreq lookups (`_zipf`), so degenerate STT output costs
   ~10 ms worst. Keep per-word work linear: a `[\s…]+$` regex per capitalised word once took
   8.6 s (`test_degenerate_turns_stay_cheap`).
+- Run openers when no source language is pinned (`Session._consider_translation`): a turn whose
+  text langid reads `en` never opens one; one langid leaves `None` is held if its words lean
+  the tagged language over English by frequency (`frequency_lean` >= 1.5), and opens the run
+  (translated first) only when a second such same-language turn follows within 8 s.
+  - The lean is needed: `detect_lang` is `None` on plain short English ("No", "I see."), and
+    pairs of those tagged es/it opened runs (QA). Real short Spanish measured >= 1.9.
+  - Why: Whisper's engine language tags noise, laughter and lyrics ("Ha ha ha" it, "Amém." pt),
+    almost always as one turn between English ones (Oct 2026 recordings).
+  - Never gate on text langid alone: short real Spanish ("Buenas noches.", "Vamos a comer.")
+    is all `None`, so a short-turn speaker got no translation at all (QA FAIL).
+  - Tests: `test_translation_session.py::test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both`,
+    `::test_lone_engine_only_foreign_turn_does_not_open_a_run`.
+  - Test fixtures that open a run alone need decidable text ("hola, ¿qué tal?"; "hola" is None).

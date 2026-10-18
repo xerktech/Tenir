@@ -25,9 +25,13 @@ paths:
   - Accepted cost: a real one-phrase "Thank you." / "You?" turn is blanked, partials included
     (the filter runs in `transcribe`). An English turn Tenir never translates; captioning noise
     about once a minute is worse (XERK-1591).
-- Whisper's non-speech inventions that are real phrases ("Gracias." / "Merci." pinned, "So,",
-  "I'm going to go to the next one.") are accepted, not filtered (XERK-1591). No cheap signal
-  separates them: vLLM's `no_speech_prob` is null.
+- Whisper's non-speech inventions that are real replies ("Gracias." / "Merci." pinned, "So,",
+  "I'm going to go.") are accepted, not filtered (XERK-1591). No cheap signal separates them:
+  vLLM's `no_speech_prob` is null.
+  - Filtered after all: "I'm going to go to the next one." / "… to the restaurant." — all 15
+    stored were inventions (Oct 2026 recordings); nobody says them as a whole turn.
+  - A decode with letters but none in Latin script is non-speech: every contract language is
+    Latin-script, and all ~25 stored CJK/Cyrillic decodes were noise.
   - On real Whisper, `es`-pinned noise windows came back "Gracias." at avg_logprob -0.12 to
     -0.83, against -0.38 to -0.56 for an espeak-spoken one. Turn RMS overlapped too (noise
     0.002-0.03, quiet replies 0.003-0.006). Re-measure before adding a gate.

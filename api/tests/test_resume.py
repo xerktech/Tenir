@@ -1003,7 +1003,7 @@ def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.Mo
             async def dead_window() -> None:
                 # b's peer is gone but its socket stays open: these all go to b.
                 final = CaptionFinal(
-                    type="caption.final", segmentId="seg-es", text="hola", startMs=0,
+                    type="caption.final", segmentId="seg-es", text="hola, ¿qué tal?", startMs=0,
                     endMs=1000, lang="es",
                 )
 

@@ -146,6 +146,19 @@ _STALL_FACTOR = 2.0
 # out on a big merge and lose every merged turn. _COALESCE_MAX_MS is the hard ceiling.
 _COALESCE_DECODE_BUDGET_S = 8.0
 _COALESCE_MAX_MS = 24000
+# A turn that reaches max_segment_ms is cut at the quietest point of its last
+# _CAP_CUT_SEARCH_MS instead of at the cap itself; the audio after the cut opens the next
+# turn. A hard cut at the cap lands mid-word (about 40 % of recorded turns close on it),
+# and Whisper garbles both halves of the split word ("domingo" -> "el dom" | "mingle").
+# Quietness is the mean RMS over a _CAP_CUT_FRAME_MS-framed, _CAP_CUT_SMOOTH-frame window,
+# so one quiet frame inside a word doesn't win over a real inter-word gap. A stretch no
+# quieter than _CAP_CUT_MAX_DIP of the window's median energy is no gap at all (steady
+# music, a flat test tone): the turn is cut at the cap, as before, rather than at an
+# arbitrary early frame that would leave a short fragment.
+_CAP_CUT_SEARCH_MS = 2000
+_CAP_CUT_MAX_DIP = 0.5
+_CAP_CUT_FRAME_MS = 20
+_CAP_CUT_SMOOTH = 5
 
 
 def _ms_to_bytes(ms: int) -> int:
@@ -154,6 +167,24 @@ def _ms_to_bytes(ms: int) -> int:
 
 def _bytes_to_ms(n: int) -> int:
     return n * 1000 // BYTES_PER_SEC
+
+
+def _quietest_cut(pcm: bytes) -> int:
+    """Byte offset to end a capped turn at: the centre of the quietest smoothed stretch
+    in the last _CAP_CUT_SEARCH_MS of ``pcm``, on a frame (and so sample) boundary.
+    Returns len(pcm) when the turn is too short to search or has no clear dip."""
+    frame = _ms_to_bytes(_CAP_CUT_FRAME_MS)
+    n = min(len(pcm), _ms_to_bytes(_CAP_CUT_SEARCH_MS)) // frame
+    if n < _CAP_CUT_SMOOTH:
+        return len(pcm)
+    base = len(pcm) - n * frame
+    x = pcm16_to_float32(pcm[base:]).reshape(n, frame // 2)
+    energy = np.mean(x * x, axis=1)
+    smooth = np.convolve(energy, np.ones(_CAP_CUT_SMOOTH) / _CAP_CUT_SMOOTH, mode="valid")
+    if smooth.min() >= _CAP_CUT_MAX_DIP * float(np.median(smooth)):
+        return len(pcm)
+    centre = int(np.argmin(smooth)) + _CAP_CUT_SMOOTH // 2
+    return base + centre * frame
 
 
 def _lang(value: str | None) -> Lang | None:
@@ -244,6 +275,7 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._trailing_silence = 0
         self._has_speech = False
+        self._speech_from = 0
         # The most recent non-empty partial text shown to the client for the in-flight
         # turn. If the whole-turn final decode comes back empty for a turn the user
         # already watched being captioned word by word, this is surfaced as the final
@@ -325,7 +357,7 @@ class StreamingTranscriber:
         self._update_vad(pcm)
 
         if len(self._buf) >= self._max_segment_bytes:
-            self._close_turn()
+            self._close_turn(_quietest_cut(bytes(self._buf)))
         elif (
             self._has_speech
             and self._trailing_silence >= self._silence_bytes
@@ -351,23 +383,36 @@ class StreamingTranscriber:
             self._worker = asyncio.create_task(self._work())
         self._jobs.put_nowait((kind, pcm, start, has_speech, time.perf_counter()))
 
-    def _close_turn(self) -> None:
-        """Hand the in-flight segment to the worker for its final decode and reset the
-        ingestion state so the next turn's audio buffers immediately.
+    def _close_turn(self, cut: int | None = None) -> None:
+        """Hand the in-flight segment (up to byte ``cut``, default all of it) to the
+        worker for its final decode and reset the ingestion state so the next turn's
+        audio buffers immediately. Audio past ``cut`` stays buffered as the start of
+        the next turn (a capped turn's tail, see _CAP_CUT_SEARCH_MS).
 
         The VAD level window deliberately survives: it describes the *room*, which
         doesn't change at a turn boundary, and re-learning it every turn would put the
         first pause of each one back on the fixed threshold."""
+        if cut is None:
+            cut = len(self._buf)
         start = self._segment_start_ms
-        self._segment_start_ms = start + _bytes_to_ms(len(self._buf))
-        if self._has_speech:
+        # Advance by the turn's exact end so the carried tail's timeline stays aligned.
+        self._segment_start_ms = start + _bytes_to_ms(cut)
+        tail = len(self._buf) - cut
+        # The head holds speech only if the turn's speech started before the cut; a carried
+        # tail only if the last speech frame falls inside it.
+        head_speech = self._has_speech and self._speech_from < cut
+        tail_speech = self._has_speech and self._trailing_silence < tail
+        if head_speech:
             self._speech_finals_pending += 1
-        self._submit("final", bytes(self._buf), start, self._has_speech)
-        self._buf.clear()
+        self._submit("final", bytes(self._buf[:cut]), start, head_speech)
+        del self._buf[:cut]
         self._since_partial = 0
-        self._trailing_silence = 0
-        self._has_speech = False
-        self._energy_heard = False
+        self._has_speech = tail_speech
+        self._speech_from = max(0, self._speech_from - cut)
+        # Where in the turn the energy gate heard speech isn't tracked, so a tail inherits only
+        # its speech flag: carrying the turn's flag decoded pure silence at flush (QA).
+        self._energy_heard = self._has_speech
+        self._trailing_silence = min(self._trailing_silence, tail)
 
     async def _work(self) -> None:
         while True:
@@ -498,6 +543,10 @@ class StreamingTranscriber:
         if speech is None:
             speech = energy
         if speech:
+            if not self._has_speech:
+                # Where the turn's speech starts, so a capped turn cut before it can tell
+                # its silent head from speech (_close_turn).
+                self._speech_from = len(self._buf) - len(pcm)
             self._has_speech = True
             self._trailing_silence = 0
         else:

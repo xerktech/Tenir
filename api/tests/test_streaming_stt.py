@@ -2311,3 +2311,100 @@ def test_a_final_that_fails_as_a_brief_outage_ends_still_lands(_outage) -> None:
         await t.close()
 
     asyncio.run(run())
+
+
+def test_capped_turn_is_cut_at_the_quietest_gap_and_the_tail_opens_the_next_turn() -> None:
+    """A turn that hits max_segment_ms ends in the quietest stretch of its last 2 s, not
+    mid-word at the cap; the audio after the gap carries into the next turn, so no audio
+    is lost and the timeline stays contiguous."""
+
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=10000, max_segment_ms=3000
+        )
+        # 2.4 s speech, a 200 ms inter-word gap (too short to close on silence), speech on.
+        for chunk in (_pcm(2400, amplitude=4000), _pcm(200, amplitude=0)):
+            await _push(t, chunk)
+        for _ in range(8):
+            await _push(t, _pcm(100, amplitude=4000))
+        await t.flush()
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 2
+        assert 2400 <= finals[0].endMs <= 2600  # inside the gap, not at the 3000 ms cap
+        assert finals[1].startMs == finals[0].endMs
+        assert finals[1].endMs == 3400  # the tail plus the rest: nothing dropped
+
+    asyncio.run(run())
+
+
+def test_quietest_cut_falls_back_to_the_cap_without_a_clear_dip() -> None:
+    from api.stt.streaming import _quietest_cut
+
+    steady = _pcm(3000, amplitude=4000)
+    assert _quietest_cut(steady) == len(steady)
+    assert _quietest_cut(_pcm(3000, amplitude=0)) == len(steady)
+    short = _pcm(40, amplitude=4000)
+    assert _quietest_cut(short) == len(short)
+    # A shallow wobble (10 % quieter) is no gap either.
+    wobble = _pcm(2000, amplitude=4000) + _pcm(200, amplitude=3800) + _pcm(800, amplitude=4000)
+    assert _quietest_cut(wobble) == len(wobble)
+
+
+def test_capped_turns_carried_speech_tail_still_closes_on_silence() -> None:
+    # The tail after a cap cut holds speech, so the pause that follows it closes the turn
+    # on silence instead of waiting out another max_segment_ms.
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=500, max_segment_ms=3000
+        )
+        await _push(t, _pcm(2400, amplitude=4000))
+        await _push(t, _pcm(200, amplitude=0))  # a gap shorter than silence_ms
+        for _ in range(4):  # speech up to the cap: the tail carries it, nothing after
+            await _push(t, _pcm(100, amplitude=4000))
+        for _ in range(6):
+            await _push(t, _pcm(100, amplitude=0))
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert len(finals) == 2  # closed on the pause, not at a second cap or flush
+        assert finals[1].endMs - finals[1].startMs < 3000
+
+    asyncio.run(run())
+
+
+def test_capped_turn_cut_before_its_speech_does_not_flag_the_silent_head() -> None:
+    # Speech starting only inside the last 2 s: the cut lands before it, and the silent
+    # head goes out as a no-speech turn (no padded blank-final retry).
+    async def run() -> None:
+        eng = FakeEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=10000, max_segment_ms=3000
+        )
+        await _push(t, _pcm(2000, amplitude=0))
+        for _ in range(10):
+            await _push(t, _pcm(100, amplitude=4000))
+        await t.flush()
+        finals = [m for m in await _drain(t) if isinstance(m, CaptionFinal)]
+        assert [f.text for f in finals] == ["hello world"]
+        assert eng.calls == 2  # the silent head once, the speech once; no retry
+        assert t._speech_finals_pending == 0
+
+    asyncio.run(run())
+
+
+def test_flush_does_not_decode_a_silent_tail_left_by_a_cap_cut() -> None:
+    # Energy heard in a capped turn's head must not carry into a silent tail: flush then
+    # decoded pure silence (QA, Oct 2026).
+    async def run() -> None:
+        eng = RecordingEngine()
+        t = StreamingTranscriber(
+            eng, language="en", partial_interval_ms=100000, silence_ms=10000, max_segment_ms=3000
+        )
+        await _push(t, _pcm(2500, amplitude=4000))
+        for _ in range(5):  # the cap lands in silence: the cut keeps a silent tail
+            await _push(t, _pcm(100, amplitude=0))
+        await t.flush()
+        await _drain(t)
+        assert len(eng.sizes) == 1  # the head only
+
+    asyncio.run(run())

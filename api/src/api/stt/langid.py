@@ -336,6 +336,17 @@ def _excluded(word: str) -> bool:
     return any(word in vocab for code, vocab in _WORDS.items() if code != "en")
 
 
+def frequency_lean(text: str, lang: str) -> float:
+    """How much more the turn's words belong to ``lang`` than to English: the sum over its
+    words of their Zipf frequency in ``lang`` minus in English. Positive leans ``lang``.
+    Decides turns ``detect_lang`` leaves None: on Oct 2026 recordings short real Spanish
+    scored >= 1.9 ("Mira.") while English Whisper tagged foreign scored <= 0.8 ("No",
+    "I see.", "Come on now.")."""
+    return sum(
+        _zipf(w, lang) - _zipf(w, "en") for w in _TOKEN_RE.findall(text[:_MAX_CHARS].lower())
+    )
+
+
 def is_english_word(word: str) -> bool:
     """Whether a lowercased token can only be English: English vocabulary, or a word
     ten times as frequent in English as in every other contract language, that is no

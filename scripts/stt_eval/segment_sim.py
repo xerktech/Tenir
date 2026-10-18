@@ -74,7 +74,7 @@ class BoundaryProbe(StreamingTranscriber):
         if self._trailing_silence == 0 and self._has_speech:
             self.speech_ms.append(self._segment_start_ms + len(self._buf) * 1000 // BYTES_PER_SEC)
 
-    def _close_turn(self) -> None:
+    def _close_turn(self, cut: int | None = None) -> None:
         # Every turn boundary (silence, cap or flush) goes through _close_turn, which
         # still holds the closing turn's state; decodes happen later in the worker.
         reason = (
@@ -87,10 +87,12 @@ class BoundaryProbe(StreamingTranscriber):
                 else "flush"
             )
         )
+        # A capped turn ends at its quietest point (cut), not at the cap.
+        n = len(self._buf) if cut is None else cut
         start = self._segment_start_ms
-        end = start + len(self._buf) * 1000 // BYTES_PER_SEC
+        end = start + n * 1000 // BYTES_PER_SEC
         self.turns.append((start, end, self._has_speech, reason))
-        super()._close_turn()
+        super()._close_turn(cut)
 
     def _submit(self, kind: str, pcm: bytes, start: int, has_speech: bool) -> None:
         """Boundaries are the subject: skip the decode worker entirely."""
