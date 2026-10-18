@@ -338,6 +338,46 @@ def test_a_busy_kiwix_slot_shows_the_cue_unchecked_without_searching() -> None:
     assert checker._kiwix_down_until == 0.0  # busy is not down
 
 
+def test_a_slot_taken_mid_lookup_checks_against_the_passages_already_found() -> None:
+    import json as _j
+
+    import httpx
+
+    from api.cue import factcheck
+
+    searches: list[str] = []
+    checked: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            checked.append(_j.loads(request.content)["messages"][1]["content"])
+            answer = {"contradiction": True, "reference": "Cubone is a Ground type Pokémon"}
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]}
+            )
+        if request.url.path == "/search":
+            searches.append(request.url.params["pattern"])
+            return httpx.Response(200, text=_KIWIX_SEARCH)
+        factcheck._KIWIX_SEARCH_SLOT.acquire()  # another session's search starts now
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    from api.metrics import metrics
+
+    checker = _checker(httpx.MockTransport(handle))
+    busy = metrics.snapshot()["counters"].get("cue.fact_check.kiwix_busy", 0)
+    real_ask = checker._ask
+    checker._ask = lambda c, system, user, d: (
+        {"titles": ["A", "B", "C"]} if "Name the" in system else real_ask(c, system, user, d)
+    )
+    try:
+        assert checker.contradiction(_GHOST) == "Cubone is a Ground type Pokémon"
+    finally:
+        factcheck._KIWIX_SEARCH_SLOT.release()
+    assert searches == ["A"]  # titles B and C were skipped, not retried
+    assert metrics.snapshot()["counters"].get("cue.fact_check.kiwix_busy", 0) == busy + 1
+    assert "Ground type" in checked[-1]  # the first title's passages were still checked
+
+
 def test_the_kiwix_slot_is_released_after_a_failing_search() -> None:
     from api.cue import factcheck
 
