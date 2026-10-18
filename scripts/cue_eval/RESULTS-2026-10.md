@@ -140,3 +140,56 @@ Residuals:
 - Better grounding is the remaining lever: the news FTS tier is still skipped in replay.
 - A self-check would need a new prompt that tolerates hedged advice, or thinking on, which costs
   the latency the cap saved. Neither is measured yet.
+
+## Value bar (2026-10-18, prompt "v8")
+
+Hand review of the 2026-10-11..14 sessions (355 production cues, 3 reviewers): about 10% were
+good, about 75% added nothing. The failure classes, largest first:
+
+- Defining what the speakers obviously know: their own town, their church's vocabulary, the show
+  they are watching, a term a speaker had just explained.
+- Unsolicited advice: medical, parenting, legal and moral lectures on stories nobody asked about.
+- Restating what was just said, or labelling the moment with a concept ("cognitive load").
+- Background audio: worship lyrics, sermon filler ("a fitting verse is…"), a TV show.
+- Confabulated specifics (wrong actor, type, year, scripture detail), about 10% of cues.
+
+Method:
+- Frozen eval: 4 segments of those sessions (25 min AI/piracy talk, an 18 min sermon with a
+  live tornado warning, a 45 min slice of the 3.6 h session, a 35 min church slice).
+- Replay: `replay.py --grounded`, shared frozen evidence cache, about 1,140 attempts per run.
+- Grading: blind and cross-family. Claude graders saw both runs' cues pooled and shuffled in
+  the transcript, unlabelled, and graded each cue GOOD, MARGINAL or BAD with a class.
+- The shipped prompt was re-graded in every batch as the anchor. Its good count moved 22-27
+  between batches, so differences of ±3 good cues are noise.
+
+| prompt | cues | good | marginal | bad | good/bad |
+|---|---|---|---|---|---|
+| shipped v5 (3 gradings) | 176 | 22-27 | 49-52 | 98-105 | 0.21-0.28 |
+| v1: no "most turns", value block, blanket advice ban | 82 | 12 | 26 | 44 | 0.27 |
+| **v8 (= v1 + answer asked questions, define only when asked; 2 gradings)** | 85 | 14-16 | 24-25 | 44-47 | 0.30-0.36 |
+| v9: v8 + stricter definition and past-story rules | 85 | 12 | 30 | 43 | 0.28 |
+
+What moved, between the shipped prompt and v8:
+- Unsolicited advice fell from about 32 to 9.
+- Background-audio cues fell from 9 to 0, and restatements from about 10 to 3.
+- Definitions fell from about 30 to 15.
+- Wrong facts barely moved (about 10 to about 11).
+
+Failed attempts:
+- v1's blanket ban on medical, legal and financial advice also suppressed answers to asked
+  questions ("how is that not illegal?", live tornado shelter guidance). v8's "answer the
+  questions the speakers raise" brought those back.
+- v9 lost more good cues than it removed bad ones.
+
+Residuals:
+- v8 shows about 35% fewer good cues. That is the price of the bad cues it removes, not a free
+  win.
+- Confabulated specifics are unchanged. The "know it cold" rule didn't move them, and prompt
+  wording hasn't touched this class in any round. A grounded entity check is the next lever.
+- Definitions are still the largest bad class.
+
+Output guards (same change):
+- Assistant offers ("If you want, I can help…") are dropped: 2 of 1,619 stored cues.
+- Leaked `[n]` / `【n】` citations are stripped: 2 of 1,619.
+- An overlong body ends at its last full sentence rather than clipping mid-sentence: 14 of
+  1,619 clipped.

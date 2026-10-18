@@ -44,7 +44,7 @@ Two things are tuned here:
     evidence, evidence-gated (generous for covered facts; time-sensitive facts
     only from evidence) when evidence rides the prompt.
 
-The rest of the prompt — the emission-first frame, the five triggers, and the
+The rest of the prompt — the frame, its value bar, the five triggers, and the
 worked examples — is shared by both bars and lives in ``openai.py``'s
 ``_SYSTEM``.
 """

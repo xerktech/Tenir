@@ -1,6 +1,6 @@
 """The cue replay harness must replay the prompt that actually ships.
 
-``scripts/cue_eval/cue_replay_prompt.py --variant v5`` once anchored on a July-frame
+``scripts/cue_eval/cue_replay_prompt.py --variant v5`` (then the shipped frame) once anchored on a July-frame
 sentence the shipped prompt no longer contains, so every v5 replay silently dropped
 the shipped worked examples and the already-shown-cues avoid list (see the caveat in
 ``scripts/cue_eval/RESULTS-2026-09.md``). These tests pin the harness to the shipped
@@ -36,10 +36,10 @@ def _gen_kwargs():
     [(), (GeneratedCue(title="Tibia", body="The tibia is the larger lower-leg bone."),)],
     ids=["no-avoid", "avoid"],
 )
-def test_v5_reproduces_shipped_ungrounded_prompt(harness, avoid):
+def test_v8_reproduces_shipped_ungrounded_prompt(harness, avoid):
     transcript = "the fibula is the big bone in the lower leg"
     shipped = OpenAICueGenerator(**_gen_kwargs())._build_payload(transcript, avoid)
-    replayed = harness.VariantGen("v5", thinking=True, max_tokens=2048, **_gen_kwargs())
+    replayed = harness.VariantGen("v8", thinking=True, max_tokens=2048, **_gen_kwargs())
     assert replayed._build_payload(transcript, avoid)["messages"] == shipped["messages"]
 
 

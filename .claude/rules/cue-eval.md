@@ -11,9 +11,8 @@ paths:
 - Turma hosts reach the cluster services directly, no port-forward needed:
   `litellm.ai.svc.cluster.local:4000/v1`, `kiwix.cloud.svc.cluster.local:8080`,
   `searxng.ai.svc.cluster.local:8080`. Point `--kiwix`/`--searxng` there to match prod grounding.
-- An agent session can't export transcripts: the auto-mode classifier blocks `kubectl exec` into
-  `tenir-postgres-1` ("Production Reads") even with the owner's approval in chat. The owner runs
-  the export from the cue-eval-review skill with `!`, into the session scratchpad.
+- Exporting transcripts with `kubectl exec` into `tenir-postgres-1` may or may not pass the
+  auto-mode classifier; when it is refused, the owner runs the export with `!`.
 - `pip install -e api` fails on the host's system Python (PEP 668); use a venv in the scratchpad.
 
 ## Thinking cap
@@ -42,3 +41,15 @@ paths:
   wrong.
 - At cap 512 on INT4 the shipped `VERIFY_SYSTEM` mostly drops good cues: 2 of its 23 drops
   were wrong, at a cost of 16 perfect cues (RESULTS-2026-10.md). Don't ship it as-is.
+
+## Grading prompt changes (Oct 2026)
+
+- Grade blind and cross-family: pool every run's cues (the shipped prompt included as the anchor)
+  shuffled and unlabelled into the transcript, and have Claude graders mark each GOOD, MARGINAL
+  or BAD with a class. Tell graders that near-duplicates come from different systems.
+- Re-grade the anchor in every batch: its good count moved 22-27 between batches, so a
+  difference of ±3 good cues is noise.
+- A prompt run on the 4-segment Oct set (~1,140 attempts) takes ~2 h at the cue server's
+  concurrency of 1. A `replay.py` run prints nothing until it ends (no `-u`, no progress line).
+- Count good AND bad cues. A value bar that halves the bad cues also loses good ones, and a
+  blanket "no advice" rule suppresses answers to questions the speakers actually asked.
