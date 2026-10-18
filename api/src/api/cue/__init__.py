@@ -60,4 +60,7 @@ def make_fact_checker():
         api_key=settings.litellm_api_key,
         kiwix_endpoint=settings.cue_kiwix_endpoint,
         kiwix_book=settings.cue_kiwix_book,
+        # Under the session's wait, so a slow check stops before its model call instead of
+        # calling the model after the cue was already shown.
+        budget_s=max(0.5, settings.cue_fact_check_timeout_s - 0.5),
     )

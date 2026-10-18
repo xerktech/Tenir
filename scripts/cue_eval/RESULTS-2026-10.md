@@ -226,6 +226,12 @@ Findings:
 - Latency: 1.2-3.3 s per checked cue when the cue server is free, and only shown cues are
   checked. The cue server serves one request at a time, so a check queued behind another cue
   call can take longer. Past `cue_fact_check_timeout_s` (6 s) the cue is shown unchecked.
+- QA then found the paragraph pattern matched `<link>` in the page head, so on real Kiwix pages
+  the "lead" was kilobytes of CSS that crowded out the keyword passages. The 10/39 above was
+  measured with that bug. The shipped version strips head, style and script, and matches
+  whole table rows so infobox facts ("Type Ground") survive. It is likely better, but it was
+  not re-measured: Kiwix was crash-looping (XERK-2065) and the labelled set was lost to a
+  scratchpad wipe.
 - An early run took 11 s because the model pasted a whole paragraph as its "conflicting words".
   Capping the quote at 20 words (and the reply at 150 tokens) fixed both the latency and that
   weakness in the quote check.

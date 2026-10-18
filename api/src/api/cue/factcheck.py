@@ -21,6 +21,7 @@ import html
 import json
 import logging
 import re
+import time
 
 from api.cue.base import GeneratedCue
 from api.cue.retrieval.live import _parse_kiwix_search
@@ -49,13 +50,20 @@ _MAX_PASSAGES = 8
 _MAX_QUOTE_WORDS = 40
 # Kiwix answers in ~50-250 ms; a lookup past this is a hung search, not a slow one.
 _KIWIX_TIMEOUT_S = 2.0
+# How long a failed Kiwix lookup switches the check off.
+_KIWIX_BACKOFF_S = 60.0
 # The encyclopedia snapshot lags the news: a cue about a recent event or "the latest" thing
 # would be contradicted by stale text (the 2026 Hurricane Isaias vs the 2020 one), so those
 # are not checked.
 _RECENT = re.compile(
     r"\b20(2[5-9]|[3-9]\d)\b|\b(latest|as of|currently|newest|this year|recently)\b", re.I
 )
-_PARAGRAPH = re.compile(r"<(p|li|td|th)[^>]*>(.*?)</\1>", re.S)
+# Paragraphs, list items and whole table rows: an infobox fact is a short row ("Type Ground").
+_PARAGRAPH = re.compile(r"<(p|li|tr)\b[^>]*>(.*?)</\1>", re.S)
+_MIN_CHARS = {"p": 40, "li": 40, "tr": 8}
+# Kiwix pages carry a <head> with <link>/<style> and inline <style> in infoboxes: their text is
+# CSS, never article content, and once filled the whole reference budget.
+_NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _STOP = frozenset(
@@ -89,16 +97,17 @@ def quoted(reference_words: str, reference: str) -> bool:
 def passages(article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS) -> str:
     """The article's lead plus the paragraphs (and infobox cells) that mention the cue's own
     content words or numbers: the opening paragraph alone rarely holds the specific fact."""
-    paras = [
-        " ".join(html.unescape(_TAG.sub(" ", m.group(2))).split())
-        for m in _PARAGRAPH.finditer(article_html)
-    ]
-    paras = [p for p in paras if len(p) >= 40]
+    body = _NON_CONTENT.sub(" ", article_html)
+    paras = []
+    for m in _PARAGRAPH.finditer(body):
+        text = " ".join(html.unescape(_TAG.sub(" ", m.group(2))).split())
+        if len(text) >= _MIN_CHARS[m.group(1)]:
+            paras.append(text)
     if not paras:
         return ""
     keywords = {
         w
-        for w in re.findall(r"[\w'-]+", cue_text.lower())
+        for w in re.findall(r"[\w']+", cue_text.lower())
         if (len(w) > 3 and w not in _STOP) or any(ch.isdigit() for ch in w)
     }
 
@@ -130,14 +139,21 @@ class FactChecker:
         kiwix_endpoint: str,
         kiwix_book: str,
         api_key: str = "",
-        timeout: float = 8.0,
+        budget_s: float = 5.0,
+        transport=None,
     ) -> None:
         self._chat = endpoint.rstrip("/") + "/chat/completions"
         self._model = model
         self._kiwix = kiwix_endpoint.rstrip("/")
         self._book = kiwix_book
         self._api_key = api_key
-        self._timeout = timeout
+        # The whole check's time; each request gets what is left of it, and the check gives up
+        # (showing the cue) rather than call the model once the session has stopped waiting.
+        self._budget_s = budget_s
+        self._transport = transport  # tests inject an httpx.MockTransport
+        # A failing Kiwix (it crash-loops: fast after a restart, then hanging) skips checks until
+        # this monotonic time, so each shown cue doesn't wait out the timeout behind it.
+        self._kiwix_down_until = 0.0
 
     def _payload(self, system: str, user: str) -> dict:
         # Thinking off: on the labelled set thinking caught no more wrong cues and dropped more
@@ -150,22 +166,24 @@ class FactChecker:
             "chat_template_kwargs": {"enable_thinking": False},
         }
 
-    def contradiction(self, cue: GeneratedCue) -> str | None:  # pragma: no cover - live I/O
+    def contradiction(self, cue: GeneratedCue) -> str | None:
         """The encyclopedia words that contradict the cue, or None to show it. Never raises."""
-        if not should_check(cue):
+        if not should_check(cue) or time.monotonic() < self._kiwix_down_until:
             return None
         import httpx
 
+        deadline = time.monotonic() + self._budget_s
         note = f"{cue.title}: {cue.body}"
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         try:
-            with httpx.Client(timeout=self._timeout, headers=headers) as client:
-                proposed = self._ask(client, _PROPOSE, note).get("titles")
-                titles = [t for t in proposed or [] if isinstance(t, str)][:_MAX_TITLES]
-                reference = self._reference(client, titles, note)
+            with httpx.Client(headers=headers, transport=self._transport) as client:
+                proposed = self._ask(client, _PROPOSE, note, deadline).get("titles")
+                titles = list(dict.fromkeys(t for t in proposed or [] if isinstance(t, str)))
+                reference = self._reference(client, titles[:_MAX_TITLES], note, deadline)
                 if not reference:
                     return None
-                verdict = self._ask(client, _CHECK, f"REFERENCE TEXT:\n{reference}\n\nNOTE:\n{note}")
+                check = f"REFERENCE TEXT:\n{reference}\n\nNOTE:\n{note}"
+                verdict = self._ask(client, _CHECK, check, deadline)
         except Exception:
             log.warning("cue fact check failed; showing the cue", exc_info=True)
             return None
@@ -174,16 +192,25 @@ class FactChecker:
             return conflict
         return None
 
-    def _ask(self, client, system: str, user: str) -> dict:  # pragma: no cover - live I/O
-        resp = client.post(self._chat, json=self._payload(system, user))
+    @staticmethod
+    def _left(deadline: float, cap: float) -> float:
+        left = deadline - time.monotonic()
+        if left <= 0.05:
+            raise TimeoutError("fact check out of time")
+        return min(left, cap)
+
+    def _ask(self, client, system: str, user: str, deadline: float) -> dict:
+        resp = client.post(
+            self._chat, json=self._payload(system, user), timeout=self._left(deadline, 8.0)
+        )
         resp.raise_for_status()
         return _json(resp.json()["choices"][0]["message"].get("content") or "")
 
-    def _reference(self, client, titles: list[str], note: str) -> str:  # pragma: no cover
-        parts: list[str] = []
-        seen: set[str] = set()
+    def _reference(self, client, titles: list[str], note: str, deadline: float) -> str:
         import httpx
 
+        parts: list[str] = []
+        seen: set[str] = set()
         for title in titles:
             try:
                 resp = client.get(
@@ -194,19 +221,23 @@ class FactChecker:
                         "pageLength": "1",
                         "format": "xml",
                     },
-                    timeout=_KIWIX_TIMEOUT_S,
+                    timeout=self._left(deadline, _KIWIX_TIMEOUT_S),
                 )
                 resp.raise_for_status()
-                hits = _parse_kiwix_search(resp.text)[:1]
-                for found, link in hits:
+                for found, link in _parse_kiwix_search(resp.text)[:1]:
                     if found in seen:
                         continue
                     seen.add(found)
-                    page = client.get(self._kiwix + link, timeout=_KIWIX_TIMEOUT_S).text
-                    text = passages(page, note)
+                    page = client.get(
+                        self._kiwix + link, timeout=self._left(deadline, _KIWIX_TIMEOUT_S)
+                    )
+                    page.raise_for_status()
+                    text = passages(page.text, note)
                     if text:
                         parts.append(f"[{found}] {text}")
             except httpx.HTTPError:
-                # Kiwix search occasionally hangs for seconds: skip that article, keep the rest.
-                log.info("kiwix lookup for %r failed; skipping it", title)
+                # Kiwix is failing: stop here, and skip checks for a while (fail open).
+                log.info("kiwix lookup for %r failed; skipping checks for a while", title)
+                self._kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
+                return ""
         return "\n\n".join(parts)
