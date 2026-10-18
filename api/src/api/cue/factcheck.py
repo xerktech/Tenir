@@ -48,7 +48,7 @@ _MAX_TITLES = 3
 _MAX_REFERENCE_CHARS = 4000
 _MAX_PASSAGES = 8
 _MAX_FACTS = 8
-_MAX_FACT_CHARS = 160
+_MAX_FACT_CHARS = 400  # a cast line with its description runs ~280
 _MAX_QUOTE_WORDS = 40
 # Kiwix answers in ~50-250 ms; a lookup past this is a hung search, not a slow one.
 _KIWIX_TIMEOUT_S = 2.0
@@ -69,6 +69,9 @@ _INFOBOX = re.compile(r'<table\b[^>]*class="[^"]*\binfobox\b[^"]*"[^>]*>.*?</tab
 # Kiwix pages carry a <head> with <link>/<style> and inline <style> in infoboxes: their text is
 # CSS, never article content, and once filled the whole reference budget.
 _NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
+# The references list: every citation repeats the article's title and dates, so it out-scored
+# real facts on keyword count (QA, Oct 2026). Never article content to check against.
+_REFERENCES = re.compile(r'<ol\b[^>]*class="[^"]*\breferences\b[^"]*"[^>]*>.*?</ol>', re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _STOP = frozenset(
@@ -99,13 +102,15 @@ def quoted(reference_words: str, reference: str) -> bool:
     return sum(w in text for w in quote) >= 0.8 * len(quote)
 
 
-def passages(article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS) -> str:
+def passages(
+    article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS, article_title: str = ""
+) -> str:
     """The article's lead paragraph, then short facts, then paragraphs, each set filtered to
     the ones mentioning the cue's own words or numbers. Short facts are infobox rows ("Type
     Ground") and short list items (a cast line): that is where a deciding fact sits, and long
     paragraphs or navigation boxes out-score them on keyword count (QA, Oct 2026). They go
     before prose so the length cut can't push them out."""
-    body = _NON_CONTENT.sub(" ", article_html)
+    body = _REFERENCES.sub(" ", _NON_CONTENT.sub(" ", article_html))
     infobox = " ".join(m.group(0) for m in _INFOBOX.finditer(body))
     body = _INFOBOX.sub(" ", body)
 
@@ -118,10 +123,12 @@ def passages(article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS
                 out.append((tag, text))
         return out
 
+    # The article's own title words are in nearly every line of it, so they rank nothing.
+    own = set(re.findall(r"[\w']+", article_title.lower()))
     keywords = {
         w
         for w in re.findall(r"[\w']+", cue_text.lower())
-        if (len(w) > 2 and w not in _STOP) or any(ch.isdigit() for ch in w)
+        if ((len(w) > 2 and w not in _STOP) or any(ch.isdigit() for ch in w)) and w not in own
     }
 
     def hits(text: str) -> int:
@@ -264,7 +271,7 @@ class FactChecker:
                     seen.add(found)
                     page = client.get(self._kiwix + link, timeout=self._kiwix_timeout(deadline))
                     page.raise_for_status()
-                    text = passages(page.text, note)
+                    text = passages(page.text, note, article_title=found)
                     if text:
                         parts.append(f"[{found}] {text}")
             except httpx.HTTPStatusError as exc:

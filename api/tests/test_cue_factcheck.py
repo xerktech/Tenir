@@ -91,6 +91,57 @@ def test_short_list_items_are_facts_ahead_of_long_paragraphs() -> None:
     assert "Uma Thurman as Doctor Pamela Isley" in text
 
 
+def test_citations_and_title_words_never_crowd_out_a_long_cast_line() -> None:
+    # The real Batman & Robin page with the production "title: body" note: every citation
+    # repeats "Batman & Robin" and 1997, and the deciding cast line runs ~280 chars (QA pass 3).
+    cast = (
+        "Uma Thurman as Doctor Pamela Isley / Poison Ivy : A botanist-turned-eco-terrorist "
+        "who wields a deadly kiss, plans to overthrow humanity with plant life, and uses her "
+        "pheromones to turn Batman and Robin against each other while seducing the men of "
+        "Gotham City."
+    )
+    assert len(cast) > 200
+    citations = "".join(
+        f"<li>Critic {i} (1997). \"Batman & Robin\". Review of Batman & Robin. 1997.</li>"
+        for i in range(12)
+    )
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on the DC Comics characters "
+        "Batman and Robin.</p>"
+        f"<ul><li>{cast}</li></ul>"
+        f'<ol class="mw-references references">{citations}</ol>'
+    )
+    note = "Batman & Robin: Michelle Pfeiffer played Poison Ivy in the 1997 film Batman & Robin."
+    text = passages(page, note, article_title="Batman & Robin (film)")
+    assert "Uma Thurman as Doctor Pamela Isley" in text
+    assert "Critic" not in text
+
+
+def test_the_articles_own_title_words_rank_nothing() -> None:
+    trivia = "".join(f"<li>Batman & Robin trivia: who played whom, item {i}</li>" for i in range(9))
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on DC Comics characters.</p>"
+        f"<ul>{trivia}<li>Pfeiffer was never cast as Ivy</li></ul>"
+    )
+    note = "Batman & Robin: Michelle Pfeiffer played Poison Ivy in Batman & Robin."
+    text = passages(page, note, article_title="Batman & Robin (film)")
+    assert "Pfeiffer was never cast as Ivy" in text
+
+
+def test_an_overlong_list_item_is_not_a_fact() -> None:
+    blob = "Poison Ivy " * 60  # a list item the size of a paragraph is not a short fact
+    page = f"<p>A lead paragraph that is long enough to be kept as the lead.</p><ul><li>{blob}</li></ul>"
+    assert "Poison Ivy Poison Ivy" not in passages(page, "Poison Ivy")
+
+
+def test_three_letter_words_count_as_keywords() -> None:
+    page = (
+        "<p>An article lead paragraph that is long enough to be kept as the lead.</p>"
+        "<ul><li>Played by someone else: the Ivy role</li></ul>"
+    )
+    assert "Ivy role" in passages(page, "Ivy")
+
+
 def test_json_reads_the_first_object_and_tolerates_junk() -> None:
     assert _json('sure: {"titles": ["A"]} done') == {"titles": ["A"]}
     assert _json("no json") == {}
