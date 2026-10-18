@@ -47,6 +47,8 @@ _CHECK = (
 _MAX_TITLES = 3
 _MAX_REFERENCE_CHARS = 4000
 _MAX_PASSAGES = 8
+_MAX_FACTS = 8
+_MAX_FACT_CHARS = 160
 _MAX_QUOTE_WORDS = 40
 # Kiwix answers in ~50-250 ms; a lookup past this is a hung search, not a slow one.
 _KIWIX_TIMEOUT_S = 2.0
@@ -60,7 +62,10 @@ _RECENT = re.compile(
 )
 # Paragraphs, list items and whole table rows: an infobox fact is a short row ("Type Ground").
 _PARAGRAPH = re.compile(r"<(p|li|tr)\b[^>]*>(.*?)</\1>", re.S)
-_MIN_CHARS = {"p": 40, "li": 40, "tr": 8}
+_MIN_CHARS = {"p": 40, "li": 8, "tr": 8}
+# The infobox table: its rows are the article's key facts. Navigation boxes are tables too, but
+# their rows list dozens of related names and would out-score a fact on keyword count.
+_INFOBOX = re.compile(r'<table\b[^>]*class="[^"]*\binfobox\b[^"]*"[^>]*>.*?</table>', re.S | re.I)
 # Kiwix pages carry a <head> with <link>/<style> and inline <style> in infoboxes: their text is
 # CSS, never article content, and once filled the whole reference budget.
 _NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
@@ -95,28 +100,47 @@ def quoted(reference_words: str, reference: str) -> bool:
 
 
 def passages(article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS) -> str:
-    """The article's lead plus the paragraphs (and infobox cells) that mention the cue's own
-    content words or numbers: the opening paragraph alone rarely holds the specific fact."""
+    """The article's lead paragraph, then short facts, then paragraphs, each set filtered to
+    the ones mentioning the cue's own words or numbers. Short facts are infobox rows ("Type
+    Ground") and short list items (a cast line): that is where a deciding fact sits, and long
+    paragraphs or navigation boxes out-score them on keyword count (QA, Oct 2026). They go
+    before prose so the length cut can't push them out."""
     body = _NON_CONTENT.sub(" ", article_html)
-    paras = []
-    for m in _PARAGRAPH.finditer(body):
-        text = " ".join(html.unescape(_TAG.sub(" ", m.group(2))).split())
-        if len(text) >= _MIN_CHARS[m.group(1)]:
-            paras.append(text)
-    if not paras:
-        return ""
+    infobox = " ".join(m.group(0) for m in _INFOBOX.finditer(body))
+    body = _INFOBOX.sub(" ", body)
+
+    def items(html_text: str, tags: tuple[str, ...]) -> list[tuple[str, str]]:
+        out = []
+        for m in _PARAGRAPH.finditer(html_text):
+            tag = m.group(1)
+            text = " ".join(html.unescape(_TAG.sub(" ", m.group(2))).split())
+            if tag in tags and len(text) >= _MIN_CHARS[tag]:
+                out.append((tag, text))
+        return out
+
     keywords = {
         w
         for w in re.findall(r"[\w']+", cue_text.lower())
-        if (len(w) > 3 and w not in _STOP) or any(ch.isdigit() for ch in w)
+        if (len(w) > 2 and w not in _STOP) or any(ch.isdigit() for ch in w)
     }
 
-    def hits(p: str) -> int:
-        low = p.lower()
+    def hits(text: str) -> int:
+        low = text.lower()
         return sum(w in low for w in keywords)
 
-    ranked = sorted(paras[1:], key=hits, reverse=True)[:_MAX_PASSAGES]
-    return " … ".join([paras[0], *(p for p in ranked if hits(p))])[:limit]
+    content = items(body, ("p", "li"))
+    prose = [t for tag, t in content if tag == "p"]
+    lead = prose[0] if prose else ""
+    facts = [t for _, t in items(infobox, ("tr",))]
+    facts += [t for tag, t in content if tag == "li" and len(t) <= _MAX_FACT_CHARS]
+    facts = [t for t in facts if hits(t)]
+    rest = [t for t in prose[1:] if hits(t)]
+    picked = [
+        *([lead] if lead else []),
+        *sorted(facts, key=lambda t: (-hits(t), len(t)))[:_MAX_FACTS],
+        *sorted(rest, key=hits, reverse=True)[:_MAX_PASSAGES],
+    ]
+    return " … ".join(picked)[:limit]
 
 
 def _json(content: str) -> dict:
@@ -154,6 +178,7 @@ class FactChecker:
         # A failing Kiwix (it crash-loops: fast after a restart, then hanging) skips checks until
         # this monotonic time, so each shown cue doesn't wait out the timeout behind it.
         self._kiwix_down_until = 0.0
+        self._last_timeout = _KIWIX_TIMEOUT_S
 
     def _payload(self, system: str, user: str) -> dict:
         # Thinking off: on the labelled set thinking caught no more wrong cues and dropped more
@@ -206,6 +231,15 @@ class FactChecker:
         resp.raise_for_status()
         return _json(resp.json()["choices"][0]["message"].get("content") or "")
 
+    def _kiwix_timeout(self, deadline: float) -> float:
+        self._last_timeout = self._left(deadline, _KIWIX_TIMEOUT_S)
+        return self._last_timeout
+
+    def _trip(self, title: str) -> None:
+        """Kiwix is failing: skip checks for a while (fail open)."""
+        log.info("kiwix lookup for %r failed; skipping checks for a while", title)
+        self._kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
+
     def _reference(self, client, titles: list[str], note: str, deadline: float) -> str:
         import httpx
 
@@ -221,23 +255,30 @@ class FactChecker:
                         "pageLength": "1",
                         "format": "xml",
                     },
-                    timeout=self._left(deadline, _KIWIX_TIMEOUT_S),
+                    timeout=self._kiwix_timeout(deadline),
                 )
                 resp.raise_for_status()
                 for found, link in _parse_kiwix_search(resp.text)[:1]:
                     if found in seen:
                         continue
                     seen.add(found)
-                    page = client.get(
-                        self._kiwix + link, timeout=self._left(deadline, _KIWIX_TIMEOUT_S)
-                    )
+                    page = client.get(self._kiwix + link, timeout=self._kiwix_timeout(deadline))
                     page.raise_for_status()
                     text = passages(page.text, note)
                     if text:
                         parts.append(f"[{found}] {text}")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    continue  # one missing article, not a failing Kiwix
+                self._trip(title)
+                return ""
+            except httpx.TimeoutException:
+                # Only a timeout at Kiwix's own full limit means Kiwix is hanging; a request
+                # cut short by the check's deadline (a slow model ate the budget) is not.
+                if self._last_timeout >= _KIWIX_TIMEOUT_S:
+                    self._trip(title)
+                return ""
             except httpx.HTTPError:
-                # Kiwix is failing: stop here, and skip checks for a while (fail open).
-                log.info("kiwix lookup for %r failed; skipping checks for a while", title)
-                self._kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
+                self._trip(title)
                 return ""
         return "\n\n".join(parts)

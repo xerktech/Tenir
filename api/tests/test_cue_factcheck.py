@@ -48,13 +48,13 @@ def test_passages_keep_the_lead_and_paragraphs_that_mention_the_cue() -> None:
     page = (
         "<p>Papa Smurf is the leader of the Smurfs and the oldest of them.</p>"
         "<p>Unrelated history of the comic strip and its many publishers over decades.</p>"
-        "<table><tr><td>He is typically dressed in red pants and a matching red Phrygian cap.</td>"
-        "</tr></table>"
+        '<table class="infobox"><tr><td>Dressed in red pants and a red Phrygian cap</td></tr>'
+        "</table>"
         "<p>short</p>"
     )
     text = passages(page, "Papa Smurf wears a white hat and white pants")
     assert text.startswith("Papa Smurf is the leader")
-    assert "red pants" in text
+    assert "red pants" in text  # the infobox row
     assert "Unrelated history" not in text
     assert passages("<div>no paragraphs</div>", "anything") == ""
 
@@ -66,14 +66,29 @@ def test_passages_ignore_the_page_head_and_inline_styles() -> None:
         '<html><head><link rel="icon" href="x"><style>@media screen { .mw { color: red } }'
         "</style><title>Cubone</title></head><body>"
         "<p>Cubone is a Pokémon species in Nintendo and Game Freak's Pokémon franchise.</p>"
-        "<table><tr><th>Type</th><td><style>.infobox { width: 22em }</style>Ground</td>"
-        "</tr></table><p>It wears the skull of its dead mother and is a Ground type.</p>"
+        '<table class="infobox vcard"><tr><th>Type</th><td><style>.x { width: 22em }</style>'
+        "Ground</td></tr></table><p>It wears the skull of its dead mother and is a Ground type.</p>"
+        # A navigation box: rows full of related names that out-score a fact on keyword count.
+        "<table class=\"navbox\"><tr><td>Pokémon type list: Cubone Ghost Gastly Haunter type Pokémon"
+        "</td></tr></table>"
         "</body></html>"
     )
     text = passages(page, "Cubone is a Ghost-type Pokémon that wears a skull")
     assert text.startswith("Cubone is a Pokémon species")
     assert "@media" not in text and "infobox" not in text and "icon" not in text
     assert "Type Ground" in text and "skull of its dead mother" in text  # the infobox row kept
+    assert "Gastly" not in text  # navigation boxes are not facts
+
+
+def test_short_list_items_are_facts_ahead_of_long_paragraphs() -> None:
+    long_para = "<p>" + "Batman and Robin and Poison Ivy and Mr. Freeze in Gotham. " * 30 + "</p>"
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on DC Comics characters.</p>"
+        + long_para * 3
+        + "<ul><li>Uma Thurman as Doctor Pamela Isley / Poison Ivy</li></ul>"
+    )
+    text = passages(page, "Michelle Pfeiffer played Poison Ivy in Batman and Robin", limit=1500)
+    assert "Uma Thurman as Doctor Pamela Isley" in text
 
 
 def test_json_reads_the_first_object_and_tolerates_junk() -> None:
@@ -105,7 +120,14 @@ _KIWIX_PAGE = (
 )
 
 
-def _transport(verdict: dict, *, kiwix_fails: bool = False, calls: list | None = None):
+def _transport(
+    verdict: dict,
+    *,
+    kiwix_fails: bool = False,
+    calls: list | None = None,
+    page_status: int = 200,
+    kiwix_error=None,
+):
     import json as _j
 
     import httpx
@@ -121,9 +143,11 @@ def _transport(verdict: dict, *, kiwix_fails: bool = False, calls: list | None =
             )
         if kiwix_fails:
             raise httpx.ConnectError("kiwix down")
+        if kiwix_error is not None:
+            raise kiwix_error
         if request.url.path == "/search":
             return httpx.Response(200, text=_KIWIX_SEARCH)
-        return httpx.Response(200, text=_KIWIX_PAGE)
+        return httpx.Response(page_status, text=_KIWIX_PAGE)
 
     return httpx.MockTransport(handle)
 
@@ -175,6 +199,51 @@ def test_a_failing_kiwix_switches_the_check_off_for_a_while() -> None:
     made = len(calls)
     assert checker.contradiction(_GHOST) is None
     assert len(calls) == made  # skipped outright: no model or Kiwix call
+
+
+def test_a_missing_article_is_skipped_without_switching_the_check_off() -> None:
+    checker = _checker(_transport({"contradiction": True, "reference": "x y"}, page_status=404))
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until == 0.0
+
+
+def test_a_kiwix_server_error_switches_the_check_off() -> None:
+    checker = _checker(_transport({"contradiction": True}, page_status=503))
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until > 0.0
+
+
+def test_only_a_full_length_kiwix_timeout_switches_the_check_off() -> None:
+    import httpx
+
+    timeout = httpx.ReadTimeout("hung")
+    checker = _checker(_transport({"contradiction": True}, kiwix_error=timeout))
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until > 0.0  # Kiwix had its full 2 s and hung
+    # A request cut short by the check's own deadline (a slow model ate the budget) is not
+    # Kiwix's fault.
+    checker = _checker(_transport({"contradiction": True}, kiwix_error=timeout), budget_s=1.0)
+    assert checker.contradiction(_GHOST) is None
+    assert checker._kiwix_down_until == 0.0
+
+
+def test_the_lookup_stops_at_the_first_kiwix_failure() -> None:
+    calls: list = []
+    checker = _checker(_transport({"contradiction": True}, kiwix_fails=True, calls=calls))
+    checker._ask = lambda *a: {"titles": ["A", "B", "C"]}  # three titles to look up
+    assert checker.contradiction(_GHOST) is None
+    assert calls.count("/search") == 1
+
+
+def test_the_factory_budget_stops_inside_the_sessions_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "openai")
+    monkeypatch.setattr(settings, "cue_kiwix_endpoint", "http://kiwix")
+    monkeypatch.setattr(settings, "cue_fact_check", True)
+    monkeypatch.setattr(settings, "cue_fact_check_timeout_s", 6.0)
+    checker = make_fact_checker()
+    assert checker is not None and 0 < checker._budget_s < 6.0
 
 
 def test_a_check_out_of_time_never_calls_the_model_again(monkeypatch: pytest.MonkeyPatch) -> None:
