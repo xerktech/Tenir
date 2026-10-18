@@ -236,6 +236,50 @@ def test_no_drop_without_a_real_quoted_contradiction(verdict: dict) -> None:
     assert _checker(_transport(verdict)).contradiction(_GHOST) is None
 
 
+def test_the_check_prompt_gets_the_cast_line_past_title_repeating_citations() -> None:
+    # Production wiring: the Kiwix hit's title must reach passages(), or every citation that
+    # repeats it out-ranks the deciding cast line (QA pass 3/4).
+    import json as _j
+
+    import httpx
+
+    citations = "".join(
+        f'<li>Critic {i} (1997). "Batman & Robin". Batman & Robin review.</li>' for i in range(12)
+    )
+    page = (
+        "<html><body><p>Batman & Robin is a 1997 American superhero film based on DC Comics "
+        "characters.</p><ul><li>Uma Thurman as Doctor Pamela Isley / Poison Ivy : a botanist "
+        "turned eco-terrorist</li></ul>"
+        f'<ol class="mw-references references">{citations}</ol></body></html>'
+    )
+    # Citations a non-references list would carry, to out-score the cast line on title words.
+    page = page.replace("</body>", f"<ul>{citations}</ul></body>")
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" in msgs[0]["content"]:
+                answer = {"titles": ["Batman & Robin (film)"]}
+            else:
+                prompts.append(msgs[1]["content"])
+                answer = {"contradiction": False}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
+        if request.url.path == "/search":
+            return httpx.Response(
+                200,
+                text="<rss><channel><item><title>Batman &amp; Robin (film)</title>"
+                "<link>/content/b/Batman_Robin</link></item></channel></rss>",
+            )
+        return httpx.Response(200, text=page)
+
+    cue = GeneratedCue(
+        "Batman & Robin", "Michelle Pfeiffer played Poison Ivy in the 1997 film Batman & Robin."
+    )
+    assert _checker(httpx.MockTransport(handle)).contradiction(cue) is None
+    assert len(prompts) == 1 and "Pamela Isley" in prompts[0]
+
+
 def test_unchecked_cues_make_no_requests() -> None:
     calls: list = []
     checker = _checker(_transport({"contradiction": True}, calls=calls))
