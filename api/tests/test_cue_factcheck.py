@@ -415,6 +415,38 @@ def test_a_redirect_names_the_article_it_landed_on() -> None:
     assert prompts and prompts[0].startswith("REFERENCE TEXT:\n[Dragon Ball]")
 
 
+def test_every_title_missing_rereads_the_catalog_next_time() -> None:
+    # The weekly updater can replace the snapshot a long session cached.
+    calls: list = []
+    checker = _checker(_transport({"contradiction": True}, calls=calls, page_status=404))
+    assert checker.contradiction(_GHOST) is None
+    assert checker.contradiction(_GHOST) is None
+    assert calls.count("/catalog/v2/entries") == 2
+    assert checker._kiwix_down_until == 0.0
+
+
+def test_a_title_with_a_slash_keeps_its_whole_name() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            answer = {"titles": ["AC/DC"]} if "Name the" in msgs[0]["content"] else {}
+            if "Name the" not in msgs[0]["content"]:
+                prompts.append(msgs[1]["content"])
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    _checker(httpx.MockTransport(handle)).contradiction(_GHOST)
+    assert prompts and prompts[0].startswith("REFERENCE TEXT:\n[AC/DC]")
+
+
 def test_a_catalog_without_the_book_switches_the_check_off() -> None:
     import httpx
 

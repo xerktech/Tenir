@@ -301,6 +301,12 @@ class FactChecker:
             if isinstance(r, Exception)
             and not (isinstance(r, httpx.HTTPStatusError) and r.response.status_code < 500)
         ]
+        if results and all(
+            isinstance(r, httpx.HTTPStatusError) and r.response.status_code == 404 for r in results
+        ):
+            # Every title missing may mean the weekly updater replaced the snapshot this cached
+            # book path names: re-read the catalog on the next check.
+            self._content = None
         if failures and len(failures) == len(results):
             # Nothing answered: Kiwix is failing. One slow read among answers is just skipped
             # (a cold article on the NFS-backed ZIM can take over 2 s).
@@ -311,7 +317,8 @@ class FactChecker:
         for result in results:
             if isinstance(result, Exception):
                 continue  # a missing or slow article
-            found = urllib.parse.unquote(result.url.path.rsplit("/", 1)[-1]).replace("_", " ")
+            # Everything after the book root: a title can contain "/" ("AC/DC").
+            found = urllib.parse.unquote(result.url.path.split(root + "/", 1)[-1]).replace("_", " ")
             if found in seen:
                 continue
             seen.add(found)
