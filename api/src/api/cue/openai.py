@@ -44,18 +44,17 @@ from api.cue.tuning import cue_guidance
 log = logging.getLogger("api.cue.openai")
 
 # The full prompt frame. Wording validated by replaying recorded deployment
-# conversations against the production model (scripts/cue_eval/). The July 2026
-# enrichment frame (RESULTS-2026-07.md) was tuned on gpt-oss-120b and, on the
-# Qwen3.8-27B replacement, under-emitted badly (6 cues on the frozen set with
-# thinking off, 26 with it on). The August 2026 retune (RESULTS-2026-08.md)
-# replaced it with this short, emission-first frame ("v5"): on Qwen3.8-27B with
-# thinking on and a 2048-token budget it replayed 159 cues on the same frozen
-# set at judged novelty 1.90 / relevance 1.96 / accuracy 1.97 — ahead of the
-# gpt-oss-120b baseline of 150 cues at accuracy 1.99. The worked examples below
-# the frame are kept from the July calibration (they carry the mishearing,
-# wrong-referent, and cross-generation traps, and v5 was measured WITH them);
-# the per-case restraint prose dropped with the frame — the shorter prompt
-# measured fewer wrong cues, not more.
+# conversations against the production model (scripts/cue_eval/). The August 2026
+# emission-first frame ("v5", RESULTS-2026-08.md) fixed Qwen3.8-27B under-emitting, but a
+# blind hand review of Oct 2026 sessions found ~75% of its cues added nothing: definitions
+# of what the speakers know, unsolicited advice, restatements, lyric and sermon filler.
+# This frame ("v8", RESULTS-2026-10.md) drops the "cue on most turns" push and adds the
+# Value block. Replayed on 4 recorded sessions and blind-graded twice: bad cues ~101 -> ~45,
+# good 22-27 -> 14-16 (good per bad 0.21-0.28 -> 0.30-0.36). Allowing answers to asked
+# legal/medical/safety questions recovered good cues a blanket advice ban lost; a stricter
+# definitions/past-story rule (v9) lost more good cues for no fewer bad ones.
+# The worked examples below the frame are kept from the July calibration (mishearing,
+# wrong-referent and cross-generation traps); v5 and v8 were both measured WITH them.
 # {guidance} is the time-varying-facts bar from tuning.py, picked per call by
 # whether evidence actually arrived.
 _SYSTEM = (
@@ -64,18 +63,30 @@ _SYSTEM = (
     "listener sees. A cue ADDS information the speakers did not say aloud. "
     "Repeating or summarizing what they said is worthless, so if you have "
     "nothing new, reply {{\"cue\": false}}.\n"
-    "You should surface a cue on most turns of a substantive conversation. "
-    "Fire when you can add ANY of the following, picking the best candidate "
-    "from the newest turns:\n"
+    "Fire when you can add one of the following about the newest turns, "
+    "picking the best candidate — something these listeners would likely not "
+    "already know:\n"
     "1) A factual question was asked and you know the answer with certainty.\n"
     "2) A person, place, product, or event is being engaged with and you can "
     "add a concrete fact the speakers did not mention.\n"
-    "3) A technical term or piece of jargon appears that these listeners may "
-    "not know — define it in one plain sentence.\n"
+    "3) A speaker asks what a term means, or is plainly unsure of it — define "
+    "it in one plain sentence. Never define a term the speakers are using "
+    "comfortably, everyday words, local places, or the vocabulary of their own "
+    "faith, trade, or hobby.\n"
     "4) A decision or problem is being worked through and a relevant number, "
     "precedent, or trade-off would inform it.\n"
     "5) A claim is clearly wrong and you know the correct fact.\n"
+    "Value:\n"
+    "- Answer the questions the speakers raise, including legal, medical, "
+    "money, or safety ones, and give safety facts for a live emergency. "
+    "Otherwise never give advice nobody asked for, moralize, or label the "
+    "moment with a psychology or business concept.\n"
+    "- Song lyrics and prayers are not conversation: never cue them. For a "
+    "sermon, show, or video, never cue a \"fitting verse\" or \"this echoes\" "
+    "citation.\n"
     "Accuracy is absolute:\n"
+    "- Every name, number, date, and role in the body must be one you know "
+    "cold; drop a detail rather than recall it uncertainly.\n"
     "- State only what you are certain of; if unsure, stay silent.\n"
     "- Never invent facts about a name you do not recognize or that sounds "
     "garbled.\n"
@@ -197,6 +208,26 @@ _EVIDENCE_RULES = (
 )
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_SENTENCE_END = re.compile(r"[.!?][\"')\u201d\u2019]?(?=\s)")
+_MIN_SENTENCE_CLIP = 80
+# A period after one of these, a dotted token ("U.S.", "e.g.") or a short capitalised word
+# ("Prof.", "Mt.", "Inc.") may not end a sentence; erring that way only costs a word clip.
+_ABBREVIATIONS = frozenset({"etc", "vs", "approx"})
+
+
+def _is_abbreviation(before: str) -> bool:
+    word = (before.rsplit(None, 1)[-1] if before.strip() else "").strip("(\"'")
+    return (
+        "." in word
+        or word.lower() in _ABBREVIATIONS
+        or (len(word) <= 4 and word[:1].isupper())
+    )
+# Search-style citation markers the model copies out of evidence ("…Toronto【2】.").
+_CITATION_MARK = re.compile(r" ?(?:\[\d+(?:, ?\d+)*\]|\u3010\d+\u3011)")
+# The model answering as an assistant despite the prompt ("If you want, I can help identify
+# it", "I can help turn it into a clear, polished version"): an offer, never a cue. Narrow on
+# purpose: quoted speech ("I'll hook you up") and "If you want a…" advice must not match.
+_ASSISTANT_OFFER = re.compile(r"\bI can help\b|\bif you(?:'d|\u2019d)? (?:want|like), I\b", re.I)
 
 
 def _clip_at_word(text: str, limit: int) -> str:
@@ -210,6 +241,16 @@ def _clip_at_word(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     cut = text[: limit - 1]  # reserve one char for the ellipsis
+    # A complete first sentence reads better than a clipped second one ("…matching this 2
+    # Kings 3…", Oct 2026): end at the last sentence break when one leaves a real body.
+    ends = [
+        m.end()
+        for m in _SENTENCE_END.finditer(text)
+        if m.end() <= len(cut)
+        and not (text[m.start()] == "." and _is_abbreviation(text[: m.start()]))
+    ]
+    if ends and ends[-1] >= _MIN_SENTENCE_CLIP:
+        return text[: ends[-1]].rstrip()
     head, _, _ = cut.rpartition(" ")
     return (head or cut).rstrip(" ,;:([—–-") + "…"
 
@@ -351,6 +392,11 @@ class OpenAICueGenerator(CueGenerator):
         # replay): dots are not cue content, so require at least one alphanumeric
         # in each field, any script.
         if not any(ch.isalnum() for ch in title) or not any(ch.isalnum() for ch in body):
+            return None
+        if _ASSISTANT_OFFER.search(body):
+            return None
+        body = _CITATION_MARK.sub("", body).strip()
+        if not any(ch.isalnum() for ch in body):
             return None
         return GeneratedCue(
             title=title[:60],

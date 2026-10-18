@@ -3,6 +3,8 @@ and the OpenAI response parser (XERK-81, XERK-114)."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from api.config import settings
@@ -293,6 +295,106 @@ def test_parse_short_body_unchanged() -> None:
     assert cue is not None and cue.body == "short and sweet."
 
 
+def test_parse_clips_overlong_body_at_the_last_full_sentence() -> None:
+    # Measured on production cues: a clipped second sentence ("…matching this 2 Kings 3…")
+    # reads worse than ending on the first one.
+    first = "The Mesha Stele is a 9th-century BC inscription by Moab's king Mesha about a revolt."
+    body = first + " It matches this 2 Kings 3 account of the war closely in its details."
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=120)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body == first
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        # Each is over _MIN_SENTENCE_CLIP, so only the abbreviation guard stops the clip.
+        "Most of the fund's holdings were first moved out of Europe and later sent to the U.S.",
+        "Take it with some food to protect your stomach lining, for instance with dry toast, e.g.",
+        "The research behind it ran for eighteen months and was led by a senior lab's Prof.",
+        "They packed the tent, the stove, the lanterns, two coolers, the folding chairs (etc.)",
+        'Both teams would meet again in the final of the regional cup, loudly billed as "Rams vs.',
+    ],
+)
+def test_parse_never_ends_a_clipped_body_on_an_abbreviation(first: str) -> None:
+    assert len(first) > 80
+    body = first + " Afterwards it was listed again under a new name with the same managers."
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=len(first) + 10)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body.endswith("…")
+
+
+def test_parse_ends_on_a_question_after_a_short_capitalised_word() -> None:
+    # The abbreviation guard is for periods only: "…O Lord?" ends a sentence (QA, Oct 2026).
+    first = "The psalm opens with a lament repeated four times over by the writer, How long, O Lord?"
+    body = first + " It then turns to trust in the second half of the poem."
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=len(first) + 10)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body == first
+
+
+def test_parse_never_clips_inside_a_decimal_number() -> None:
+    body = (
+        "The average adult needs about 2.5 liters of water a day, and the usual guidance says "
+        "roughly 2.7 liters for women. Even more is needed in hot weather."
+    )
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=100)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and "2.7" in cue.body and cue.body.endswith("…")
+
+
+def test_parse_keeps_a_sentence_ending_right_at_the_limit() -> None:
+    first = "A" * 85 + " ends here."
+    body = first + " More text follows that will not fit at all."
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=len(first) + 1)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body == first
+
+
+def test_parse_short_first_sentence_word_clips_instead() -> None:
+    body = "Short one. " + "word " * 40
+    gen = OpenAICueGenerator(endpoint="e", model="m", max_body_chars=100)
+    cue = gen._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body.endswith("…") and len(cue.body) <= 100
+
+
+def test_parse_strips_a_leading_citation_mark_without_leaving_a_space() -> None:
+    cue = _gen()._parse(json.dumps({"cue": True, "title": "T", "body": "[1] Filmed in Toronto."}))
+    assert cue is not None and cue.body == "Filmed in Toronto."
+
+
+def test_parse_drops_a_body_that_was_only_citation_marks() -> None:
+    assert _gen()._parse(json.dumps({"cue": True, "title": "T", "body": "[1] \u30102\u3011"})) is None
+
+
+def test_parse_strips_leaked_citation_marks() -> None:
+    raw = {"cue": True, "title": "Con Calma", "body": "Filmed in Toronto\u30102\u3011 and LA [1, 3]."}
+    cue = _gen()._parse(json.dumps(raw))
+    assert cue is not None and cue.body == "Filmed in Toronto and LA."
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Those lines look like worship lyrics. If you want, I can help identify it.",
+        "This reads like a testimony. I can help turn it into a polished version.",
+    ],
+)
+def test_parse_drops_assistant_offers(body: str) -> None:
+    assert _gen()._parse(json.dumps({"cue": True, "title": "T", "body": body})) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '"I\'ll hook you up" is slang for providing something for someone.',
+        "If you want a modern reference, Dragon Ball Super ran 2015-2018.",
+    ],
+)
+def test_parse_keeps_quoted_speech_and_advice_that_is_not_an_offer(body: str) -> None:
+    assert _gen()._parse(json.dumps({"cue": True, "title": "T", "body": body})) is not None
+
+
 def test_parse_placeholder_answer_returns_none() -> None:
     # The v5think replay produced one degenerate {"cue": true, "title": "...",
     # "body": "..."} — a decline the model phrased as an acceptance. Dots are
@@ -359,19 +461,22 @@ def test_payload_omits_avoid_clause_when_nothing_surfaced_yet() -> None:
     assert "do NOT repeat" not in system
 
 
-def test_payload_system_prompt_is_emission_first() -> None:
-    # August 2026 Qwen retune (RESULTS-2026-08.md): the July enrichment frame
-    # under-emitted on Qwen3.8-27B (26 cues thinking-on, 6 thinking-off on the
-    # frozen set), so the shipped frame is the short emission-first one — cue on
-    # most substantive turns, any of five triggers, from the newest turns.
+def test_payload_system_prompt_sets_a_value_bar() -> None:
+    # Oct 2026 (RESULTS-2026-10.md): the emission-first "cue on most turns" push produced
+    # ~75% low-value cues; the shipped frame keeps the five triggers but adds a value bar.
     system = _gen()._build_payload("hi")["messages"][0]["content"].lower()
     assert "adds information the speakers did not say aloud" in system
     assert "repeating or summarizing" in system  # restatement banned
-    assert "most turns of a substantive conversation" in system
+    assert "most turns of a substantive conversation" not in system
     assert "newest turns" in system
-    for trigger in ("factual question", "concrete fact", "jargon",
+    for trigger in ("factual question", "concrete fact", "asks what a term means",
                     "decision or problem", "correct fact"):
         assert trigger in system
+    assert "answer the questions the speakers raise" in system  # asked advice is fine
+    assert "never give advice nobody asked for" in system
+    assert "song lyrics and prayers are not conversation" in system
+    assert "fitting verse" in system
+    assert "know cold" in system
 
 
 def test_payload_system_prompt_gates_accuracy() -> None:
