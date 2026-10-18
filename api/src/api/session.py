@@ -67,7 +67,7 @@ from api.persistence import (
 from api.persistence.postgres import is_database_unavailable, is_retryable_write
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
-from api.stt.langid import detect_lang, is_english_word, is_shared_english_word
+from api.stt.langid import detect_lang, frequency_lean, is_english_word, is_shared_english_word
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -195,6 +195,9 @@ _CUE_AVOID_PROMPT_LIMIT = 40
 # The longest gap between two engine-only foreign turns that still confirms a run
 # (_consider_translation): about one caption turn of pause.
 _PENDING_OPENER_MS = 8000
+# The least frequency_lean (langid) a held opener needs: real short Spanish measured >= 1.9,
+# English that Whisper tagged foreign <= 0.8 (Oct 2026 recordings).
+_HELD_OPENER_MIN_LEAN = 1.5
 # How often an expired translation hold re-checks a final decode still in flight.
 _HOLD_RECHECK_S = 0.05
 
@@ -997,10 +1000,15 @@ class Session:
             # "Amém." pt, "Denn..." de): on Oct 2026 recordings those were isolated turns
             # between English ones. So a turn whose text reads English never opens a run, and
             # one text langid can't decide opens it only once a second same-language turn
-            # follows within _PENDING_OPENER_MS. Real short-turn speakers ("Buenas noches." /
+            # follows within _PENDING_OPENER_MS, if its words lean that language over English
+            # by frequency. Real short-turn speakers ("Buenas noches." /
             # "Vamos a comer.", both undecidable) still get translated, a turn late.
             text_lang = detect_lang(result.text)
-            if text_lang == "en":
+            if text_lang == "en" or (
+                text_lang is None and frequency_lean(result.text, lang) < _HELD_OPENER_MIN_LEAN
+            ):
+                # Reads English, or no more the tagged language than English ("No", "I see."
+                # tagged es/it in pairs opened runs on Oct 2026 recordings, QA).
                 return
             pending = self._translation_pending
             confirms = (

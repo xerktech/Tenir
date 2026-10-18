@@ -767,3 +767,46 @@ def test_decidable_turn_confirms_a_held_opener_and_translates_it_first(
         assert [t.segmentId for t in _translations(sent)] == ["a", "b"]
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "first, second, lang",
+    [("No.", "No.", "es"), ("I see.", "Come on now.", "it")],
+)
+def test_held_openers_whose_words_lean_english_never_open_a_run(
+    monkeypatch: pytest.MonkeyPatch, first: str, second: str, lang: str
+) -> None:
+    # Pairs of English turns Whisper tagged foreign opened runs on Oct 2026 recordings (QA):
+    # undecidable text must lean the tagged language by word frequency to be held.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final(first, segment_id="a", lang=lang))
+        session._consider_translation(
+            _final(second, segment_id="b", lang=lang, start_ms=2500, end_ms=3000)
+        )
+        await _drain_translations(session)
+        await session.close()
+        assert _translations(sent) == []
+
+    asyncio.run(run())
+
+
+def test_held_opener_confirms_at_exactly_the_window_edge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final("Buenas noches.", segment_id="a", lang="es"))
+        session._consider_translation(
+            _final("Vamos a comer.", segment_id="b", lang="es", start_ms=10000, end_ms=11000)
+        )
+        assert session._translation_pending is None  # opening the run clears the hold
+        await _drain_translations(session)
+        await session.close()
+        assert [t.segmentId for t in _translations(sent)] == ["a", "b"]
+
+    asyncio.run(run())

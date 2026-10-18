@@ -409,9 +409,9 @@ class StreamingTranscriber:
         self._since_partial = 0
         self._has_speech = tail_speech
         self._speech_from = max(0, self._speech_from - cut)
-        # Keep what the energy gate heard for flush(): a loud tail the model overruled still
-        # decodes if the session ends right after the cut.
-        self._energy_heard = self._has_speech or (self._energy_heard and tail > 0)
+        # Where in the turn the energy gate heard speech isn't tracked, so a tail inherits only
+        # its speech flag: carrying the turn's flag decoded pure silence at flush (QA).
+        self._energy_heard = self._has_speech
         self._trailing_silence = min(self._trailing_silence, tail)
 
     async def _work(self) -> None:

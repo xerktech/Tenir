@@ -573,3 +573,13 @@ def test_word_frequency_lookups_are_memoised() -> None:
     detect_lang("ñandú " * 100)
     assert _zipf.cache_info().hits > hits
     assert _zipf.cache_info().maxsize >= 1024
+
+
+def test_frequency_lean_separates_short_real_spanish_from_english_tagged_foreign() -> None:
+    from api.stt.langid import frequency_lean
+
+    for text in ("Mira.", "Buenas noches.", "Vamos a comer.", "Hola.", "Adiós."):
+        assert frequency_lean(text, "es") >= 1.5, text
+    assert frequency_lean("No", "es") < 1.5
+    assert frequency_lean("I see.", "it") < 0
+    assert frequency_lean("", "es") == 0
