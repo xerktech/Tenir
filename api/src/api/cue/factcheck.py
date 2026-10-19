@@ -21,6 +21,7 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -54,6 +55,11 @@ _MAX_FACT_CHARS = 400  # a cast line with its description runs ~280
 _MAX_QUOTE_WORDS = 40
 # A direct article read takes 0.3-0.9 s, a cold one on the NFS-backed ZIM can pass 2 s.
 _KIWIX_TIMEOUT_S = 2.5
+# kiwix-serve answers reads about one at a time: in-cluster, a cold-ish read took 0.11 s alone,
+# 0.28 s with 4 in flight and 1.8-2.2 s with 24 (Oct 2026). So reads queue here, process-wide,
+# and the per-read timeout only covers Kiwix serving one: wait at Kiwix used to count against it
+# and trip the backoff on a busy but healthy server (XERK-2093).
+_KIWIX_READS = threading.BoundedSemaphore(4)
 # How long a failed Kiwix lookup switches the check off.
 _KIWIX_BACKOFF_S = 60.0
 # The encyclopedia snapshot lags the news: a cue about a recent event or "the latest" thing
@@ -178,6 +184,26 @@ def _readable(title) -> bool:
     )
 
 
+def _send(client, method: str, url: str, *, timeout: float, **kwargs):
+    """The response, read whole within about `timeout` seconds of wall clock. httpx's timeout
+    is per phase, so a body dripped a few bytes at a time never trips it (92 s for a page at
+    2 KB/s, XERK-2093) and keeps this worker thread and its connection busy long after the
+    session stopped waiting. A chunk itself can still take up to `timeout` to arrive, so the
+    worst case is about twice it."""
+    import httpx
+
+    end = time.monotonic() + timeout
+    with client.stream(method, url, timeout=timeout, **kwargs) as resp:
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if time.monotonic() > end:
+                raise httpx.ReadTimeout(f"response not read within {timeout:.1f}s", request=resp.request)
+    headers = resp.headers.copy()
+    headers.pop("content-encoding", None)  # the body is already decoded
+    return httpx.Response(resp.status_code, headers=headers, content=bytes(body), request=resp.request)
+
+
 class FactChecker:
     def __init__(
         self,
@@ -254,8 +280,9 @@ class FactChecker:
         return min(left, cap)
 
     def _ask(self, client, system: str, user: str, deadline: float) -> dict:
-        resp = client.post(
-            self._chat, json=self._payload(system, user), timeout=self._left(deadline, 8.0)
+        resp = _send(
+            client, "POST", self._chat,
+            json=self._payload(system, user), timeout=self._left(deadline, 8.0),
         )
         resp.raise_for_status()
         return _json(resp.json()["choices"][0]["message"].get("content") or "")
@@ -274,8 +301,8 @@ class FactChecker:
         read once from the Kiwix catalog (~10 ms) and cached."""
         content = self._content  # another check may reset it meanwhile
         if content is None:
-            resp = client.get(
-                f"{self._kiwix}/catalog/v2/entries",
+            resp = _send(
+                client, "GET", f"{self._kiwix}/catalog/v2/entries",
                 params={"name": self._book},
                 timeout=self._kiwix_timeout(deadline),
             )
@@ -303,16 +330,29 @@ class FactChecker:
         except (httpx.HTTPError, LookupError) as exc:
             self._kiwix_failed(exc, "catalog")
             return ""
-        timeout = self._kiwix_timeout(deadline)
         origin = httpx.URL(self._kiwix)
 
         def fetch(title: str):
             path = urllib.parse.quote(title.strip().replace(" ", "_"))
+            if not _KIWIX_READS.acquire(timeout=max(0.0, deadline - time.monotonic() - 0.05)):
+                return TimeoutError("no Kiwix read slot in time")  # busy, not failing
             try:
-                page = client.get(f"{self._kiwix}{root}/{path}", timeout=timeout, follow_redirects=True)
+                timeout = self._left(deadline, _KIWIX_TIMEOUT_S)
+                page = _send(
+                    client, "GET", f"{self._kiwix}{root}/{path}",
+                    timeout=timeout, follow_redirects=True,
+                )
                 page.raise_for_status()
+            except httpx.TimeoutException as exc:
+                # Only a timeout at Kiwix's own full limit means Kiwix is hanging; one cut short
+                # by the check's deadline is not Kiwix's fault.
+                return exc if timeout >= _KIWIX_TIMEOUT_S else TimeoutError(str(exc))
             except httpx.HTTPError as exc:
                 return exc
+            except TimeoutError as exc:  # the check ran out of time waiting for the slot
+                return exc
+            finally:
+                _KIWIX_READS.release()
             if (page.url.scheme, page.url.host, page.url.port) != (
                 origin.scheme, origin.host, origin.port
             ):
@@ -336,7 +376,7 @@ class FactChecker:
         if failures and len(failures) == len(results):
             # Nothing answered: Kiwix is failing. One slow read among answers is just skipped
             # (a cold article on the NFS-backed ZIM can take over 2 s).
-            self._kiwix_failed(failures[0], titles[0])
+            self._trip(titles[0])
             return ""
         parts: list[str] = []
         seen: set[str] = set()

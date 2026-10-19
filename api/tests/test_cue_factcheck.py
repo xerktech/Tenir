@@ -662,6 +662,109 @@ def test_the_articles_are_read_in_parallel() -> None:
     assert not barrier.broken
 
 
+def _drip(chunks: int = 1000, every_s: float = 0.02):
+    for _ in range(chunks):
+        time.sleep(every_s)
+        yield b"<p>x</p>"
+
+
+def test_a_dripped_body_is_cut_off_at_the_wall_clock_limit() -> None:
+    import httpx
+
+    # httpx's timeouts are per phase: each chunk arrives well inside 0.3 s, so without a
+    # wall-clock bound this 20 s body would be read to the end (XERK-2093).
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=_drip())))
+    start = time.monotonic()
+    with pytest.raises(httpx.ReadTimeout):
+        factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=0.3)
+    assert time.monotonic() - start < 1.0
+
+
+def test_a_compressed_response_is_decoded_once() -> None:
+    import gzip
+
+    import httpx
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = gzip.compress(_KIWIX_PAGE.encode())
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=iter([body]))
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    assert factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0).text == _KIWIX_PAGE
+
+
+def test_dripping_kiwix_reads_end_at_the_read_cap_and_switch_the_check_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    monkeypatch.setattr(factcheck, "_KIWIX_TIMEOUT_S", 0.3)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": '{"titles": ["A", "B", "C"]}'}}]}
+            return httpx.Response(200, json=body)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(200, content=_drip())
+
+    checker = _checker(httpx.MockTransport(handle))
+    start = time.monotonic()
+    assert checker.contradiction(_GHOST) is None
+    assert time.monotonic() - start < 1.5  # not the 20 s each body would take
+    assert checker._kiwix_down_until > 0.0  # every read used its full limit: Kiwix is hanging
+
+
+def test_kiwix_reads_in_flight_are_capped_across_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    import httpx
+
+    monkeypatch.setattr(factcheck, "_KIWIX_READS", threading.BoundedSemaphore(2))
+    lock = threading.Lock()
+    in_flight = [0, 0]  # now, most
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            system = request.content.decode()
+            answer = '{"titles": ["A", "B", "C"]}' if "Name the" in system else '{"contradiction": false}'
+            return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        with lock:
+            in_flight[0] += 1
+            in_flight[1] = max(in_flight)
+        time.sleep(0.05)
+        with lock:
+            in_flight[0] -= 1
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    checkers = [_checker(httpx.MockTransport(handle)) for _ in range(3)]
+    threads = [threading.Thread(target=c.contradiction, args=(_GHOST,)) for c in checkers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert in_flight[1] == 2
+    assert all(c._kiwix_down_until == 0.0 for c in checkers)
+
+
+def test_waiting_for_a_read_slot_is_not_a_failing_kiwix(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(factcheck, "_KIWIX_READS", slots)
+    slots.acquire()  # other checks hold every slot
+    calls: list = []
+    try:
+        checker = _checker(_transport({"contradiction": True}, calls=calls), budget_s=0.5)
+        assert checker.contradiction(_GHOST) is None
+    finally:
+        slots.release()
+    assert checker._kiwix_down_until == 0.0
+    assert not [c for c in calls if c.startswith("/content/")]
+
+
 def test_a_catalog_without_the_book_switches_the_check_off() -> None:
     import httpx
 
