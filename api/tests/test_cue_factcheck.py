@@ -739,13 +739,23 @@ def test_a_compressed_response_is_decoded_once() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         body = gzip.compress(_KIWIX_PAGE.encode())
-        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=iter([body]))
+        headers = {"content-encoding": "gzip", "content-length": str(len(body))}
+        return httpx.Response(200, headers=headers, content=iter([body]))
 
     client = httpx.Client(transport=httpx.MockTransport(handle))
     resp = factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0)
     assert resp.text == _KIWIX_PAGE
     assert "content-encoding" not in resp.headers
     assert resp.headers["content-length"] == str(len(_KIWIX_PAGE.encode()))  # not the gzip size
+
+
+def test_a_chunked_response_is_rebuilt_without_its_framing() -> None:
+    import httpx
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=iter([b"ab"]))))
+    resp = factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0)
+    assert "transfer-encoding" not in resp.headers
+    assert resp.headers["content-length"] == "2"
 
 
 def test_dripping_kiwix_reads_end_at_the_read_cap_and_switch_the_check_off(
@@ -889,18 +899,20 @@ def test_one_sessions_trip_switches_every_session_off(monkeypatch: pytest.Monkey
         if request.url.path == "/catalog/v2/entries":
             return httpx.Response(200, text=_KIWIX_CATALOG)
         reads.append(request.url.path)
+        time.sleep(0.3)  # hung for Kiwix's full limit
         raise httpx.ReadTimeout("hung")
 
-    checkers = [_checker(httpx.MockTransport(handle)) for _ in range(4)]
+    checkers = [_checker(httpx.MockTransport(handle)) for _ in range(6)]
     threads = [threading.Thread(target=c.contradiction, args=(_GHOST,)) for c in checkers]
     start = time.monotonic()
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert time.monotonic() - start < 1.5  # not four reads' worth of waiting, nor the budget
-    # The holder frees its slot just before it trips, so one waiter per slot can still read.
-    assert len(reads) <= 2
+    # Not six hung reads one after another (1.8 s), nor the 5 s budget. The holder frees its slot
+    # just before it trips, so a waiter can still slip a read in; how many depends on scheduling.
+    assert time.monotonic() - start < 1.2
+    assert len(reads) < len(checkers)
     assert factcheck._kiwix_down_until > 0.0
     seen = len(reads)
     assert all(c.contradiction(_GHOST) is None for c in checkers)

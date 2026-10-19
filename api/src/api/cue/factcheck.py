@@ -211,9 +211,9 @@ def _send(client, method: str, url: str, *, timeout: float, **kwargs):
             if time.monotonic() > end:
                 raise httpx.ReadTimeout(f"response not read within {timeout:.1f}s", request=resp.request)
     headers = resp.headers.copy()
-    # The body is already decoded, so its encoding and wire length no longer apply.
-    headers.pop("content-encoding", None)
-    headers.pop("content-length", None)
+    # The body is already decoded and whole, so its wire encoding and framing no longer apply.
+    for wire in ("content-encoding", "content-length", "transfer-encoding"):
+        headers.pop(wire, None)
     return httpx.Response(resp.status_code, headers=headers, content=bytes(body), request=resp.request)
 
 
