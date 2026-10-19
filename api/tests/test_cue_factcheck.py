@@ -473,7 +473,7 @@ def test_an_empty_title_is_never_read() -> None:
     # "/content/<book>/" redirects to the book's landing page, which is no reference.
     calls: list = []
     checker = _checker(_transport({}, calls=calls))
-    checker._ask = lambda *a: {"titles": ["", "  "]}
+    checker._ask = lambda *a: {"titles": ["", "  ", "___"]}
     assert checker.contradiction(_GHOST) is None
     assert [c for c in calls if not c.endswith("/chat/completions")] == []
 
@@ -565,6 +565,40 @@ def test_a_redirect_to_another_port_on_kiwix_host_is_not_a_reference() -> None:
         if request.url.path == "/catalog/v2/entries":
             return httpx.Response(200, text=_KIWIX_CATALOG)
         return httpx.Response(302, headers={"Location": "http://kiwix:9999/Cubone"})
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) is None
+    assert prompts == []
+
+
+def test_spellings_of_one_article_take_one_read() -> None:
+    calls: list = []
+    checker = _checker(_transport({}, calls=calls))
+    checker._ask = lambda *a: {"titles": [" Cubone", "Cubone_", "Cubone", "Pikachu"]}
+    checker.contradiction(_GHOST)
+    assert calls.count("/content/b/Cubone") == 1
+    assert "/content/b/Pikachu" in calls
+
+
+def test_a_redirect_to_another_scheme_is_not_a_reference() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" not in msgs[0]["content"]:
+                prompts.append(msgs[1]["content"])
+            body = {"titles": ["Cubone"]} if "Name the" in msgs[0]["content"] else {}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(body)}}]})
+        if request.url.scheme == "https":
+            return httpx.Response(200, text=_KIWIX_PAGE)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(302, headers={"Location": "https://kiwix/Cubone"})
 
     checker = _checker(httpx.MockTransport(handle))
     assert checker.contradiction(_GHOST) is None

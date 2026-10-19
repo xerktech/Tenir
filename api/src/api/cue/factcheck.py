@@ -230,7 +230,9 @@ class FactChecker:
                 proposed = self._ask(client, _PROPOSE, note, deadline).get("titles")
                 if not isinstance(proposed, list):
                     proposed = []  # a bare string would be read letter by letter
-                titles = list(dict.fromkeys(t for t in proposed if _readable(t)))
+                # Kiwix reads "Mount Everest", " Mount Everest" and "Mount_Everest" as one article.
+                names = (t.replace("_", " ").strip() for t in proposed if isinstance(t, str))
+                titles = list(dict.fromkeys(t for t in names if _readable(t)))
                 reference = self._reference(client, titles[:_MAX_TITLES], note, deadline)
                 if not reference:
                     return None
