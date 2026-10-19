@@ -688,6 +688,50 @@ def test_a_dripped_body_is_cut_off_at_the_wall_clock_limit() -> None:
     assert time.monotonic() - start < 1.0
 
 
+def test_a_slow_header_wait_counts_against_the_wall_clock_limit() -> None:
+    import httpx
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        time.sleep(0.4)  # headers late (a slow redirect chain looks the same), then no body
+        return httpx.Response(200, content=iter([]))
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    with pytest.raises(httpx.ReadTimeout):
+        factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=0.3)
+
+
+def test_a_check_that_gets_a_slot_after_a_trip_makes_no_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    import httpx
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(factcheck, "_KIWIX_READS", slots)
+    waiting = threading.Event()
+    reads: list = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": '{"titles": ["A"]}'}}]}
+            return httpx.Response(200, json=body)
+        if request.url.path == "/catalog/v2/entries":
+            waiting.set()  # the read slot is next
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        reads.append(request.url.path)
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    slots.acquire()  # another check holds the slot and is about to find Kiwix hung
+    checker = _checker(httpx.MockTransport(handle))
+    thread = threading.Thread(target=checker.contradiction, args=(_GHOST,))
+    thread.start()
+    assert waiting.wait(2.0)
+    time.sleep(0.1)
+    factcheck._kiwix_down_until = time.monotonic() + 60  # that check trips, then frees the slot
+    slots.release()
+    thread.join()
+    assert reads == []
+
+
 def test_a_compressed_response_is_decoded_once() -> None:
     import gzip
 
@@ -698,7 +742,10 @@ def test_a_compressed_response_is_decoded_once() -> None:
         return httpx.Response(200, headers={"content-encoding": "gzip"}, content=iter([body]))
 
     client = httpx.Client(transport=httpx.MockTransport(handle))
-    assert factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0).text == _KIWIX_PAGE
+    resp = factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0)
+    assert resp.text == _KIWIX_PAGE
+    assert "content-encoding" not in resp.headers
+    assert resp.headers["content-length"] == str(len(_KIWIX_PAGE.encode()))  # not the gzip size
 
 
 def test_dripping_kiwix_reads_end_at_the_read_cap_and_switch_the_check_off(
