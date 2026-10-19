@@ -165,6 +165,19 @@ def _json(content: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _readable(title) -> bool:
+    """Whether a proposed title can be read as /content/<book>/<title>. quote() keeps "/" so
+    "AC/DC" reads, but httpx resolves a "." or ".." segment, which would climb out of the book
+    to other Kiwix routes. No article title has one, an empty title reads the book's landing
+    page, and a lone surrogate can't be URL-encoded. Filtered before the first _MAX_TITLES are taken, so junk can't use them up."""
+    return (
+        isinstance(title, str)
+        and bool(title.strip())
+        and not any("\ud800" <= c <= "\udfff" for c in title)
+        and not {".", ".."} & {p.strip() for p in title.split("/")}
+    )
+
+
 class FactChecker:
     def __init__(
         self,
@@ -217,7 +230,7 @@ class FactChecker:
                 proposed = self._ask(client, _PROPOSE, note, deadline).get("titles")
                 if not isinstance(proposed, list):
                     proposed = []  # a bare string would be read letter by letter
-                titles = list(dict.fromkeys(t for t in proposed if isinstance(t, str)))
+                titles = list(dict.fromkeys(t for t in proposed if _readable(t)))
                 reference = self._reference(client, titles[:_MAX_TITLES], note, deadline)
                 if not reference:
                     return None
@@ -281,14 +294,6 @@ class FactChecker:
         mirror doesn't have is skipped; a failing Kiwix switches the check off for a while."""
         import httpx
 
-        # quote() keeps "/" so "AC/DC" reads, but httpx resolves a "." or ".." segment, which
-        # would climb out of the book to other Kiwix routes. No article title has one, and an
-        # empty title reads the book's landing page.
-        titles = [
-            t
-            for t in titles
-            if t.strip() and not {".", ".."} & {p.strip() for p in t.split("/")}
-        ]
         if not titles:
             return ""
         try:
@@ -297,20 +302,19 @@ class FactChecker:
             self._kiwix_failed(exc, "catalog")
             return ""
         timeout = self._kiwix_timeout(deadline)
-        kiwix_host = httpx.URL(self._kiwix).host
+        origin = httpx.URL(self._kiwix)
 
         def fetch(title: str):
-            try:
-                path = urllib.parse.quote(title.strip().replace(" ", "_"))
-            except UnicodeEncodeError as exc:  # a lone surrogate: skip this title only
-                return exc
+            path = urllib.parse.quote(title.strip().replace(" ", "_"))
             try:
                 page = client.get(f"{self._kiwix}{root}/{path}", timeout=timeout, follow_redirects=True)
                 page.raise_for_status()
             except httpx.HTTPError as exc:
                 return exc
-            if page.url.host != kiwix_host:
-                return LookupError(f"redirected off Kiwix to {page.url.host}")
+            if (page.url.scheme, page.url.host, page.url.port) != (
+                origin.scheme, origin.host, origin.port
+            ):
+                return LookupError(f"redirected off Kiwix to {page.url}")
             return page
 
         with ThreadPoolExecutor(max_workers=_MAX_TITLES) as pool:

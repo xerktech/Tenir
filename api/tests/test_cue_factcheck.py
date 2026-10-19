@@ -538,6 +538,57 @@ def test_a_redirect_off_kiwix_is_not_a_reference() -> None:
     assert checker._kiwix_down_until == 0.0
 
 
+def test_junk_titles_never_use_up_the_three_reads() -> None:
+    calls: list = []
+    checker = _checker(_transport({}, calls=calls))
+    checker._ask = lambda *a: {"titles": ["", " ", "\ud800", "../x", "Cubone"]}
+    checker.contradiction(_GHOST)
+    assert "/content/b/Cubone" in calls
+
+
+def test_a_redirect_to_another_port_on_kiwix_host_is_not_a_reference() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" not in msgs[0]["content"]:
+                prompts.append(msgs[1]["content"])
+            body = {"titles": ["Cubone"]} if "Name the" in msgs[0]["content"] else {}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(body)}}]})
+        if request.url.port == 9999:
+            return httpx.Response(200, text=_KIWIX_PAGE)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(302, headers={"Location": "http://kiwix:9999/Cubone"})
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) is None
+    assert prompts == []
+
+
+def test_the_book_root_survives_a_concurrent_reset() -> None:
+    # Another check clears the cached root (every title 404'd) between this one's test and use.
+    class Racing(FactChecker):
+        reads = 0
+
+        @property
+        def _content(self):
+            Racing.reads += 1
+            return "/content/b" if Racing.reads == 1 else None
+
+        @_content.setter
+        def _content(self, value) -> None:
+            pass
+
+    checker = Racing(endpoint="http://llm/v1", model="m", kiwix_endpoint="http://kiwix", kiwix_book="b")
+    assert checker._book_path(None, time.monotonic() + 5) == "/content/b"
+
+
 def test_the_articles_are_read_in_parallel() -> None:
     import json as _j
     import threading
