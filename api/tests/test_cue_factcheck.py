@@ -15,6 +15,13 @@ from api.cue import factcheck
 from api.cue.factcheck import FactChecker, _json, passages, quoted, should_check
 from api.session import Session
 
+
+@pytest.fixture(autouse=True)
+def _kiwix_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Kiwix backoff is process-wide: one test's trip must not switch off the next test's check.
+    monkeypatch.setattr(factcheck, "_kiwix_down_until", 0.0)
+
+
 # ---- pure helpers -------------------------------------------------------------------
 
 
@@ -317,13 +324,13 @@ def test_a_failing_kiwix_switches_the_check_off_for_a_while() -> None:
 def test_a_missing_article_is_skipped_without_switching_the_check_off() -> None:
     checker = _checker(_transport({"contradiction": True, "reference": "x y"}, page_status=404))
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_a_kiwix_server_error_switches_the_check_off() -> None:
     checker = _checker(_transport({"contradiction": True}, page_status=503))
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until > 0.0
+    assert factcheck._kiwix_down_until > 0.0
 
 
 def test_only_a_full_length_kiwix_timeout_switches_the_check_off() -> None:
@@ -332,12 +339,13 @@ def test_only_a_full_length_kiwix_timeout_switches_the_check_off() -> None:
     timeout = httpx.ReadTimeout("hung")
     checker = _checker(_transport({"contradiction": True}, kiwix_error=timeout))
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until > 0.0  # Kiwix had its full 2 s and hung
+    assert factcheck._kiwix_down_until > 0.0  # Kiwix had its full 2 s and hung
     # A request cut short by the check's own deadline (a slow model ate the budget) is not
     # Kiwix's fault.
+    factcheck._kiwix_down_until = 0.0  # the autouse fixture restores it afterwards
     checker = _checker(_transport({"contradiction": True}, kiwix_error=timeout), budget_s=1.0)
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_the_lookup_stops_at_the_first_kiwix_failure() -> None:
@@ -373,7 +381,7 @@ def test_one_slow_article_among_answers_is_skipped_without_switching_the_check_o
 
     checker = _checker(httpx.MockTransport(handle))
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
     assert prompts and "[Cubone]" in prompts[0]
 
 
@@ -434,7 +442,7 @@ def test_every_title_missing_rereads_the_catalog_next_time() -> None:
     assert checker.contradiction(_GHOST) is None
     assert checker.contradiction(_GHOST) is None
     assert calls.count("/catalog/v2/entries") == 2
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_a_title_with_a_slash_keeps_its_whole_name() -> None:
@@ -470,7 +478,7 @@ def test_a_dot_segment_title_is_never_read(titles: list[str]) -> None:
     checker._ask = lambda *a: {"titles": titles}
     assert checker.contradiction(_GHOST) is None
     assert [c for c in calls if not c.endswith("/chat/completions")] == []
-    assert checker._kiwix_down_until == 0.0  # a bad title is not a failing Kiwix
+    assert factcheck._kiwix_down_until == 0.0  # a bad title is not a failing Kiwix
 
 
 def test_dots_inside_a_title_segment_still_read() -> None:
@@ -521,7 +529,7 @@ def test_an_unencodable_title_skips_only_itself() -> None:
 
     checker = _checker(httpx.MockTransport(handle))
     assert checker.contradiction(_GHOST) == "Cubone is a Ground type Pokémon"
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_a_redirect_off_kiwix_is_not_a_reference() -> None:
@@ -547,7 +555,7 @@ def test_a_redirect_off_kiwix_is_not_a_reference() -> None:
     checker = _checker(httpx.MockTransport(handle))
     assert checker.contradiction(_GHOST) is None
     assert prompts == []  # nothing was checked against the other host's page
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_junk_titles_never_use_up_the_three_reads() -> None:
@@ -712,7 +720,7 @@ def test_dripping_kiwix_reads_end_at_the_read_cap_and_switch_the_check_off(
     start = time.monotonic()
     assert checker.contradiction(_GHOST) is None
     assert time.monotonic() - start < 1.5  # not the 20 s each body would take
-    assert checker._kiwix_down_until > 0.0  # every read used its full limit: Kiwix is hanging
+    assert factcheck._kiwix_down_until > 0.0  # every read used its full limit: Kiwix is hanging
 
 
 def test_kiwix_reads_in_flight_are_capped_across_checks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -746,7 +754,7 @@ def test_kiwix_reads_in_flight_are_capped_across_checks(monkeypatch: pytest.Monk
     for t in threads:
         t.join()
     assert in_flight[1] == 2
-    assert all(c._kiwix_down_until == 0.0 for c in checkers)
+    assert factcheck._kiwix_down_until == 0.0
 
 
 def test_waiting_for_a_read_slot_is_not_a_failing_kiwix(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -758,11 +766,98 @@ def test_waiting_for_a_read_slot_is_not_a_failing_kiwix(monkeypatch: pytest.Monk
     calls: list = []
     try:
         checker = _checker(_transport({"contradiction": True}, calls=calls), budget_s=0.5)
+        start = time.monotonic()
         assert checker.contradiction(_GHOST) is None
+        assert time.monotonic() - start < 0.8  # the wait ends at the check's deadline
     finally:
         slots.release()
-    assert checker._kiwix_down_until == 0.0
+    assert factcheck._kiwix_down_until == 0.0
     assert not [c for c in calls if c.startswith("/content/")]
+
+
+def test_the_production_cap_is_four_reads_in_flight() -> None:
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    in_flight = [0, 0]  # now, most
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            system = request.content.decode()
+            answer = '{"titles": ["A", "B", "C"]}' if "Name the" in system else '{"contradiction": false}'
+            return httpx.Response(200, json={"choices": [{"message": {"content": answer}}]})
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        with lock:
+            in_flight[0] += 1
+            in_flight[1] = max(in_flight)
+        time.sleep(0.1)
+        with lock:
+            in_flight[0] -= 1
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    threads = [
+        threading.Thread(target=_checker(httpx.MockTransport(handle)).contradiction, args=(_GHOST,))
+        for _ in range(3)  # nine reads wanted at once
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert in_flight[1] == 4
+
+
+def test_a_read_cut_short_by_the_checks_deadline_is_not_a_failing_kiwix() -> None:
+    import httpx
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": '{"titles": ["A", "B"]}'}}]}
+            return httpx.Response(200, json=body)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        raise httpx.ReadTimeout("slow")  # each read had under Kiwix's full limit
+
+    assert _checker(httpx.MockTransport(handle), budget_s=1.0).contradiction(_GHOST) is None
+    assert factcheck._kiwix_down_until == 0.0
+
+
+def test_one_sessions_trip_switches_every_session_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    import httpx
+
+    # One slot: only the first check reaches the hung Kiwix; the others must not each pay the
+    # whole budget waiting their turn, round after round (QA on XERK-2093).
+    monkeypatch.setattr(factcheck, "_KIWIX_READS", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(factcheck, "_KIWIX_TIMEOUT_S", 0.3)
+    reads: list = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"choices": [{"message": {"content": '{"titles": ["A"]}'}}]}
+            return httpx.Response(200, json=body)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        reads.append(request.url.path)
+        raise httpx.ReadTimeout("hung")
+
+    checkers = [_checker(httpx.MockTransport(handle)) for _ in range(4)]
+    threads = [threading.Thread(target=c.contradiction, args=(_GHOST,)) for c in checkers]
+    start = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert time.monotonic() - start < 1.5  # not four reads' worth of waiting, nor the budget
+    # The holder frees its slot just before it trips, so one waiter per slot can still read.
+    assert len(reads) <= 2
+    assert factcheck._kiwix_down_until > 0.0
+    seen = len(reads)
+    assert all(c.contradiction(_GHOST) is None for c in checkers)
+    assert len(reads) == seen  # switched off for every session
 
 
 def test_a_catalog_without_the_book_switches_the_check_off() -> None:
@@ -776,7 +871,7 @@ def test_a_catalog_without_the_book_switches_the_check_off() -> None:
 
     checker = _checker(httpx.MockTransport(handle))
     assert checker.contradiction(_GHOST) is None
-    assert checker._kiwix_down_until > 0.0
+    assert factcheck._kiwix_down_until > 0.0
 
 
 def test_the_factory_budget_stops_inside_the_sessions_wait(

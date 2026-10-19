@@ -18,6 +18,7 @@ It fails open: no articles, a Kiwix or model error, or a timeout shows the cue.
 from __future__ import annotations
 
 import html
+import itertools
 import json
 import logging
 import re
@@ -60,6 +61,11 @@ _KIWIX_TIMEOUT_S = 2.5
 # and the per-read timeout only covers Kiwix serving one: wait at Kiwix used to count against it
 # and trip the backoff on a busy but healthy server (XERK-2093).
 _KIWIX_READS = threading.BoundedSemaphore(4)
+# A failing Kiwix (it crash-loops: fast after a restart, then hanging) skips checks until this
+# monotonic time, so each shown cue doesn't wait out the timeout behind it. Process-wide like the
+# read slots: only the checks that win a slot can see Kiwix hang, so a per-session backoff left
+# the others paying the whole budget per cue for several rounds (QA on XERK-2093).
+_kiwix_down_until = 0.0
 # How long a failed Kiwix lookup switches the check off.
 _KIWIX_BACKOFF_S = 60.0
 # The encyclopedia snapshot lags the news: a cue about a recent event or "the latest" thing
@@ -184,23 +190,30 @@ def _readable(title) -> bool:
     )
 
 
+def _kiwix_down() -> bool:
+    return time.monotonic() < _kiwix_down_until
+
+
 def _send(client, method: str, url: str, *, timeout: float, **kwargs):
     """The response, read whole within about `timeout` seconds of wall clock. httpx's timeout
     is per phase, so a body dripped a few bytes at a time never trips it (92 s for a page at
     2 KB/s, XERK-2093) and keeps this worker thread and its connection busy long after the
-    session stopped waiting. A chunk itself can still take up to `timeout` to arrive, so the
-    worst case is about twice it."""
+    session stopped waiting. The deadline is checked once the headers arrive and after each
+    chunk, so one phase can still overrun it by up to `timeout`, and a redirect chain is only
+    checked once it ends."""
     import httpx
 
     end = time.monotonic() + timeout
     with client.stream(method, url, timeout=timeout, **kwargs) as resp:
         body = bytearray()
-        for chunk in resp.iter_bytes():
+        for chunk in itertools.chain([b""], resp.iter_bytes()):  # b"": check once headers are in
             body += chunk
             if time.monotonic() > end:
                 raise httpx.ReadTimeout(f"response not read within {timeout:.1f}s", request=resp.request)
     headers = resp.headers.copy()
-    headers.pop("content-encoding", None)  # the body is already decoded
+    # The body is already decoded, so its encoding and wire length no longer apply.
+    headers.pop("content-encoding", None)
+    headers.pop("content-length", None)
     return httpx.Response(resp.status_code, headers=headers, content=bytes(body), request=resp.request)
 
 
@@ -225,9 +238,6 @@ class FactChecker:
         # (showing the cue) rather than call the model once the session has stopped waiting.
         self._budget_s = budget_s
         self._transport = transport  # tests inject an httpx.MockTransport
-        # A failing Kiwix (it crash-loops: fast after a restart, then hanging) skips checks until
-        # this monotonic time, so each shown cue doesn't wait out the timeout behind it.
-        self._kiwix_down_until = 0.0
         self._last_timeout = _KIWIX_TIMEOUT_S
         self._content: str | None = None  # "/content/<book>", resolved on first use
 
@@ -244,7 +254,7 @@ class FactChecker:
 
     def contradiction(self, cue: GeneratedCue) -> str | None:
         """The encyclopedia words that contradict the cue, or None to show it. Never raises."""
-        if not should_check(cue) or time.monotonic() < self._kiwix_down_until:
+        if not should_check(cue) or _kiwix_down():
             return None
         import httpx
 
@@ -294,7 +304,8 @@ class FactChecker:
     def _trip(self, title: str) -> None:
         """Kiwix is failing: skip checks for a while (fail open)."""
         log.info("kiwix lookup for %r failed; skipping checks for a while", title)
-        self._kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
+        global _kiwix_down_until
+        _kiwix_down_until = time.monotonic() + _KIWIX_BACKOFF_S
 
     def _book_path(self, client, deadline: float) -> str:
         """The content root of the newest ZIM matching the book filter ("/content/<book>"),
@@ -337,6 +348,8 @@ class FactChecker:
             if not _KIWIX_READS.acquire(timeout=max(0.0, deadline - time.monotonic() - 0.05)):
                 return TimeoutError("no Kiwix read slot in time")  # busy, not failing
             try:
+                if _kiwix_down():  # another check saw Kiwix hang while this one waited
+                    return TimeoutError("kiwix switched off")
                 timeout = self._left(deadline, _KIWIX_TIMEOUT_S)
                 page = _send(
                     client, "GET", f"{self._kiwix}{root}/{path}",

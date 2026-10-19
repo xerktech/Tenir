@@ -68,6 +68,8 @@ paths:
 - kiwix-serve also answers `/content` reads about one at a time (in-cluster: 0.11 s alone, 0.28 s
   at 4 in flight, ~2 s at 24). The fact check caps its reads process-wide (`_KIWIX_READS`) so the
   wait is spent here, not inside the 2.5 s read cap; waiting for a slot is never a backoff trip.
+- Keep the fact check's Kiwix backoff process-wide too: only slot holders see Kiwix hang, so a
+  per-session backoff left the other sessions paying the full budget per cue for several rounds.
 - httpx timeouts are per phase: a dripped body never times out. Read Kiwix/model responses through
   `factcheck._send`, which bounds wall clock, or a worker thread stays busy for minutes.
 - `/search` ignores `books.filter.flavour`, and both Wikipedia ZIMs are named `wikipedia_en_all`.
