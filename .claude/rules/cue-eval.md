@@ -79,6 +79,9 @@ paths:
 - Cap the quote length: a pasted paragraph passes any overlap test and costs seconds to decode.
 - Live Wikipedia rate-limits a host that hammers it (429 within ~400 lookups); evaluate against
   Kiwix (`kiwix.cloud.svc.cluster.local:8080`).
+- Don't cancel a check on `Session.close()`: a cue landing in teardown or after a resume handoff
+  is still checked and stored (XERK-1502), so that model call decides whether it is saved.
+  Cancelling either stores it unchecked or drops it (both failed QA on XERK-2057).
 - Session restarts wipe the scratchpad: put the labelled set and results in the repo or report
   them as you go, or a multi-hour eval is lost.
 - Titles come from the model: drop any with a "." or ".." path segment before reading, because

@@ -15,6 +15,7 @@ import pytest
 
 from api.cue.base import GeneratedCue
 from api.cue.openai import OpenAICueGenerator
+from api.cue.retrieval.base import Evidence
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "cue_eval" / "cue_replay_prompt.py"
 
@@ -41,6 +42,15 @@ def test_v8_reproduces_shipped_ungrounded_prompt(harness, avoid):
     shipped = OpenAICueGenerator(**_gen_kwargs())._build_payload(transcript, avoid)
     replayed = harness.VariantGen("v8", thinking=True, max_tokens=2048, **_gen_kwargs())
     assert replayed._build_payload(transcript, avoid)["messages"] == shipped["messages"]
+
+
+def test_v8_reproduces_shipped_grounded_prompt(harness):
+    # With evidence the shipped prompt carries the grounded bar, not the frozen frame's.
+    transcript = "who directed the film?"
+    evidence = (Evidence(source="Wikipedia", title="Heat", snippet="Directed by Michael Mann."),)
+    shipped = OpenAICueGenerator(**_gen_kwargs())._build_payload(transcript, (), evidence)
+    replayed = harness.VariantGen("v8", thinking=True, max_tokens=2048, **_gen_kwargs())
+    assert replayed._build_payload(transcript, (), evidence)["messages"] == shipped["messages"]
 
 
 @pytest.mark.parametrize("variant", ["v6", "v7"])

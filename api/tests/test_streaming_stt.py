@@ -2408,3 +2408,50 @@ def test_flush_does_not_decode_a_silent_tail_left_by_a_cap_cut() -> None:
         assert len(eng.sizes) == 1  # the head only
 
     asyncio.run(run())
+
+
+def test_quietest_cut_lands_on_the_first_fully_quiet_window_centre() -> None:
+    # Pins the cut offset: the last 2 s start at 1000 ms, the 200 ms gap at 2400 ms is
+    # frames 70-79, the first all-quiet 5-frame window starts at frame 70, so its centre
+    # (frame 72) is 2440 ms. A cut off by a frame or two would split the next word.
+    from api.stt.streaming import _quietest_cut
+
+    pcm = _pcm(2400, amplitude=4000) + _pcm(200, amplitude=0) + _pcm(400, amplitude=4000)
+    assert _quietest_cut(pcm) == _ms_to_bytes(2440)
+
+
+def test_speech_start_is_marked_at_the_start_of_the_chunk_that_carried_it() -> None:
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), language="en", partial_interval_ms=100000, silence_ms=10000
+        )
+        await _push(t, _pcm(500, amplitude=0))
+        await _push(t, _pcm(100, amplitude=4000))
+        assert t._speech_from == _ms_to_bytes(500)
+        await t.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("silence_ms, carried_ms", [(100, 100), (800, 600)])
+def test_cap_cut_shifts_speech_start_and_keeps_trailing_silence_into_the_tail(
+    silence_ms: int, carried_ms: int
+) -> None:
+    # After a cut at 2400 ms of a 3000 ms turn whose speech began at 2600 ms, the tail's
+    # speech starts 200 ms in, and its trailing silence is what lies inside the 600 ms tail:
+    # a reset would hold the next pause-close back, an unshifted start mis-flag the next head.
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), language="en", partial_interval_ms=100000, silence_ms=10000
+        )
+        t._buf = bytearray(_pcm(3000, amplitude=4000))
+        t._has_speech = True
+        t._speech_from = _ms_to_bytes(2600)
+        t._trailing_silence = _ms_to_bytes(silence_ms)
+        t._close_turn(_ms_to_bytes(2400))
+        assert t._speech_from == _ms_to_bytes(200)
+        assert t._trailing_silence == _ms_to_bytes(carried_ms)
+        assert t._has_speech is (silence_ms < 600)
+        await t.close()
+
+    asyncio.run(run())

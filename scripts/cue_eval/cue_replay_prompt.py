@@ -35,6 +35,7 @@ from api.cue.base import (
     normalize_cue_title,
 )
 from api.cue.openai import OpenAICueGenerator
+from api.cue.tuning import CUE_GUIDANCE, cue_guidance
 
 CONTEXT_SEGMENTS = 8
 ATTEMPT_MS = 2500
@@ -224,7 +225,10 @@ class VariantGen(OpenAICueGenerator):
                     f"shipped cue prompt has no {_FRAME_END.strip()!r} anchor; "
                     "update _FRAME_END in cue_replay_prompt.py"
                 )
-            sysmsg["content"] = full + sep + rest
+            # The frozen frames inline the ungrounded bar; the shipped prompt swaps in the
+            # grounded one when evidence rides along, so do the same.
+            frame = full.replace(CUE_GUIDANCE, cue_guidance(grounded=bool(evidence)))
+            sysmsg["content"] = frame + sep + rest
             return payload
         tail = VARIANTS.get(self.variant)
         if tail is not None:

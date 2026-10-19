@@ -52,6 +52,10 @@ Options that make the replay match production more closely:
   errors, unparseable verdicts) also drop the cue but are counted separately
   as `verify_errors` — a non-zero count means the verifier, not the model, is
   shaping the result.
+- `--fact-check --kiwix URL` runs the production encyclopedia fact check
+  (`api/cue/factcheck.py`) on each cue that survives dedupe and drops the ones
+  the Kiwix text contradicts, as a live session does (`fact_check_drops`).
+  Without it a replay no longer matches production.
 - `--max-tokens N` and `--extra JSON` override the shipped payload, e.g.
   `--extra '{"custom_params": {"thinking_budget": 512}}'` (SGLang thinking cap)
   or `'{"chat_template_kwargs": {"reasoning_effort": "low"}}'` (Qwen3.8 effort;
