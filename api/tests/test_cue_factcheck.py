@@ -447,6 +447,28 @@ def test_a_title_with_a_slash_keeps_its_whole_name() -> None:
     assert prompts and prompts[0].startswith("REFERENCE TEXT:\n[AC/DC]")
 
 
+@pytest.mark.parametrize(
+    "titles",
+    [["../../catalog/v2/entries"], ["Cubone/../../../search"], [" .. /x", "./Cubone"]],
+)
+def test_a_dot_segment_title_is_never_read(titles: list[str]) -> None:
+    # httpx resolves "." and ".." in a path, so such a title would read another Kiwix route.
+    calls: list = []
+    checker = _checker(_transport({"contradiction": True, "reference": "x"}, calls=calls))
+    checker._ask = lambda *a: {"titles": titles}
+    assert checker.contradiction(_GHOST) is None
+    assert [c for c in calls if not c.endswith("/chat/completions")] == []
+    assert checker._kiwix_down_until == 0.0  # a bad title is not a failing Kiwix
+
+
+def test_dots_inside_a_title_segment_still_read() -> None:
+    calls: list = []
+    checker = _checker(_transport({}, calls=calls))
+    checker._ask = lambda *a: {"titles": ["...And Justice for All (album)"]}
+    checker.contradiction(_GHOST)
+    assert "/content/b/...And_Justice_for_All_(album)" in calls
+
+
 def test_a_catalog_without_the_book_switches_the_check_off() -> None:
     import httpx
 

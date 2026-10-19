@@ -10,7 +10,7 @@ state the cue's facts, the offline Wikipedia mirror (Kiwix) supplies the paragra
 mention the cue's own words, and the model is asked one narrow question: does that text
 explicitly contradict a specific claim? "Not mentioned" is never a contradiction, and the
 conflicting words must actually appear in the text, so an invented contradiction can't drop a
-cue. Measured on 369 labelled production cues: 10 of 39 wrong cues dropped, 2 of 274 correct.
+cue. Measured on 369 labelled production cues: 17 of 41 wrong cues dropped, 2 of 277 correct.
 
 It fails open: no articles, a Kiwix or model error, or a timeout shows the cue.
 """
@@ -277,6 +277,11 @@ class FactChecker:
         mirror doesn't have is skipped; a failing Kiwix switches the check off for a while."""
         import httpx
 
+        # quote() keeps "/" so "AC/DC" reads, but httpx resolves a "." or ".." segment, which
+        # would climb out of the book to other Kiwix routes. No article title has one.
+        titles = [t for t in titles if not {".", ".."} & {p.strip() for p in t.split("/")}]
+        if not titles:
+            return ""
         try:
             root = self._book_path(client, deadline)
         except (httpx.HTTPError, LookupError) as exc:

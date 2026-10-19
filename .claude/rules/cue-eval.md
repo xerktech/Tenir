@@ -62,17 +62,17 @@ paths:
   thread, and a late search parked in a finished thread's loop held a global lock forever.
 - A cold search (fresh pod, NFS-backed ZIMs) takes seconds to tens of seconds; time any Kiwix
   measurement twice, so the second run shows warm-cache figures.
-- The fact check (sync, in a worker thread) has its own one-search slot: a non-blocking
-  `threading.Lock` in `cue/factcheck.py`. That is safe there because every request times out.
-  The two slots are separate, so prod can have one retrieval and one fact-check search in flight.
+- The fact check never calls `/search`: it reads `/content/<book>/<Title>` directly, in
+  parallel, so it needs no search slot. Search also returns the wrong article for an exact title
+  ("Mount Everest" -> "Mount Everest in popular culture").
 - `/search` ignores `books.filter.flavour`, and both Wikipedia ZIMs are named `wikipedia_en_all`.
 
 ## Fact check (`api/cue/factcheck.py`)
 
 - Judge against text, never memory: the earlier self-check lost 16 good cues per 2 wrong.
-  Contradiction-only with a quote that must appear in the Kiwix text measured 10/39 wrong
-  dropped for 2/274 correct.
-- Retrieval, not the model, limits recall. Thinking on caught nothing more. A title search's
+  Contradiction-only with a quote that must appear in the Kiwix text measured 17/41 wrong
+  dropped for 2/277 correct.
+- Retrieval, not the model, limits recall. Thinking on caught nothing more. An article's
   first paragraph rarely holds the fact, so the cue's own words pick the paragraphs.
 - Never check cues citing live news or about recent events: the mirror lags, and the 2026
   Hurricane Isaias got "corrected" to the 2020 one.
@@ -81,3 +81,6 @@ paths:
   Kiwix (`kiwix.cloud.svc.cluster.local:8080`).
 - Session restarts wipe the scratchpad: put the labelled set and results in the repo or report
   them as you go, or a multi-hour eval is lost.
+- Titles come from the model: drop any with a "." or ".." path segment before reading, because
+  `quote()` keeps "/" and httpx resolves dot segments into other Kiwix routes.
+- `/content` reads are case-sensitive ("cubone" 404s); a missing title is skipped, never a trip.
