@@ -583,3 +583,17 @@ def test_frequency_lean_separates_short_real_spanish_from_english_tagged_foreign
     assert frequency_lean("No", "es") < 1.5
     assert frequency_lean("I see.", "it") < 0
     assert frequency_lean("", "es") == 0
+
+
+def test_repeated_word_flags_laughter_and_lyric_filler_only() -> None:
+    from api.stt.langid import repeated_word
+
+    assert repeated_word("Ha ha ha.")
+    assert repeated_word("Ha ha.")
+    assert repeated_word("La, la, la, la!")
+    assert not repeated_word("Mira.")
+    assert not repeated_word("Gracias, gracias.")  # a real word doubled for emphasis
+    assert not repeated_word("Ciao ciao.")
+    assert not repeated_word("Hola.")
+    assert not repeated_word("Vamos a comer.")
+    assert not repeated_word("")

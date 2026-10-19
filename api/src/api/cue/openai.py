@@ -223,11 +223,15 @@ def _is_abbreviation(before: str) -> bool:
         or (len(word) <= 4 and word[:1].isupper())
     )
 # Search-style citation markers the model copies out of evidence ("…Toronto【2】.").
-_CITATION_MARK = re.compile(r" ?(?:\[\d+(?:, ?\d+)*\]|\u3010\d+\u3011)")
+# Evidence is numbered from 1, so "[0]" is never one: "a[0] is the first item" keeps it.
+_CITATION_MARK = re.compile(r" ?(?:\[[1-9]\d*(?:, ?[1-9]\d*)*\]|\u3010\d+\u3011)")
 # The model answering as an assistant despite the prompt ("If you want, I can help identify
 # it", "I can help turn it into a clear, polished version"): an offer, never a cue. Narrow on
 # purpose: quoted speech ("I'll hook you up") and "If you want a…" advice must not match.
-_ASSISTANT_OFFER = re.compile(r"\bI can help\b|\bif you(?:'d|\u2019d)? (?:want|like), I\b", re.I)
+# The title-case "I Can Help" (the Billy Swan song) is not read as an offer.
+_ASSISTANT_OFFER = re.compile(
+    r"\bI can help\b(?-i:(?<!I Can Help))|\bif you(?:'d|\u2019d)? (?:want|like), I\b", re.I
+)
 
 
 def _clip_at_word(text: str, limit: int) -> str:

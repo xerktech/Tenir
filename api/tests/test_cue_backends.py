@@ -378,6 +378,9 @@ def test_parse_strips_leaked_citation_marks() -> None:
     [
         "Those lines look like worship lyrics. If you want, I can help identify it.",
         "This reads like a testimony. I can help turn it into a polished version.",
+        "IF YOU WANT, I can look it up.",
+        "I CAN HELP you identify the bird.",
+        "Sure, I can Help with that.",
     ],
 )
 def test_parse_drops_assistant_offers(body: str) -> None:
@@ -393,6 +396,18 @@ def test_parse_drops_assistant_offers(body: str) -> None:
 )
 def test_parse_keeps_quoted_speech_and_advice_that_is_not_an_offer(body: str) -> None:
     assert _gen()._parse(json.dumps({"cue": True, "title": "T", "body": body})) is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "In Python, a[0] is the first item of a list.",
+        '"I Can Help" was Billy Swan\'s 1974 number-one hit.',
+    ],
+)
+def test_parse_keeps_index_brackets_and_titles_that_look_like_guards(body: str) -> None:
+    cue = _gen()._parse(json.dumps({"cue": True, "title": "T", "body": body}))
+    assert cue is not None and cue.body == body
 
 
 def test_parse_placeholder_answer_returns_none() -> None:

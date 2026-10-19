@@ -701,6 +701,8 @@ def test_pinned_source_language_opens_a_run_on_any_turn(monkeypatch: pytest.Monk
         ("Buenas noches.", "Vamos a comer.", "es"),
         ("Hola.", "Mira.", "es"),  # real short openers just above the lean threshold
         ("Obrigada.", "Sim.", "pt"),
+        ("Gracias, gracias.", "Vamos a comer.", "es"),  # emphatic doubling is speech
+        ("Vamos, vamos.", "Claro, claro.", "es"),
     ],
 )
 def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
@@ -723,6 +725,32 @@ def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
         await _drain_translations(session)
         await session.close()
         assert [t.segmentId for t in _translations(sent)] == ["a", "b", "c"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "text, lang",
+    [("Ha ha ha.", "it"), ("La la la.", "es"), ("La la la la.", "fr")],
+)
+def test_repeated_word_turns_never_open_a_run(
+    monkeypatch: pytest.MonkeyPatch, text: str, lang: str
+) -> None:
+    # Laughter and lyric filler lean foreign by repetition alone ('Ha ha ha.' 6.33 for it):
+    # two such turns in one language within the pending window must not open a run.
+    monkeypatch.setattr(settings, "translation_backend", "stub")
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        session._consider_translation(_final(text, segment_id="a", lang=lang))
+        session._consider_translation(
+            _final(text, segment_id="b", lang=lang, start_ms=3000, end_ms=4500)
+        )
+        await _drain_translations(session)
+        assert not session._translation_active
+        await session.close()
+        assert _translations(sent) == []
 
     asyncio.run(run())
 

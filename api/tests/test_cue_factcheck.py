@@ -128,6 +128,18 @@ def test_the_articles_own_title_words_rank_nothing() -> None:
     assert "Pfeiffer was never cast as Ivy" in text
 
 
+def test_every_title_word_ranks_nothing_not_just_the_first() -> None:
+    # A line matching only a later title word ("Robin", "film") is no fact about the cue.
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on DC Comics characters.</p>"
+        "<ul><li>Robin film merchandise list</li><li>Pfeiffer was never cast as Ivy</li></ul>"
+    )
+    note = "Batman & Robin: Michelle Pfeiffer played Poison Ivy in the Robin film."
+    text = passages(page, note, article_title="Batman & Robin (film)")
+    assert "Pfeiffer was never cast as Ivy" in text
+    assert "merchandise" not in text
+
+
 def test_an_overlong_list_item_is_not_a_fact() -> None:
     blob = "Poison Ivy " * 60  # a list item the size of a paragraph is not a short fact
     page = f"<p>A lead paragraph that is long enough to be kept as the lead.</p><ul><li>{blob}</li></ul>"

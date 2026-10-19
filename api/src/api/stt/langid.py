@@ -347,6 +347,19 @@ def frequency_lean(text: str, lang: str) -> float:
     )
 
 
+# Longer than this a repeated token is a real word doubled for emphasis ("Gracias, gracias.",
+# "Ciao ciao."), which is speech in that language, not laughter.
+_FILLER_MAX_LEN = 3
+
+
+def repeated_word(text: str) -> bool:
+    """Whether the turn is only a short syllable said over and over: laughter ("Ha ha ha.")
+    and lyric filler ("La la la.") score a high ``frequency_lean`` for it/es/fr by repetition
+    alone, so they read as foreign, though no language is being spoken."""
+    words = _TOKEN_RE.findall(text[:_MAX_CHARS].lower())
+    return len(words) > 1 and len(set(words)) == 1 and len(words[0]) <= _FILLER_MAX_LEN
+
+
 def is_english_word(word: str) -> bool:
     """Whether a lowercased token can only be English: English vocabulary, or a word
     ten times as frequent in English as in every other contract language, that is no

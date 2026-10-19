@@ -74,7 +74,13 @@ from api.persistence import (
 from api.persistence.postgres import is_database_unavailable, is_retryable_write
 from api.stt import Transcriber, make_transcriber
 from api.stt.engine import BYTES_PER_SEC
-from api.stt.langid import detect_lang, frequency_lean, is_english_word, is_shared_english_word
+from api.stt.langid import (
+    detect_lang,
+    frequency_lean,
+    is_english_word,
+    is_shared_english_word,
+    repeated_word,
+)
 from api.translate import Translator, make_translator
 
 log = logging.getLogger("api.session")
@@ -1014,10 +1020,15 @@ class Session:
             # "Vamos a comer.", both undecidable) still get translated, a turn late.
             text_lang = detect_lang(result.text)
             if text_lang == "en" or (
-                text_lang is None and frequency_lean(result.text, lang) < _HELD_OPENER_MIN_LEAN
+                text_lang is None
+                and (
+                    frequency_lean(result.text, lang) < _HELD_OPENER_MIN_LEAN
+                    or repeated_word(result.text)
+                )
             ):
                 # Reads English, or no more the tagged language than English ("No", "I see."
-                # tagged es/it in pairs opened runs on Oct 2026 recordings, QA).
+                # tagged es/it in pairs opened runs on Oct 2026 recordings, QA), or is one word
+                # repeated: laughter or lyric filler, whose lean comes from repetition alone.
                 return
             pending = self._translation_pending
             confirms = (

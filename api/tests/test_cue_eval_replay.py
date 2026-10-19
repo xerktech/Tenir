@@ -134,6 +134,75 @@ def test_verify_keeps_safe_cues(replay):
     assert out["cues"] and out["verify_drops"] == 0
 
 
+class _Checker:
+    def __init__(self, contradicted: set[str], ms: int = 0, server=None) -> None:
+        self.contradicted, self.ms, self.server, self.seen = contradicted, ms, server, []
+
+    def contradiction(self, cue):
+        self.seen.append(cue.title)
+        if self.server is not None:
+            self.server.now += self.ms / 1000
+        return "conflicting words" if cue.title in self.contradicted else None
+
+
+def test_fact_check_drops_contradicted_cues_after_dedupe(replay):
+    checker = _Checker({"Topic1 alpha1"})
+    out = _run(replay, _FakeServer(replay.VERIFY_SYSTEM, cue_ms=100), fact_check=checker)
+    titles = [c["title"] for c in out["cues"]]
+    assert "Topic1 alpha1" not in titles and "Topic2 alpha2" in titles
+    assert out["fact_check_drops"] == 1
+    assert len(out["fact_check_ms"]) == len(checker.seen) == len(titles) + 1
+
+
+def test_realtime_spacing_charges_fact_check_latency(replay):
+    without = _run(replay, _FakeServer(replay.VERIFY_SYSTEM, cue_ms=2000), realtime=True)
+    server = _FakeServer(replay.VERIFY_SYSTEM, cue_ms=2000)
+    checked = _run(
+        replay, server, realtime=True, fact_check=_Checker(set(), ms=4000, server=server)
+    )
+    assert checked["attempts"] < without["attempts"]
+
+
+def test_realtime_spacing_charges_a_fact_check_that_drops_the_cue(replay):
+    # Every cue dropped: no min interval runs, so only the in-flight window spaces attempts.
+    class _All(_Checker):
+        def contradiction(self, cue):
+            super().contradiction(cue)
+            return "conflicting words"
+
+    def attempts(ms: int) -> int:
+        server = _FakeServer(replay.VERIFY_SYSTEM, cue_ms=2000)
+        out = _run(replay, server, realtime=True, fact_check=_All(set(), ms=ms, server=server))
+        assert out["cues"] == []
+        return out["attempts"]
+
+    assert attempts(4000) < attempts(0)
+
+
+def test_a_contradicted_title_is_never_offered_again(replay):
+    class _Repeating(_FakeServer):
+        def post(self, url, json, timeout):  # noqa: A002
+            self.cue_payloads.append(json)
+            return _Resp('{"cue": true, "title": "Cubone", "body": "A Ghost-type Pokemon."}')
+
+    checker = _Checker({"Cubone"})
+    out = _run(replay, _Repeating(replay.VERIFY_SYSTEM, cue_ms=100), fact_check=checker)
+    assert out["fact_check_drops"] == 1 and checker.seen == ["Cubone"]
+    assert out["dedup_drops"] == out["attempts"] - 1
+
+
+def test_main_rejects_fact_check_without_kiwix(replay, monkeypatch, tmp_path):
+    segments = tmp_path / "segments.json"
+    segments.write_text("[]")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["replay.py", str(segments), "--endpoint", "http://model/v1", "--model", "m",
+         "--fact-check"],
+    )
+    with pytest.raises(SystemExit):
+        replay.main()
+
+
 def test_extra_merges_into_the_shipped_payload(replay):
     server = _FakeServer(replay.VERIFY_SYSTEM, cue_ms=100)
     _run(replay, server, extra={"custom_params": {"thinking_budget": 512},
@@ -742,9 +811,23 @@ def test_main_records_every_setting(replay, monkeypatch, tmp_path):
     replay.main()
     settings = json.loads(out.read_text())["settings"]
     assert settings == {
-        "model": "gpt-x", "grounded": False, "realtime": False, "verify": "",
+        "model": "gpt-x", "grounded": False, "realtime": False, "verify": "", "fact_check": False, "fact_check_model": None,
         "max_tokens": 77, "extra": {}, "reasoning_effort": "high", "no_template_kwargs": False,
     }
+
+
+@pytest.mark.parametrize("flag, recorded", [([], "gpt-x"), (["--fact-check-model", "fc"], "fc")])
+def test_main_records_the_fact_check_model(replay, monkeypatch, tmp_path, flag, recorded):
+    segments = tmp_path / "s.json"
+    segments.write_text("[]")  # no conversations: nothing is checked, settings still recorded
+    out = tmp_path / "o.json"
+    monkeypatch.setattr(sys, "argv", [
+        "replay.py", str(segments), "--endpoint", "http://model/v1", "--model", "gpt-x",
+        "--out", str(out), "--fact-check", "--kiwix", "http://kiwix", *flag,
+    ])
+    replay.main()
+    settings = json.loads(out.read_text())["settings"]
+    assert settings["fact_check"] is True and settings["fact_check_model"] == recorded
 
 
 def test_blind_report_names_the_file_and_line_of_bad_json(tmp_path, monkeypatch):

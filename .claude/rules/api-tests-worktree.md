@@ -9,6 +9,10 @@ paths:
   checkout), so pytest silently tests that tree's source, not yours.
 - Check first: `python -c "import api.session; print(api.session.__file__)"`.
 - Pin it per run with `PYTHONPATH=$PWD/src` from `api/` rather than re-installing over a peer's env.
+- Install `.[dev,persistence]` like CI: without psycopg the outage classifier sees no pool, and
+  the faked-pool cases in `test_pg_unreachable.py` skip (they failed before XERK-2057).
+- Don't pass `--no-cov` to `test_langid.py`: its `no_cover` timing tests then fail with
+  `'NoneType' object has no attribute 'pause'` (pytest-cov's marker needs coverage on).
 
 # Live Postgres tests (`TENIR_TEST_PG_DSN`) without Docker
 

@@ -9,8 +9,9 @@ three dedupe backstops (normalized title + substance fingerprint +
 title-subject containment). Ungrounded by default; ``--grounded`` adds live
 retrieval evidence (cached per transcript window so every model under
 comparison sees identical evidence), ``--realtime`` spaces attempts by the
-measured call latency instead of a fixed 2.5 s, and ``--verify`` runs the
-self-check pass on every emitted cue.
+measured call latency instead of a fixed 2.5 s, ``--verify`` runs the
+self-check pass on every emitted cue, and ``--fact-check`` runs production's
+encyclopedia fact check after dedupe.
 
 Usage: see scripts/cue_eval/README.md.
 """
@@ -268,6 +269,7 @@ def replay_conversation(
     realtime: bool = False,
     verify: str = "",
     verify_adapt=None,
+    fact_check=None,
     clock=time.monotonic,
 ) -> dict:
     recent: collections.deque[str] = collections.deque(maxlen=CONTEXT_SEGMENTS)
@@ -286,6 +288,8 @@ def replay_conversation(
         "verify_ms": [],
         "verify_drops": 0,
         "verify_errors": 0,
+        "fact_check_ms": [],
+        "fact_check_drops": 0,
         "evidence_windows": 0,
         "evidence_empty": 0,
         "cues": [],
@@ -361,6 +365,20 @@ def replay_conversation(
         ):
             out["dedup_drops"] += 1
             return False
+        if fact_check is not None:
+            # As Session._generate_cue: after dedupe, and a contradicted cue's title is
+            # never offered again (the model would re-propose the same wrong fact).
+            c_started = clock()
+            conflict = fact_check.contradiction(cue)
+            check_ms = int((clock() - c_started) * 1000)
+            out["fact_check_ms"].append(check_ms)
+            in_flight_ms += check_ms
+            if realtime:
+                next_free_ms = at + in_flight_ms
+            if conflict:
+                norms.add(norm)
+                out["fact_check_drops"] += 1
+                return False
         norms.add(norm)
         surfaced.append(cue)
         substance.append(tokens)
@@ -459,6 +477,16 @@ def main() -> None:
         "calls unsafe",
     )
     ap.add_argument(
+        "--fact-check", action="store_true",
+        help="run the encyclopedia fact check (api/cue/factcheck.py) on every cue that "
+        "survives dedupe, as production does, against --kiwix; drops contradicted cues",
+    )
+    ap.add_argument("--kiwix-book", default="wikipedia_en_all", help="Kiwix book for --fact-check")
+    ap.add_argument(
+        "--fact-check-model", default="",
+        help="model for --fact-check (production uses API_LLM_MODEL); default --model",
+    )
+    ap.add_argument(
         "--refetch-empty", action="store_true",
         help="with --grounded: re-query windows cached with no evidence (a tier "
         "may have been rate-limited); repeat until the empty count stops falling",
@@ -473,6 +501,8 @@ def main() -> None:
     if args.no_template_kwargs and args.verify in ("low", "medium"):
         # Without chat_template_kwargs there is no way to ask for a thinking mode.
         ap.error("--verify low/medium needs chat_template_kwargs; use --verify off here")
+    if args.fact_check and not args.kiwix:
+        ap.error("--fact-check needs --kiwix")
 
     evidence = None
     if args.grounded:
@@ -523,6 +553,20 @@ def main() -> None:
             endpoint=args.endpoint, model=args.model, api_key=args.api_key, **gen_kwargs
         )
     url = args.endpoint.rstrip("/") + "/chat/completions"
+    make_checker = None
+    if args.fact_check:
+        from api.config import settings
+        from api.cue.factcheck import FactChecker
+
+        def make_checker() -> FactChecker:
+            # One per conversation, as production builds one per session: a conversation
+            # tripping the Kiwix backoff must not switch the check off in the others.
+            return FactChecker(
+                endpoint=args.endpoint, model=args.fact_check_model or args.model,
+                api_key=args.api_key, kiwix_endpoint=args.kiwix, kiwix_book=args.kiwix_book,
+                # The production budget (make_fact_checker): under the session's wait.
+                budget_s=max(0.5, settings.cue_fact_check_timeout_s - 0.5),
+            )
 
     results: list[dict | None] = [None] * len(conv_ids)
     lock = threading.Lock()
@@ -543,6 +587,7 @@ def main() -> None:
                         gen, client, url, conv_ids[i], by_conv[conv_ids[i]],
                         extra=extra, evidence=evidence, realtime=args.realtime,
                         verify=args.verify, verify_adapt=adapt,
+                        fact_check=make_checker() if make_checker else None,
                     )
                 except Exception as exc:  # a dead thread must fail the run, not shrink it
                     with lock:
@@ -568,7 +613,9 @@ def main() -> None:
         # What produced these numbers, so runs can be told apart afterwards.
         "settings": {
             "model": args.model, "grounded": args.grounded, "realtime": args.realtime,
-            "verify": args.verify, "max_tokens": args.max_tokens or None, "extra": extra,
+            "verify": args.verify, "fact_check": args.fact_check,
+            "fact_check_model": (args.fact_check_model or args.model) if args.fact_check else None,
+            "max_tokens": args.max_tokens or None, "extra": extra,
             "reasoning_effort": args.reasoning_effort or None,
             "no_template_kwargs": args.no_template_kwargs,
         },
@@ -586,6 +633,8 @@ def main() -> None:
             f"verify dropped {sum(c['verify_drops'] for c in convs)} unsafe, "
             f"{sum(c['verify_errors'] for c in convs)} on verifier errors"
         )
+    if args.fact_check:
+        notes.append(f"fact check dropped {sum(c['fact_check_drops'] for c in convs)}")
     if evidence:
         notes.append(
             f"{sum(c['evidence_empty'] for c in convs)}/"

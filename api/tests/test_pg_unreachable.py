@@ -160,9 +160,16 @@ def _connection_lost() -> Exception:
     return psycopg.OperationalError("server closed the connection unexpectedly")
 
 
+def _no_connection() -> Exception:
+    # is_database_unavailable() classifies PoolTimeout only once psycopg imports: without
+    # the persistence extra (a dev-only install) there is no pool, so nothing to classify.
+    pytest.importorskip("psycopg")
+    return _PoolTimeout("couldn't get a connection after 5.00 sec")
+
+
 @pytest.mark.parametrize(
     "lost",
-    [lambda: _PoolTimeout("couldn't get a connection after 5.00 sec"), _connection_lost],
+    [_no_connection, _connection_lost],
     ids=["no-connection", "connection-lost"],
 )
 def test_database_lost_mid_apply_is_shared_across_openers_of_one_dsn(monkeypatch, lost) -> None:
