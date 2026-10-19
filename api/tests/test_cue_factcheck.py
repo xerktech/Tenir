@@ -469,6 +469,102 @@ def test_dots_inside_a_title_segment_still_read() -> None:
     assert "/content/b/...And_Justice_for_All_(album)" in calls
 
 
+def test_an_empty_title_is_never_read() -> None:
+    # "/content/<book>/" redirects to the book's landing page, which is no reference.
+    calls: list = []
+    checker = _checker(_transport({}, calls=calls))
+    checker._ask = lambda *a: {"titles": ["", "  "]}
+    assert checker.contradiction(_GHOST) is None
+    assert [c for c in calls if not c.endswith("/chat/completions")] == []
+
+
+def test_a_bare_string_of_titles_is_not_read_letter_by_letter() -> None:
+    calls: list = []
+    checker = _checker(_transport({}, calls=calls))
+    checker._ask = lambda *a: {"titles": "Cubone"}
+    assert checker.contradiction(_GHOST) is None
+    assert [c for c in calls if not c.endswith("/chat/completions")] == []
+
+
+def test_an_unencodable_title_skips_only_itself() -> None:
+    import json as _j
+
+    import httpx
+
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/chat/completions"):
+            system = _j.loads(request.content)["messages"][0]["content"]
+            answer = (
+                {"titles": ["\ud800", "Cubone"]}
+                if "Name the" in system
+                else {"contradiction": True, "reference": "Cubone is a Ground type Pokémon"}
+            )
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(answer)}}]})
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) == "Cubone is a Ground type Pokémon"
+    assert checker._kiwix_down_until == 0.0
+
+
+def test_a_redirect_off_kiwix_is_not_a_reference() -> None:
+    import json as _j
+
+    import httpx
+
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            msgs = _j.loads(request.content)["messages"]
+            if "Name the" not in msgs[0]["content"]:
+                prompts.append(msgs[1]["content"])
+            body = {"titles": ["Cubone"]} if "Name the" in msgs[0]["content"] else {}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(body)}}]})
+        if request.url.host == "evil":
+            return httpx.Response(200, text=_KIWIX_PAGE)
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        return httpx.Response(302, headers={"Location": "http://evil/Cubone"})
+
+    checker = _checker(httpx.MockTransport(handle))
+    assert checker.contradiction(_GHOST) is None
+    assert prompts == []  # nothing was checked against the other host's page
+    assert checker._kiwix_down_until == 0.0
+
+
+def test_the_articles_are_read_in_parallel() -> None:
+    import json as _j
+    import threading
+
+    import httpx
+
+    # Each read waits until all three are in flight; one after another, the barrier breaks.
+    barrier = threading.Barrier(3, timeout=2.0)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = {"contradiction": True, "reference": "Cubone is a Ground type Pokémon"}
+            return httpx.Response(200, json={"choices": [{"message": {"content": _j.dumps(body)}}]})
+        if request.url.path == "/catalog/v2/entries":
+            return httpx.Response(200, text=_KIWIX_CATALOG)
+        barrier.wait()
+        return httpx.Response(200, text=_KIWIX_PAGE)
+
+    checker = _checker(httpx.MockTransport(handle))
+    real_ask = checker._ask
+    checker._ask = lambda c, system, user, d: (
+        {"titles": ["A", "B", "C"]} if "Name the" in system else real_ask(c, system, user, d)
+    )
+    assert checker.contradiction(_GHOST) == "Cubone is a Ground type Pokémon"
+    assert not barrier.broken
+
+
 def test_a_catalog_without_the_book_switches_the_check_off() -> None:
     import httpx
 

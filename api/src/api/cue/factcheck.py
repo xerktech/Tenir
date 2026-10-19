@@ -215,7 +215,9 @@ class FactChecker:
         try:
             with httpx.Client(headers=headers, transport=self._transport) as client:
                 proposed = self._ask(client, _PROPOSE, note, deadline).get("titles")
-                titles = list(dict.fromkeys(t for t in proposed or [] if isinstance(t, str)))
+                if not isinstance(proposed, list):
+                    proposed = []  # a bare string would be read letter by letter
+                titles = list(dict.fromkeys(t for t in proposed if isinstance(t, str)))
                 reference = self._reference(client, titles[:_MAX_TITLES], note, deadline)
                 if not reference:
                     return None
@@ -255,7 +257,8 @@ class FactChecker:
     def _book_path(self, client, deadline: float) -> str:
         """The content root of the newest ZIM matching the book filter ("/content/<book>"),
         read once from the Kiwix catalog (~10 ms) and cached."""
-        if self._content is None:
+        content = self._content  # another check may reset it meanwhile
+        if content is None:
             resp = client.get(
                 f"{self._kiwix}/catalog/v2/entries",
                 params={"name": self._book},
@@ -266,8 +269,9 @@ class FactChecker:
             if not roots:
                 raise LookupError(f"no Kiwix book matches {self._book!r}")
             # Several flavours can match (maxi_2026-08, nopic_2026-06): take the newest snapshot.
-            self._content = max(roots, key=lambda r: (_SNAPSHOT.findall(r)[-1:], r))
-        return self._content
+            content = max(roots, key=lambda r: (_SNAPSHOT.findall(r)[-1:], r))
+            self._content = content
+        return content
 
     def _reference(self, client, titles: list[str], note: str, deadline: float) -> str:
         """Each proposed article, fetched straight by title and in parallel. Kiwix's full-text
@@ -278,8 +282,13 @@ class FactChecker:
         import httpx
 
         # quote() keeps "/" so "AC/DC" reads, but httpx resolves a "." or ".." segment, which
-        # would climb out of the book to other Kiwix routes. No article title has one.
-        titles = [t for t in titles if not {".", ".."} & {p.strip() for p in t.split("/")}]
+        # would climb out of the book to other Kiwix routes. No article title has one, and an
+        # empty title reads the book's landing page.
+        titles = [
+            t
+            for t in titles
+            if t.strip() and not {".", ".."} & {p.strip() for p in t.split("/")}
+        ]
         if not titles:
             return ""
         try:
@@ -288,22 +297,28 @@ class FactChecker:
             self._kiwix_failed(exc, "catalog")
             return ""
         timeout = self._kiwix_timeout(deadline)
+        kiwix_host = httpx.URL(self._kiwix).host
 
         def fetch(title: str):
             try:
                 path = urllib.parse.quote(title.strip().replace(" ", "_"))
+            except UnicodeEncodeError as exc:  # a lone surrogate: skip this title only
+                return exc
+            try:
                 page = client.get(f"{self._kiwix}{root}/{path}", timeout=timeout, follow_redirects=True)
                 page.raise_for_status()
-                return page
             except httpx.HTTPError as exc:
                 return exc
+            if page.url.host != kiwix_host:
+                return LookupError(f"redirected off Kiwix to {page.url.host}")
+            return page
 
         with ThreadPoolExecutor(max_workers=_MAX_TITLES) as pool:
             results = list(pool.map(fetch, titles))
         failures = [
             r
             for r in results
-            if isinstance(r, Exception)
+            if isinstance(r, httpx.HTTPError)  # a title Kiwix can't serve isn't Kiwix failing
             and not (isinstance(r, httpx.HTTPStatusError) and r.response.status_code < 500)
         ]
         if results and all(

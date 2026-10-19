@@ -249,8 +249,8 @@ class Settings(BaseSettings):
     cue_kiwix_book: str = "wikipedia_en_all"
     # Encyclopedia fact check of each cue about to be shown (api/cue/factcheck.py): the cue is
     # dropped only when the Kiwix mirror explicitly contradicts it. Needs the openai cue backend
-    # and cue_kiwix_endpoint; fails open. Measured on 369 labelled production cues: 10 of 39
-    # wrong cues dropped, 2 of 274 correct (scripts/cue_eval/RESULTS-2026-10.md).
+    # and cue_kiwix_endpoint; fails open. Measured on 369 labelled production cues: 17 of 41
+    # wrong cues dropped, 2 of 277 correct (scripts/cue_eval/RESULTS-2026-10.md).
     cue_fact_check: bool = True
     # Ceiling on the check (two short model calls + Kiwix). Past it the cue is shown unchecked.
     cue_fact_check_timeout_s: float = 6.0
