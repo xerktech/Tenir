@@ -378,11 +378,11 @@ flight per event loop (one per process in production, which runs a single
 loop; the replay harness runs a loop per worker thread): a fallback that finds
 it busy contributes nothing at once instead of queuing on the server. The search
 in flight has a 30s timeout, so a slow one settles into the topic cache for the next cue instead of being dropped.
-The encyclopedia fact check (`api/cue/factcheck.py`) searches Kiwix for every
-shown cue, so it holds its own one-search slot. A check that finds it busy goes
-ahead with what it already has, or shows the cue unchecked. It keeps its 2s
-per-search cap because the cue waits on it. A cold search trips its 60s backoff,
-which also keeps further cold searches off Kiwix.
+The encyclopedia fact check (`api/cue/factcheck.py`) does not search at all: it
+reads the model's proposed article titles straight from `/content/<book>/<Title>`,
+in parallel (0.3–0.9s each, versus seconds for a cold search), so it needs no
+search slot. Each read has a 2.5s cap because the cue waits on it; only every
+read failing trips its 60s backoff, and one slow article among answers is skipped.
 Narrowing the search to one book does not help: kiwix-serve 3.8's `/search`
 ignores `books.filter.flavour`, and both books share the name `wikipedia_en_all`.
 
