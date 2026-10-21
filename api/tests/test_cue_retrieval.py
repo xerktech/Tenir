@@ -643,6 +643,9 @@ def test_kiwix_slot_stuck_in_an_abandoned_loop_does_not_block_other_loops() -> N
     asyncio.run(other_loop())
     assert len(searches) == 2  # the second loop searched instead of reading busy
     abandoned.run_until_complete(stuck.close())
+    # close() drains the cancelled late search, so closing the loop leaves no pending task to
+    # be garbage-collected later as "Task was destroyed but it is pending!" (XERK-2106).
+    assert all(task.done() for task in asyncio.all_tasks(abandoned))
     abandoned.close()
 
 
@@ -707,6 +710,10 @@ def test_live_retriever_close_cancels_late_tasks() -> None:
         await r.close()
         await asyncio.sleep(0)  # let cancellation propagate
         assert all(t.cancelled() or t.done() for t in r._late_tasks or set())
+        # close() ran before the settle task first did, so its gather never existed: the tier
+        # tasks themselves must be cancelled too, not left running on the closed client.
+        others = asyncio.all_tasks() - {asyncio.current_task()}
+        assert all(t.done() for t in others)
 
     asyncio.run(run())
 

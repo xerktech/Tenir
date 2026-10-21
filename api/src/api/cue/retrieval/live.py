@@ -140,8 +140,13 @@ class LiveEvidenceRetriever:
         return self._client
 
     async def close(self) -> None:
-        for task in self._late_tasks:
+        late = list(self._late_tasks)  # done callbacks shrink the set while we wait
+        for task in late:
             task.cancel()
+        # Await the cancellations: a loop closed right after close() otherwise still holds them
+        # pending, and their garbage collection logs "Task was destroyed but it is pending!"
+        # into whatever runs next (XERK-2106).
+        await asyncio.gather(*late, return_exceptions=True)
         if self._client is not None and self._own_client:
             await self._client.aclose()
             self._client = None
@@ -367,8 +372,11 @@ class LiveEvidenceRetriever:
         if pending:
             late_network = {t for n, t in tiers.items() if t in pending and n != "news"}
             late = asyncio.create_task(self._settle_late(key, network, late_network, pending))
-            self._late_tasks.add(late)
-            late.add_done_callback(self._late_tasks.discard)
+            # The tiers are tracked too: a close() before the settle task first runs cancels it
+            # before its gather exists, which would leave them running on a closed client.
+            for task in (late, *pending):
+                self._late_tasks.add(task)
+                task.add_done_callback(self._late_tasks.discard)
 
         if network:
             self._remember(key, network)

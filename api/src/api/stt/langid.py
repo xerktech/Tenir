@@ -356,8 +356,29 @@ def repeated_word(text: str) -> bool:
     """Whether the turn is only a short syllable said over and over: laughter ("Ha ha ha.")
     and lyric filler ("La la la.") score a high ``frequency_lean`` for it/es/fr by repetition
     alone, so they read as foreign, though no language is being spoken."""
+    if laughter(text):  # "Ha ha haa.", "¡Jajaja!": one syllable, not one repeated token
+        return True
     words = _TOKEN_RE.findall(text[:_MAX_CHARS].lower())
     return len(words) > 1 and len(set(words)) == 1 and len(words[0]) <= _FILLER_MAX_LEN
+
+
+# One laughter token as the STT spells it: a single h/j syllable over and over, run together
+# or drawn out ("ha", "haa", "jajaja", "hahah", "jeje"). "hija", "hoja" change vowel and pt "haja"
+# changes consonant, so they don't match.
+_LAUGH_TOKEN_RE = re.compile(r"([hj])([aeiou])(?:\2|\1\2)*\1?")
+
+
+def laughter(text: str) -> bool:
+    """Whether the turn is only laughter of at least two syllables ("Ja ja ja.", "¡Jajaja!",
+    "Ha ha haa."). Its words are real ones elsewhere (de "ja", fr "je", es lean), so
+    ``detect_lang`` tagged it and it opened a translation run (XERK-2106). A lone "Ja." or
+    "Je" is a word, not laughter."""
+    words = _TOKEN_RE.findall(text[:_MAX_CHARS].lower())
+    return (
+        bool(words)
+        and all(_LAUGH_TOKEN_RE.fullmatch(w) for w in words)
+        and sum(len(re.findall(r"[aeiou]+", w)) for w in words) >= 2
+    )
 
 
 def is_english_word(word: str) -> bool:
@@ -394,7 +415,7 @@ def detect_lang(text: str) -> str | None:
     """
     text = text[:_MAX_CHARS]
     scored = _scores(text)
-    if scored is None:
+    if scored is None or laughter(text):
         return None
     scores, words = scored
     ruled_out = _ruled_out(text)

@@ -1104,3 +1104,102 @@ def test_a_cue_checked_while_the_recording_ended_is_dropped(
         await session.close()
 
     asyncio.run(run())
+
+
+def test_a_slow_redirect_chain_is_cut_off_at_the_wall_clock_limit() -> None:
+    import httpx
+
+    # Each hop answers inside the per-phase timeout, so httpx's own redirect following read
+    # the whole chain (~42 s at Kiwix's limits) before any wall-clock check (XERK-2106).
+    hops: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        hops.append(request.url.path)
+        time.sleep(0.15)
+        return httpx.Response(302, headers={"location": f"/content/b/{len(hops)}"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    start = time.monotonic()
+    with pytest.raises(httpx.ReadTimeout):
+        factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=0.3, follow_redirects=True)
+    assert time.monotonic() - start < 0.7
+    assert len(hops) <= 3
+
+
+def test_a_redirect_hop_gets_only_the_time_left() -> None:
+    import httpx
+
+    timeouts: list[float] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        if request.url.path == "/content/b/A":
+            time.sleep(0.1)
+            return httpx.Response(301, headers={"location": "/content/b/B"})
+        return httpx.Response(200, text="landed")
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    resp = factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0, follow_redirects=True)
+    assert resp.text == "landed" and resp.url.path == "/content/b/B"
+    assert timeouts[0] == 1.0 and timeouts[1] < 0.95
+
+
+def test_redirects_are_capped_at_the_clients_max_redirects() -> None:
+    import httpx
+
+    hops: list[str] = []
+
+    def chain(request: httpx.Request) -> httpx.Response:
+        hops.append(request.url.path)
+        if len(hops) <= 3:
+            return httpx.Response(302, headers={"location": f"/content/b/{len(hops)}"})
+        return httpx.Response(200, text="landed")
+
+    client = httpx.Client(transport=httpx.MockTransport(chain), max_redirects=3)
+    resp = factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0, follow_redirects=True)
+    assert resp.text == "landed" and len(hops) == 4  # three redirects are allowed
+
+    hops.clear()
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda r: hops.append(r.url.path) or httpx.Response(302, headers={"location": "/x"})
+        ),
+        max_redirects=3,
+    )
+    with pytest.raises(httpx.TooManyRedirects):
+        factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0, follow_redirects=True)
+    assert len(hops) == 4  # the fourth redirect is refused, not requested
+
+
+def test_every_redirect_hop_is_closed() -> None:
+    import httpx
+
+    closed: list[str] = []
+
+    class Body(httpx.SyncByteStream):
+        def __init__(self, path: str) -> None:
+            self._path = path
+
+        def __iter__(self):
+            yield b""
+
+        def close(self) -> None:
+            closed.append(self._path)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/content/b/A":
+            return httpx.Response(302, headers={"location": "/content/b/B"}, stream=Body("A"))
+        return httpx.Response(200, stream=Body("B"))
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0, follow_redirects=True)
+    assert closed == ["A", "B"]  # an unclosed hop holds its pooled connection
+
+
+def test_a_redirect_is_returned_as_is_when_not_following() -> None:
+    import httpx
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(302, headers={"location": "/x"}))
+    )
+    assert factcheck._send(client, "GET", "http://kiwix/content/b/A", timeout=1.0).status_code == 302

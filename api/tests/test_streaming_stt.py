@@ -2433,6 +2433,28 @@ def test_speech_start_is_marked_at_the_start_of_the_chunk_that_carried_it() -> N
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("offset, speech", [(0, False), (-2, True)])
+def test_cap_cut_speech_flags_flip_exactly_at_the_cut(offset: int, speech: bool) -> None:
+    # Pins the strict "<" boundaries in _close_turn (XERK-2106): speech starting exactly at the
+    # cut belongs to the tail, not the head, and trailing silence spanning exactly the whole
+    # tail leaves no speech in it. One sample (2 bytes) to the other side flips each flag.
+    async def run() -> None:
+        t = StreamingTranscriber(
+            FakeEngine(), language="en", partial_interval_ms=100000, silence_ms=10000
+        )
+        cut, tail = _ms_to_bytes(2400), _ms_to_bytes(600)
+        t._buf = bytearray(_pcm(3000, amplitude=4000))
+        t._has_speech = True
+        t._speech_from = cut + offset
+        t._trailing_silence = tail + offset
+        t._close_turn(cut)
+        assert t._speech_finals_pending == (1 if speech else 0)  # head_speech
+        assert t._has_speech is speech  # tail_speech
+        await t.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("silence_ms, carried_ms", [(100, 100), (800, 600)])
 def test_cap_cut_shifts_speech_start_and_keeps_trailing_silence_into_the_tail(
     silence_ms: int, carried_ms: int

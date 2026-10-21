@@ -104,3 +104,6 @@ paths:
   - Tests: `test_translation_session.py::test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both`,
     `::test_lone_engine_only_foreign_turn_does_not_open_a_run`.
   - Test fixtures that open a run alone need decidable text ("hola, ¿qué tal?"; "hola" is None).
+- Laughter (`laughter`: one h/j syllable repeated, ≥2 syllables) is never a language: its tokens are
+  real words elsewhere (de "ja", fr "je"), so `detect_lang` tagged "Ja ja ja." and opened runs
+  (XERK-2106). Keep the regex one-vowel, one-consonant per token: "hija", "hoja", pt "haja" are words.

@@ -731,7 +731,18 @@ def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
 
 @pytest.mark.parametrize(
     "text, lang",
-    [("Ha ha ha.", "it"), ("La la la.", "es"), ("La la la la.", "fr")],
+    [
+        ("Ha ha ha.", "it"),
+        ("La la la.", "es"),
+        ("La la la la.", "fr"),
+        # Laughter text langid used to decide (de "ja", fr "je"), or that is no one token
+        # repeated ("haa"): each opened a run (XERK-2106).
+        ("Ja ja ja.", "de"),
+        ("¡Ja, ja, ja!", "es"),
+        ("Je je je.", "fr"),
+        ("¡Jajaja!", "es"),
+        ("Ha ha haa.", "it"),
+    ],
 )
 def test_repeated_word_turns_never_open_a_run(
     monkeypatch: pytest.MonkeyPatch, text: str, lang: str
