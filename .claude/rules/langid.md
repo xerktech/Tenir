@@ -107,3 +107,5 @@ paths:
 - Laughter (`laughter`: one h/j syllable repeated, ≥2 syllables) is never a language: its tokens are
   real words elsewhere (de "ja", fr "je"), so `detect_lang` tagged "Ja ja ja." and opened runs
   (XERK-2106). Keep the regex one-vowel, one-consonant per token: "hija", "hoja", pt "haja" are words.
+  - A vowel-first token ("ahah") needs two h/j: es "ojo"/"eje", de "Ehe" matched otherwise; pt
+    "kkk" needs four k ("KKK"). Check new spellings against wordfreq top-50k in all six languages.

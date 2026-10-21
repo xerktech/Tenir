@@ -118,15 +118,28 @@ def quoted(reference_words: str, reference: str) -> bool:
     return sum(w in text for w in quote) >= 0.8 * len(quote)
 
 
+# Wikipedia's appendix sections (MOS:ORDER), always last: citations and link lists, never facts.
+_BACK_MATTER = (
+    "See_also", "Notes", "Footnotes", "Citations", "References", "Notes_and_references",
+    "Sources", "Works_cited", "Bibliography", "Further_reading", "External_links",
+)  # fmt: skip
+
+
 def _cut_categories(html_text: str) -> str:
-    """The page without its closing category links and ZIM footer: a cue with a year matched
+    """The page without its back matter, category links and ZIM footer: a cue with a year matched
     every "1997 films" category as a fact and crowded the fact slots (XERK-2106). A plain
     find, not a regex: `<div\b[^>]*\bid="catlinks"` backtracks quadratically on a page of
     unclosed "<div " tags (78 s at 200 KB, QA)."""
     # The tag itself, last on the page: article text can quote 'id="catlinks"' (a code block
     # keeps raw quotes), but never a raw "<", so only real markup matches (QA).
     at = html_text.rfind('<div id="catlinks"')
-    return html_text if at < 0 else html_text[:at]
+    if at >= 0:
+        html_text = html_text[:at]
+    # The back matter too: a bibliography or further-reading line repeats a year and a name, so
+    # a year cue filled the slots the categories left with "Collier, Paul (2003)…" (XERK-2106).
+    # It closes every article: 68 sampled Kiwix pages had no other section after it.
+    cuts = [i for i in (html_text.find(f'<h2 id="{h}"') for h in _BACK_MATTER) if i >= 0]
+    return html_text[: min(cuts)] if cuts else html_text
 
 
 def passages(

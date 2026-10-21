@@ -168,6 +168,21 @@ def test_a_title_only_cue_takes_facts_in_page_order_once_each() -> None:
     assert passages(page, "Albert Einstein", article_title="Albert Einstein").count("Help!") == 1
 
 
+def test_back_matter_lines_are_never_facts() -> None:
+    # Bibliography and further-reading entries repeat years and names, so a year cue filled
+    # fact slots with "Collier, Paul (2003)…" (real World War II page, XERK-2106).
+    page = (
+        "<p>World War II was a global conflict between two coalitions from 1939 to 1945.</p>"
+        "<ul><li>Germany surrendered on 8 May 1945</li></ul>"
+        '<h2 id="Further_reading">Further reading</h2>'
+        "<ul><li>Collier, Paul (2003). The Second World War 1940-1945. Osprey.</li></ul>"
+        '<h2 id="External_links">External links</h2><ul><li>World War II 1945 archive</li></ul>'
+    )
+    text = passages(page, "Germany surrendered in 1945", article_title="World War II")
+    assert "Germany surrendered on 8 May 1945" in text
+    assert "Collier" not in text and "archive" not in text
+
+
 def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
     # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
     # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).
