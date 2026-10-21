@@ -597,3 +597,33 @@ def test_repeated_word_flags_laughter_and_lyric_filler_only() -> None:
     assert not repeated_word("Hola.")
     assert not repeated_word("Vamos a comer.")
     assert not repeated_word("")
+    assert repeated_word("Ha ha haa.")  # laughter, though not one token repeated
+
+
+@pytest.mark.parametrize("text", ["Ja ja ja.", "¡Ja, ja, ja!", "Je je je.", "¡Jajaja!", "Ha ha haa."])
+def test_laughter_is_no_language(text: str) -> None:
+    # Each read as de/fr/es on Oct 2026 recordings and opened a translation run (XERK-2106).
+    from api.stt.langid import laughter
+
+    assert laughter(text)
+    assert detect_lang(text) is None
+
+
+@pytest.mark.parametrize(
+    "text, lang",
+    [("Ja.", "de"), ("Je.", None), ("Ja, das stimmt.", "de"), ("Je suis là.", "fr"),
+     ("Jajaja, qué bueno.", "es")],
+)  # fmt: skip
+def test_words_that_sound_like_laughter_still_decide(text: str, lang: str | None) -> None:
+    from api.stt.langid import laughter
+
+    assert not laughter(text)
+    if lang:
+        assert detect_lang(text) == lang
+
+
+@pytest.mark.parametrize("word", ["hija", "hoja", "haja", "jah", "haa", "hola"])
+def test_real_words_and_one_syllable_are_not_laughter(word: str) -> None:
+    from api.stt.langid import laughter
+
+    assert not laughter(word)

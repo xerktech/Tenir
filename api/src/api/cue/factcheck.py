@@ -194,22 +194,41 @@ def _kiwix_down() -> bool:
     return time.monotonic() < _kiwix_down_until
 
 
-def _send(client, method: str, url: str, *, timeout: float, **kwargs):
+def _send(client, method: str, url: str, *, timeout: float, follow_redirects: bool = False, **kwargs):
     """The response, read whole within about `timeout` seconds of wall clock. httpx's timeout
     is per phase, so a body dripped a few bytes at a time never trips it (92 s for a page at
     2 KB/s, XERK-2093) and keeps this worker thread and its connection busy long after the
-    session stopped waiting. The deadline is checked once the headers arrive and after each
-    chunk, so one phase can still overrun it by up to `timeout`, and a redirect chain is only
-    checked once it ends."""
+    session stopped waiting. The deadline is checked once the headers arrive, after each chunk
+    and before each redirect hop, and each hop gets only the time left, so one phase can still
+    overrun it by up to `timeout`. Redirects are followed here, not by httpx, which checks
+    nothing until the chain ends: slow hops ran to max_redirects x the per-phase timeout
+    (~42 s) while holding a Kiwix read slot (XERK-2106)."""
     import httpx
 
     end = time.monotonic() + timeout
-    with client.stream(method, url, timeout=timeout, **kwargs) as resp:
-        body = bytearray()
-        for chunk in itertools.chain([b""], resp.iter_bytes()):  # b"": check once headers are in
-            body += chunk
-            if time.monotonic() > end:
-                raise httpx.ReadTimeout(f"response not read within {timeout:.1f}s", request=resp.request)
+    request = client.build_request(method, url, timeout=timeout, **kwargs)
+    for _ in range(client.max_redirects + 1):
+        resp = client.send(request, stream=True, follow_redirects=False)
+        try:
+            if follow_redirects and resp.next_request is not None:
+                request = resp.next_request
+                left = end - time.monotonic()
+                if left <= 0:
+                    raise httpx.ReadTimeout(
+                        f"redirects not followed within {timeout:.1f}s", request=request
+                    )
+                request.extensions["timeout"] = httpx.Timeout(left).as_dict()
+                continue
+            body = bytearray()
+            for chunk in itertools.chain([b""], resp.iter_bytes()):  # b"": check once headers are in
+                body += chunk
+                if time.monotonic() > end:
+                    raise httpx.ReadTimeout(f"response not read within {timeout:.1f}s", request=resp.request)
+        finally:
+            resp.close()
+        break
+    else:
+        raise httpx.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
     headers = resp.headers.copy()
     # The body is already decoded and whole, so its wire encoding and framing no longer apply.
     for wire in ("content-encoding", "content-length", "transfer-encoding"):
