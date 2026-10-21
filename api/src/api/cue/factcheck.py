@@ -119,7 +119,7 @@ def quoted(reference_words: str, reference: str) -> bool:
 
 
 # Wikipedia's appendix sections (MOS:ORDER): citations and link lists, never facts.
-# "Bibliography" is left out: for an author it is the list of their works (Murakami, Orwell).
+# "Bibliography" counts only as _appendix_bibliography: for an author it lists their works.
 _BACK_MATTER = frozenset({
     "See_also", "Notes", "Footnotes", "Citations", "References", "Notes_and_references",
     "Sources", "Works_cited", "Further_reading", "External_links",
@@ -141,12 +141,27 @@ def _cut_categories(html_text: str) -> str:
     # filled the slots the categories left with "Collier, Paul (2003)…" (XERK-2106). Only the
     # closing run of appendix headings: Nile's first section is "Sources" (where it rises) and
     # "Notes" can come before "Charts" (QA, 562 real pages).
+    headings = list(_H2_ID.finditer(html_text))
     cut = len(html_text)
-    for m in reversed(list(_H2_ID.finditer(html_text))):
-        if m.group(1) not in _BACK_MATTER:
+    for i in reversed(range(len(headings))):
+        m = headings[i]
+        before = headings[i - 1].group(1) if i else ""
+        if not (
+            m.group(1) in _BACK_MATTER
+            or _appendix_bibliography(m.group(1), html_text[m.start() : cut], before)
+        ):
             break
         cut = m.start()
     return html_text[:cut]
+
+
+def _appendix_bibliography(heading: str, section: str, before: str) -> bool:
+    """Whether a "Bibliography" is back matter: it cites (Darwin, Homer: ISBNs, citation
+    markup) or follows another appendix heading ("References", "Bibliography"). An author's
+    own works list (Orwell, Murakami) does neither: 0 of 7 sampled works lists did (QA)."""
+    return heading == "Bibliography" and (
+        before in _BACK_MATTER or "ISBN" in section or 'class="citation' in section
+    )
 
 
 def passages(

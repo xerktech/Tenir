@@ -211,6 +211,26 @@ def test_an_appendix_named_section_followed_by_content_is_content() -> None:
     assert "Atlas" not in text
 
 
+def test_a_citing_bibliography_in_the_closing_run_is_cut_but_a_works_list_is_not() -> None:
+    # Darwin's run is Notes, Citations, Bibliography, External links: a Bibliography that stopped
+    # the cut kept every citation before it ("Retrieved", "ISBN"). Orwell's Bibliography is
+    # his works, followed by the appendix (QA, XERK-2106).
+    def page(bibliography: str) -> str:
+        return (
+            "<p>Charles Darwin was an English naturalist who published a theory of evolution.</p>"
+            '<h2 id="Notes">Notes</h2><ul><li>Darwin 1859 note, retrieved online</li></ul>'
+            f'<h2 id="Bibliography">Bibliography</h2><ul><li>{bibliography}</li></ul>'
+            '<h2 id="External_links">x</h2><ul><li>Darwin 1859 archive</li></ul>'
+        )
+
+    cited = passages(page("Darwin (1859). On the Origin. ISBN 978-0-00-000000-0"), "Darwin in 1859")
+    assert "note" not in cited and "ISBN" not in cited and "archive" not in cited
+    after_notes = passages(page("Darwin (1859). On the Origin. Murray."), "Darwin in 1859")
+    assert "Murray" not in after_notes  # no ISBN, but it follows an appendix heading
+    works = passages(page("1859 – On the Origin of Species").replace('id="Notes"', 'id="Career"'), "Darwin in 1859")
+    assert "On the Origin of Species" in works and "archive" not in works
+
+
 def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
     # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
     # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).
