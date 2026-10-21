@@ -94,3 +94,8 @@ paths:
 - Titles come from the model: drop any with a "." or ".." path segment before reading, because
   `quote()` keeps "/" and httpx resolves dot segments into other Kiwix routes.
 - `/content` reads are case-sensitive ("cubone" 404s); a missing title is skipped, never a trip.
+- `passages()` cuts the page's tail (`_cut_categories`), never by first heading name: Nile's first
+  section is "Sources", "Notes" can precede "Charts". Only the closing run of appendix h2s goes.
+  - "Bibliography" is back matter only right after another appendix heading. ISBNs and citation
+    markup also sit in authors' works lists (Obama, Salaman); those come before the appendix.
+  - Measure a cut on real Kiwix pages (`/random?content=<book>`, a few hundred), not fixtures.
