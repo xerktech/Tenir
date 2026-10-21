@@ -118,6 +118,17 @@ def quoted(reference_words: str, reference: str) -> bool:
     return sum(w in text for w in quote) >= 0.8 * len(quote)
 
 
+def _cut_categories(html_text: str) -> str:
+    """The page without its closing category links and ZIM footer: a cue with a year matched
+    every "1997 films" category as a fact and crowded the fact slots (XERK-2106). A plain
+    find, not a regex: `<div\b[^>]*\bid="catlinks"` backtracks quadratically on a page of
+    unclosed "<div " tags (78 s at 200 KB, QA)."""
+    at = html_text.find('id="catlinks"')
+    if at < 0:
+        return html_text
+    return html_text[: max(0, html_text.rfind("<div", 0, at))]
+
+
 def passages(
     article_html: str, cue_text: str, limit: int = _MAX_REFERENCE_CHARS, article_title: str = ""
 ) -> str:
@@ -126,7 +137,7 @@ def passages(
     Ground") and short list items (a cast line): that is where a deciding fact sits, and long
     paragraphs or navigation boxes out-score them on keyword count (QA, Oct 2026). They go
     before prose so the length cut can't push them out."""
-    body = _REFERENCES.sub(" ", _NON_CONTENT.sub(" ", article_html))
+    body = _REFERENCES.sub(" ", _NON_CONTENT.sub(" ", _cut_categories(article_html)))
     infobox = " ".join(m.group(0) for m in _INFOBOX.finditer(body))
     body = _INFOBOX.sub(" ", body)
 
@@ -148,6 +159,11 @@ def passages(
     }
 
     def hits(text: str) -> int:
+        # A cue made only of title words ("Batman and Robin film") filters nothing out: every
+        # line counts as one hit, so the first facts and paragraphs stand in, rather than the
+        # lead paragraph alone (XERK-2106).
+        if not keywords:
+            return 1
         low = text.lower()
         return sum(w in low for w in keywords)
 
@@ -156,11 +172,13 @@ def passages(
     lead = prose[0] if prose else ""
     facts = [t for _, t in items(infobox, ("tr",))]
     facts += [t for tag, t in content if tag == "li" and len(t) <= _MAX_FACT_CHARS]
-    facts = [t for t in facts if hits(t)]
+    facts = list(dict.fromkeys(t for t in facts if hits(t)))  # a repeated line is one fact
     rest = [t for t in prose[1:] if hits(t)]
     picked = [
         *([lead] if lead else []),
-        *sorted(facts, key=lambda t: (-hits(t), len(t)))[:_MAX_FACTS],
+        # Shortest first among equal hits, unless nothing ranks: then shortest means captions
+        # and "Signature", so page order (the infobox's own rows) stands in (QA).
+        *sorted(facts, key=lambda t: (-hits(t), len(t) if keywords else 0))[:_MAX_FACTS],
         *sorted(rest, key=hits, reverse=True)[:_MAX_PASSAGES],
     ]
     return " … ".join(picked)[:limit]
