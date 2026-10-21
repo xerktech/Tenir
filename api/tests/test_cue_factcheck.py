@@ -124,6 +124,75 @@ def test_citations_and_title_words_never_crowd_out_a_long_cast_line() -> None:
     assert "Critic" not in text
 
 
+def test_category_links_and_the_footer_are_never_facts() -> None:
+    # A real Kiwix page ends in catlinks: a cue with a year matched "1997 films" and every
+    # other year category as a fact, ahead of real ones (Batman & Robin, XERK-2106).
+    cats = "".join(f"<li>1997 {kind} films</li>" for kind in ("American", "superhero", "action"))
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on DC Comics characters.</p>"
+        "<ul><li>George Clooney as Bruce Wayne / Batman</li></ul>"
+        f'<div id="catlinks" class="catlinks"><div id="mw-normal-catlinks">Categories: <ul>{cats}'
+        '</ul></div></div><div class="zim-footer">This page is issued from Wikipedia 1997.</div>'
+    )
+    text = passages(page, "George Clooney played Batman in 1997", article_title="Batman & Robin (film)")
+    assert "George Clooney as Bruce Wayne" in text
+    assert "films" not in text and "issued" not in text
+
+
+def test_a_cue_of_only_title_words_still_reads_past_the_lead() -> None:
+    # Every cue word is a title word, so none ranks: the reference used to shrink to the lead
+    # paragraph, missing a fact further down (XERK-2106).
+    page = (
+        "<p>Batman & Robin is a 1997 American superhero film based on DC Comics characters.</p>"
+        "<ul><li>Directed by Joel Schumacher</li></ul>"
+        "<p>Batman & Robin was released on June 20, 1997, and was a critical failure.</p>"
+    )
+    text = passages(page, "Batman and Robin film", article_title="Batman & Robin (film)")
+    assert "Joel Schumacher" in text and "critical failure" in text
+
+
+def test_a_title_only_cue_takes_facts_in_page_order_once_each() -> None:
+    # With nothing to rank, shortest-first picked captions and "Signature" over the infobox's
+    # own rows, and a line repeated on the page filled two slots (QA, XERK-2106).
+    rows = "".join(f"<tr><th>Row {i}</th><td>a longer infobox value {i}</td></tr>" for i in range(8))
+    page = (
+        "<p>Albert Einstein was a German-born theoretical physicist and a famous scientist.</p>"
+        f'<table class="infobox">{rows}</table>'
+        "<ul><li>Signature</li><li>Help! (1965)</li><li>Help! (1965)</li></ul>"
+    )
+    text = passages(page, "Albert Einstein", article_title="Albert Einstein")
+    assert all(f"Row {i}" in text for i in range(8))
+    assert "Signature" not in text and "Help!" not in text
+
+    page = "<p>Albert Einstein was a German-born theoretical physicist.</p><ul><li>Help! (1965)</li><li>Help! (1965)</li></ul>"
+    assert passages(page, "Albert Einstein", article_title="Albert Einstein").count("Help!") == 1
+
+
+def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
+    # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
+    # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).
+    page = (
+        '<div class="mw-parser-output"><p>MediaWiki renders every category link into one box.</p>'
+        '<pre>&lt;div id="catlinks"&gt;</pre><ul><li>Born 14 March 1879 in Ulm</li></ul></div>'
+        '<div id="catlinks" class="catlinks">Categories: <ul><li>1879 births</li></ul></div>'
+    )
+    text = passages(page, "Einstein was born in 1879 in Ulm")
+    assert "Born 14 March 1879 in Ulm" in text and "births" not in text
+
+
+def test_a_repeated_fact_takes_one_slot_on_the_keyword_path_too() -> None:
+    page = "<p>Lead paragraph about the office.</p>" + "<ul><li>Assumed office 22 May 2012</li></ul>" * 2
+    assert passages(page, "He assumed office in 2012").count("Assumed office") == 1
+
+
+def test_unclosed_divs_do_not_stall_the_category_cut() -> None:
+    # A regex for the catlinks div backtracked quadratically: 78 s on 200 KB of "<div " (QA).
+    start = time.monotonic()
+    passages("<div " * 40000, "x 1997")
+    passages('<div id="catlinks">' + "<div " * 40000, "x 1997")
+    assert time.monotonic() - start < 1.0
+
+
 def test_the_articles_own_title_words_rank_nothing() -> None:
     trivia = "".join(f"<li>Batman & Robin trivia: who played whom, item {i}</li>" for i in range(9))
     page = (
