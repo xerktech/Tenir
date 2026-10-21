@@ -303,7 +303,7 @@ def leans_english(text: str, versus: str) -> bool:
     """
     text = text[:_MAX_CHARS]
     scored = _scores(text)
-    if scored is None or laughter(text):
+    if scored is None:
         return False
     scores, _ = scored
     return scores["en"] >= _LEAN_MIN_EN_HITS and scores["en"] > scores.get(versus, 0)
