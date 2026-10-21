@@ -148,20 +148,20 @@ def _cut_categories(html_text: str) -> str:
         before = headings[i - 1].group(1) if i else ""
         if not (
             m.group(1) in _BACK_MATTER
-            or _appendix_bibliography(m.group(1), html_text[m.start() : cut], before)
+            or _appendix_bibliography(m.group(1), before)
         ):
             break
         cut = m.start()
     return html_text[:cut]
 
 
-def _appendix_bibliography(heading: str, section: str, before: str) -> bool:
-    """Whether a "Bibliography" is back matter: it cites (Darwin, Homer: ISBNs, citation
-    markup) or follows another appendix heading ("References", "Bibliography"). An author's
-    own works list (Orwell, Murakami) does neither: 0 of 7 sampled works lists did (QA)."""
-    return heading == "Bibliography" and (
-        before in _BACK_MATTER or "ISBN" in section or 'class="citation' in section
-    )
+def _appendix_bibliography(heading: str, before: str) -> bool:
+    """Whether a "Bibliography" is back matter: only right after another appendix heading
+    (Darwin: Notes, Citations, Bibliography). Citations and ISBNs don't tell it from an author's
+    own works list, which carries both (Obama, Salaman) and sits before the appendix (QA). A
+    citing one after a content heading stays, as before: a kept citation costs a fact slot, a
+    cut works list loses the evidence."""
+    return heading == "Bibliography" and before in _BACK_MATTER
 
 
 def passages(

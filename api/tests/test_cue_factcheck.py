@@ -225,9 +225,11 @@ def test_a_citing_bibliography_in_the_closing_run_is_cut_but_a_works_list_is_not
 
     cited = passages(page("Darwin (1859). On the Origin. ISBN 978-0-00-000000-0"), "Darwin in 1859")
     assert "note" not in cited and "ISBN" not in cited and "archive" not in cited
-    after_notes = passages(page("Darwin (1859). On the Origin. Murray."), "Darwin in 1859")
-    assert "Murray" not in after_notes  # no ISBN, but it follows an appendix heading
-    works = passages(page("1859 – On the Origin of Species").replace('id="Notes"', 'id="Career"'), "Darwin in 1859")
+    # Obama's works list carries ISBNs but follows a content heading: it is evidence (QA).
+    works = page("1859 – On the Origin of Species. ISBN 978-0-00-000000-0").replace(
+        'id="Notes"', 'id="Career"'
+    )
+    works = passages(works, "Darwin in 1859")
     assert "On the Origin of Species" in works and "archive" not in works
 
 
