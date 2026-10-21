@@ -123,10 +123,10 @@ def _cut_categories(html_text: str) -> str:
     every "1997 films" category as a fact and crowded the fact slots (XERK-2106). A plain
     find, not a regex: `<div\b[^>]*\bid="catlinks"` backtracks quadratically on a page of
     unclosed "<div " tags (78 s at 200 KB, QA)."""
-    at = html_text.find('id="catlinks"')
-    if at < 0:
-        return html_text
-    return html_text[: max(0, html_text.rfind("<div", 0, at))]
+    # The tag itself, last on the page: article text can quote 'id="catlinks"' (a code block
+    # keeps raw quotes), but never a raw "<", so only real markup matches (QA).
+    at = html_text.rfind('<div id="catlinks"')
+    return html_text if at < 0 else html_text[:at]
 
 
 def passages(

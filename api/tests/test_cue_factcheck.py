@@ -168,6 +168,23 @@ def test_a_title_only_cue_takes_facts_in_page_order_once_each() -> None:
     assert passages(page, "Albert Einstein", article_title="Albert Einstein").count("Help!") == 1
 
 
+def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
+    # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
+    # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).
+    page = (
+        '<div class="mw-parser-output"><p>MediaWiki renders every category link into one box.</p>'
+        '<pre>&lt;div id="catlinks"&gt;</pre><ul><li>Born 14 March 1879 in Ulm</li></ul></div>'
+        '<div id="catlinks" class="catlinks">Categories: <ul><li>1879 births</li></ul></div>'
+    )
+    text = passages(page, "Einstein was born in 1879 in Ulm")
+    assert "Born 14 March 1879 in Ulm" in text and "births" not in text
+
+
+def test_a_repeated_fact_takes_one_slot_on_the_keyword_path_too() -> None:
+    page = "<p>Lead paragraph about the office.</p>" + "<ul><li>Assumed office 22 May 2012</li></ul>" * 2
+    assert passages(page, "He assumed office in 2012").count("Assumed office") == 1
+
+
 def test_unclosed_divs_do_not_stall_the_category_cut() -> None:
     # A regex for the catlinks div backtracked quadratically: 78 s on 200 KB of "<div " (QA).
     start = time.monotonic()
