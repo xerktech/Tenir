@@ -383,7 +383,9 @@ def _laugh_syllables(word: str) -> int:
         return 0
     if m.group(1) and plain.count(m.group(2)) < 2:  # es "ojo", "eje", de "Ehe" are words
         return 0
-    return len(re.findall(r"[aeiou]+", plain))
+    syllables = len(re.findall(r"[aeiou]+", plain))
+    # An accented single syllable is a word, not a laugh: pt "Já, já." (right away), "há" (QA).
+    return 0 if syllables < 2 and plain != word else syllables
 
 
 def laughter(text: str) -> bool:

@@ -118,11 +118,13 @@ def quoted(reference_words: str, reference: str) -> bool:
     return sum(w in text for w in quote) >= 0.8 * len(quote)
 
 
-# Wikipedia's appendix sections (MOS:ORDER), always last: citations and link lists, never facts.
-_BACK_MATTER = (
+# Wikipedia's appendix sections (MOS:ORDER): citations and link lists, never facts.
+# "Bibliography" is left out: for an author it is the list of their works (Murakami, Orwell).
+_BACK_MATTER = frozenset({
     "See_also", "Notes", "Footnotes", "Citations", "References", "Notes_and_references",
-    "Sources", "Works_cited", "Bibliography", "Further_reading", "External_links",
-)  # fmt: skip
+    "Sources", "Works_cited", "Further_reading", "External_links",
+})  # fmt: skip
+_H2_ID = re.compile(r'<h2 id="([^"<>]*)"')
 
 
 def _cut_categories(html_text: str) -> str:
@@ -135,11 +137,16 @@ def _cut_categories(html_text: str) -> str:
     at = html_text.rfind('<div id="catlinks"')
     if at >= 0:
         html_text = html_text[:at]
-    # The back matter too: a bibliography or further-reading line repeats a year and a name, so
-    # a year cue filled the slots the categories left with "Collier, Paul (2003)…" (XERK-2106).
-    # It closes every article: 68 sampled Kiwix pages had no other section after it.
-    cuts = [i for i in (html_text.find(f'<h2 id="{h}"') for h in _BACK_MATTER) if i >= 0]
-    return html_text[: min(cuts)] if cuts else html_text
+    # The back matter too: a further-reading line repeats a year and a name, so a year cue
+    # filled the slots the categories left with "Collier, Paul (2003)…" (XERK-2106). Only the
+    # closing run of appendix headings: Nile's first section is "Sources" (where it rises) and
+    # "Notes" can come before "Charts" (QA, 562 real pages).
+    cut = len(html_text)
+    for m in reversed(list(_H2_ID.finditer(html_text))):
+        if m.group(1) not in _BACK_MATTER:
+            break
+        cut = m.start()
+    return html_text[:cut]
 
 
 def passages(

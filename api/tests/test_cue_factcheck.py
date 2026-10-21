@@ -183,6 +183,34 @@ def test_back_matter_lines_are_never_facts() -> None:
     assert "Collier" not in text and "archive" not in text
 
 
+@pytest.mark.parametrize("section", ["See_also", "Notes", "References", "Sources", "Further_reading"])
+def test_the_closing_appendix_run_is_cut(section: str) -> None:
+    page = (
+        "<p>The Nile is a major river in northeastern Africa that flows into the Mediterranean.</p>"
+        "<ul><li>Length 6,650 km</li></ul>"
+        f'<h2 id="{section}">x</h2><ul><li>Nile 6,650 km atlas, 2003 edition</li></ul>'
+        '<h2 id="External_links">x</h2><ul><li>Nile 6,650 km online map</li></ul>'
+    )
+    text = passages(page, "The Nile is 6,650 km long", article_title="Nile")
+    assert "Length 6,650 km" in text
+    assert "atlas" not in text and "online map" not in text
+
+
+def test_an_appendix_named_section_followed_by_content_is_content() -> None:
+    # Nile's first section is "Sources" (where the river rises), and an author's "Bibliography"
+    # is the list of their works: cutting at the first such heading lost 95% of Nile (QA).
+    page = (
+        "<p>The Nile is a major river in northeastern Africa that flows into the Mediterranean.</p>"
+        '<h2 id="Sources">Sources</h2><p>The Nile rises at Lake Victoria in 1858 records.</p>'
+        '<h2 id="Bibliography">Bibliography</h2><ul><li>1988: Dance Dance Dance</li></ul>'
+        '<h2 id="Hydrology">Hydrology</h2><p>The Nile Delta covers about 22,000 km2 by 1988.</p>'
+        '<h2 id="References">References</h2><ul><li>Atlas of the Nile, 1988 edition</li></ul>'
+    )
+    text = passages(page, "The Nile Delta was mapped in 1858 and 1988", article_title="Nile")
+    assert "Lake Victoria" in text and "Dance Dance Dance" in text and "22,000" in text
+    assert "Atlas" not in text
+
+
 def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
     # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
     # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).
