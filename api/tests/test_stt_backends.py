@@ -17,6 +17,7 @@ import pytest
 
 from api.stt import make_transcriber
 from api.stt.engine import SAMPLE_RATE
+from api.stt.langid import laughter
 from api.stt.streaming import StreamingTranscriber
 from api.stt.stub import StubTranscriber
 from api.stt.parakeet import ParakeetEngine
@@ -204,6 +205,25 @@ def test_parakeet_requests_verbose_json_for_the_detected_language(
     assert result.text == "hola amigos"
     assert result.language == "es"
     assert result.words == []
+
+
+def test_parakeet_composes_decomposed_accents(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A decomposed "Já" (J + a + U+0301) tokenised to "ja" in langid, so pt "Já, já."
+    # (right away) read as laughter and "Já." as German (XERK-2181).
+    _fake_body(
+        monkeypatch,
+        {
+            "text": " Ja\u0301, ja\u0301, \u00bd.",
+            "language": "pt",
+            "words": [{"word": "Ja\u0301,", "start": 0.0, "end": 0.3}],
+        },
+    )
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
+    result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+
+    assert result.text == "J\u00e1, j\u00e1, \u00bd."  # NFC, not NFKC: "½" stays
+    assert result.words[0].text == "J\u00e1,"
+    assert not laughter(result.text)
 
 
 @pytest.mark.parametrize(

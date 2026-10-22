@@ -42,3 +42,6 @@ paths:
   with no padded retry and no XERK-174 partial fallback — the partials over that noise were the
   same invention ("Gracias. al canal!" captioned in QA).
   - Tests: `test_streaming_stt.py::test_a_final_the_engine_calls_non_speech_drops_the_turn_and_its_partials`.
+- `transcribe` NFC-normalises text and words: `langid` tokenises without combining marks, so a
+  decomposed "Já" read as "ja" (laughter, or German) downstream (XERK-2181).
+  - Tests: `test_stt_backends.py::test_parakeet_composes_decomposed_accents`.

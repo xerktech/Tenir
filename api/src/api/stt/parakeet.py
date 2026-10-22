@@ -139,14 +139,16 @@ class ParakeetEngine:
         finally:
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()
-        text = (body.get("text") or "").strip()
+        # NFC: langid tokenises without combining marks, so a decomposed "Já" read as "ja"
+        # (laughter, or German) downstream (XERK-2181).
+        text = unicodedata.normalize("NFC", body.get("text") or "").strip()
         if _non_speech(text):
             return EngineResult(text="", words=[], language=language, non_speech=True)
         # Word timestamps are returned only when the server supports them; absent (vLLM
         # sends "words": null), the streaming layer falls back to segment-boundary timing.
         words = [
             EngineWord(
-                text=w.get("word", ""),
+                text=unicodedata.normalize("NFC", w.get("word", "")),
                 start=float(w.get("start", 0.0)),
                 end=float(w.get("end", 0.0)),
             )
