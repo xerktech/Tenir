@@ -168,6 +168,71 @@ def test_a_title_only_cue_takes_facts_in_page_order_once_each() -> None:
     assert passages(page, "Albert Einstein", article_title="Albert Einstein").count("Help!") == 1
 
 
+def test_back_matter_lines_are_never_facts() -> None:
+    # Bibliography and further-reading entries repeat years and names, so a year cue filled
+    # fact slots with "Collier, Paul (2003)…" (real World War II page, XERK-2106).
+    page = (
+        "<p>World War II was a global conflict between two coalitions from 1939 to 1945.</p>"
+        "<ul><li>Germany surrendered on 8 May 1945</li></ul>"
+        '<h2 id="Further_reading">Further reading</h2>'
+        "<ul><li>Collier, Paul (2003). The Second World War 1940-1945. Osprey.</li></ul>"
+        '<h2 id="External_links">External links</h2><ul><li>World War II 1945 archive</li></ul>'
+    )
+    text = passages(page, "Germany surrendered in 1945", article_title="World War II")
+    assert "Germany surrendered on 8 May 1945" in text
+    assert "Collier" not in text and "archive" not in text
+
+
+@pytest.mark.parametrize("section", ["See_also", "Notes", "References", "Sources", "Further_reading"])
+def test_the_closing_appendix_run_is_cut(section: str) -> None:
+    page = (
+        "<p>The Nile is a major river in northeastern Africa that flows into the Mediterranean.</p>"
+        "<ul><li>Length 6,650 km</li></ul>"
+        f'<h2 id="{section}">x</h2><ul><li>Nile 6,650 km atlas, 2003 edition</li></ul>'
+        '<h2 id="External_links">x</h2><ul><li>Nile 6,650 km online map</li></ul>'
+    )
+    text = passages(page, "The Nile is 6,650 km long", article_title="Nile")
+    assert "Length 6,650 km" in text
+    assert "atlas" not in text and "online map" not in text
+
+
+def test_an_appendix_named_section_followed_by_content_is_content() -> None:
+    # Nile's first section is "Sources" (where the river rises), and an author's "Bibliography"
+    # is the list of their works: cutting at the first such heading lost 95% of Nile (QA).
+    page = (
+        "<p>The Nile is a major river in northeastern Africa that flows into the Mediterranean.</p>"
+        '<h2 id="Sources">Sources</h2><p>The Nile rises at Lake Victoria in 1858 records.</p>'
+        '<h2 id="Bibliography">Bibliography</h2><ul><li>1988: Dance Dance Dance</li></ul>'
+        '<h2 id="Hydrology">Hydrology</h2><p>The Nile Delta covers about 22,000 km2 by 1988.</p>'
+        '<h2 id="References">References</h2><ul><li>Atlas of the Nile, 1988 edition</li></ul>'
+    )
+    text = passages(page, "The Nile Delta was mapped in 1858 and 1988", article_title="Nile")
+    assert "Lake Victoria" in text and "Dance Dance Dance" in text and "22,000" in text
+    assert "Atlas" not in text
+
+
+def test_a_citing_bibliography_in_the_closing_run_is_cut_but_a_works_list_is_not() -> None:
+    # Darwin's run is Notes, Citations, Bibliography, External links: a Bibliography that stopped
+    # the cut kept every citation before it ("Retrieved", "ISBN"). Orwell's Bibliography is
+    # his works, followed by the appendix (QA, XERK-2106).
+    def page(bibliography: str) -> str:
+        return (
+            "<p>Charles Darwin was an English naturalist who published a theory of evolution.</p>"
+            '<h2 id="Notes">Notes</h2><ul><li>Darwin 1859 note, retrieved online</li></ul>'
+            f'<h2 id="Bibliography">Bibliography</h2><ul><li>{bibliography}</li></ul>'
+            '<h2 id="External_links">x</h2><ul><li>Darwin 1859 archive</li></ul>'
+        )
+
+    cited = passages(page("Darwin (1859). On the Origin. ISBN 978-0-00-000000-0"), "Darwin in 1859")
+    assert "note" not in cited and "ISBN" not in cited and "archive" not in cited
+    # Obama's works list carries ISBNs but follows a content heading: it is evidence (QA).
+    works = page("1859 – On the Origin of Species. ISBN 978-0-00-000000-0").replace(
+        'id="Notes"', 'id="Career"'
+    )
+    works = passages(works, "Darwin in 1859")
+    assert "On the Origin of Species" in works and "archive" not in works
+
+
 def test_quoted_catlinks_markup_in_the_article_is_not_the_cut() -> None:
     # Cutting at the first 'id="catlinks"' anywhere sliced back to the content wrapper and
     # emptied the reference when an article quoted MediaWiki markup (QA, XERK-2106).

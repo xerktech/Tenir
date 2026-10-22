@@ -742,6 +742,10 @@ def test_two_undecidable_turns_in_one_language_open_the_run_and_translate_both(
         ("Je je je.", "fr"),
         ("¡Jajaja!", "es"),
         ("Ha ha haa.", "it"),
+        ("Héhé.", "fr"),
+        ("Ahahah.", "it"),
+        ("Kkkkkk.", "pt"),
+        ("Rsrsrs.", "pt"),
     ],
 )
 def test_repeated_word_turns_never_open_a_run(

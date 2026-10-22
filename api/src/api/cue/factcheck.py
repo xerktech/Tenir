@@ -118,15 +118,50 @@ def quoted(reference_words: str, reference: str) -> bool:
     return sum(w in text for w in quote) >= 0.8 * len(quote)
 
 
+# Wikipedia's appendix sections (MOS:ORDER): citations and link lists, never facts.
+# "Bibliography" counts only as _appendix_bibliography: for an author it lists their works.
+_BACK_MATTER = frozenset({
+    "See_also", "Notes", "Footnotes", "Citations", "References", "Notes_and_references",
+    "Sources", "Works_cited", "Further_reading", "External_links",
+})  # fmt: skip
+_H2_ID = re.compile(r'<h2 id="([^"<>]*)"')
+
+
 def _cut_categories(html_text: str) -> str:
-    """The page without its closing category links and ZIM footer: a cue with a year matched
+    """The page without its back matter, category links and ZIM footer: a cue with a year matched
     every "1997 films" category as a fact and crowded the fact slots (XERK-2106). A plain
     find, not a regex: `<div\b[^>]*\bid="catlinks"` backtracks quadratically on a page of
     unclosed "<div " tags (78 s at 200 KB, QA)."""
     # The tag itself, last on the page: article text can quote 'id="catlinks"' (a code block
     # keeps raw quotes), but never a raw "<", so only real markup matches (QA).
     at = html_text.rfind('<div id="catlinks"')
-    return html_text if at < 0 else html_text[:at]
+    if at >= 0:
+        html_text = html_text[:at]
+    # The back matter too: a further-reading line repeats a year and a name, so a year cue
+    # filled the slots the categories left with "Collier, Paul (2003)…" (XERK-2106). Only the
+    # closing run of appendix headings: Nile's first section is "Sources" (where it rises) and
+    # "Notes" can come before "Charts" (QA, 562 real pages).
+    headings = list(_H2_ID.finditer(html_text))
+    cut = len(html_text)
+    for i in reversed(range(len(headings))):
+        m = headings[i]
+        before = headings[i - 1].group(1) if i else ""
+        if not (
+            m.group(1) in _BACK_MATTER
+            or _appendix_bibliography(m.group(1), before)
+        ):
+            break
+        cut = m.start()
+    return html_text[:cut]
+
+
+def _appendix_bibliography(heading: str, before: str) -> bool:
+    """Whether a "Bibliography" is back matter: only right after another appendix heading
+    (Darwin: Notes, Citations, Bibliography). Citations and ISBNs don't tell it from an author's
+    own works list, which carries both (Obama, Salaman) and sits before the appendix (QA). A
+    citing one after a content heading stays, as before: a kept citation costs a fact slot, a
+    cut works list loses the evidence."""
+    return heading == "Bibliography" and before in _BACK_MATTER
 
 
 def passages(

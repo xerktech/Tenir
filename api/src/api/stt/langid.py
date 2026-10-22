@@ -363,22 +363,38 @@ def repeated_word(text: str) -> bool:
 
 
 # One laughter token as the STT spells it: a single h/j syllable over and over, run together
-# or drawn out ("ha", "haa", "jajaja", "hahah", "jeje"). "hija", "hoja" change vowel and pt "haja"
-# changes consonant, so they don't match.
-_LAUGH_TOKEN_RE = re.compile(r"([hj])([aeiou])(?:\2|\1\2)*\1?")
+# or drawn out ("ha", "haa", "jajaja", "hahah", "jeje"), maybe opened by its own vowel
+# ("ahahah"); or pt chat laughter ("kkkkkk", "rsrsrs"). "hija", "hoja" change vowel and pt "haja"
+# changes consonant, so they don't match. Accents are dropped first ("héhé", "já").
+_LAUGH_TOKEN_RE = re.compile(r"([aeiou]?)([hj])([aeiou])(?:\3|\2\3)*\2?|k{4,}|(?:rs){2,}r?")
+
+
+def _laugh_syllables(word: str) -> int:
+    """How many laughs one token holds (0: not laughter). "kkkk"/"rsrs" count as two."""
+    plain = "".join(
+        ch for ch in unicodedata.normalize("NFD", word) if not unicodedata.combining(ch)
+    )
+    m = _LAUGH_TOKEN_RE.fullmatch(plain)
+    if m is None:
+        return 0
+    if m.group(2) is None:  # kkk / rsrs
+        return 2
+    if m.group(1) not in ("", m.group(3)):  # "ihaha" is no laugh
+        return 0
+    if m.group(1) and plain.count(m.group(2)) < 2:  # es "ojo", "eje", de "Ehe" are words
+        return 0
+    syllables = len(re.findall(r"[aeiou]+", plain))
+    # An accented single syllable is a word, not a laugh: pt "Já, já." (right away), "há" (QA).
+    return 0 if syllables < 2 and plain != word else syllables
 
 
 def laughter(text: str) -> bool:
     """Whether the turn is only laughter of at least two syllables ("Ja ja ja.", "¡Jajaja!",
-    "Ha ha haa."). Its words are real ones elsewhere (de "ja", fr "je", es lean), so
-    ``detect_lang`` tagged it and it opened a translation run (XERK-2106). A lone "Ja." or
-    "Je" is a word, not laughter."""
-    words = _TOKEN_RE.findall(text[:_MAX_CHARS].lower())
-    return (
-        bool(words)
-        and all(_LAUGH_TOKEN_RE.fullmatch(w) for w in words)
-        and sum(len(re.findall(r"[aeiou]+", w)) for w in words) >= 2
-    )
+    "Ha ha haa.", "Héhé.", "Kkkkkk."). Its words are real ones elsewhere (de "ja", fr "je",
+    es lean), so ``detect_lang`` tagged it and it opened a translation run (XERK-2106). A
+    lone "Ja." or "Je" is a word, not laughter."""
+    counts = [_laugh_syllables(w) for w in _TOKEN_RE.findall(text[:_MAX_CHARS].lower())]
+    return bool(counts) and all(counts) and sum(counts) >= 2
 
 
 def is_english_word(word: str) -> bool:
