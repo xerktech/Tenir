@@ -266,6 +266,35 @@ def test_parse_extracts_json_wrapped_in_reasoning() -> None:
     assert cue is not None and cue.title == "Pikachu"
 
 
+def test_parse_reads_the_last_object_after_a_self_correction() -> None:
+    # A model may answer, then correct itself with a second object (seen on Claude Sonnet in
+    # the fact check). A greedy first-to-last-brace match spans both and fails to parse.
+    raw = (
+        '{"cue": true, "title": "Mars", "body": "Fourth planet."}\n'
+        'Wait, corrected:\n{"cue": true, "title": "Venus", "body": "Second planet."}'
+    )
+    cue = _gen()._parse(raw)
+    assert cue is not None and cue.title == "Venus"
+
+
+def test_parse_skips_braces_that_are_not_json() -> None:
+    raw = 'Set {x} aside. {"cue": true, "title": "Sun", "body": "A star."} {not json'
+    cue = _gen()._parse(raw)
+    assert cue is not None and cue.title == "Sun"
+    assert _gen()._parse("[1, 2]") is None
+
+
+def test_parse_keeps_a_cue_with_a_nested_object() -> None:
+    # The inner object is part of the answer, not a later one to prefer.
+    raw = '{"cue": true, "title": "Mars", "body": "Fourth planet.", "meta": {"x": 1}}'
+    cue = _gen()._parse(raw)
+    assert cue is not None and cue.title == "Mars"
+
+
+def test_parse_survives_pathologically_deep_nesting() -> None:
+    assert _gen()._parse('{"a":' * 20000) is None
+
+
 def test_parse_garbage_returns_none() -> None:
     assert _gen()._parse("not json at all") is None
     assert _gen()._parse("{broken json") is None
