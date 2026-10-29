@@ -28,6 +28,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from api.cue.base import GeneratedCue
+from api.llm import adapt
 
 log = logging.getLogger("api.cue.factcheck")
 
@@ -316,13 +317,13 @@ class FactChecker:
     def _payload(self, system: str, user: str) -> dict:
         # Thinking off: on the labelled set thinking caught no more wrong cues and dropped more
         # good ones, for several times the latency.
-        return {
+        return adapt({
             "model": self._model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": 0.0,
             "max_tokens": 150,
             "chat_template_kwargs": {"enable_thinking": False},
-        }
+        })
 
     def contradiction(self, cue: GeneratedCue) -> str | None:
         """The encyclopedia words that contradict the cue, or None to show it. Never raises."""
