@@ -1,6 +1,6 @@
 # Cue + STT review — October 2026 (first session on the INT4 cue server)
 
-Hand review of the 2026-10-06 recording (27 min, glasses mic, 390 turns, 26 production cues) on
+Hand review of the 2026-10-06 recording (27 min, 390 turns, 26 production cues) on
 the new cue stack: Qwen3.8-27B W4A16 INT4 on vLLM with MTP drafting (`tenir-cue`), 512-token
 thinking cap in the LiteLLM route. The session is mostly a desktop-CNC promo video played twice,
 a family disagreement, and a water-flosser demo. Previous rounds: `RESULTS-2026-09*.md`.

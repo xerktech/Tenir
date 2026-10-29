@@ -116,7 +116,7 @@ def test_grace_window_expiry_finalizes_and_unregisters() -> None:
 
         session = Session(send, session_id="grace-1")
         await session.start(
-            mic_source="g2-microphone", source_lang=None
+            mic_source="phone-microphone", source_lang=None
         )
         registry.register(session)
 
@@ -139,10 +139,10 @@ def test_stale_grace_close_does_not_evict_a_live_session_with_the_same_id() -> N
             pass
 
         stale = Session(send, session_id="dup-1")
-        await stale.start(mic_source="g2-microphone", source_lang=None)
+        await stale.start(mic_source="phone-microphone", source_lang=None)
         registry.register(stale)
         live = Session(send, session_id="dup-1")
-        await live.start(mic_source="g2-microphone", source_lang=None)
+        await live.start(mic_source="phone-microphone", source_lang=None)
         registry.register(live)
 
         stale.detach(grace_seconds=0)
@@ -165,7 +165,7 @@ def test_detach_after_close_is_noop() -> None:
 
         session = Session(send)
         await session.start(
-            mic_source="g2-microphone", source_lang=None
+            mic_source="phone-microphone", source_lang=None
         )
         await session.close()
         session.detach(grace_seconds=30)  # closed already -> no grace task
@@ -256,11 +256,11 @@ def test_ws_warm_resume_repeats_a_delayed_caption_status_after_ready() -> None:
 
 
 def test_ws_resume_after_finalize_extends_retained_audio() -> None:
-    """The glasses persist their session id and reconnect with it long after the
+    """A client may persist its session id and reconnect with it long after the
     grace window has lapsed — by then the first leg has been finalized and
     unregistered, so the reconnect starts a *brand-new* Session on the same
     conversation id. Its audio must extend the stored clip, not replace it, so the
-    web UI can replay the whole glasses session rather than just its last leg
+    web UI can replay the whole session rather than just its last leg
     (XERK-86)."""
 
     def audio_samples(sid: str) -> int:
@@ -278,7 +278,7 @@ def test_ws_resume_after_finalize_extends_retained_audio() -> None:
         # unregisters the session (persisting its audio) — the same terminal state a
         # dropped session reaches once its grace window expires.
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             for _ in range(20):
                 ws.send_bytes(_voice_chunk(freq=200))
@@ -297,7 +297,7 @@ def test_ws_resume_after_finalize_extends_retained_audio() -> None:
         with client.websocket_connect("/ws") as ws2:
             ws2.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             ready = ws2.receive_json()
@@ -332,7 +332,7 @@ def test_racing_cold_resumes_of_one_id_share_a_single_session(
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
@@ -341,7 +341,7 @@ def test_racing_cold_resumes_of_one_id_share_a_single_session(
 
         monkeypatch.setattr(Session, "start", slow_start)
         start = json.dumps(
-            {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+            {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
         )
         with client.websocket_connect("/ws") as b, client.websocket_connect("/ws") as c:
             b.send_text(start)
@@ -362,7 +362,7 @@ def test_warm_resume_closes_the_socket_it_takes_over(monkeypatch: pytest.MonkeyP
     into a closed Session with no captions and no close. It must instead get a
     distinct close code its client does not auto-reconnect on."""
     monkeypatch.setattr(settings, "session_resume_grace_seconds", 0.2)
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as b:
             b.send_text(json.dumps(start))
@@ -393,7 +393,7 @@ def test_warm_resume_repeats_the_done_markers_a_dead_socket_swallowed() -> None:
     """Regression (XERK-1736, QA): displacing a still-open but dead socket replays
     nothing, so a song.done / translation.done the server already wrote to it never
     reached the client and its box stuck. The takeover repeats them after ready."""
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as b:
             b.send_text(json.dumps(start))
@@ -454,7 +454,7 @@ def test_a_start_in_flight_on_the_displaced_socket_leaves_the_session_alone(
         return await real_check(user_id)
 
     monkeypatch.setattr(main, "_account_exists", account_exists)
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
             a.send_text(json.dumps(start))
@@ -491,7 +491,7 @@ def test_a_cold_resume_in_flight_on_the_displaced_socket_leaves_the_session_alon
             time.sleep(0.5)
         return real_get(*args, **kwargs)
 
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps(start))
@@ -548,7 +548,7 @@ def test_the_displaced_socket_gets_its_4001_even_with_a_frame_queued(
         events.append("handler returned")
 
     monkeypatch.setattr(WebSocket, "close", slow_close)
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(observed) as client:
         with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
             a.send_text(json.dumps(start))
@@ -599,7 +599,7 @@ def test_the_displaced_handler_keeps_reading_while_its_close_goes_out(
         await app(scope, counting_receive if scope["type"] == "websocket" else receive, send)
 
     monkeypatch.setattr(WebSocket, "close", legacy_close)
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(counted) as client:
         with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
             a.send_text(json.dumps(start))
@@ -617,7 +617,7 @@ def test_the_displaced_handler_keeps_reading_while_its_close_goes_out(
 
 
 def test_resuming_onto_the_same_socket_does_not_close_it() -> None:
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
         ws.send_text(json.dumps(start))
         sid = ws.receive_json()["sessionId"]
@@ -644,7 +644,7 @@ def test_a_resume_target_ending_mid_takeover_cold_resumes_instead_of_revoking(
         await real_close(self)
 
     monkeypatch.setattr(Session, "close", slow_close)
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     removed = metrics.snapshot()["counters"].get("ws.account_removed", 0)
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
@@ -699,7 +699,7 @@ def test_a_foreign_id_start_does_not_hold_the_owner_off_its_resume(
             await asyncio.sleep(0.6)
         await real_start(self, **kwargs)
 
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         _as_household(monkeypatch, "owner")
         with client.websocket_connect("/ws") as ws:
@@ -755,7 +755,7 @@ def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
     start and keep the socket usable."""
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
 
@@ -765,7 +765,7 @@ def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
             monkeypatch.setattr(get_conversation_store(), "get", boom)
             ws.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             err = ws.receive_json()
@@ -776,7 +776,7 @@ def test_resume_owner_check_store_error_is_an_error_frame_not_a_dropped_socket(
             monkeypatch.undo()
             ws.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             assert ws.receive_json()["sessionId"] == sid
@@ -790,7 +790,7 @@ def test_resume_owner_check_fails_closed_on_a_transient_store_error(
     the store recovers by the time start() reads it again."""
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
 
@@ -808,7 +808,7 @@ def test_resume_owner_check_fails_closed_on_a_transient_store_error(
             monkeypatch.setattr(store, "get", flaky_get)
             ws.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             assert ws.receive_json()["type"] == "error"
@@ -828,7 +828,7 @@ def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
     store = get_conversation_store()
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
@@ -840,7 +840,7 @@ def test_cold_resume_reopens_a_finished_conversation_as_live() -> None:
         with client.websocket_connect("/ws") as ws2:
             ws2.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             assert ws2.receive_json()["sessionId"] == sid
@@ -870,7 +870,7 @@ def test_resuming_a_deleted_recording_starts_fresh_instead_of_recreating_it() ->
     store = get_conversation_store()
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
@@ -880,7 +880,7 @@ def test_resuming_a_deleted_recording_starts_fresh_instead_of_recreating_it() ->
         with client.websocket_connect("/ws") as ws2:
             ws2.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             ready = ws2.receive_json()
@@ -930,7 +930,7 @@ def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+            ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
             sid = ws.receive_json()["sessionId"]
             ws.send_text(json.dumps({"type": "session.end"}))
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
@@ -941,7 +941,7 @@ def test_a_recording_deleted_while_its_cold_resume_starts_stays_deleted(
         with client.websocket_connect("/ws") as ws2:
             ws2.send_text(
                 json.dumps(
-                    {"type": "session.start", "micSource": "g2-microphone", "sessionId": sid}
+                    {"type": "session.start", "micSource": "phone-microphone", "sessionId": sid}
                 )
             )
             ready = ws2.receive_json()
@@ -992,7 +992,7 @@ def test_warm_resume_replays_what_a_dead_socket_swallowed(monkeypatch: pytest.Mo
     from api.contract import CaptionFinal
 
     monkeypatch.setattr(settings, "translation_backend", "stub")
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as b:
             b.send_text(json.dumps(start))
@@ -1208,7 +1208,7 @@ def test_rebind_without_dedupe_replays_only_the_buffer() -> None:
 def test_warm_resume_without_dedupe_flag_does_not_replay_delivered_turns() -> None:
     """Regression (XERK-1789): the api only replays the recent window to a socket
     opened with ?dedupe=1; an old client resuming without it sees no repeat."""
-    start = {"type": "session.start", "micSource": "g2-microphone"}
+    start = {"type": "session.start", "micSource": "phone-microphone"}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as b:
             b.send_text(json.dumps(start))

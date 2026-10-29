@@ -13,7 +13,6 @@
  */
 
 import { ApiClient } from "@tenir/client-core";
-import type { MicSource } from "@tenir/contract";
 import { useEffect, useMemo, useState } from "react";
 import { AppState } from "react-native";
 
@@ -30,7 +29,6 @@ export interface CaptureController {
   start(): Promise<boolean>;
   stop(): Promise<void>;
   togglePause(): void;
-  switchMic(micSource: MicSource): void;
 }
 
 export function useCapture(wsUrl: string): CaptureController {
@@ -81,6 +79,5 @@ export function useCapture(wsUrl: string): CaptureController {
     start: () => session.start(),
     stop: () => session.stop(),
     togglePause: () => session.togglePause(),
-    switchMic: (micSource) => session.switchMic(micSource),
   };
 }

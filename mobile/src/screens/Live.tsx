@@ -89,7 +89,7 @@ export function LiveScreen(): JSX.Element {
   // cue floating over it, so a long session never scrolls them away (XERK-103).
   // Follow
   // the newest caption while the viewer is at the bottom; release once they
-  // scroll up to re-read (shared geometry with the web + even companion).
+  // scroll up to re-read (shared geometry with the web Live panel).
   const scrollRef = useRef<ScrollView>(null);
   const pinnedRef = useRef(true);
   const onTranscriptScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -116,7 +116,6 @@ export function LiveScreen(): JSX.Element {
     setBusy(false);
   };
 
-  const mic = state.micSource === "g2-microphone" ? "glasses mic" : "phone mic";
   const live = state.running && state.connection === "open" && state.listening;
 
   const hasContent =
@@ -141,8 +140,6 @@ export function LiveScreen(): JSX.Element {
           <Badge tone={live ? "accent" : "neutral"}>{connectionLabel(state)}</Badge>
           {/* Speech-to-text is behind real time (XERK-1498), matching the web pill. */}
           {state.running && state.captionsDelayed && <Badge tone="neutral">captions delayed</Badge>}
-          <View style={{ flexGrow: 1 }} />
-          <Muted>{mic}</Muted>
         </Row>
         <Row>
           {!state.running ? (
@@ -152,15 +149,6 @@ export function LiveScreen(): JSX.Element {
               <Button
                 title={state.listening ? "Pause" : "Resume"}
                 onPress={cap.togglePause}
-                disabled={busy}
-              />
-              <Button
-                title={state.micSource === "g2-microphone" ? "Use phone mic" : "Use glasses mic"}
-                onPress={() =>
-                  cap.switchMic(
-                    state.micSource === "g2-microphone" ? "phone-microphone" : "g2-microphone",
-                  )
-                }
                 disabled={busy}
               />
               <Button title="Stop" kind="danger" onPress={stop} disabled={busy} />
@@ -191,7 +179,7 @@ export function LiveScreen(): JSX.Element {
                 selection can be dragged across every turn in it and copied
                 (XERK-104). A released cue is a separate dropdown that ends the
                 run (XERK-108); selecting across a cue is a documented platform
-                gap vs. the web/even DOM clients. The live partial rides the
+                gap vs. the web DOM client. The live partial rides the
                 trailing turn run so it's selectable too. */}
             {runList.map((run, i) =>
               run.kind === "cue" ? (

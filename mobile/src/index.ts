@@ -3,7 +3,7 @@
  *
  * The phone client — live speech-to-text capture plus browse of recorded sessions
  * (history/search, retained audio) built on the shared `@tenir/client-core`, like
- * the Even G2 app (`even/`) and the web SPA (`web/`). The native entrypoint is
+ * the web SPA (`web/`). The native entrypoint is
  * `index.js`; this module re-exports the app root and the wiring helpers.
  */
 

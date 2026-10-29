@@ -1,44 +1,29 @@
 # STT model selection
 
-Research for [XERK-115](https://xerktech.atlassian.net/browse/XERK-115): why the Even
-G2's built-in **Conversate** app transcribes faster and more accurately than Tenir,
-what we can do about it on the model we have, and which model we should move to.
+Research for [XERK-115](https://xerktech.atlassian.net/browse/XERK-115): why Tenir's live
+captions lag and miss words next to a streaming cloud ASR service, what we can do about it on
+the model we have, and which model we should move to.
 
 **The headline:** the gap is mostly *architectural*, not a bad model pick. Parakeet is
 a strong ASR model that we are using in the one mode it is worst at — chunked
 re-decoding — and published measurement puts the cost of that at **~46% relative WER**.
-Conversate isn't beating us with a better GPU; it's a true streaming pipeline. The fix
-that closes most of the gap is to stop re-decoding and start streaming.
+Cloud services aren't beating us with a better GPU; they run a true streaming pipeline. The
+fix that closes most of the gap is to stop re-decoding and start streaming.
 
 ---
 
-## 1. What Conversate actually is
+## 1. The streaming bar
 
-Even publish very little, so this is assembled from their support/privacy docs, a
-third-party security teardown, and the community G2 STT app.
-
-| Question | Finding |
-|---|---|
-| On-device or cloud? | **Cloud.** "Conversate requires an internet connection through your phone"; with the phone offline the feature is unavailable. |
-| Who transcribes? | An unnamed third party. Even's privacy policy lists the recipient categories "**iOS ASR voice service provider**", "real-time translation service provider" and "AI service provider" without naming any of them. A March 2026 security review of the G2 flagged exactly this non-disclosure and could not identify the endpoints. |
-| Audio retention | Original recordings are deleted after transcription; only transcripts and summaries persist on the phone. |
-| Claimed latency/accuracy | **None published.** Their marketing page gives no latency, language list, WER or speaker-separation numbers. |
-
-So there is no "Conversate model" to copy. What there *is* to copy is the **shape**:
-a persistent WebSocket to a streaming ASR service that emits incremental tokens as
-the audio arrives.
-
-The community reference implementation for the same glasses — [`nickustinov/stt-even-g2`](https://github.com/nickustinov/stt-even-g2)
-— does precisely this against **Soniox**: resample to 16 kHz S16LE mono PCM, push it
-down a WebSocket as binary frames, render the returned tokens on the lens. That is the
-same audio format Tenir already captures, which is worth noting — the gap is not in
-our capture path.
+What a fast transcription service has that we don't is the **shape**: a persistent
+WebSocket to a streaming ASR service that emits incremental tokens as the audio arrives.
+Its input is 16 kHz S16LE mono PCM pushed as binary frames — the same audio format Tenir
+already captures, so the gap is not in our capture path.
 
 For scale, a commercial streaming service of that class reports **~249 ms median
 time-to-final-segment** (281 ms p95) and **1.25% semantic WER** across 60 languages.
 That is the bar users are implicitly comparing us against.
 
-### Is Even's advantage reproducible by us?
+### Is that advantage reproducible by us?
 
 Partly, and the important part is. We are not going to beat a hyperscaler ASR service
 on WER with a 0.6B self-hosted model, and we shouldn't try — Tenir's whole premise is
@@ -92,7 +77,7 @@ is `700 ms (endpoint detection) + a from-scratch decode of the whole turn`. Agai
 
 **4. The energy VAD had a hard failure mode in noise.** `stt_silence_rms` was an
 *absolute* gate at 0.005 RMS (≈ −46 dBFS). In any room whose noise floor sits above
-that — a café, a car, a fan, which is most of the places you'd wear these glasses — no
+that — a café, a car, a fan, which is most of the places people actually talk — no
 frame is ever classified as silent, so **no turn ever closes on a pause** and every
 caption waits out the full `stt_max_segment_ms` (12 s). This is fixed in this ticket
 (§4).
@@ -121,7 +106,7 @@ Ruled out quickly:
   and Spanish is a live requirement. Regression.
 - **Whisper / distil-whisper** — no advantage over Parakeet on either axis.
 - **Cloud (Soniox, Deepgram, AssemblyAI, Speechmatics)** — the fastest and most accurate
-  option by a wide margin, and the one Even themselves use. Excluded by Tenir's
+  option by a wide margin. Excluded by Tenir's
   self-hosted premise, not on merit. Worth revisiting only if that premise ever changes.
 
 ### Recommendation: `nvidia/nemotron-3.5-asr-streaming-0.6b`
@@ -212,7 +197,7 @@ migration in §5.
 
 A follow-up ticket to migrate to cache-aware streaming. It is a real piece of work —
 a new model server and a persistent-stream engine — but it is the change that actually
-closes the gap with Conversate, and everything above is scaffolding by comparison.
+closes the latency gap, and everything above is scaffolding by comparison.
 
 1. **New model server** alongside `parakeet-stt`, serving
    `nemotron-3.5-asr-streaming-0.6b` over a **WebSocket** rather than
@@ -240,10 +225,6 @@ number instead of ~46% worse, and GPU headroom for many more concurrent sessions
 
 ## Sources
 
-- [Even Realities — Conversate](https://www.evenrealities.com/conversate)
-- [Even Support Center — Privacy Policy (Device & APP)](https://support.evenrealities.com/hc/en-us/articles/14270525749519-Privacy-Policy-Device-APP)
-- [Internal Analysis: Even Realities G2 Smart Glasses Security & Privacy Investigation](https://securityboulevard.com/2026/03/internal-analysis-even-realities-g2-smart-glasses-security-privacy-investigation/)
-- [`nickustinov/stt-even-g2` — real-time STT via Soniox for the G2](https://github.com/nickustinov/stt-even-g2)
 - [Pushing the Limits of On-Device Streaming ASR (arXiv 2604.14493)](https://arxiv.org/html/2604.14493v1)
 - [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
 - [Scaling Real-Time Voice Agents with Cache-Aware Streaming ASR](https://huggingface.co/blog/nvidia/nemotron-speech-asr-scaling-voice-agents)

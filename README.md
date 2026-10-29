@@ -3,7 +3,7 @@
 **Tenir** — /teh-NEER/ — from the Latin *tenēre*, "to hold, to keep": it holds
 onto everything worth remembering.
 
-A self-hosted speech-to-text recorder for the **Even G2** glasses, a browser,
+A self-hosted speech-to-text recorder for a browser
 and Android: live captions from a self-hosted STT model, with every session
 **recorded and stored** — transcript + full audio — and browsable afterwards.
 
@@ -13,16 +13,15 @@ chat, …) was stripped back to; features return one at a time, slowly.
 
 ## What it does
 
-- **Streaming transcription** — phone, browser or glasses mic → real-time
+- **Streaming transcription** — phone or browser mic → real-time
   captions from self-hosted STT: one offline model (NVIDIA Parakeet) drives both
   the low-latency live partials (a bounded trailing-window re-decode on a cadence)
   and the accurate stored transcript (a whole-turn decode on each finished turn)
 - **Live translations** — a turn spoken in another language is transcribed as
-  spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): the
-  glasses show the translation in the cue box, web/Android/the phone app show
+  spoken and auto-translated to English (`API_TRANSLATION_BACKEND`): web and Android show
   it under the original turn — see [`docs/translations.md`](docs/translations.md)
 - **Music ID** — when a song is playing, recognize the track and show its
-  **time-synced lyrics** in the cue box, auto-scrolling as the song plays, titled
+  **time-synced lyrics** in a song card, auto-scrolling as the song plays, titled
   `ARTIST - SONG NAME` (`API_MUSIC_BACKEND`): recognition via shazamio (Shazam's
   global catalog), synced lyrics from LRCLIB — see
   [`docs/music-id.md`](docs/music-id.md)
@@ -33,10 +32,7 @@ chat, …) was stripped back to; features return one at a time, slowly.
   REST surface, *and* the built web UI on a single origin (`:8080`)
 - **Multi-user auth** — login issues a bearer token; every session and
   conversation is scoped to the user's household
-- **Clients** — the web UI, an Even G2 glasses app (live captions on the lens,
-  with dedicated Session + History pages on the phone, either surface starting
-  and stopping a session), and an Android app
-  (phone-mic capture + history)
+- **Clients** — the web UI and an Android app (phone-mic capture + history)
 
 ## Quick start
 
@@ -51,10 +47,6 @@ npm install
 
 # Web UI in dev (the built UI is already served by the app container)
 VITE_API_HTTP=http://localhost:8080 npm run dev --workspace @tenir/web
-
-# Even G2 glasses app
-VITE_API_WS=ws://localhost:8080/ws npm run dev --workspace tenir-even   # :5173
-npx @evenrealities/evenhub-simulator -g http://localhost:5173
 
 # Android app
 npm run typecheck --workspace tenir-mobile

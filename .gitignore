@@ -1,9 +1,6 @@
 # Node
 node_modules/
 dist/
-*.ehpk
-# Generated at pack time from app.json + TENIR_API_HOSTS (even/).
-even/app.packed.json
 
 # Python
 __pycache__/

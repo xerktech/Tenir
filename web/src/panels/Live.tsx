@@ -235,7 +235,7 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
         <h2 className="grow">Live</h2>
         <Badge tone={state.connection === "open" ? "accent" : "neutral"}>{state.connection}</Badge>
         {/* Speech-to-text is behind real time (XERK-1498): say why captions lag or
-            stop, rather than leave a blank band. Same pill on Android and the lens. */}
+            stop, rather than leave a blank band. Same pill on Android. */}
         {state.running && state.captionsDelayed && <Badge tone="neutral">captions delayed</Badge>}
       </div>
 

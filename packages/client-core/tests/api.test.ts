@@ -293,7 +293,7 @@ describe("status", () => {
 });
 
 // XERK-237. Tenir is self-hosted, so the server address is a user-typed field
-// (mobile Setup/Settings, the web + glasses login). That makes a mistyped or
+// (mobile Setup/Settings, the web login). That makes a mistyped or
 // phished address an ordinary mistake — and it must cost the user nothing more
 // than a failed sign-in.
 describe("a login must not leak or destroy the existing token", () => {

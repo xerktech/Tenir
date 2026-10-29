@@ -12,7 +12,6 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from api.contract import (
     ClientMessage,
-    MicSwitch,
     Ping,
     ServerMessage,
     SessionEnd,
@@ -21,7 +20,7 @@ from api.contract import (
 
 # Discriminated union keyed on the literal `type` field.
 _ClientUnion = Annotated[
-    SessionStart | MicSwitch | SessionEnd | Ping,
+    SessionStart | SessionEnd | Ping,
     Field(discriminator="type"),
 ]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(_ClientUnion)

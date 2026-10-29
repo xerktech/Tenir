@@ -7,7 +7,6 @@ const M = require("../manifest.js");
 const ALL_CHANGED = {
   api: true,
   "parakeet-stt": true,
-  even: true,
   mobile: true,
 };
 
@@ -29,17 +28,9 @@ test("first release: every component fresh and built", () => {
   assert.equal(m.schema, 1);
   assert.equal(m.components.api.ref, "ghcr.io/xerktech/tenir:0.1.0");
   assert.equal(m.components["parakeet-stt"].ref, "ghcr.io/xerktech/tenir-parakeet-stt:0.1.0");
-  assert.equal(m.components.even.kind, "evenhub");
-  assert.equal(m.components.even.package_id, "com.tenir.local");
-  assert.equal(m.components.even.asset, undefined); // the portal is the channel, not a release asset
   assert.equal(m.components.mobile.asset, "tenir-android-v0.1.0.apk");
   assert.equal(m.components.mobile.version_code, 10000);
   for (const c of Object.values(m.components)) assert.equal(c.built, true);
-});
-
-test("even package_id is overridable (EVENHUB_PACKAGE_ID repo variable path)", () => {
-  const c = M.freshComponent("even", "0.1.0", "v0.1.0", { evenPackageId: "com.tenir.app" });
-  assert.equal(c.package_id, "com.tenir.app");
 });
 
 test("removed components (web, sidecar-gpu) are not manifest components", () => {
@@ -57,7 +48,7 @@ test("carried image keeps its OLDER version and ref; never retagged to the new v
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: false, "parakeet-stt": true, even: false, mobile: false },
+    changed: { api: false, "parakeet-stt": true, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
@@ -75,7 +66,7 @@ test("carried asset keeps its name/version but re-points release_tag to the new 
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": true, even: true, mobile: false },
+    changed: { api: true, "parakeet-stt": true, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
@@ -86,60 +77,16 @@ test("carried asset keeps its name/version but re-points release_tag to the new 
   assert.equal(a.built, false);
 });
 
-test("carried even keeps its older version on the portal; nothing to copy", () => {
-  const prev = firstRelease();
-  const m = M.buildManifest({
-    version: "0.1.1",
-    tag: "v0.1.1",
-    commit: "bbb",
-    releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": true, even: false, mobile: true },
-    prevManifest: prev,
-    androidVersionCode: 10001,
-  });
-  const e = m.components.even;
-  assert.equal(e.version, "0.1.0");
-  assert.equal(e.kind, "evenhub");
-  assert.equal(e.built, false);
-  assert.deepEqual(M.carryPlan(m, prev), []); // the portal already holds 0.1.0
-});
-
-test("carried even from a pre-portal (asset-kind) manifest is normalized to evenhub", () => {
-  // Manifests older than the portal pipeline shipped the .ehpk as a release
-  // asset; carrying one must NOT re-emit the asset entry (nothing copies the
-  // file forward anymore) — it becomes an evenhub reference at its old version.
-  const prev = firstRelease();
-  prev.components.even = {
-    version: "0.1.0",
-    kind: "asset",
-    asset: "tenir-even-v0.1.0.ehpk",
-    release_tag: "v0.1.0",
-    built: true,
-  };
-  const m = M.buildManifest({
-    version: "0.1.1",
-    tag: "v0.1.1",
-    commit: "bbb",
-    releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": true, even: false, mobile: true },
-    prevManifest: prev,
-    androidVersionCode: 10001,
-  });
-  const e = m.components.even;
-  assert.deepEqual(e, { version: "0.1.0", kind: "evenhub", package_id: "com.tenir.local", built: false });
-  assert.deepEqual(M.carryPlan(m, prev), []);
-});
-
 test("unchanged component absent from prev manifest throws (never emit a hole)", () => {
   const prev = firstRelease();
-  delete prev.components.even;
+  delete prev.components["parakeet-stt"];
   assert.throws(() =>
     M.buildManifest({
       version: "0.1.1",
       tag: "v0.1.1",
       commit: "bbb",
       releasedAt: "2026-07-20T00:00:00Z",
-      changed: { api: true, "parakeet-stt": true, even: false, mobile: true },
+      changed: { api: true, "parakeet-stt": false, mobile: true },
       prevManifest: prev,
       androidVersionCode: 10001,
     }),
@@ -153,14 +100,13 @@ test("carryPlan emits copy-asset only for carried assets, not images or built on
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": false, even: false, mobile: false },
+    changed: { api: true, "parakeet-stt": false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
   const plan = M.carryPlan(m, prev);
   const components = plan.map((a) => a.component).sort();
-  // parakeet-stt carried but it's an image, even lives on the portal -> no copy
-  // action for either. mobile is the only carried release asset.
+  // parakeet-stt carried but it's an image -> no copy action. mobile is the only carried release asset.
   assert.deepEqual(components, ["mobile"]);
   assert.deepEqual(plan[0], {
     component: "mobile",

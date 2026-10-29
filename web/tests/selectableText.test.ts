@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // Vitest runs with the workspace root (web/) as cwd. jsdom does not compute
 // stylesheet rules, so this guards XERK-104 at the source: conversation and
 // history transcript text must opt into `user-select: text` so it can be copied
-// (in parity with the mobile `selectable` prop and the even client's CSS).
+// (in parity with the mobile `selectable` prop).
 const readText = (rel: string) => readFileSync(resolve(process.cwd(), rel)).toString("utf8");
 
 describe("selectable transcript text (XERK-104)", () => {

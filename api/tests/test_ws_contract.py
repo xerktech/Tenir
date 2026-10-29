@@ -18,7 +18,7 @@ def test_health() -> None:
 
 def test_session_handshake_and_ping() -> None:
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-        ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+        ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
         ready = ws.receive_json()
         assert ready["type"] == "session.ready"
         assert ready["sessionId"]
@@ -33,6 +33,27 @@ def test_session_handshake_and_ping() -> None:
         else:
             raise AssertionError("no pong received")
 
+
+def test_unknown_frame_type_is_a_non_fatal_error() -> None:
+    """A frame the contract doesn't know (e.g. a message type a stale client still
+    sends) gets a non-fatal bad_request; the socket and session keep working."""
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
+        assert ws.receive_json()["type"] == "session.ready"
+
+        ws.send_text(json.dumps({"type": "mic.switch", "micSource": "phone-microphone"}))
+        err = ws.receive_json()
+        assert err["type"] == "error" and err["code"] == "bad_request"
+        assert err["fatal"] is False
+
+        ws.send_text(json.dumps({"type": "ping", "t": 7}))
+        for _ in range(5):
+            msg = ws.receive_json()
+            if msg["type"] == "pong":
+                assert msg["t"] == 7
+                break
+        else:
+            raise AssertionError("socket stopped answering after the bad frame")
 
 def test_audio_produces_captions() -> None:
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:

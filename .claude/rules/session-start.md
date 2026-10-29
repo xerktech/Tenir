@@ -53,7 +53,7 @@ paths:
   - Replay before the buffer, and hold new frames in the buffer until caught up: clients append
     turns in arrival order, so a lost turn replayed later lands after newer ones (QA).
   - No delivery is ever confirmed, so the replay overlaps what the client has: every client
-    (client-core reducer, Even controller) must drop a re-delivered final/translation/cue by id.
+    (the client-core reducer) must drop a re-delivered final/translation/cue by id.
   - The recent window is replayed only to a socket opened with `?dedupe=1` (`WS_DEDUPE_PARAM`,
     sent by `ApiClient`): builds older than XERK-1771 append re-deliveries as duplicate turns,
     so without it a resume gets only the buffer (XERK-1789).

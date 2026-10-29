@@ -92,12 +92,12 @@ def test_close_persists_finals_still_queued_in_the_result_pump() -> None:
 def test_resumed_session_extends_retained_audio_across_the_grace_window() -> None:
     """A session that resumes *after* the resume grace window has expired reaches
     the api as a brand-new ``Session`` object bound to the *same* conversation id
-    (the glasses persist their session id across drops and relaunches, so this is
-    their normal lifecycle — not an edge case). Its full-audio buffer starts empty
+    (a client that persists its session id across drops and relaunches does this
+    as its normal lifecycle — not an edge case). Its full-audio buffer starts empty
     and only holds the post-resume portion. Retaining that alone would overwrite
     the earlier audio, leaving the stored conversation with a fragment that no
     longer matches its transcript. The retained audio must span the whole
-    conversation, so the web UI can replay every glasses session end to end
+    conversation, so the web UI can replay every session end to end
     (XERK-86)."""
 
     async def run() -> None:
@@ -107,7 +107,7 @@ def test_resumed_session_extends_retained_audio_across_the_grace_window() -> Non
         # First leg: audio at 200 Hz, persisted when the socket drops and the grace
         # window lapses (a new Session, close()d by the grace-close path).
         leg1 = Session(send, session_id="conv-resumed")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):
             await leg1.on_audio(_voice_chunk(freq=200))
         for _ in range(10):
@@ -122,7 +122,7 @@ def test_resumed_session_extends_retained_audio_across_the_grace_window() -> Non
         # the api starts a fresh Session on the existing conversation. Distinct tone
         # (400 Hz) so we can tell the legs apart in the retained audio.
         leg2 = Session(send, session_id="conv-resumed")
-        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        await leg2.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):
             await leg2.on_audio(_voice_chunk(freq=400))
         for _ in range(10):
@@ -157,7 +157,7 @@ def test_resumed_session_continues_the_segment_timeline() -> None:
             pass
 
         leg1 = Session(send, session_id="conv-timeline")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):  # ~3s of audio -> stub finals at [0,2000] + flush tail
             await leg1.on_audio(_voice_chunk())
         for _ in range(10):
@@ -176,7 +176,7 @@ def test_resumed_session_continues_the_segment_timeline() -> None:
         )
 
         leg2 = Session(send, session_id="conv-timeline")
-        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        await leg2.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):
             await leg2.on_audio(_voice_chunk())
         for _ in range(10):
@@ -216,7 +216,7 @@ def test_resume_offset_falls_back_to_segment_end_without_retained_audio() -> Non
 
         leg1 = Session(send, session_id="conv-no-audio")
         leg1._audio_store = None
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):
             await leg1.on_audio(_voice_chunk())
         for _ in range(10):
@@ -244,7 +244,7 @@ def test_session_without_persistence_does_not_retain() -> None:
         session = Session(send, session_id="conv-2")
         session._conversations = None
         session._audio_store = None
-        await session.start(mic_source="g2-microphone", source_lang=None)
+        await session.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(30):
             await session.on_audio(_voice_chunk())
         for _ in range(10):
@@ -315,7 +315,7 @@ def test_resume_during_prior_teardown_continues_its_timeline() -> None:
 
         leg1 = Session(send, session_id="conv-closing")
         leg1._audio_store = None  # offset would come from the segments alone
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(25):  # ~2.5s -> stub final at [0,2000], tail [2000,2500] on flush
             await leg1.on_audio(_voice_chunk())
         for _ in range(10):
@@ -326,7 +326,7 @@ def test_resume_during_prior_teardown_continues_its_timeline() -> None:
 
         leg2 = Session(send, session_id="conv-closing")
         leg2._audio_store = None
-        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        await asyncio.wait_for(leg2.start(mic_source="phone-microphone", source_lang=None), 1)
         assert not closing.done(), "the old sitting must still be flushing"
         assert leg2._start_offset_ms == 2500
 
@@ -353,7 +353,7 @@ def test_prior_sitting_finishing_late_leaves_the_resumed_row_live() -> None:
 
         store = get_conversation_store()
         leg1 = Session(send, session_id="conv-late-finish")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(25):
             await leg1.on_audio(_voice_chunk())
         for _ in range(10):
@@ -363,7 +363,7 @@ def test_prior_sitting_finishing_late_leaves_the_resumed_row_live() -> None:
         await asyncio.sleep(0)
 
         leg2 = Session(send, session_id="conv-late-finish")
-        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        await asyncio.wait_for(leg2.start(mic_source="phone-microphone", source_lang=None), 1)
         assert store.get("default", "conv-late-finish").status == "live"
 
         release.set()
@@ -392,7 +392,7 @@ def test_prior_finish_waiting_on_the_store_leaves_a_resume_live(reopen: bool) ->
         store = get_conversation_store()
         sid = "conv-finish-race"
         leg1 = Session(send, session_id=sid)
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(5):
             await leg1.on_audio(_voice_chunk())
         entered, release = threading.Event(), threading.Event()
@@ -408,7 +408,7 @@ def test_prior_finish_waiting_on_the_store_leaves_a_resume_live(reopen: bool) ->
             closing = asyncio.create_task(leg1.close())
             assert await asyncio.to_thread(entered.wait, 5)
             leg2 = Session(send, session_id=sid, reopen=reopen)
-            await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+            await asyncio.wait_for(leg2.start(mic_source="phone-microphone", source_lang=None), 1)
             assert store.get("default", sid).status == "live"
             release.set()
             await closing
@@ -453,7 +453,7 @@ def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
 
         store = get_conversation_store()
         leg1 = Session(send, session_id="conv-successor-closed")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(5):
             await leg1.on_audio(_voice_chunk())
         release = _hold_flush(leg1)
@@ -462,7 +462,7 @@ def test_prior_sitting_finishes_the_row_once_its_successor_closed() -> None:
 
         leg2 = Session(send, session_id="conv-successor-closed")
         leg2._prior_retain = leg2._prior_teardown = None
-        await asyncio.wait_for(leg2.start(mic_source="g2-microphone", source_lang=None), 1)
+        await asyncio.wait_for(leg2.start(mic_source="phone-microphone", source_lang=None), 1)
         leg2._prior_retain = leg2._prior_teardown = None  # don't order behind leg1
         await leg2.close()
 
@@ -485,7 +485,7 @@ def test_a_closed_successor_in_the_chain_does_not_unblock_the_first_sittings_fin
         store = get_conversation_store()
         sid = "conv-chain"
         a = Session(send, session_id=sid)
-        await a.start(mic_source="g2-microphone", source_lang=None)
+        await a.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(5):
             await a.on_audio(_voice_chunk())
         release_a = _hold_flush(a)
@@ -493,13 +493,13 @@ def test_a_closed_successor_in_the_chain_does_not_unblock_the_first_sittings_fin
         await asyncio.sleep(0)
 
         b = Session(send, session_id=sid)
-        await asyncio.wait_for(b.start(mic_source="g2-microphone", source_lang=None), 1)
+        await asyncio.wait_for(b.start(mic_source="phone-microphone", source_lang=None), 1)
         release_b = _hold_flush(b)
         closing_b = asyncio.create_task(b.close())
         await asyncio.sleep(0)
 
         c = Session(send, session_id=sid)
-        await asyncio.wait_for(c.start(mic_source="g2-microphone", source_lang=None), 1)
+        await asyncio.wait_for(c.start(mic_source="phone-microphone", source_lang=None), 1)
         assert a._successor is b and b._successor is c
 
         release_a.set()
@@ -526,7 +526,7 @@ def test_resume_during_prior_teardown_keeps_audio_in_order() -> None:
 
         key = audio_key("default", "conv-order")
         leg1 = Session(send, session_id="conv-order")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(25):
             await leg1.on_audio(_voice_chunk(freq=200))
         _hold_flush(leg1)
@@ -535,7 +535,7 @@ def test_resume_during_prior_teardown_keeps_audio_in_order() -> None:
         leg2 = Session(send, session_id="conv-order")
         # Resume before leg1's teardown (or its retain) has taken a single step.
         assert not leg1._first_retain.done()
-        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        await leg2.start(mic_source="phone-microphone", source_lang=None)
         assert leg2._start_offset_ms == 2500
         for _ in range(10):
             await leg2.on_audio(_voice_chunk(freq=400))
@@ -560,7 +560,7 @@ def test_closing_registry_is_per_household_and_cleared() -> None:
             pass
 
         leg1 = Session(send, session_id="conv-shared-id", household="hh-a")
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(25):
             await leg1.on_audio(_voice_chunk())
         release = _hold_flush(leg1)
@@ -599,7 +599,7 @@ def test_resume_during_prior_teardown_keeps_order_when_prior_retain_fails() -> N
         store.put = flaky_put
         try:
             leg1 = Session(send, session_id="conv-retry")
-            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            await leg1.start(mic_source="phone-microphone", source_lang=None)
             for _ in range(25):
                 await leg1.on_audio(_voice_chunk(freq=200))
             release = _hold_flush(leg1)
@@ -607,7 +607,7 @@ def test_resume_during_prior_teardown_keeps_order_when_prior_retain_fails() -> N
             await asyncio.sleep(0)
 
             leg2 = Session(send, session_id="conv-retry")
-            await leg2.start(mic_source="g2-microphone", source_lang=None)
+            await leg2.start(mic_source="phone-microphone", source_lang=None)
             for _ in range(10):
                 await leg2.on_audio(_voice_chunk(freq=400))
             closing2 = asyncio.create_task(leg2.close())
@@ -648,7 +648,7 @@ def test_earlier_teardown_finishing_keeps_a_later_closing_sitting() -> None:
 
         leg1 = Session(send, session_id="conv-chain")
         leg1._audio_store = None  # the stores lag the closing sitting's end
-        await leg1.start(mic_source="g2-microphone", source_lang=None)
+        await leg1.start(mic_source="phone-microphone", source_lang=None)
         for _ in range(10):
             await leg1.on_audio(_voice_chunk())
         release1 = _hold_flush(leg1)
@@ -657,7 +657,7 @@ def test_earlier_teardown_finishing_keeps_a_later_closing_sitting() -> None:
 
         leg2 = Session(send, session_id="conv-chain")
         leg2._audio_store = None  # the stores lag the closing sitting's end
-        await leg2.start(mic_source="g2-microphone", source_lang=None)
+        await leg2.start(mic_source="phone-microphone", source_lang=None)
         assert leg2._start_offset_ms == 1000
         for _ in range(10):
             await leg2.on_audio(_voice_chunk())
@@ -701,7 +701,7 @@ def test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio() -> N
         store.put = flaky_put
         try:
             leg1 = Session(send, session_id="conv-deadline")
-            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            await leg1.start(mic_source="phone-microphone", source_lang=None)
             for _ in range(25):
                 await leg1.on_audio(_voice_chunk(freq=200))
             release = _hold_flush(leg1)
@@ -709,7 +709,7 @@ def test_shutdown_cancel_while_waiting_on_failed_prior_still_stores_audio() -> N
             await asyncio.sleep(0)
 
             leg2 = Session(send, session_id="conv-deadline")
-            await leg2.start(mic_source="g2-microphone", source_lang=None)
+            await leg2.start(mic_source="phone-microphone", source_lang=None)
             for _ in range(10):
                 await leg2.on_audio(_voice_chunk(freq=400))
             closing2 = asyncio.create_task(leg2.close())
@@ -772,7 +772,7 @@ def test_failed_start_does_not_wait_behind_a_prior_whose_retain_failed() -> None
         store.put = flaky_put
         try:
             leg1 = Session(send, session_id="c")
-            await leg1.start(mic_source="g2-microphone", source_lang=None)
+            await leg1.start(mic_source="phone-microphone", source_lang=None)
             for _ in range(25):
                 await leg1.on_audio(_voice_chunk(freq=200))
             release = _hold_flush(leg1)
@@ -784,13 +784,13 @@ def test_failed_start_does_not_wait_behind_a_prior_whose_retain_failed() -> None
             failed = Session(dying_send, session_id="c")
             with pytest.raises(RuntimeError, match="socket gone"):
                 await asyncio.wait_for(
-                    failed.start(mic_source="g2-microphone", source_lang=None), 1
+                    failed.start(mic_source="phone-microphone", source_lang=None), 1
                 )
             assert not closing.done()
             assert _closing.get(("default", "c")) is leg1
 
             leg3 = Session(send, session_id="c")
-            await leg3.start(mic_source="g2-microphone", source_lang=None)
+            await leg3.start(mic_source="phone-microphone", source_lang=None)
             assert leg3._start_offset_ms == 2500
             for _ in range(10):
                 await leg3.on_audio(_voice_chunk(freq=400))

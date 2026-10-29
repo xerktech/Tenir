@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
-    # CORS for clients served from a different origin (the Even Hub WebView, vite
-    # dev). Comma-separated; "*" is allowed for local dev only. The bundled web UI
+    # CORS for clients served from a different origin (e.g. the vite
+    # dev server). Comma-separated; "*" is allowed for local dev only. The bundled web UI
     # is same-origin, so production deployments usually don't need this at all.
     cors_origins: str = "*"
 
@@ -80,8 +80,7 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3.8-27b-dflash"
     # How much recent transcript (finalized turns) to feed the cue model as context.
     cue_context_segments: int = 8
-    # Cap the model's cue body length (characters) so a cue fits the glasses box and
-    # the live band; the generator prompt also asks for brevity.
+    # Cap the model's cue body length (characters) so a cue fits the live cue card; the generator prompt also asks for brevity.
     cue_max_body_chars: int = 240
     # Token budget for the cue call. With thinking on (the default) the model
     # reasons inside this same budget before the JSON answer; at 600 the answer
@@ -104,8 +103,8 @@ class Settings(BaseSettings):
     # litellm_endpoint) and delivers it as a `translation` WS message paired to the
     # segment. While a non-English run is live, cue generation is suppressed; when
     # the run ends (an English turn arrives, or speech goes quiet past the hold
-    # window below) a `translation.done` message tells the glasses to start the
-    # translation box's dismiss countdown, and cues resume.
+    # window below) a `translation.done` message tells clients to start the
+    # translation's dismiss countdown, and cues resume.
     #   "off"    — no translations (default; matches the stripped core).
     #   "stub"   — model-free, deterministic translator for CI/dev (no GPU).
     #   "openai" — real chat model via the gateway (prod sets API_TRANSLATION_MODEL

@@ -12,7 +12,7 @@
  * randomness, the redirect mechanism, and the app's redirect URI. Two shapes of
  * `redirect` cover both targets:
  *
- *  - **Browser (web / even):** `redirect(url)` navigates the page and never returns
+ *  - **Browser (web):** `redirect(url)` navigates the page and never returns
  *    (the page unloads). On the way back the callback screen calls
  *    `completeOidcCallback(window.location.search)`.
  *  - **Native (mobile / AppAuth):** `redirect(url)` opens the system browser and
@@ -510,10 +510,9 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 /**
- * OIDC primitives for a browser front (web / even), built on Web Crypto + `location`.
- * Both browser fronts share this — the cross-platform-parity rule means the OIDC
- * button behaves identically on each without either reimplementing PKCE. The mobile
- * app injects its own AppAuth-backed primitives instead.
+ * OIDC primitives for the browser front (web), built on Web Crypto + `location`.
+ * The mobile app injects its own AppAuth-backed primitives instead, so the OIDC
+ * button behaves identically on both platforms without the web reimplementing PKCE.
  *
  * `redirect` navigates the page (returns void), so `startOidcLogin` does not resolve
  * inline; the callback route calls `completeOidcCallback(window.location.search)`.

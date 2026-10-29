@@ -397,7 +397,6 @@ class FakeApi implements ApiLike {
     resume?: string;
   }[] = [];
   audio: Uint8Array[] = [];
-  micSwitches: MicSource[] = [];
   stopped = false;
   constructor(readonly handlers: ApiHandlers) {}
   start(params: { micSource: MicSource; sourceLang?: Lang }, resumeSessionId?: string): void {
@@ -409,9 +408,6 @@ class FakeApi implements ApiLike {
   sendAudio(pcm: Uint8Array): boolean {
     this.audio.push(pcm);
     return true;
-  }
-  switchMic(micSource: MicSource): void {
-    this.micSwitches.push(micSource);
   }
 }
 
@@ -533,14 +529,6 @@ describe("CaptureSession", () => {
     session.togglePause();
     audio.onChunk!(chunk);
     expect(refs.client?.audio).toHaveLength(1); // dropped while paused
-  });
-
-  it("forwards a runtime mic switch to the api and state", async () => {
-    const { session, refs } = harness();
-    await session.start();
-    session.switchMic("g2-microphone");
-    expect(refs.client?.micSwitches).toEqual(["g2-microphone"]);
-    expect(session.getState().micSource).toBe("g2-microphone");
   });
 
   it("tears down the mic, socket, and resume id on stop", async () => {

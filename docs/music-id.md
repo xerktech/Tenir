@@ -5,7 +5,7 @@ When a song is playing in the room, Tenir recognizes the track and shows its
 the lyrics **auto-scrolling** as the song plays. It is the fourth "derived aside"
 built on the cue/translation pattern (an `off`/`stub`/real backend, a WebSocket
 contract message, off-loop work that never disturbs captions, persistence +
-history, parity across web + Android + the glasses lens), with two differences
+history, parity across web + Android), with two differences
 that make it new:
 
 1. **It is audio-driven, not transcript-driven.** Cues and translations run off
@@ -17,16 +17,13 @@ that make it new:
 
 Where it appears:
 
-- **Live** (web + Android + the glasses phone Session page): a bordered card in
+- **Live** (web + Android): a bordered card in
   the cue box's slot, title `ARTIST — SONG NAME` over a four-line window of the
   lyrics — one already-sung line, the current line (highlighted), and two
   upcoming — scrolling as the song plays. A live song **owns the box**: the cue
   band is hidden while it shows, exactly as cues stand aside for a translation
   run.
-- **Glasses lens**: the same full-width popup box the cue/translation use, its
-  body the scrolling lyric window (a documented platform exception: monochrome,
-  its own line count).
-- **History** (web + Android + glasses phone): each recognized song renders
+- **History** (web + Android): each recognized song renders
   inline on the transcript timeline as a quiet `♪ ARTIST — TITLE` marker at the
   point it played. The lyrics themselves are **not** stored — they are
   re-fetchable and licensing-sensitive — so history keeps only the identity.
@@ -67,9 +64,7 @@ Where it appears:
    **suppresses cues** (gated in `session.py` beside the translation flag). Song
    and translation are otherwise **independent streams** (XERK-194): music
    recognition is not gated on a translation run, so both can be live at once and
-   the web/mobile/phone surfaces render both. Only the glasses share one popup box
-   for them, and there precedence is **lyrics > translation > cue** — arbitrated on
-   the lens (`even/src/lens/controller.ts`), not the server.
+   web and mobile render both.
 
    **Song-end prep (XERK-192).** The hold alone left the box lingering on the last
    lyric long after a song *finished* — the hold is deliberately long (it must

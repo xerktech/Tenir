@@ -5,7 +5,7 @@
  * URLs loosely — `my-server.com`, `https://my-server.com`, `wss://my-server.com/ws`
  * — so this normalizes any of those into the canonical `ws(s)://host[:port]/ws`
  * form the core expects (`httpBaseFromWs` derives the REST base from it). Shared
- * by the mobile setup screen and the Even G2 phone login page; kept
+ * by the mobile setup screen; kept
  * environment-free so it is unit-tested under vitest.
  */
 

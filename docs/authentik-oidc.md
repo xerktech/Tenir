@@ -44,7 +44,7 @@ under the application slug `tenir`:
 | **Token endpoint** | `AUTHENTIK_URL/application/o/token/` |
 | **Userinfo endpoint** | `AUTHENTIK_URL/application/o/userinfo/` |
 | **End-session endpoint** | `AUTHENTIK_URL/application/o/tenir/end-session/` |
-| **Client ID** | `AUTHENTIK_TENIR_CLIENT_ID` (default `tenir`) — same id for all three fronts |
+| **Client ID** | `AUTHENTIK_TENIR_CLIENT_ID` (default `tenir`) — same id for both fronts |
 | **Client type** | public (PKCE, no secret). T2 confirms if any front is confidential instead. |
 | **Audience** (`aud`) | the client id (`tenir`) |
 | **Signing alg** | RS256 (keys at the JWKS URL above) |
@@ -59,7 +59,6 @@ finalize the real values**:
 | Client | Env var | Placeholder |
 |---|---|---|
 | Web (served by API) | `TENIR_OIDC_REDIRECT_WEB` | `http://localhost:8080/auth/oidc/callback` |
-| even phone page | `TENIR_OIDC_REDIRECT_EVEN` | `http://localhost:8080/even/auth/oidc/callback` |
 | mobile native | `TENIR_OIDC_REDIRECT_MOBILE` | `com.xerktech.tenir://auth/callback` |
 
 ## Deploy on the hub (Portainer)

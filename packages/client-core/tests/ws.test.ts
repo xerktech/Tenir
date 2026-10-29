@@ -101,21 +101,21 @@ describe("ApiClient", () => {
     const client = new ApiClient("ws://h/ws", {
       onConnectionChange: (s) => states.push(s),
     });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     expect(states).toEqual(["connecting"]);
 
     instances[0].open();
     expect(states).toEqual(["connecting", "open"]);
     expect(instances[0].jsonSent()[0]).toEqual({
       type: "session.start",
-      micSource: "g2-microphone",
+      micSource: "phone-microphone",
       sourceLang: undefined,
     });
   });
 
   it("tells the api it drops re-delivered frames, so a warm resume replays them (XERK-1789)", () => {
-    new ApiClient("ws://h/ws").start({ micSource: "g2-microphone" });
-    new ApiClient("ws://h/ws?x=1").start({ micSource: "g2-microphone" });
+    new ApiClient("ws://h/ws").start({ micSource: "phone-microphone" });
+    new ApiClient("ws://h/ws?x=1").start({ micSource: "phone-microphone" });
     expect(instances.map((ws) => ws.url)).toEqual(["ws://h/ws?dedupe=1", "ws://h/ws?x=1&dedupe=1"]);
   });
 
@@ -129,7 +129,7 @@ describe("ApiClient", () => {
   it("routes server messages to the matching handler and tracks the session id", () => {
     const onFinal = vi.fn();
     const client = new ApiClient("ws://h/ws", { onFinal });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
 
     instances[0].emit({ type: "session.ready", sessionId: "abc" });
@@ -148,7 +148,7 @@ describe("ApiClient", () => {
   it("routes a cue frame to onCue", () => {
     const onCue = vi.fn();
     const client = new ApiClient("ws://h/ws", { onCue });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].emit({
       type: "cue",
@@ -166,7 +166,7 @@ describe("ApiClient", () => {
     const onTranslation = vi.fn();
     const onTranslationDone = vi.fn();
     const client = new ApiClient("ws://h/ws", { onTranslation, onTranslationDone });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].emit({
       type: "translation",
@@ -186,7 +186,7 @@ describe("ApiClient", () => {
     const onSongSync = vi.fn();
     const onSongDone = vi.fn();
     const client = new ApiClient("ws://h/ws", { onSong, onSongSync, onSongDone });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].emit({
       type: "song",
@@ -212,7 +212,7 @@ describe("ApiClient", () => {
   it("routes caption.status frames to onCaptionStatus (XERK-1498)", () => {
     const onCaptionStatus = vi.fn();
     const client = new ApiClient("ws://h/ws", { onCaptionStatus });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].emit({ type: "caption.status", delayed: true });
     expect(onCaptionStatus).toHaveBeenCalledWith({ type: "caption.status", delayed: true });
@@ -220,10 +220,10 @@ describe("ApiClient", () => {
 
   it("does not send a cueLevel in session.start (XERK-114: toggle removed)", () => {
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     const start = instances[0].jsonSent()[0];
-    expect(start).toMatchObject({ type: "session.start", micSource: "g2-microphone" });
+    expect(start).toMatchObject({ type: "session.start", micSource: "phone-microphone" });
     expect(start).not.toHaveProperty("cueLevel");
   });
 
@@ -232,7 +232,7 @@ describe("ApiClient", () => {
     const pcm = new Uint8Array([1, 2, 3]);
     expect(client.sendAudio(pcm)).toBe(false); // not connected yet
 
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     expect(client.sendAudio(pcm)).toBe(true);
 
@@ -240,20 +240,9 @@ describe("ApiClient", () => {
     expect(client.sendAudio(pcm)).toBe(false);
   });
 
-  it("switchMic updates params and sends mic.switch", () => {
-    const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
-    instances[0].open();
-    client.switchMic("phone-microphone");
-    expect(instances[0].lastJson()).toEqual({
-      type: "mic.switch",
-      micSource: "phone-microphone",
-    });
-  });
-
   it("stop ends the session, closes, and does not reconnect", () => {
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     client.stop();
     expect(instances[0].lastJson()).toEqual({ type: "session.end" });
@@ -265,7 +254,7 @@ describe("ApiClient", () => {
 
   it("reconnects with backoff after an unexpected close", () => {
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].close(1006); // server dropped us (abnormal)
     expect(instances).toHaveLength(1);
@@ -275,7 +264,7 @@ describe("ApiClient", () => {
 
   it("reconnects after a 1013 (api's database unavailable, XERK-1510)", () => {
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].close(1013); // try again later — not the 1008 that means re-login
     vi.advanceTimersByTime(1000);
@@ -293,7 +282,7 @@ describe("ApiClient", () => {
   it("does not reconnect after a 4001 (session resumed on another connection, XERK-1526)", () => {
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].close(4001); // another tab/device resumed this session id
     expect(onError).toHaveBeenCalledWith(
@@ -307,7 +296,7 @@ describe("ApiClient", () => {
   it("does not reconnect after a 1008 policy close, and surfaces an auth error", () => {
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].close(1008); // api rejected the token / capture off
     expect(onError).toHaveBeenCalledWith(
@@ -323,7 +312,7 @@ describe("ApiClient", () => {
     registerOidcRefresher(refresh);
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
 
     instances[0].close(1008); // token expired mid-session
@@ -344,7 +333,7 @@ describe("ApiClient", () => {
     registerOidcRefresher(refresh);
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
 
     instances[0].open();
     instances[0].close(1008); // first policy close → one refresh + reconnect
@@ -369,7 +358,7 @@ describe("ApiClient", () => {
     const refresh = vi.fn(async () => true);
     registerOidcRefresher(refresh);
     const client = new ApiClient("ws://h/ws");
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
 
     instances[0].open();
     instances[0].emit({ type: "session.ready", sessionId: "s1" }); // session established
@@ -390,7 +379,7 @@ describe("ApiClient", () => {
     registerOidcRefresher(async () => false); // refresh token revoked/expired
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
 
     instances[0].close(1008);
@@ -405,7 +394,7 @@ describe("ApiClient", () => {
   it("stops reconnecting after a fatal error message", () => {
     const onError = vi.fn();
     const client = new ApiClient("ws://h/ws", { onError });
-    client.start({ micSource: "g2-microphone" });
+    client.start({ micSource: "phone-microphone" });
     instances[0].open();
     instances[0].emit({
       type: "error",

@@ -120,7 +120,7 @@ bounded, constant partials) and on *concurrency* (cache-aware ⇒ many more stre
 
 - **Recommended — hybrid.** Nemotron `[56,3]` (320 ms) for the live streaming
   partials, Parakeet-TDT-v3 offline re-decode for the committed final at the
-  endpoint. This delivers Conversate-class responsiveness on the live caption **and**
+  endpoint. This delivers cloud-streaming-class responsiveness on the live caption **and**
   keeps Parakeet's better final accuracy (5.87 / 2.97) for the stored transcript,
   making the streaming accuracy regression irrelevant to what's saved. Both are 0.6 B;
   together they fit in <5 GB and run side by side. This matches the doc's own §5.4

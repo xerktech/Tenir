@@ -16,7 +16,7 @@ test("buildEntries matches merge-commit and squash oids to PRs; orphans synthesi
     { number: 201, title: "Tighten cue dedup", url: "http://x/201", author: "malc", mergeCommitOid: "m1" },
     { number: 202, title: "Add web settings pane", url: "http://x/202", author: "malc", mergeCommitOid: "s1" },
   ];
-  const componentsByOid = { m1: [], s1: ["api"], d1: ["api", "even"] };
+  const componentsByOid = { m1: [], s1: ["api"], d1: ["api", "mobile"] };
   const entries = CL.buildEntries({ commits, prs, componentsByOid });
   assert.equal(entries[0].number, 201);
   assert.equal(entries[0].title, "Tighten cue dedup");
@@ -25,23 +25,23 @@ test("buildEntries matches merge-commit and squash oids to PRs; orphans synthesi
   // orphan: kept, synthesized from the commit subject, no PR metadata
   assert.equal(entries[2].number, null);
   assert.equal(entries[2].title, "direct hotfix to main");
-  assert.deepEqual(entries[2].components, ["api", "even"]);
+  assert.deepEqual(entries[2].components, ["api", "mobile"]);
 });
 
 test("groupByComponent groups by heading, [] into Other; no double-counting", () => {
   const groups = CL.groupByComponent([
-    entry({ title: "even thing", components: ["even"] }),
+    entry({ title: "mobile thing", components: ["mobile"] }),
     entry({ title: "api thing", components: ["api", "api"] }),
     entry({ title: "chore", components: [] }),
   ]);
-  assert.deepEqual(Object.keys(groups), ["API", "Even", "Other"]);
+  assert.deepEqual(Object.keys(groups), ["API", "Mobile", "Other"]);
   assert.equal(groups.API.length, 1); // not double-counted within one entry
 });
 
 test("a multi-component entry appears under each heading it touches", () => {
-  const groups = CL.groupByComponent([entry({ title: "shared", components: ["api", "even"] })]);
+  const groups = CL.groupByComponent([entry({ title: "shared", components: ["api", "mobile"] })]);
   assert.equal(groups.API.length, 1);
-  assert.equal(groups.Even.length, 1);
+  assert.equal(groups.Mobile.length, 1);
 });
 
 test("a removed component name (web/sidecar-gpu) has no heading and lands in Other", () => {
@@ -74,14 +74,12 @@ test("renderComponentTable reads rebuilt/carried status straight from the manife
     components: {
       api: { version: "0.1.1", kind: "image", ref: "ghcr.io/x/tenir:0.1.1", built: true },
       "parakeet-stt": { version: "0.1.0", kind: "image", ref: "ghcr.io/x/tenir-parakeet-stt:0.1.0", built: false },
-      even: { version: "0.1.0", kind: "evenhub", package_id: "com.tenir.local", built: false },
       mobile: { version: "0.1.1", kind: "asset", asset: "tenir-android-v0.1.1.apk", version_code: 10001, built: true },
     },
   };
   const table = CL.renderComponentTable(manifest);
   assert.match(table, /API \(image, incl\. web UI\) \| 0\.1\.1 \| rebuilt/);
   assert.match(table, /Parakeet STT \(image\) \| 0\.1\.0 \| carried/);
-  assert.match(table, /Even \(Even Hub\) \| 0\.1\.0 \| carried \| `com\.tenir\.local` \(Even Hub portal\)/);
   assert.match(table, /code 10001/);
   assert.ok(!table.includes("tenir-web"));
   assert.ok(!table.includes("sidecar"));
@@ -95,7 +93,7 @@ test("renderReleaseNotes handles an empty range", () => {
 
 test("insertSection prepends under the marker and is idempotent for the same version", () => {
   const base = `# Changelog\n\n${CL.CHANGELOG_MARKER}\n`;
-  const secA = CL.renderChangelogSection({ version: "0.1.0", date: "2026-07-19", groups: { Even: [entry({ title: "a", components: ["even"] })] } });
+  const secA = CL.renderChangelogSection({ version: "0.1.0", date: "2026-07-19", groups: { Mobile: [entry({ title: "a", components: ["mobile"] })] } });
   const once = CL.insertSection(base, secA);
   assert.match(once, /## 0\.1\.0 — 2026-07-19/);
 

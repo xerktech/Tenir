@@ -1,10 +1,9 @@
 /**
  * The microphone seam shared by every capture client (master plan §4.1, §10).
  *
- * The Even G2 app gets PCM pushed by the glasses host; the mobile app owns a native
- * recorder; the web SPA captures the browser mic. All three deliver the same 16 kHz
- * s16le mono PCM — the exact format the api STT wants, so nothing is resampled on the
- * wire. This interface is the platform-agnostic contract for that source, free of any
+ * The mobile app owns a native recorder; the web SPA captures the browser mic. Both
+ * deliver the same 16 kHz s16le mono PCM — the exact format the api STT wants, so
+ * nothing is resampled on the wire. This interface is the platform-agnostic contract for that source, free of any
  * React Native or browser import so the capture state machine can be unit-tested with
  * a fake one.
  */

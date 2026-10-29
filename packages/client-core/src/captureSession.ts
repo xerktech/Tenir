@@ -1,7 +1,7 @@
 /**
  * Live phone-mic capture state machine.
  *
- * This is the mobile counterpart to the Even G2 app's `even/src/main.ts` loop:
+ * The live loop shared by the web and Android clients:
  * phone mic -> 16 kHz PCM -> `ApiClient` (WSS) -> caption messages -> on-screen
  * render. It is deliberately framework-agnostic — it imports `react`/`react-native`
  * not at all — so the whole transition logic (partial/final captions,
@@ -180,7 +180,6 @@ export type CaptureAction =
   | { type: "captionStatus"; delayed: boolean }
   | { type: "error"; message: string }
   | { type: "togglePause" }
-  | { type: "micSwitch"; micSource: MicSource }
   | { type: "stop" };
 
 export function initialCaptureState(micSource: MicSource): CaptureState {
@@ -377,8 +376,6 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
     case "togglePause":
       // Pausing clears the in-flight hypothesis so a stale partial doesn't linger.
       return { ...state, listening: !state.listening, partial: "" };
-    case "micSwitch":
-      return { ...state, micSource: action.micSource };
     case "stop":
       // Session over: drop to idle but keep the transcript on screen to read back
       // — including the past cues now embedded in it (XERK-108). Only the live
@@ -446,7 +443,7 @@ export function liveTranscript(segments: CaptureSegment[], pastCues: LiveCue[]):
  * clock jump (or a timer that fires late) can't paint a number outside the
  * range the cue ever had.
  *
- * Pure and shared, so the lens box and the web/mobile cards count identically.
+ * Pure and shared, so the web and mobile cards count identically.
  */
 export function cueSecondsLeft(elapsedMs: number, ttlMs: number = CUE_TTL_MS): number {
   const remaining = Math.ceil((ttlMs - elapsedMs) / 1000);
@@ -483,7 +480,7 @@ export function songPositionMs(
 /**
  * Index of the currently-sung lyric line at wall-clock `now` — the last line
  * whose (song-time) `atMs` has been reached, or -1 before the first line. Pure
- * and shared, so the lens box and the web/mobile cards scroll identically.
+ * and shared, so the web and mobile cards scroll identically.
  */
 export function currentLyricIndex(song: LiveSong, now: number): number {
   const pos = songPositionMs(song, now);
@@ -539,7 +536,6 @@ export interface ApiLike {
   ): void;
   stop(): void;
   sendAudio(pcm: Uint8Array): boolean;
-  switchMic(micSource: MicSource): void;
 }
 
 export interface CaptureSessionDeps {
@@ -557,7 +553,7 @@ export interface CaptureSessionDeps {
 /**
  * Owns one capture session end to end: permission, mic, api client, and the
  * reduced view state. Subscribe for state updates (the React hook does); call
- * `start`/`stop`/`togglePause`/`switchMic` to drive it.
+ * `start`/`stop`/`togglePause` to drive it.
  */
 export class CaptureSession {
   private deps: CaptureSessionDeps;
@@ -734,12 +730,6 @@ export class CaptureSession {
   /** Pause/resume audio upload without closing the socket. */
   togglePause(): void {
     if (this.state.running) this.dispatch({ type: "togglePause" });
-  }
-
-  /** Switch capture source at runtime so the server knows the acoustics changed. */
-  switchMic(micSource: MicSource): void {
-    this.dispatch({ type: "micSwitch", micSource });
-    this.client?.switchMic(micSource);
   }
 
   /** End the session: stop the mic, close the socket, and forget the resume id. */

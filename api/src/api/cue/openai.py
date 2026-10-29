@@ -237,7 +237,7 @@ _ASSISTANT_OFFER = re.compile(
 def _clip_at_word(text: str, limit: int) -> str:
     """Clip overlong model output at a word boundary with an ellipsis.
 
-    The cue body renders on a glasses card — a hard character slice ended
+    The cue body renders on a small cue card — a hard character slice ended
     mid-word on 8 of 51 cues in a reviewed production session ("…vascular
     trend monito"). Clipping back to the last full word costs a few
     characters and reads as an intentional continuation instead of a bug.

@@ -5,7 +5,6 @@
 ```
 api/             FastAPI + WebSocket api (auth, sessions, history) — its Dockerfile
                  also builds the web SPA and serves it from the same container
-even/            Even G2 glasses client (Vite + TS) — live capture + lens render
 web/             self-hosted React SPA — history, live capture, status, users
 mobile/          React Native app (Android) — phone-mic capture + history
 packages/

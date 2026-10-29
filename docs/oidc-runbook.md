@@ -39,7 +39,7 @@ curl -fsS localhost:8080/health
 curl -fsS localhost:8080/auth/config      # -> {"builtin": true}
 ```
 
-Clients (web, Android, glasses phone page) show only the username/password form. Every session and
+Clients (web, Android) show only the username/password form. Every session and
 recording is scoped to the logged-in user's household, as today.
 
 ## 2. Optionally enabling Authentik OIDC
@@ -103,10 +103,9 @@ placeholders — set them to your real hosts:
 | Client | Env var (Authentik stack) | Example value |
 |---|---|---|
 | Web (served by the API) | `TENIR_OIDC_REDIRECT_WEB` | `https://tenir.household.example/auth/oidc/callback` |
-| even phone page | `TENIR_OIDC_REDIRECT_EVEN` | `https://tenir.household.example/even/auth/oidc/callback` |
 | Android native | `TENIR_OIDC_REDIRECT_MOBILE` | `com.xerktech.tenir://auth/callback` |
 
-Set each to the full callback URL on your real host (the web/even ones should be your public
+Set each to the full callback URL on your real host (the web one should be your public
 Tenir origin, i.e. match `TENIR_PUBLIC_URL`, with the callback path shown). The Android
 custom-scheme URI is a three-place contract — changing it means changing the app manifest too; see
 [`.claude/rules/mobile-oidc.md`](../.claude/rules/mobile-oidc.md).

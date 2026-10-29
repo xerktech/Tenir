@@ -15,7 +15,7 @@ the first pass found and did **not** fix.
 
 ```bash
 # 0. one-time toolchain (see "Toolchain" for what's already on the usual box)
-npm install                                   # workspaces: packages/*, even, mobile, web
+npm install                                   # workspaces: packages/*, mobile, web
 uv venv --python 3.12 .venv && VIRTUAL_ENV=.venv uv pip install -e './api[dev]'
 
 # 1. the cheap gates
@@ -144,8 +144,7 @@ serve the web UI — that is baked into the image at `/srv/web`.
 - The WS surface is `ws://<host>/ws?token=<bearer>`: `session.start`, then raw
   PCM as **binary** frames (16 kHz s16le mono), then `caption.partial` /
   `caption.final` come back. `contract/ws-messages.schema.json` is the source of
-  truth — note `micSource` is `g2-microphone` | `phone-microphone` (not
-  "glasses-…"), and a wrong enum returns a generic `could not parse message`
+  truth — note `micSource` is `phone-microphone`, and a wrong enum returns a generic `could not parse message`
   with no field name.
 - **`session.end` finalizes asynchronously** (audio flush + store write are
   offloaded to threads). A REST read issued the instant the socket closes will
@@ -185,53 +184,14 @@ serve the web UI — that is baked into the image at `/srv/web`.
   `--deny-permission-prompts`; omit the fake device entirely for `NotFoundError`.
   To prove the mic is released, `addInitScript` a `getUserMedia` wrapper that
   stashes streams and read `track.readyState`.
-- `page.goto(url)` where only the **hash** differs does not reload, and
-  `adoptTokenFromUrl` runs at module load — `goto('about:blank')` first or the
-  fragment test silently no-ops and looks like a pass.
 - `context().setOffline(true)` does **not** kill an established WebSocket; the
   only reliable drop is stopping the app container.
 - There is no REST route to create conversations — they only come from WS
   sessions. Seed hostile data straight into Postgres
   (`docker exec -i <pg> psql -U tenir -d tenir < seed.sql`).
-
-### Even G2 glasses client (`even/`)
-
-- `VITE_API_WS=ws://127.0.0.1:18080/ws npm run dev --workspace tenir-even`, then
-  `scripts/evenhub-sim-guarded.sh --no-glow --automation-port <port> http://localhost:5173`.
-- **Never launch the simulator headless without that guard** (XERK-1020). While the app
-  is recording, the simulator reads the capture device unpaced. `--aid alsa:null` returns
-  zeros as fast as it can (~20× real time), and the simulator *host* process grows
-  ~120–330 MB/s. Xvfb stays flat, and WebKit can spike briefly. On a shared
-  pod that took every session down.
-- The guard runs xvfb-run + simulator in their own session and kills the group once
-  summed RSS passes `SIM_RSS_LIMIT_MB` (default 4096), exiting 137. Expect that exit
-  within ~15 s of starting a recording on `alsa:null`. Keep simulator recordings to a
-  few seconds and soak-test audio through the node harness below.
-- The guard dies with its wrapper: if the wrapper is SIGKILLed (e.g. a tool timeout),
-  the simulator runs on unguarded. Where `systemd-run --user` works, also launch it inside
-  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` as a hard backstop.
-  Otherwise run the wrapper in the background and stop it with SIGTERM. A backgrounded
-  script ignores SIGINT.
-- After a click, check `api.log` for the `/ws` accept before trusting that a recording
-  started. A click sent too soon after the autologin sometimes doesn't start one.
-- The simulator's automation API cannot type into the phone page. To sign in, add a
-  throwaway `<script>` to `even/index.html` that fills `#server-url`/`#username`/
-  `#password` and clicks `#login-submit`. Revert it afterwards.
-- No hardware needed for the logic: only `EvenAppBridge` needs stubbing.
-  `even/tests/controller.test.ts` has the shape — swap in the *real* `ApiClient`
-  and you have a full loop against a live api.
-- Audio goes in as `emit({ audioEvent: { audioPcm: <Uint8Array> } })`.
-- `handleGesture` dedupes the same gesture within 200 ms; sleep ≥300 ms between
-  synthetic gestures.
-- Lens output: pass your own write fn to `LensTextWriter`. The cue/song/
-  translation **body arrives inside the `rebuildPageContainer` payload**, not
-  through `writer.set` — capture rebuild payloads too or the body looks empty.
 - jsdom's WebSocket drops a frame sent in the same tick as `close()`; node's
   undici and the `ws` package do not. Never file a "frame lost on close" bug
   without re-running it on a second stack.
-
-`phone-tour.ts --shots` captures the frame *after* each step's teardown, so some
-screenshots show no card at all. Read the step's assertions, not the picture.
 
 ### Android app (`mobile/`)
 
@@ -300,8 +260,8 @@ security-relevant mediums). Each was reproduced; none is speculative.
 
 ### Feature-shaped gaps
 
-- **History is hard-capped at 50 conversations with no pagination**, on web,
-  Android, the glasses phone page and the miniapp. `api/src/api/history.py`
+- **History is hard-capped at 50 conversations with no pagination**, on web
+  and Android. `api/src/api/history.py`
   supports `limit`/`offset`; no client passes them. The 51st-oldest session is
   unreachable and undeletable, which contradicts the README's "browse, search,
   replay, export and delete".
@@ -326,15 +286,9 @@ security-relevant mediums). Each was reproduced; none is speculative.
 
 ### Security follow-ups
 
-- **The `#token=` handoff is still an unauthenticated write into a signed-out
-  browser.** XERK-236 stopped it replacing an existing session; closing it fully
-  needs a one-time, server-issued handoff code instead of a raw token in a URL.
-- **The account password is stored in plaintext** on the glasses
-  (`even/src/state/credentials.ts`), and the bearer token sits in plain
-  AsyncStorage on Android despite `mobile/src/secureStorage.ts` claiming
-  "EncryptedSharedPreferences-class storage". Deliberate today — it powers the
-  silent re-login — but the comment is wrong and the stored secret is the
-  *account* password, not a scoped refresh token.
+- **The bearer token sits in plain AsyncStorage on Android** despite
+  `mobile/src/secureStorage.ts` claiming "EncryptedSharedPreferences-class storage" —
+  the comment is wrong.
 - **The api image runs as root.** Dropping the uid needs an entrypoint that
   fixes ownership of the existing root-owned `API_AUDIO_DIR` bind mount before
   dropping privileges, plus a release note — see the note in `api/Dockerfile`.
@@ -373,8 +327,6 @@ security-relevant mediums). Each was reproduced; none is speculative.
   web; audio in the gap is silently dropped.
 - **422 validation errors render as `[object Object]`** — `detail` is typed as
   `string` but FastAPI returns a list.
-- **A live cue's transcript anchor doesn't follow the bounded segment window**
-  in `even/` (the past-cue anchors do).
 - **`ApiClient.dispatch` throws on a JSON `null` text frame.**
 - **Two clients on one session id: the first is silently orphaned.**
 - **The server URL is persisted before the login is attempted**, so a typo
@@ -393,12 +345,10 @@ security-relevant mediums). Each was reproduced; none is speculative.
   should too.
 - Confirmed escapes worth pinning: web logout never clicked
   (`App.test.tsx` only asserts the button exists); web search term never
-  asserted; `even/src/lens/layout.ts` `CAPTION_LINES` can exceed the screen.
+  asserted.
 - **`web/tests/App.test.tsx` mocks the entire `@tenir/client-core` module**, so
   the real REST client, 422 handling and sliding renewal are unexercised at the
   web layer.
-- **`even/tests/selectableText.test.ts` and `textSize.test.ts` resolve paths
-  from `process.cwd()`**, so they fail unless vitest runs from `even/`.
 
 ---
 

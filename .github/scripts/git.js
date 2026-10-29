@@ -26,7 +26,7 @@ function git(args) {
 }
 
 // All tags, one per line -> array. Includes the legacy rolling prerelease tags
-// (even-latest/mobile-latest); parseTag ignores anything non-semver.
+// (mobile-latest); parseTag ignores anything non-semver.
 function allTags() {
   const out = git(["tag", "-l"]);
   return out ? out.split("\n").filter(Boolean) : [];

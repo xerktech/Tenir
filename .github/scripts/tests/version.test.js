@@ -20,7 +20,6 @@ test("parseBase accepts MAJOR.MINOR, rejects everything else", () => {
 test("parseTag parses v-prefixed and bare triples, null otherwise", () => {
   assert.deepEqual(V.parseTag("v0.1.9"), { major: 0, minor: 1, patch: 9 });
   assert.deepEqual(V.parseTag("0.1.9"), { major: 0, minor: 1, patch: 9 });
-  assert.equal(V.parseTag("even-latest"), null);
   assert.equal(V.parseTag("mobile-latest"), null);
   assert.equal(V.parseTag("v0.1"), null);
   assert.equal(V.parseTag("nonsense"), null);
@@ -34,7 +33,7 @@ test("nextPatch: empty -> 0, max+1 on the matching line, numeric not lexical", (
   // ignores other minor lines
   assert.equal(V.nextPatch(["v0.0.99", "v0.2.5"], { major: 0, minor: 1 }), 0);
   // ignores non-semver rolling tags
-  assert.equal(V.nextPatch(["even-latest", "mobile-latest"], { major: 0, minor: 1 }), 0);
+  assert.equal(V.nextPatch(["mobile-latest"], { major: 0, minor: 1 }), 0);
   // ignores malformed
   assert.equal(V.nextPatch(["v0.1.x", "v0.1.2"], { major: 0, minor: 1 }), 3);
 });
@@ -76,12 +75,12 @@ test("androidVersionCode throws at each field's budget, never wraps silently", (
 });
 
 test("assertStrictlyGreatest rejects a regression against legacy namespaces", () => {
-  const legacy = ["even-v0.1.0", "mobile-v0.1.0", "v0.1.2"];
+  const legacy = ["mobile-v0.1.0", "v0.1.2"];
   assert.doesNotThrow(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 3 }, legacy));
   // 0.1.2 already exists -> not strictly greater
   assert.throws(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 2 }, legacy));
   // 0.1.0 is at/below a published legacy tag -> the regression the guard blocks
-  assert.throws(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 0 }, ["even-v0.1.5"]));
+  assert.throws(() => V.assertStrictlyGreatest({ major: 0, minor: 1, patch: 0 }, ["mobile-v0.1.5"]));
 });
 
 // The comment on version.compare says "NOT lexical — v0.3.10 > v0.3.9", but

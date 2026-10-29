@@ -1,9 +1,8 @@
 /**
  * Mobile app api configuration (master plan §8.5).
  *
- * Unlike the Even G2 app (`even/`), which ships pointed at a known instance, the
- * mobile client lets the user pick their own server at runtime — the same posture as
- * the web SPA. This helper points the shared REST client at a user-supplied api;
+ * The mobile client lets the user pick their own server at runtime — the same
+ * posture as the web SPA. This helper points the shared REST client at a user-supplied api;
  * the chosen URL is persisted via `storage.ts` and re-applied on launch in `bootstrap.ts`.
  */
 
@@ -14,9 +13,7 @@ import type { Lang, MicSource } from "@tenir/contract";
 export const DEFAULT_WS_URL = "ws://localhost:8080/ws";
 
 /**
- * The phone is the capture device here, so live sessions default to the phone mic
- * (the Even G2 app defaults to the glasses mic — decision #5). The contract still
- * allows switching to `g2-microphone` at runtime when paired glasses are present.
+ * The phone is the capture device here, so live sessions use the phone mic.
  */
 export const DEFAULT_MIC_SOURCE: MicSource = "phone-microphone";
 

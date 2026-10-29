@@ -2,11 +2,9 @@
 
 One release publishes **all components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **Parakeet STT** image, the Even **glasses
-app**, and the Android **`.apk`**. Driven by `.github/workflows/release.yml`; the logic lives in
-`.github/scripts/` (see its README). The Even build is **not a release
-asset**: its distribution channel is the Even Hub developer portal, uploaded
-by `build-even` right after packing (see "Even Hub dev-portal publish").
+UI), the **Parakeet STT** image, and the Android **`.apk`**. Driven by
+`.github/workflows/release.yml`; the logic lives in `.github/scripts/` (see its
+README).
 
 **Not a release component: optional Authentik OIDC.** The optional Authentik IdP
 (`authentik/`) is separate operator-managed infra — its own Portainer stack on a
@@ -25,10 +23,9 @@ unchanged.
   path read-only against the repo, so it can't re-trigger itself.
 - A minor/major bump is a deliberate manual act (see below) that edits `VERSION`.
 
-There is no committed version-sync into the manifests. The artifacts that
-version their *installs* by content are stamped at build time by `release.yml`:
-the Even `app.json` `version` (Even Hub keys sideloads on it), and the Android
-`versionName` + packed `versionCode` (see `.github/scripts/version.js`). The
+There is no committed version-sync into the manifests. The artifact that
+versions its *installs* by content is stamped at build time by `release.yml`:
+the Android `versionName` + packed `versionCode` (see `.github/scripts/version.js`). The
 `package.json`/`pyproject.toml`/FastAPI-banner versions are ordinary dev metadata
 and are not release-managed.
 
@@ -61,38 +58,6 @@ committed default — no code change needed. Note that switching signing keys
 per-runner debug key) requires one final uninstall/reinstall, because the
 certificate itself changes; every update after that installs in place.
 
-## Even Hub dev-portal publish
-
-The `build-even` job packs the `.ehpk` and immediately uploads it to the Even
-Hub developer portal (the portal's draft + create-version API, via
-`even/scripts/evenhub-publish.mjs`). The portal — not the GitHub release — is
-the glasses app's distribution channel, so the `.ehpk` is not attached to the
-release; a portal failure fails `build-even` and blocks the release like any
-other build failure. The upload happens **before the tag exists**: if a later
-job fails, no tag is minted, and the retrying run recomputes the same version —
-the publish script detects a version the portal already has (via
-`versions/list-private`) and skips, so retries are safe. A carried (unchanged)
-even component publishes nothing: the portal already holds its version, and the
-manifest references it (`kind: "evenhub"`). **Promoting** the uploaded build in
-the portal remains a manual step.
-
-Configuration (Settings → Secrets and variables → Actions):
-
-- **Secret `EVENHUB_EMAIL`** — the Even Hub developer-account email.
-- **Secret `EVENHUB_PASSWORD`** — its password. The job logs in
-  non-interactively each run; a stored token can't work because portal access
-  tokens expire after ~10 minutes.
-- **Variable `EVENHUB_PACKAGE_ID`** *(optional)* — overrides the committed
-  `even/app.json` `package_id` when the portal listing uses a different id.
-- **Variable `TENIR_API_HOSTS`** *(optional, pre-existing)* — pins the packed
-  network whitelist; defaults to the `*` wildcard for BYO self-hosting.
-
-If the secrets are missing on a real release, `build-even` fails with a clear
-error before anything is tagged or published. A `dry_run` dispatch exercises
-the publish step (config + artifact resolution) without authenticating or
-uploading, and uploads the packed `.ehpk` as an Actions artifact
-(`even-ehpk-dry-run`) for inspection.
-
 ## Patch releases (automatic)
 
 Every merge to `main` that touches a component's source cuts a patch release — a
@@ -103,7 +68,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 
 ```
 api/**  contract/**  packages/**  web/**  parakeet-stt/**
-even/**  mobile/**  package.json  package-lock.json
+mobile/**  package.json  package-lock.json
 ```
 
 `plan` diffs the merge against the previous release tag and decides, per
@@ -111,12 +76,12 @@ component, **build or carry**:
 
 - **Changed** components are rebuilt at the new version.
 - **Unchanged** components are **carried**: they ship *at their own prior
-  version*, not rebuilt. An even-only merge builds and portal-publishes the new
-  glasses app, copies the previous `.apk` onto the release unchanged, and
-  references the previous api/parakeet-stt image tags.
+  version*, not rebuilt. A parakeet-stt-only merge builds the new STT image,
+  copies the previous `.apk` onto the release unchanged, and references the
+  previous api image tag.
 
 Because Tenir is an npm-workspace monorepo, a single change can fan out: a
-`contract/**` edit rebuilds the api image *and* both frontend bundles (it
+`contract/**` edit rebuilds the api image *and* the Android app (it
 regenerates both the Pydantic models and the TS types); a `packages/**`,
 `web/**` or root-lockfile change rebuilds the api image too, because the api
 image bakes in the built web SPA.
@@ -130,8 +95,7 @@ Carried **images** are referenced in the manifest at their prior `:version` tag
 already correct on a carried image, so the Compose stack needs nothing. A
 carried **`.apk`** is copied forward under its **original filename**, because
 Android versions an install by the version baked *inside* the file — the name
-must describe the bits. A carried **even** component needs nothing physical:
-the Even Hub portal already holds its version, and the manifest references it.
+must describe the bits.
 
 ## Deploying the api (automatic)
 
@@ -210,10 +174,9 @@ version guard (`assertStrictlyGreatest`) refuses any version at or below an
 existing tag, so a fat-fingered `VERSION` can't regress a shipped channel.
 
 The previous per-component channels (the `:latest`/`:<sha>` image tags and the
-rolling `even-latest` / `mobile-latest` prereleases) are superseded by this
-pipeline: images still publish `:latest` (plus `:<version>` and `:sha-<sha>`),
-and the glasses/android builds now live on the versioned release instead of a
-rolling prerelease.
+rolling `mobile-latest` prerelease) are superseded by this pipeline: images
+still publish `:latest` (plus `:<version>` and `:sha-<sha>`), and the Android
+build now lives on the versioned release instead of a rolling prerelease.
 
 ## Known wrinkles
 

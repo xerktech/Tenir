@@ -50,7 +50,7 @@ paths:
 - A final whose audio arrived more than `_STALE_FINAL_S` ago (`Session._final_age_s`) is stored
   only: no caption push, translation or cue (XERK-1447).
   - Finals queue through an outage and land as one burst on recovery; pushing them flooded the
-    glasses' caption band with turns from tens of seconds earlier.
+    live caption band with turns from tens of seconds earlier.
   - Age is dated by audio *arrival* time, not the session timeline, so tests that push audio
     faster than real time never read as stale.
 - An engine slower than real time sheds load by merging the final backlog (XERK-1498).

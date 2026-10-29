@@ -14,7 +14,7 @@
     "MicSource": {
       "title": "MicSource",
       "type": "string",
-      "enum": ["g2-microphone", "phone-microphone"],
+      "enum": ["phone-microphone"],
       "description": "Which microphone the client is currently capturing from."
     },
 
@@ -55,18 +55,6 @@
       }
     },
 
-    "MicSwitch": {
-      "title": "MicSwitch",
-      "description": "Client -> server. Runtime microphone source change.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "micSource"],
-      "properties": {
-        "type": { "const": "mic.switch" },
-        "micSource": { "$ref": "#/$defs/MicSource" }
-      }
-    },
-
     "SessionEnd": {
       "title": "SessionEnd",
       "description": "Client -> server. Finalizes the session; the transcript and retained audio are persisted.",
@@ -94,7 +82,6 @@
       "title": "ClientMessage",
       "oneOf": [
         { "$ref": "#/$defs/SessionStart" },
-        { "$ref": "#/$defs/MicSwitch" },
         { "$ref": "#/$defs/SessionEnd" },
         { "$ref": "#/$defs/Ping" }
       ]
@@ -177,7 +164,7 @@
 
     "Translation": {
       "title": "Translation",
-      "description": "Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.",
+      "description": "Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web and mobile render it alongside the original turn). While a translation run is live the api suppresses cues; the run ends with translation.done.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "segmentId", "text"],
@@ -194,7 +181,7 @@
 
     "TranslationDone": {
       "title": "TranslationDone",
-      "description": "Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.",
+      "description": "Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). Cue generation resumes after this.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
@@ -281,7 +268,7 @@
 
     "SongDone": {
       "title": "SongDone",
-      "description": "Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). On the glasses this starts the song box's dismiss countdown, mirroring translation.done; cue generation resumes after it.",
+      "description": "Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). Clients start the song card's dismiss countdown on it, mirroring translation.done; cue generation resumes after it.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "songId"],

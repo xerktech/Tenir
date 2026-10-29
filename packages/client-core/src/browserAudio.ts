@@ -1,8 +1,7 @@
 /**
  * Browser streaming microphone (master plan §4.1) — the web SPA's `PcmAudioSource`.
  *
- * The Even G2 app gets PCM pushed by the glasses host and the mobile app owns a
- * native recorder; the browser has neither, so the web client captures the mic with
+ * The mobile app owns a native recorder; the browser has none, so the web client captures the mic with
  * the Web Audio API and emits the same 16 kHz s16le mono PCM (base64, ~100 ms slices)
  * every `PcmAudioSource` produces, reusing the shared `pcm.ts` helpers. Uses
  * ScriptProcessor — adequate for a management-UI capture surface.

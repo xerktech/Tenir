@@ -88,4 +88,3 @@ accidental gap"):
 - Pre-capture consent gate: web gates the first capture behind the recording
   notice screen; mobile shows the notice inline on Live (and has a dedicated
   Privacy tab, which web lacks).
-- Glasses-mic switching on Live: mobile only.

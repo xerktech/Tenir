@@ -53,7 +53,7 @@ describe("released cues are embedded inline in the live transcript (XERK-108)", 
   const live = readText("src/screens/Live.tsx");
 
   it("interleaves finalized turns and past cues via the shared liveTranscript helper", () => {
-    // Built from the shared timeline helper, so the interleave matches web/even,
+    // Built from the shared timeline helper, so the interleave matches web,
     // then grouped into selectable runs (XERK-104 parity).
     expect(live).toContain("liveTranscript");
     expect(live).toContain("liveRuns(liveTranscript(state.segments, state.pastCues))");
@@ -75,7 +75,7 @@ describe("live cue counts down to its dismissal (XERK-110)", () => {
   const cue = readText("src/ui/cue.tsx");
 
   it("derives the count from the shared client-core helpers, not its own timing", () => {
-    // Same primitives the web card and the lens box use, so all three surfaces
+    // Same primitives the web card uses, so both surfaces
     // count identically (10s, 9s, … 0s) off the one TTL.
     expect(cue).toContain("cueCountdownLabel");
     expect(cue).toContain("CUE_COUNTDOWN_TICK_MS");

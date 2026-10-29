@@ -18,8 +18,7 @@ production cues showed ~13% pure restatements.
 The calibration underneath swung twice before landing here. XERK-114 ran "when
 in doubt, emit", which on a replayed real session produced confidently *wrong*
 cues. XERK-118 swung to accuracy-only assertions, which measured **zero cues on
-entire real sessions** — including one made purely of direct questions to the
-glasses, since its triggers only fired when somebody asserted something. The
+entire real sessions** — including one made purely of direct questions, since its triggers only fired when somebody asserted something. The
 current setting keeps XERK-118's accuracy rule absolute over the *content* (never
 state what you are unsure of; prefer the modest accurate statement over a
 specific guess) while keeping an emissive posture over the *triggers*.
