@@ -10,7 +10,6 @@ from api.contract.messages import (  # noqa: F401
     Lang,
     LyricLine,
     MicSource,
-    MicSwitch,
     Ping,
     Pong,
     ServerMessage,

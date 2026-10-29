@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 // a selection within a single <Text> tree, so every turn has to render inside
 // one selectable <Text> (newline-separated) rather than one <Text> per turn —
 // otherwise each turn is its own selection island. Kept in parity with the web
-// and even clients, whose DOM selection already spans the whole transcript.
+// client, whose DOM selection already spans the whole transcript.
 const readText = (rel: string) => readFileSync(resolve(process.cwd(), rel)).toString("utf8");
 
 describe("selectable transcript text (XERK-104)", () => {

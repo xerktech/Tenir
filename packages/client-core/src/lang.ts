@@ -2,7 +2,7 @@
  * Human-readable names for the languages the STT engine may report (`Lang` in
  * the contract). Shared across the frontends so a spoken language reads the same
  * everywhere it is surfaced — the web/mobile source-language chips (XERK-160)
- * and the glasses translation box title (XERK-173: "<Source> → English").
+ * and the translation title (XERK-173: "<Source> → English").
  */
 
 import type { Lang } from "@tenir/contract";

@@ -22,7 +22,7 @@ describe("apkAssetVersion", () => {
   });
 
   it("rejects anything that isn't a release APK asset", () => {
-    expect(apkAssetVersion("tenir-even-v0.1.5.ehpk")).toBeNull();
+    expect(apkAssetVersion("tenir-android-v0.1.5.apk.sha256")).toBeNull();
     expect(apkAssetVersion("manifest.json")).toBeNull();
     expect(apkAssetVersion("tenir-android-v0.1.apk")).toBeNull(); // needs three parts
     expect(apkAssetVersion("tenir-android-vX.Y.Z.apk")).toBeNull();
@@ -87,7 +87,7 @@ describe("latestApkUpdate", () => {
     // A newer release can CARRY an older APK forward, or omit the mobile asset;
     // the newest APK may live on an earlier release. Every one is considered.
     const releases = [
-      release(["tenir-even-v0.2.0.ehpk"]), // newest tag, no APK
+      release(["manifest.json"]), // newest tag, no APK
       release(["tenir-android-v0.1.6.apk"]),
       release(["tenir-android-v0.1.5.apk"]),
     ];

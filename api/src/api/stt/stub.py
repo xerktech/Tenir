@@ -1,7 +1,7 @@
 """Phase 0 stub transcriber.
 
 Emits placeholder captions driven by how much audio has arrived, so the full
-phone -> WSS -> api -> lens caption loop can be exercised in the simulator
+client -> WSS -> api -> caption loop can be exercised end to end
 before a real model is wired in (Phase 1). It does NOT transcribe anything.
 """
 

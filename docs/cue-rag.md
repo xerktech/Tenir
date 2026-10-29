@@ -75,9 +75,7 @@ Three consequences fell straight out of these numbers:
 The model cites which evidence items it used (`"evidence": [1]` in its JSON
 reply); the backend maps the first citation to the item's source label, which
 travels the whole path — WS `cue` frame → `cues.source` column → history API →
-an attribution line on web, Android, and the glasses phone Session/History
-pages (the on-lens box deliberately omits it — a tiny monochrome strip where
-every row costs caption space). An uncited cue (from model knowledge, fine for
+an attribution line on web and Android, Live and History alike. An uncited cue (from model knowledge, fine for
 stable facts) simply
 carries no label. Malformed or out-of-range citations are dropped rather than
 guessed: a wrong label is worse than none.
@@ -261,7 +259,7 @@ open tuning question rather than a bug.
 
 The retrieval fix shipped and the very next test session still produced zero
 cues — for a *different* reason, visible in its transcript: the session was
-almost entirely direct factual questions to the glasses ("How many Toy Story
+almost entirely direct factual questions ("How many Toy Story
 movies are there?", "How many rings does Saturn have?"). Replayed through the
 deployed stack, retrieval was healthy (evidence on 24/27 turns, the grounded
 bar engaged) and the model answered `{"cue": false}` on every turn — correctly,

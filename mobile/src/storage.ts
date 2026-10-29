@@ -65,7 +65,7 @@ export function createMirroredTokenStore(
 ): MirroredTokenStore {
   let cached: string | null = null;
   // The sign-in epoch rides beside the token in the same store (XERK-1591), so the
-  // app shares client-core's one model with the web tabs and Even.
+  // app shares client-core's one model with the web tabs.
   let cachedEpoch: string | null = null;
   const swallow = (err: unknown) => onError?.(err);
 

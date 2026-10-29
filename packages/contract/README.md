@@ -1,7 +1,7 @@
 # @tenir/contract
 
 The generated **TypeScript** half of the WS+REST message contract — the single
-source of truth shared by every TS frontend (`even/`, `mobile/`, and `web/`).
+source of truth shared by every TS frontend (`mobile/` and `web/`).
 `src/messages.ts` is generated from
 [`../../contract/ws-messages.schema.json`](../../contract/ws-messages.schema.json)
 by `make gen`; **never hand-edit it**.

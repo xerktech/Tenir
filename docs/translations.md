@@ -8,26 +8,16 @@ detected language isn't English is translated automatically.
 
 Where it appears:
 
-- **Glasses lens**: the translation shows in the **cue box's slot** — the same
-  full-width popup strip, same place, same size (title row "Translation" over a
-  scrolling body). A run of consecutive non-English turns keeps appending to the
-  box. The box's 10s auto-dismiss countdown does **not** start while the other
-  language is still being spoken: only when the api declares the run done
-  (`translation.done` — an English turn arrived, or speech went quiet past the
-  hold window) does the countdown appear and run, exactly like a cue's
-  (XERK-110). Tapping or swiping the box while it counts down resets the
-  countdown (XERK-129 parity), and swipes scroll a long body under the host's
-  native scroll (XERK-133).
-- **Web, Android, and the glasses phone Session page**: turn-by-turn — the
+- **Live** (web + Android): turn-by-turn — the
   English rendering sits directly under the original turn, quieter than the
   spoken text and led by a small accent "EN" tag, in the live transcript as it
   arrives. The original text of a translated turn leads with the matching
   source-language chip ("ES", "FR", …) so both halves of the pair are labeled —
   omitted when the turn's language wasn't actually detected (a run-inherited
   turn has no claimed source). (Turn-by-turn rather than side-by-side: it reads
-  identically on all three surfaces, and on Android it keeps each transcript
+  identically on both surfaces, and on Android it keeps each transcript
   run one selectable `<Text>` (XERK-104).)
-- **History** (web + mobile + glasses phone): translations persist on their
+- **History** (web + mobile): translations persist on their
   segments (`segments.translation`) and render the same way in the stored
   transcript. Search still matches the original text only — the record is what
   was said.
@@ -35,10 +25,9 @@ Where it appears:
 ## Cues stand aside
 
 While a translation run is live, **cues neither trigger nor appear** — the
-translation owns their box and their attention. This is enforced in three
-places: the session skips cue generation while a run is open, a cue that was
-already generating when the run opened is dropped before delivery, and the
-glasses queue any cue that does arrive behind the translation box. Cues resume
+translation owns their box and their attention. This is enforced in two
+places: the session skips cue generation while a run is open, and a cue that was
+already generating when the run opened is dropped before delivery. Cues resume
 once the run ends.
 
 ## How it works
@@ -81,8 +70,8 @@ once the run ends.
 4. **Delivery + persistence.** Each translation is a `translation` WS message
    keyed by `segmentId` (see `contract/ws-messages.schema.json`) so clients pair
    it with the turn it renders under; the run's end is `translation.done`, which
-   is queued behind the run's last translation so the glasses countdown never
-   starts before the text is on screen. Translations are persisted onto the
+   is queued behind the run's last translation so it never overtakes the text it
+   closes. Translations are persisted onto the
    `segments` row (additive `translation` column, applied idempotently on pool
    open like the other schema drift).
 

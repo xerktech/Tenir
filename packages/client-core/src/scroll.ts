@@ -1,7 +1,6 @@
 /**
  * Live-transcript auto-scroll geometry (XERK-103), shared by every frontend so
- * the web SPA, the Android app and the Even phone companion follow the newest
- * caption identically.
+ * the web SPA and the Android app follow the newest caption identically.
  *
  * The running conversation lives in its own bounded, internally-scrolling box
  * with the cue band floating over its top edge (XERK-107): a growing session

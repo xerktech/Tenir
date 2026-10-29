@@ -12,18 +12,17 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("web/src/App.tsx"), ["api"]);
   assert.deepEqual(C.componentsForPath("web/Dockerfile"), ["api"]);
   // contract/** regenerates the Pydantic models (api) AND the TS types (clients).
-  assert.deepEqual(C.componentsForPath("contract/ws-messages.schema.json"), ["api", "even", "mobile"]);
+  assert.deepEqual(C.componentsForPath("contract/ws-messages.schema.json"), ["api", "mobile"]);
   // packages/** is the shared TS the web SPA (in the api image) and the two
   // device clients compile against.
-  assert.deepEqual(C.componentsForPath("packages/client-core/src/x.ts"), ["api", "even", "mobile"]);
-  assert.deepEqual(C.componentsForPath("even/src/app.ts"), ["even"]);
+  assert.deepEqual(C.componentsForPath("packages/client-core/src/x.ts"), ["api", "mobile"]);
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
 });
 
 test("componentsForPath maps the root workspace manifest/lockfile to api + clients", () => {
-  assert.deepEqual(C.componentsForPath("package.json"), ["api", "even", "mobile"]);
-  assert.deepEqual(C.componentsForPath("package-lock.json"), ["api", "even", "mobile"]);
+  assert.deepEqual(C.componentsForPath("package.json"), ["api", "mobile"]);
+  assert.deepEqual(C.componentsForPath("package-lock.json"), ["api", "mobile"]);
   // a nested package.json is owned by its dir, not the root rule
   assert.deepEqual(C.componentsForPath("web/package.json"), ["api"]);
 });
@@ -37,12 +36,11 @@ test("componentsForPath returns [] for non-component paths (-> Other, never a bu
 });
 
 test("detectChanges unions components across the diff", () => {
-  const changed = C.detectChanges(["api/src/api/main.py", "even/src/app.ts", "README.md"], {});
+  const changed = C.detectChanges(["api/src/api/main.py", "mobile/src/App.tsx", "README.md"], {});
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
-    even: true,
-    mobile: false,
+    mobile: true,
   });
 });
 
@@ -51,7 +49,6 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
-    even: false,
     mobile: false,
   });
 });

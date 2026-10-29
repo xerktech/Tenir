@@ -18,7 +18,7 @@ def test_health() -> None:
 
 def test_session_handshake_and_ping() -> None:
     with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-        ws.send_text(json.dumps({"type": "session.start", "micSource": "g2-microphone"}))
+        ws.send_text(json.dumps({"type": "session.start", "micSource": "phone-microphone"}))
         ready = ws.receive_json()
         assert ready["type"] == "session.ready"
         assert ready["sessionId"]

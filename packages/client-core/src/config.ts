@@ -1,11 +1,9 @@
 /**
  * Api endpoint configuration for the shared client core.
  *
- * `client-core` is consumed by several frontends (the Even G2 glasses app, the web
- * SPA, and the mobile app), each of which discovers the api differently: the
- * Even G2 app bakes it in at build time via Vite env, while the web/mobile clients
- * let the user point at *their own* self-hosted instance with a server-URL field
- * (master plan §8.5). So the base URL is injected by the host rather than read
+ * `client-core` is consumed by the web SPA and the mobile app, which let the user
+ * point at *their own* self-hosted instance with a server-URL field (master plan
+ * §8.5). So the base URL is injected by the host rather than read
  * from `import.meta.env` here, keeping the core environment-agnostic.
  */
 

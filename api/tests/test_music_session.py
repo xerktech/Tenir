@@ -348,8 +348,7 @@ def test_no_window_skips_identify() -> None:
 def test_scan_runs_during_translation() -> None:
     """Music recognition is independent of a translation run (XERK-194): lyrics and
     translation are separate streams that can be live at once, so a song still
-    opens while someone is being translated. The single-box arbitration (lyrics
-    beat translation) lives on the glasses, not here."""
+    opens while someone is being translated."""
 
     async def run() -> None:
         sent: list[ServerMessage] = []
@@ -370,8 +369,8 @@ def test_scan_runs_during_translation() -> None:
 def test_song_ends_during_translation() -> None:
     """A live song must be able to END while a translation is running (XERK-194):
     once the music stops matching past the hold, `song.done` goes out even mid
-    translation — otherwise a finished song would keep blocking the lyrics box on
-    the glasses for the whole translation."""
+    translation — otherwise a finished song would keep blocking the lyrics card for
+    the whole translation."""
 
     async def run() -> None:
         sent: list[ServerMessage] = []

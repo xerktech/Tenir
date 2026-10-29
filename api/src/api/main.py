@@ -495,7 +495,7 @@ def _ws_principal(ws: WebSocket) -> Principal | None:
     """Authenticate a WebSocket from its bearer token.
 
     The token rides in the ``Authorization`` header or a ``?token=`` query param
-    (the Even Hub WS client can set either). Returns the principal, or ``None`` when
+    (a client may set either). Returns the principal, or ``None`` when
     the token is missing/invalid (the caller then closes the socket).
     """
     auth_header = ws.headers.get("authorization", "")
@@ -898,8 +898,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 registry.unregister(session)
                 await session.close()
                 session = None
-            elif msg.type == "mic.switch":
-                session.set_mic_source(msg.micSource)
 
     except WebSocketDisconnect:
         log.info("client disconnected")

@@ -3,12 +3,12 @@
  *
  * Auth is always required: every REST call needs an `Authorization: Bearer <token>`
  * header and the WS needs a `?token=` query param (the browser WebSocket API can't
- * set headers). Login stores the token here; the lens app and the web SPA both read
+ * set headers). Login stores the token here; the web SPA and the mobile app both read
  * it. Before login (or after logout) the token is simply absent and protected calls
  * 401, which the clients surface as the login screen.
  *
  * The default backing store is `localStorage`, which is available in every browser
- * frontend that consumes this core (the Even Hub WebView and the web SPA alike).
+ * frontend that consumes this core (the web SPA).
  * Native frontends without `localStorage` — the React Native mobile app — inject
  * their own **secure keychain/keystore** store via `configureTokenStore` (master
  * plan §8.5), keeping `getToken`/`authHeader`/`withToken` synchronous for callers.

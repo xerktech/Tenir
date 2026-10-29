@@ -112,8 +112,8 @@ entries:
       name: Tenir
     attrs:
       name: Tenir
-      # Public client + PKCE for the browser/native fronts (the browser web app,
-      # the even phone page, the mobile native app). No client secret is issued;
+      # Public client + PKCE for the browser/native fronts (the browser web app
+      # and the mobile native app). No client secret is issued;
       # T2 confirms whether any client is instead confidential.
       client_type: public
       client_id: !Env [AUTHENTIK_TENIR_CLIENT_ID, tenir]
@@ -134,8 +134,6 @@ entries:
       redirect_uris:
         - matching_mode: strict
           url: !Env [TENIR_OIDC_REDIRECT_WEB, "http://localhost:8080/auth/oidc/callback"]
-        - matching_mode: strict
-          url: !Env [TENIR_OIDC_REDIRECT_EVEN, "http://localhost:8080/even/auth/oidc/callback"]
         - matching_mode: strict
           url: !Env [TENIR_OIDC_REDIRECT_MOBILE, "com.xerktech.tenir://auth/callback"]
       property_mappings:

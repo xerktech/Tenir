@@ -25,7 +25,7 @@ installed with `pip install datamodel-code-generator` (see
 ## Transport conventions
 
 - **Audio is binary, not JSON.** Raw PCM (16 kHz, signed 16-bit little-endian,
-  mono) is sent as binary WebSocket frames, matching the G2 mic natively. The
+  mono) is sent as binary WebSocket frames, the api STT input format. The
   JSON messages in the schema are control (client→server) and results
   (server→client).
 - **Discriminated by `type`.** Every message carries a `type` string literal;
@@ -34,7 +34,7 @@ installed with `pip install datamodel-code-generator` (see
 
 ## Message map
 
-Client → server: `session.start`, `mic.switch`, `session.end`, `ping`.
+Client → server: `session.start`, `session.end`, `ping`.
 
 Server → client: `session.ready`, `caption.partial`, `caption.final`, `cue`,
 `translation`, `translation.done`, `caption.status`, `song`, `song.sync`, `song.done`,

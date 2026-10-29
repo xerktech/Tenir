@@ -116,14 +116,14 @@ _FOREIGN_KEY_VIOLATION = "23503"
 
 # A caption.final whose turn's last audio arrived more than this long ago is stored
 # but not pushed live, translated or cued. Finals queue through an STT outage and
-# land as one burst on recovery (XERK-1447); on the glasses that buried the present
+# land as one burst on recovery (XERK-1447); live, that buried the present
 # under seconds-old turns. A healthy final lands within ~1-2 s of its turn's end.
 _STALE_FINAL_S = 10.0
 
 # Captions are "delayed" (caption.status, XERK-1498) from the first final that lands
 # more than _LATE_FINAL_S after its audio until finals have landed on time for
 # _CAUGHT_UP_S and the transcriber is no longer behind real time. Without it, STT
-# slower than real time just left the glasses blank or lagging with nothing saying
+# slower than real time just left the live captions blank or lagging with nothing saying
 # why. A healthy final lands within ~1-2 s. The hold-off, and waiting out the
 # transcriber, keep a slow engine whose merged backlog lands in bursts (some on time)
 # from flapping the indicator.
@@ -395,7 +395,7 @@ class Session:
         # `translation` message paired to the segment. Consecutive non-English
         # turns form a RUN: while one is live, cues are suppressed; the run ends
         # when an English turn arrives or speech goes quiet past the hold window,
-        # which emits `translation.done` (the glasses start their dismiss
+        # which emits `translation.done` (clients start their dismiss
         # countdown on it) and lets cues resume. Translation calls are serialized
         # through a single worker + queue so translations reach the client in
         # transcript order even when the model is slow; the `done` marker rides
@@ -873,10 +873,6 @@ class Session:
 
         registry.unregister(self)
         await self.close()
-
-    def set_mic_source(self, mic_source: MicSource) -> None:
-        self.mic_source = mic_source
-        log.info("session %s mic -> %s", self.session_id, mic_source)
 
     async def _pump_results(self) -> None:
         assert self._transcriber is not None
@@ -1476,10 +1472,8 @@ class Session:
             return
         # Music recognition runs independently of a translation run (XERK-194):
         # lyrics and translation are two separate streams that can be live at the
-        # same time (web/mobile/phone render both at once), so a song must be free
-        # to open, re-sync and end while someone is being translated. Only the
-        # glasses have a single popup box for both, and there lyrics beat
-        # translation beats cues — the arbitration lives on the lens, not here.
+        # same time (web and mobile render both at once), so a song must be free
+        # to open, re-sync and end while someone is being translated.
         # Cues still stand aside for either run (see `_consider_cue`).
         wav = self._music_window_wav()
         if wav is None:
@@ -1615,7 +1609,7 @@ class Session:
         `song` frame, and persist the identity. Best-effort throughout."""
         if self._music_active:
             # A different song replaced the last one: close the old run cleanly so
-            # the client's box (and the glasses countdown) resets before the new one.
+            # the client's card (and its dismiss countdown) resets before the new one.
             await self._end_music_run()
         try:
             synced = await self._music.lyrics(match)
@@ -1835,7 +1829,7 @@ class Session:
         # first await below (the pump join) and _persist() never ran, so a
         # dropped-and-never-resumed session stayed "live" forever and its whole
         # retained audio buffer was thrown away (XERK-236). That is exactly the
-        # path even/ documents as the safety net for an abnormal exit.
+        # safety net clients rely on for an abnormal exit.
         grace = self._grace_task
         self._grace_task = None
         if grace is not None and grace is not asyncio.current_task():
@@ -2193,8 +2187,8 @@ class Session:
             taken = len(pcm)
             # Extend, don't overwrite. A session that resumes after the grace window
             # has lapsed reaches the api as a *new* Session on the same conversation
-            # id, so its buffer holds only the post-resume audio — the glasses do
-            # exactly this, persisting their session id across drops and relaunches.
+            # id, so its buffer holds only the post-resume audio — a client that
+            # persists its session id across drops and relaunches does exactly this.
             # Prepend whatever is already retained for this conversation so the stored
             # clip spans the whole session and stays replayable end to end, instead of
             # being clobbered with the latest fragment (XERK-86).

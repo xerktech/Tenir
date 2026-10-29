@@ -9,11 +9,11 @@
  * Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.
  */
 export type TenirWsMessages = ClientMessage | ServerMessage;
-export type ClientMessage = SessionStart | MicSwitch | SessionEnd | Ping;
+export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
  */
-export type MicSource = "g2-microphone" | "phone-microphone";
+export type MicSource = "phone-microphone";
 /**
  * Languages the STT engine may detect/report on captions.
  */
@@ -43,13 +43,6 @@ export interface SessionStart {
   sessionId?: string;
   micSource: MicSource;
   sourceLang?: Lang;
-}
-/**
- * Client -> server. Runtime microphone source change.
- */
-export interface MicSwitch {
-  type: "mic.switch";
-  micSource: MicSource;
 }
 /**
  * Client -> server. Finalizes the session; the transcript and retained audio are persisted.
@@ -135,7 +128,7 @@ export interface Cue {
   source?: string;
 }
 /**
- * Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.
+ * Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web and mobile render it alongside the original turn). While a translation run is live the api suppresses cues; the run ends with translation.done.
  */
 export interface Translation {
   type: "translation";
@@ -150,7 +143,7 @@ export interface Translation {
   sourceLang?: Lang;
 }
 /**
- * Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.
+ * Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). Cue generation resumes after this.
  */
 export interface TranslationDone {
   type: "translation.done";
@@ -228,7 +221,7 @@ export interface SongSync {
   offsetMs: number;
 }
 /**
- * Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). On the glasses this starts the song box's dismiss countdown, mirroring translation.done; cue generation resumes after it.
+ * Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). Clients start the song card's dismiss countdown on it, mirroring translation.done; cue generation resumes after it.
  */
 export interface SongDone {
   type: "song.done";

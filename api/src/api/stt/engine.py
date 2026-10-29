@@ -15,7 +15,7 @@ from typing import Protocol
 
 import numpy as np
 
-# The G2 mic and the api STT input are both 16 kHz s16le mono — no resampling.
+# Client capture and the api STT input are both 16 kHz s16le mono — no resampling.
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2
 BYTES_PER_SEC = SAMPLE_RATE * BYTES_PER_SAMPLE

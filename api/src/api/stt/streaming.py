@@ -125,7 +125,7 @@ _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 # decodes that final together with the finals queued behind it, as one turn. One call
 # pays the engine's per-request latency once for the whole backlog, so the worker
 # catches up to live speech and no turn's text is lost from the stored transcript.
-# Kept well under _STALE_FINAL_S so a merged final still reaches the glasses.
+# Kept well under _STALE_FINAL_S so a merged final still reaches the client live.
 _FINAL_BEHIND_S = 3.0
 # "Behind" judges the last _BEHIND_WINDOW single-turn final decodes (at least
 # _BEHIND_MIN_DECODES): leaving out stalls, did decoding them take longer than their

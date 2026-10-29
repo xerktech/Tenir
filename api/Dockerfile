@@ -12,11 +12,10 @@ WORKDIR /app
 
 # Install with the lockfile first, copying only the workspace manifests so this
 # layer caches until a package.json/lock changes. Every workspace listed in the
-# root package.json (packages/*, even, mobile, web) must be present for `npm ci`.
+# root package.json (packages/*, mobile, web) must be present for `npm ci`.
 COPY package.json package-lock.json ./
 COPY packages/client-core/package.json packages/client-core/
 COPY packages/contract/package.json packages/contract/
-COPY even/package.json even/
 COPY mobile/package.json mobile/
 COPY web/package.json web/
 RUN npm ci

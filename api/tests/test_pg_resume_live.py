@@ -45,7 +45,7 @@ def store():
 
 def test_create_on_a_finished_row_reopens_it_keeping_owner_and_start(store) -> None:
     cid = str(uuid.uuid4())
-    first = store.create("default", cid, owner="alice", mic_source="g2-microphone")
+    first = store.create("default", cid, owner="alice", mic_source="phone-microphone")
     store.finish("default", cid)
     assert store.get("default", cid).status == "ready"
 
@@ -53,7 +53,7 @@ def test_create_on_a_finished_row_reopens_it_keeping_owner_and_start(store) -> N
     assert resumed.status == "live"
     assert resumed.ended_at is None
     assert resumed.owner == "alice"
-    assert resumed.mic_source == "g2-microphone"
+    assert resumed.mic_source == "phone-microphone"
     assert resumed.started_at == first.started_at
 
     done = store.finish("default", cid)

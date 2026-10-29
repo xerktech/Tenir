@@ -98,7 +98,7 @@ is already applied idempotently on every pool open (see the `translation`/`sourc
 
 The in-memory `UserStore`/`ConversationStore` (`auth/users.py`, `persistence/conversations.py`) gain
 the equivalent fields behind the same Protocols — the OIDC path must work in the memory/stub backend
-(CI, simulator) exactly as in Postgres.
+(CI) exactly as in Postgres.
 
 ## 3. Config block (env)
 
@@ -318,11 +318,11 @@ conversation is, and it applies identically to local, linked, and OIDC users.
 
   With `oidc` absent/`enabled:false` the client shows only the existing username/password form;
   with it present the client shows the OIDC login button **in addition to** the form. This lives in
-  shared `packages/client-core` (T7) so web, mobile, and even consume it identically — the
+  shared `packages/client-core` (T7) so web and mobile consume it identically — the
   cross-platform-parity rule (CLAUDE.md) means the OIDC button, logout, and per-user recording views
-  ship on all three fronts in the same effort.
+  ship on both fronts in the same effort.
 
-- **Login: Authorization Code + PKCE** (public clients — SPA, React Native, the even phone app —
+- **Login: Authorization Code + PKCE** (public clients — SPA, React Native —
   hold no client secret). The client redirects to Authentik's `authorization_endpoint` with
   `response_type=code`, `code_challenge` (S256), `scope=openid email profile groups`, exchanges the
   code at the `token_endpoint` for an **access token (the JWT the API validates), an id_token, and a

@@ -14,7 +14,6 @@ class MicSource(StrEnum):
     Which microphone the client is currently capturing from.
     """
 
-    g2_microphone = 'g2-microphone'
     phone_microphone = 'phone-microphone'
 
 
@@ -58,18 +57,6 @@ class SessionStart(BaseModel):
     sourceLang: Lang | None = None
 
 
-class MicSwitch(BaseModel):
-    """
-    Client -> server. Runtime microphone source change.
-    """
-
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    type: Literal['mic.switch']
-    micSource: MicSource
-
-
 class SessionEnd(BaseModel):
     """
     Client -> server. Finalizes the session; the transcript and retained audio are persisted.
@@ -95,10 +82,8 @@ class Ping(BaseModel):
     )
 
 
-class ClientMessage(RootModel[SessionStart | MicSwitch | SessionEnd | Ping]):
-    root: SessionStart | MicSwitch | SessionEnd | Ping = Field(
-        ..., title='ClientMessage'
-    )
+class ClientMessage(RootModel[SessionStart | SessionEnd | Ping]):
+    root: SessionStart | SessionEnd | Ping = Field(..., title='ClientMessage')
 
 
 class SessionReady(BaseModel):
@@ -179,7 +164,7 @@ class Cue(BaseModel):
 
 class Translation(BaseModel):
     """
-    Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web/mobile/phone render it alongside the original turn, the glasses lens shows it in the cue box slot). While a translation run is live the api suppresses cues; the run ends with translation.done.
+    Server -> client. English translation of one finalized non-English turn (XERK-160). Delivered off the caption path once the turn's caption.final is out; clients pair it with that segment by segmentId (web and mobile render it alongside the original turn). While a translation run is live the api suppresses cues; the run ends with translation.done.
     """
 
     model_config = ConfigDict(
@@ -195,7 +180,7 @@ class Translation(BaseModel):
 
 class TranslationDone(BaseModel):
     """
-    Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). On the glasses this is what starts the translation box's 10s dismiss countdown; cue generation resumes after this.
+    Server -> client. The non-English run is over — the speaker is done being spoken-to in another language (an English turn arrived, or speech went quiet past the hold window). Cue generation resumes after this.
     """
 
     model_config = ConfigDict(
@@ -291,7 +276,7 @@ class SongSync(BaseModel):
 
 class SongDone(BaseModel):
     """
-    Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). On the glasses this starts the song box's dismiss countdown, mirroring translation.done; cue generation resumes after it.
+    Server -> client. The recognized song is over — it stopped matching past the hold window, or a different song took over (XERK-184). Clients start the song card's dismiss countdown on it, mirroring translation.done; cue generation resumes after it.
     """
 
     model_config = ConfigDict(

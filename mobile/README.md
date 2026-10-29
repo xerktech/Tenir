@@ -3,8 +3,8 @@
 The Android client for a self-hosted Tenir server: **phone-mic live capture**
 plus browse/manage of the recorded, stored sessions.
 
-- **Live capture** — stream the phone mic to the server over the same WS
-  contract the Even G2 lens uses; partial/final captions render on screen, and
+- **Live capture** — stream the phone mic to the server over the shared WS
+  contract; partial/final captions render on screen, and
   the finished session is stored on the server (transcript + audio).
 - **History** — list/search stored sessions, read the transcript with timing,
   play the retained audio, delete.
@@ -154,4 +154,4 @@ PR check (`mobile.yml`) covers typecheck + the shared logic tests + the type-lev
 matching the other frontends, while its push-to-`main` job produces the installable APK.
 
 The shared client/contract live in `packages/client-core` and `packages/contract`;
-this app, the Even G2 app (`even/`) and the web SPA (`web/`) all depend on them.
+this app and the web SPA (`web/`) both depend on them.

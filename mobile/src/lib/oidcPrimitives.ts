@@ -5,8 +5,8 @@
  * T7 owns the entire OIDC state machine — PKCE, `state`/`nonce`, the code exchange,
  * silent refresh, and RP-initiated logout — and asks the host only for a handful of
  * environment primitives: PKCE crypto, secure randomness, the app's redirect URI, and
- * a `redirect` that opens the IdP and hands back the callback. On the browser fronts
- * (`web`/`even`) that redirect navigates the page; on native it opens a system browser
+ * a `redirect` that opens the IdP and hands back the callback. On the browser front
+ * (`web`) that redirect navigates the page; on native it opens a system browser
  * and resolves with the custom-scheme callback params, so `startOidcLogin` completes
  * the exchange inline (see `OidcPrimitives.redirect` in `client-core/src/oidc.ts`).
  *

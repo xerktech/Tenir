@@ -28,8 +28,8 @@ function parseBase(text) {
 }
 
 // Parse a full v<M>.<m>.<p> tag (or bare M.m.p). Returns null for anything that
-// isn't one — the legacy rolling prerelease tags (even-latest/mobile-latest)
-// parse to null here so nextPatch ignores them (assertStrictlyGreatest still
+// isn't one — the legacy rolling prerelease tag (mobile-latest)
+// parses to null here so nextPatch ignores them (assertStrictlyGreatest still
 // checks any that carry a version core).
 function parseTag(tag) {
   const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(tag).trim());
@@ -78,14 +78,14 @@ function androidVersionCode(v) {
 }
 
 // The regression guard: the new version MUST sort strictly above EVERY existing
-// tag, including any legacy per-component namespaces (even-v* / mobile-v*),
-// because Even Hub / Android version their installs by content and a regression
+// tag, including any legacy per-component namespace (mobile-v*),
+// because Android versions its installs by content and a regression
 // silently stops registering new builds. This is the assertion standing between
 // a fat-fingered VERSION edit and a bricked release channel.
 function assertStrictlyGreatest(version, allTags) {
   for (const t of allTags) {
     // Strip any known prefix down to the M.m.p core.
-    const core = String(t).replace(/^(v|even-v|mobile-v)/, "");
+    const core = String(t).replace(/^(v|mobile-v)/, "");
     const p = parseTag(core);
     if (p && compare(version, p) <= 0) {
       throw new Error(`computed version ${format(version)} is not greater than existing tag ${t}`);

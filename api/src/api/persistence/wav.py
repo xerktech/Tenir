@@ -1,6 +1,6 @@
 """WAV container helpers for retained audio (master plan §5.7, Phase 3).
 
-The api streams and buffers raw 16 kHz s16le mono PCM (the G2 mic's native
+The api streams and buffers raw 16 kHz s16le mono PCM (the clients' capture
 format, no resampling). For retention we wrap it in a WAV container so the stored
 object is a self-describing, re-playable file the re-process worker — and any
 ``/conversations/{id}/audio`` download — can decode without out-of-band metadata.

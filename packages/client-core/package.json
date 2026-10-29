@@ -2,7 +2,7 @@
   "name": "@tenir/client-core",
   "version": "0.1.1",
   "private": true,
-  "description": "Shared TS core for every tenir frontend: api REST + WS client, auth/token handling, endpoint config, and enrolment mic capture. Consumed by even/, mobile/, and web/.",
+  "description": "Shared TS core for every tenir frontend: api REST + WS client, auth/token handling, endpoint config, and enrolment mic capture. Consumed by mobile/ and web/.",
   "type": "module",
   "types": "./src/index.ts",
   "//react-native": "Entry for Metro, whose default resolution ignores `exports` and falls back to the main fields. Other consumers (Vite/vitest/tsc) keep using `exports`.",

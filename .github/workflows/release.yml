@@ -2,13 +2,9 @@ name: release
 
 # The unified release pipeline: ONE v<MAJOR>.<MINOR>.<PATCH> tag per release,
 # covering ALL components (the api image — which bakes in the web SPA —, the
-# Parakeet STT image, the Even glasses app, and the Android .apk)
-# + a changelog. Replaces the per-component
-# main-push publish jobs that used to live
-# in api.yml, parakeet-stt.yml, even.yml and mobile.yml (now PR-only CI). See
-# RELEASING.md and .github/scripts/README.md. The Even .ehpk is NOT a release
-# asset: its distribution channel is the Even Hub developer portal, uploaded by
-# build-even right after packing.
+# Parakeet STT image, and the Android .apk) + a changelog. api.yml,
+# parakeet-stt.yml and mobile.yml are PR-only CI. See RELEASING.md and
+# .github/scripts/README.md.
 #
 # Model:
 #   - PATCH is derived from the existing v* tags (max+1), never committed — so
@@ -44,7 +40,6 @@ on:
       - "packages/**"
       - "web/**"
       - "parakeet-stt/**"
-      - "even/**"
       - "mobile/**"
       - "package.json"
       - "package-lock.json"
@@ -100,7 +95,6 @@ jobs:
       release_type: ${{ steps.plan.outputs.release_type }}
       build_api: ${{ steps.plan.outputs.build_api }}
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
-      build_even: ${{ steps.plan.outputs.build_even }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
       sha: ${{ github.sha }}
@@ -468,86 +462,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
-  # ----------------------------------------------------------- build: even ----
-  # GitHub-hosted: an npm build + evenhub pack, no docker cache to keep warm.
-  # Packs AND publishes: the .ehpk ships straight to the Even Hub developer
-  # portal from this job (the portal — not the GitHub release — is its
-  # distribution channel), so a portal failure fails the build and blocks the
-  # release like any other build failure. The upload happens before the tag
-  # exists; the publish script skips versions the portal already has, so a
-  # release run that fails downstream and retries at the same version is safe.
-  # Promotion in the portal remains manual.
-  build-even:
-    needs: [plan, bump]
-    if: >-
-      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
-      && needs.plan.outputs.build_even == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      # Stamp the unified version into app.json before packing — Even Hub keys
-      # sideloaded installs on app.json's "version", so it MUST increase per
-      # build. `npm run pack` regenerates app.packed.json from app.json (carrying
-      # the version into the .ehpk) and defaults the network whitelist to a
-      # wildcard so BYO-self-hosting wearers can point the app at their own api
-      # host; override via the TENIR_API_HOSTS repo variable to pin.
-      - name: Stamp version, build, pack Even app
-        working-directory: even
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-          TENIR_API_HOSTS: ${{ vars.TENIR_API_HOSTS || '*' }}
-        run: |
-          set -euo pipefail
-          node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("app.json"));j.version=process.env.VERSION;fs.writeFileSync("app.json",JSON.stringify(j,null,2)+"\n")'
-          npm run build
-          npm run pack
-      - name: Publish .ehpk to the Even Hub dev portal
-        working-directory: even
-        env:
-          EVENHUB_EMAIL: ${{ secrets.EVENHUB_EMAIL }}
-          EVENHUB_PASSWORD: ${{ secrets.EVENHUB_PASSWORD }}
-          PACKAGE_ID: ${{ vars.EVENHUB_PACKAGE_ID }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
-        run: |
-          set -euo pipefail
-          FLAGS=()
-          if [ "$DRY_RUN" = "true" ]; then
-            FLAGS+=(--dry-run)
-          elif [ -z "$EVENHUB_EMAIL" ] || [ -z "$EVENHUB_PASSWORD" ]; then
-            echo "::error::EVENHUB_EMAIL / EVENHUB_PASSWORD repository secrets are not set — the portal upload cannot authenticate. See RELEASING.md." >&2
-            exit 1
-          fi
-          # The committed app.json package_id is the dev default; the repo
-          # variable EVENHUB_PACKAGE_ID overrides it when the portal listing
-          # uses a different id.
-          if [ -n "$PACKAGE_ID" ]; then FLAGS+=(--package-id "$PACKAGE_ID"); fi
-          node scripts/evenhub-publish.mjs \
-            --skip-build \
-            --artifact tenir.ehpk \
-            --changelog "Tenir ${TAG} — https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
-            "${FLAGS[@]}"
-      # No release asset for the .ehpk — the portal is its channel. Keep the
-      # packed file inspectable on dry-run rehearsals only (named so the publish
-      # job's asset-* download can't pick it up).
-      - uses: actions/upload-artifact@v5
-        if: needs.plan.outputs.dry_run == 'true'
-        with:
-          name: even-ehpk-dry-run
-          path: even/tenir.ehpk
-          if-no-files-found: error
-          retention-days: 3
-
   # -------------------------------------------------------- build: mobile -----
   # GitHub-hosted: ubuntu-latest ships a JDK + the Android SDK, so assembleRelease
   # is a first-class hosted workload. Version name from the unified version;
@@ -615,7 +529,6 @@ jobs:
         build-api,
         deploy-argocd,
         build-parakeet-stt,
-        build-even,
         build-mobile,
       ]
     # A release that claims an api change must have the gate AND the image: a
@@ -631,7 +544,6 @@ jobs:
       && (needs.plan.outputs.build_api != 'true'
           || (needs.schema-gate.result == 'success' && needs.build-api.result == 'success'))
       && needs.build-parakeet-stt.result != 'failure'
-      && needs.build-even.result != 'failure'
       && needs.build-mobile.result != 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -647,9 +559,9 @@ jobs:
         with:
           node-version: "24"
       # Collect the built release assets into dist/ (flattened). The Android
-      # .apk is the only asset-* producer (the .ehpk ships to the Even Hub
-      # portal from build-even), so only download when it actually built — a
-      # zero-match pattern must not be able to fail an even-only release.
+      # .apk is the only asset-* producer, so only download when it actually
+      # built — a zero-match pattern must not be able to fail a release that
+      # carries mobile.
       - uses: actions/download-artifact@v5
         if: needs.plan.outputs.build_mobile == 'true'
         with:

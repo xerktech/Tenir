@@ -15,34 +15,33 @@
 //                     image. There is no separate web image.
 //   - contract/**  -> `make gen` writes BOTH the Pydantic models (api) and the
 //                     TS types (packages/contract, which every client builds
-//                     on), so a contract edit rebuilds the api image and both
-//                     device clients.
+//                     on), so a contract edit rebuilds the api image and the
+//                     Android client.
 //   - packages/**  -> the shared client-core/contract TS the web SPA (inside
-//                     the api image) and the two device clients compile against.
+//                     the api image) and the Android client compile against.
 //   - root package(-lock).json -> the workspace manifest/lockfile the clients
 //                     (and the api image's web build stage) install from.
 // Over-building a shared change wastes runner time; under-building ships a
 // manifest that lies. We take the former.
-const COMPONENTS = ["api", "parakeet-stt", "even", "mobile"];
+const COMPONENTS = ["api", "parakeet-stt", "mobile"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
 // than derived.
 const PREFIX_MAP = [
   { prefix: "api/", components: ["api"] },
-  { prefix: "contract/", components: ["api", "even", "mobile"] },
-  { prefix: "packages/", components: ["api", "even", "mobile"] },
+  { prefix: "contract/", components: ["api", "mobile"] },
+  { prefix: "packages/", components: ["api", "mobile"] },
   { prefix: "web/", components: ["api"] },
   { prefix: "parakeet-stt/", components: ["parakeet-stt"] },
-  { prefix: "even/", components: ["even"] },
   { prefix: "mobile/", components: ["mobile"] },
 ];
 
 // Repo-root files (no dir prefix) that still touch components: the npm workspace
 // manifest + lockfile the clients (and the api image's SPA stage) install from.
 const FILE_MAP = {
-  "package.json": ["api", "even", "mobile"],
-  "package-lock.json": ["api", "even", "mobile"],
+  "package.json": ["api", "mobile"],
+  "package-lock.json": ["api", "mobile"],
   // schema.sql SHIPS INSIDE the api image (api/Dockerfile COPYs it to
   // /srv/schema.sql) and SqlConversationStore applies it idempotently on every
   // pool open — that is how an existing Postgres data dir gains an additive

@@ -41,10 +41,9 @@ x-authentik-env: &authentik-env
   AUTHENTIK_TENIR_ROOT_PASSWORD: ${AUTHENTIK_TENIR_ROOT_PASSWORD:?set AUTHENTIK_TENIR_ROOT_PASSWORD in .env}
   AUTHENTIK_TENIR_MEMBER_EMAIL: ${AUTHENTIK_TENIR_MEMBER_EMAIL:-member@example.com}
   AUTHENTIK_TENIR_MEMBER_PASSWORD: ${AUTHENTIK_TENIR_MEMBER_PASSWORD:?set AUTHENTIK_TENIR_MEMBER_PASSWORD in .env}
-  # Redirect URIs for the three Tenir clients. Placeholders here; T7–T10 finalize
-  # the real values (web served by the API, even phone page, mobile custom scheme).
+  # Redirect URIs for the two Tenir clients. Placeholders here; T7–T10 finalize
+  # the real values (web served by the API, mobile custom scheme).
   TENIR_OIDC_REDIRECT_WEB: ${TENIR_OIDC_REDIRECT_WEB:-http://localhost:8080/auth/oidc/callback}
-  TENIR_OIDC_REDIRECT_EVEN: ${TENIR_OIDC_REDIRECT_EVEN:-http://localhost:8080/even/auth/oidc/callback}
   TENIR_OIDC_REDIRECT_MOBILE: ${TENIR_OIDC_REDIRECT_MOBILE:-com.xerktech.tenir://auth/callback}
   TENIR_PUBLIC_URL: ${TENIR_PUBLIC_URL:-http://localhost:8080}
 

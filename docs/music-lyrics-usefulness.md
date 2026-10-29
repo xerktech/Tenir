@@ -47,8 +47,8 @@ known, unsent, unpersisted, and adjacent to the music state:
 This changes no behaviour by itself, which is exactly why it goes first: it is
 the substrate every other proposal (suppression, search hygiene, UI
 de-emphasis, history grouping) keys off, it is fully exercised by the stub
-backend in CI, and it ships client parity trivially (web + Android + glasses
-all read the same contract field).
+backend in CI, and it ships client parity trivially (web and Android
+both read the same contract field).
 
 ## Tier 1 — high value, near term
 
@@ -88,7 +88,7 @@ on speech** — spoken words wrongly suppressed are the one unacceptable failure
 
 - **Live UI:** hide or dim captions carrying the active `songId` — the direct
   fix for "accurate lyrics with completely wrong transcription below", shipped
-  in parity on web, Android, and the lens.
+  in parity on web and Android.
 - **Search:** exclude `sung` segments from the FTS query path. Searching your
   own conversations for "love" should not return every pop song that played in
   the kitchen.
@@ -164,7 +164,7 @@ marker per song (`songs` table, `at_ms`). Roll them up into a per-conversation
 "soundtrack" strip — every track that played, in order — and make it exportable:
 a text list, or ready-made search links (Spotify / YouTube / Apple Music take
 `artist title` query URLs, so no API keys or accounts). "What was that song from
-dinner last night?" becomes a solved problem. Web + Android + glasses phone
+dinner last night?" becomes a solved problem. Web + Android
 History in parity.
 
 **C2. Jump to the moment.** Full session audio is retained
@@ -186,7 +186,7 @@ listening data from a self-hosted system, so it must be a deliberate choice
 **C4. Karaoke mode.** The lyric window is fixed at one line behind / two ahead
 (`LYRIC_LINES_BEFORE`/`AFTER`, `packages/client-core/src/captureSession.ts`).
 A per-session toggle that widens the look-ahead and leads the anchor by a
-second or two turns the glasses into a prompter — you see the line *before*
+second or two turns the song card into a prompter — you see the line *before*
 you have to sing it. Almost entirely client-side; the sync machinery already
 does the hard part. (Pairs with the "singing along" open question: karaoke mode
 is the one context where suppressing the user's own singing is unambiguously

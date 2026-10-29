@@ -13,28 +13,17 @@ the conversation, and never sent to anyone else in the session.
 
 Where they appear:
 
-- **Live** (web + mobile + glasses phone Session page): a bordered card above
-  the live transcript, auto-dismissed after 10s.
-- **Glasses lens**: a bordered box above the on-lens caption band — the same
-  full-width popup strip the double-tap menu uses (XERK-85), showing the cue's
-  title over its detail, auto-dismissed after 10s. The interactive menu takes
-  precedence: a cue arriving while the menu is open is queued behind it
-  (XERK-102). The title stays pinned; a body longer than the box's four visible
-  rows (XERK-112, XERK-133) lives in its own scrolling container inside the box,
-  which the host scrolls with its native scroll bar as the wearer swipes.
-  Tapping or swiping a live cue resets its auto-dismiss countdown, so an engaged
-  reader is never cut off mid-read.
+- **Live** (web + mobile): a bordered card above the live transcript,
+  auto-dismissed after 10s.
 
 Every live surface counts that dismissal down (XERK-110): across from the title,
 in the cue's top-right corner, `10s` → `9s` → … → `0s`. The count is derived from
-when the cue went up (`cueSecondsLeft` in client-core, shared by all three
+when the cue went up (`cueSecondsLeft` in client-core, shared by both
 frontends) rather than decremented per tick, so a throttled tab or a
 backgrounded app resyncs to the truth instead of drifting away from the release
-timer. On the lens — where a row is one string and there is no alignment control
-— it is spaced out to the right edge of the popup's title row, and the title is
-trimmed to whatever width that leaves. History cues carry no countdown: they are
-kept permanently, so there is nothing to count down to.
-- **History** (web + mobile + glasses phone History page): an inline, clickable
+timer. History cues carry no countdown: they are kept permanently, so there is
+nothing to count down to.
+- **History** (web + mobile): an inline, clickable
   box at the point in the transcript where the cue appeared; tapping it opens a
   popup with the detail (not a new page).
 
@@ -43,11 +32,7 @@ fact). A correction is just a cue whose body states the right fact — there is 
 separate cue type; it rides the same title/body shape as any other cue. A cue
 whose fact was grounded in a live source (XERK-120, below) also carries a
 **source** — a short label like "BBC News" or "Wikipedia" rendered as a quiet
-attribution line under the body on web, Android, and the glasses phone
-Session/History pages. The on-lens box deliberately omits it — a documented
-platform exception: the lens is a tiny monochrome strip where every row costs
-caption space, and the full cue with its attribution is always a glance away
-on the phone.
+attribution line under the body on web and Android, Live and History alike.
 
 ## How it works
 
@@ -141,8 +126,7 @@ There is still no per-client aggressiveness toggle. The fixed settings live in
 
 The old three-level toggle (Conservative / Balanced / Aggressive) that web + mobile
 used to expose and persist per client (XERK-81) is gone; the per-client `cueLevel`
-on `session.start` is no longer sent by any client. The glasses client never had
-the toggle, so it simply matches the single fixed setting everyone else gets.
+on `session.start` is no longer sent by any client.
 
 ## Evidence retrieval (XERK-120)
 

@@ -7,7 +7,6 @@ paths:
   - packages/client-core/src/ws.ts
   - web/src/App.tsx
   - mobile/src/lib/controllers.ts
-  - even/src/phone/login.ts
   - api/tests/test_db_unavailable.py
   - api/tests/test_pg_outage_live.py
   - api/tests/test_pg_unreachable.py
@@ -30,11 +29,11 @@ paths:
 - client-core resets the WS reconnect backoff on `session.ready`, not on open: an accept-then-1013
   would otherwise retry at the base delay for the whole outage.
 - client-core turns a 503 into `ServerUnavailableError`, a `NetworkError` subclass on purpose:
-  every client already keeps the session and retries on `NetworkError` (web, Android, Even).
+  every client already keeps the session and retries on `NetworkError` (web, Android).
 - Boot (web, Android) confirms the token via client-core `checkSession()`: 401 clears it (an
   OIDC session clears only the access token — the refresh sidecar must survive an IdP outage); any
   server fault (`isServerFault`: `NetworkError` or any 5xx) keeps it and shows the unreachable
-  state. Even's `resolveBootAuth` follows the same rule. A plain 500 is NOT folded into
+  state. A plain 500 is NOT folded into
   `NetworkError` in `request()`: a 500 on an ordinary action must still surface as `ApiError`.
 - `checkSession` clears compare-and-clear: only the token it proved dead. Tabs share the token
   store, so another tab's fresh token must survive (it is re-checked once instead).

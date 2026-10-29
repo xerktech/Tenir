@@ -4,7 +4,7 @@
  * One bidirectional WSS to our api: raw PCM goes up as binary frames; captions
  * come down as JSON. Long-lived `sessionId` lets a session continue across brief
  * drops (reconnect-with-resume). Lives in the shared core so any capture client
- * (glasses, web, Android) speaks the same wire protocol.
+ * (web, Android) speaks the same wire protocol.
  */
 
 import type {
@@ -267,11 +267,6 @@ export class ApiClient {
   send(msg: ClientMessage): void {
     const ws = this.ws;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-  }
-
-  switchMic(micSource: MicSource): void {
-    if (this.params) this.params.micSource = micSource;
-    this.send({ type: "mic.switch", micSource });
   }
 
   ping(): void {

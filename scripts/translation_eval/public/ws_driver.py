@@ -4,7 +4,7 @@ One WS session per clip, PCM streamed in 100 ms frames at real-time pace (the
 app's turn segmentation and partial cadence are wall-clock), then trailing
 silence so the turn closes. Records every caption.final and translation with a
 receive timestamp; translation latency = translation recv - its final's recv,
-i.e. what the glasses would see.
+i.e. what a live client would see.
 
 Usage: python ws_driver.py clips.json --out run.json [--base http://127.0.0.1:8080]
        [--concurrency 4]

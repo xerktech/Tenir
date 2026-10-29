@@ -36,8 +36,8 @@ def _reset() -> None:
 
 
 def test_unresumed_dropped_session_is_finalized_when_grace_lapses() -> None:
-    """The glasses rely on this: an abnormal exit can't send session.end, so the
-    lapsed grace window IS the finalization path (even/README, controller.ts).
+    """Clients rely on this: an abnormal exit can't send session.end, so the
+    lapsed grace window IS the finalization path.
 
     ``close()`` used to cancel ``self._grace_task`` unconditionally — but
     ``_grace_close()`` calls ``close()``, so that cancelled the running task.
@@ -114,7 +114,7 @@ def test_redact_tokens_scrubs_query_string_credentials() -> None:
     assert redact_tokens(line) == "GET /conversations/abc/audio?token=<redacted> HTTP/1.1"
     assert redact_tokens("/ws?token=abc.def") == "/ws?token=<redacted>"
     # Only the value goes; other params survive, and non-token text is untouched.
-    assert redact_tokens("/ws?token=abc&mic=g2") == "/ws?token=<redacted>&mic=g2"
+    assert redact_tokens("/ws?token=abc&lang=en") == "/ws?token=<redacted>&lang=en"
     assert redact_tokens("nothing to see") == "nothing to see"
 
 

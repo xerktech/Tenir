@@ -1,5 +1,5 @@
 # tenir — top-level orchestration.
-# Most day-to-day work happens inside even/, mobile/, web/, and api/; this
+# Most day-to-day work happens inside mobile/, web/, and api/; this
 # Makefile wires the cross-cutting bits (the generated WS contract) together.
 
 SCHEMA := contract/ws-messages.schema.json

@@ -71,7 +71,7 @@ green.
 # API (Python) — runs tests with coverage and the 85% gate
 cd api && pip install -e '.[dev]' && pytest
 
-# Clients (TS) — type-check, test and build every workspace (even, mobile, web)
+# Clients (TS) — type-check, test and build every workspace (mobile, web)
 npm install && npm run typecheck && npm run test && npm run build
 ```
 

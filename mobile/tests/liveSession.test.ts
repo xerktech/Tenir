@@ -43,7 +43,7 @@ describe("live partial rendering (XERK-143)", () => {
 
   it("renders the live partial without a current-turn marker", () => {
     // The partial is the newest text at the bottom of the transcript (and muted),
-    // which already signals the live turn — no "›" prefix (matches web and lens).
+    // which already signals the live turn — no "›" prefix (matches web).
     expect(live).not.toContain("›");
     expect(live).toContain("{state.partial}");
   });
