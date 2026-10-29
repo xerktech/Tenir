@@ -6,7 +6,8 @@ reached through LiteLLM (an alias such as ``anthropic/claude-sonnet-5-5``) rejec
 first with a 400 (only the default temperature is allowed) and have no use for the
 second, so every chat call site passes its payload through ``adapt`` before sending it.
 
-Claude's thinking is left at the model default: in the 2026-10-29 replay Sonnet 5.5 at
+Where a call turns Qwen's thinking off, Claude's is turned off too (``adapt``). Cues keep
+Claude's thinking at the model default: in the 2026-10-29 replay Sonnet 5.5 at
 its default (it rarely thinks on a cue window) gave the best cues, and lowering the
 effort made it decline nearly every window (scripts/cue_eval/RESULTS-2026-10.md).
 
@@ -25,11 +26,27 @@ def is_claude(model: str) -> bool:
 
 
 def adapt(payload: dict) -> dict:
-    """Drop the Qwen-only fields when the payload targets a Claude model. In place."""
-    if is_claude(payload.get("model", "")):
-        for key in _QWEN_ONLY:
-            payload.pop(key, None)
+    """Rewrite a Qwen-shaped payload for a Claude model, in place; others pass unchanged.
+
+    Qwen's thinking-off switch becomes Claude's. Without it Haiku 5.5 thinks by default and
+    spent the fact check's whole 150-token budget reasoning (QA, 2026-10-29: finish_reason
+    length, no answer, every wrong cue shown). Thinking on maps to the model default.
+    """
+    if not is_claude(payload.get("model", "")):
+        return payload
+    kwargs = payload.get("chat_template_kwargs") or {}
+    for key in _QWEN_ONLY:
+        payload.pop(key, None)
+    if kwargs.get("enable_thinking") is False:
+        payload["thinking"] = {"type": _thinking_off(payload["model"])}
     return payload
+
+
+def _thinking_off(model: str) -> str:
+    """Claude's thinking-off type through LiteLLM, measured 2026-10-29. Sonnet 5.5 ignores
+    "disabled" (it still reasoned on 3 of 5 calls) and honours "between_tools"; Haiku 5.5
+    honours "disabled" and rejects "between_tools" with a 400."""
+    return "between_tools" if "sonnet" in model.lower() else "disabled"
 
 
 def system_content(model: str, fixed: str, varying: str = "") -> str | list[dict]:

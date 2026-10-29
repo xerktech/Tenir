@@ -32,6 +32,19 @@ def test_adapt_drops_the_fields_claude_rejects() -> None:
     assert adapt(payload) == {"model": CLAUDE, "max_tokens": 9}
 
 
+def test_adapt_maps_thinking_off_to_claude_thinking_disabled() -> None:
+    # Haiku 5.5 thinks by default; without this the fact check's 150 tokens all went to
+    # reasoning and it never answered (QA 2026-10-29). LiteLLM accepts it for both models.
+    # Per model, measured through LiteLLM: Sonnet 5.5 ignores "disabled", Haiku 400s on
+    # "between_tools".
+    off = {"model": CLAUDE, "chat_template_kwargs": {"enable_thinking": False}}
+    assert adapt(off) == {"model": CLAUDE, "thinking": {"type": "between_tools"}}
+    haiku = {"model": "anthropic/claude-haiku-5-5", "chat_template_kwargs": {"enable_thinking": False}}
+    assert adapt(haiku)["thinking"] == {"type": "disabled"}
+    on = {"model": CLAUDE, "chat_template_kwargs": {"enable_thinking": True}}
+    assert adapt(on) == {"model": CLAUDE}
+
+
 def test_adapt_leaves_other_models_untouched() -> None:
     payload = {"model": QWEN, "temperature": 0.0, "chat_template_kwargs": {"enable_thinking": True}}
     assert adapt(dict(payload)) == payload
@@ -53,6 +66,7 @@ def test_cue_payload_for_claude_has_no_qwen_fields_and_a_cached_prefix() -> None
     payload = _cue_payload(CLAUDE)
     assert "temperature" not in payload
     assert "chat_template_kwargs" not in payload
+    assert "thinking" not in payload  # cues keep Claude's default thinking
     fixed = payload["messages"][0]["content"]
     assert len(fixed) == 1 and fixed[0]["cache_control"] == {"type": "ephemeral"}
     # Sonnet 5.5 caches prefixes of 512+ tokens; the cue rules are several thousand chars.
@@ -77,6 +91,7 @@ def test_fact_check_payload_for_claude() -> None:
     checker = FactChecker(endpoint="http://gw/v1", model=CLAUDE, kiwix_endpoint="http://k", kiwix_book="b")
     payload = checker._payload("system", "user")
     assert "temperature" not in payload and "chat_template_kwargs" not in payload
+    assert payload["thinking"] == {"type": "between_tools"}
     assert payload["max_tokens"] == 150
 
 
@@ -84,4 +99,5 @@ def test_translation_payload_for_claude() -> None:
     translator = OpenAITranslator(endpoint="http://gw/v1", model=CLAUDE, disable_thinking=True)
     payload = translator._build_payload("hola", "es")
     assert "temperature" not in payload and "chat_template_kwargs" not in payload
+    assert payload["thinking"] == {"type": "between_tools"}
     assert payload["response_format"] == {"type": "json_object"}

@@ -88,7 +88,6 @@ _NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
 # real facts on keyword count (QA, Oct 2026). Never article content to check against.
 _REFERENCES = re.compile(r'<ol\b[^>]*class="[^"]*\breferences\b[^"]*"[^>]*>.*?</ol>', re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _CONTENT_ROOT = re.compile(r'href="(/content/[^"/]+)"')
 _SNAPSHOT = re.compile(r"\d{4}-\d{2}")
 _STOP = frozenset(
@@ -221,14 +220,24 @@ def passages(
 
 
 def _json(content: str) -> dict:
-    match = _JSON_OBJECT.search(content or "")
-    if not match:
-        return {}
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    """The last JSON object in the reply, or {}. The last, not the first: Claude Sonnet
+    sometimes answers, then writes "Wait — corrected:" and a second object (QA, 2026-10-29).
+    A greedy first-to-last-brace match spanned both, failed to parse, and passed the cue
+    unchecked."""
+    decoder = json.JSONDecoder()
+    content = content or ""
+    found: dict = {}
+    i = content.find("{")
+    while i != -1:
+        try:
+            data, end = decoder.raw_decode(content, i)
+        except json.JSONDecodeError:
+            i = content.find("{", i + 1)
+            continue
+        if isinstance(data, dict):
+            found = data
+        i = content.find("{", end)
+    return found
 
 
 def _readable(title) -> bool:

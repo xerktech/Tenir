@@ -42,6 +42,7 @@ from api.cue.base import (
 )
 from api.cue.openai import OpenAICueGenerator
 from api.cue.tuning import MIN_INTERVAL_MS
+from api.llm import adapt as adapt_for_claude
 
 CONTEXT_SEGMENTS = 8  # settings.cue_context_segments default
 ATTEMPT_MS = 2500  # transcript time one serialized attempt occupies
@@ -208,6 +209,7 @@ def verify_cue(
         if "reasoning_effort" in payload:
             # gpt-oss style: no thinking switch, so "off" maps to the lowest effort.
             payload["reasoning_effort"] = "low" if mode == "off" else mode
+    payload = adapt_for_claude(payload)  # same request shape as the api's own calls
     try:
         resp = client.post(url, json=payload, timeout=60)
         resp.raise_for_status()

@@ -19,13 +19,22 @@ paths:
   block. Anything that varies there turns every call into a cache write at 1.25x the input price.
   - The fixed cue prompt is about 2,800 tokens, cached from the second call on (Sonnet 5.5's
     minimum is 512). That cuts each call's cost by about 55%. Tests: `test_llm.py`.
-- Leave Claude's thinking at the model default.
-  - Sonnet 5.5 at its default rarely thinks on a cue window and gave the best cues.
+- Cue calls leave Claude's thinking at the model default.
+  - Sonnet 5.5 at its default gave the best cues. It averaged ~56 output tokens per call, since
+    most windows decline at once, but a window that yields a cue can reason 200-500 tokens.
   - `reasoning_effort=low` made it decline nearly every window.
   - Haiku 5.5 thinks by default (about 160 tokens per call).
   - Replay data: `scripts/cue_eval/RESULTS-2026-10.md`.
-- Replaying Claude with the eval harness: pass
-  `--extra '{"temperature": null, "chat_template_kwargs": null}'`.
+- `replay.py` (cue calls and `--verify`) goes through `adapt`, so Claude needs no `--extra`.
+  `cue_replay_prompt.py` is Qwen-only: it re-adds `chat_template_kwargs` and string-splits the
+  system prompt.
+- Thinking off (Qwen `enable_thinking: false`) maps to Claude's own switch, per model:
+  - Sonnet 5.5: `between_tools`. It ignores `disabled` through LiteLLM.
+  - Haiku 5.5: `disabled`. It 400s on `between_tools`.
+  - Without it, Haiku spends the fact check's 150-token budget reasoning and returns nothing.
+  - Opus 5.5 can't turn thinking off at all. Measure before pointing the api at it.
+- Sonnet may answer, then write "Wait — corrected:" and a second JSON object. The fact check
+  reads the last object (`factcheck._json`).
 - Cost: input tokens are over 90% of a call. You pay per attempt, and about 94% of attempts
   decline, so cost per cue is about 17x the per-call price. LiteLLM spend logs
   (`/spend/logs`, admin key `LITELLM_MASTER_KEY` in bws) carry LiteLLM's computed cost per call.
