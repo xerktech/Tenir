@@ -13,12 +13,37 @@ the session owns those (so timing and delivery stay testable without a model).
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from api.cue.retrieval.base import Evidence
+
+
+def last_json_object(content: str) -> dict | None:
+    """The last JSON object in a model reply, or None when it holds none.
+
+    The last, not the first: a model may answer, then write "Wait — corrected:" and a
+    second object (Claude Sonnet on the fact check, Oct 2026). A greedy first-to-last-brace
+    match spans both objects and fails to parse, losing the answer.
+    """
+    decoder = json.JSONDecoder()
+    found = None
+    i = content.find("{")
+    while i != -1:
+        try:
+            data, end = decoder.raw_decode(content, i)
+        except json.JSONDecodeError:
+            i = content.find("{", i + 1)
+            continue
+        except RecursionError:
+            # Pathologically deep nesting overflows the C scanner; no answer is that deep.
+            return found
+        found = data  # raw_decode from "{" only ever returns a dict
+        i = content.find("{", end)
+    return found
 
 
 @dataclass

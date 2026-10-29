@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import html
 import itertools
-import json
 import logging
 import re
 import threading
@@ -27,7 +26,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
-from api.cue.base import GeneratedCue
+from api.cue.base import GeneratedCue, last_json_object
 
 log = logging.getLogger("api.cue.factcheck")
 
@@ -87,7 +86,6 @@ _NON_CONTENT = re.compile(r"<(head|style|script)\b.*?</\1>", re.S | re.I)
 # real facts on keyword count (QA, Oct 2026). Never article content to check against.
 _REFERENCES = re.compile(r'<ol\b[^>]*class="[^"]*\breferences\b[^"]*"[^>]*>.*?</ol>', re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _CONTENT_ROOT = re.compile(r'href="(/content/[^"/]+)"')
 _SNAPSHOT = re.compile(r"\d{4}-\d{2}")
 _STOP = frozenset(
@@ -220,14 +218,7 @@ def passages(
 
 
 def _json(content: str) -> dict:
-    match = _JSON_OBJECT.search(content or "")
-    if not match:
-        return {}
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return last_json_object(content or "") or {}
 
 
 def _readable(title) -> bool:

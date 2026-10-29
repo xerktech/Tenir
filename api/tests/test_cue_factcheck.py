@@ -295,11 +295,16 @@ def test_three_letter_words_count_as_keywords() -> None:
     assert "Ivy role" in passages(page, "Ivy")
 
 
-def test_json_reads_the_first_object_and_tolerates_junk() -> None:
+def test_json_reads_an_object_and_tolerates_junk() -> None:
     assert _json('sure: {"titles": ["A"]} done') == {"titles": ["A"]}
     assert _json("no json") == {}
     assert _json("{broken") == {}
     assert _json("[1, 2]") == {}
+
+
+def test_json_reads_the_last_object_after_a_self_correction() -> None:
+    raw = '{"titles": ["Mars"]}\nWait, corrected:\n{"titles": ["Venus"]}'
+    assert _json(raw) == {"titles": ["Venus"]}
 
 
 def test_check_prompt_spares_estimates_other_senses_and_unmentioned_claims() -> None:
