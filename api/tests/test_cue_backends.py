@@ -293,6 +293,9 @@ def test_parse_keeps_a_cue_with_a_nested_object() -> None:
 
 def test_parse_survives_pathologically_deep_nesting() -> None:
     assert _gen()._parse('{"a":' * 20000) is None
+    # An answer before the deep junk is kept.
+    cue = _gen()._parse('{"cue": true, "title": "T", "body": "b."} ' + '{"a":' * 20000)
+    assert cue is not None and cue.title == "T"
 
 
 def test_parse_garbage_returns_none() -> None:
