@@ -271,3 +271,21 @@ def test_legacy_status_row_does_not_break_the_listing() -> None:
 
         detail = client.get("/conversations/44444444-4444-4444-8444-444444444444")
         assert detail.status_code == 200 and detail.json()["status"] == "ready"
+
+
+def test_unknown_mic_source_row_does_not_break_history() -> None:
+    """A row stored with a mic source this build's contract no longer lists is
+    still listed and opened: History serializes micSource as a plain string, so
+    narrowing the contract enum must not 500 older recordings."""
+    with TestClient(app) as client:
+        cid = "66666666-6666-4666-8666-666666666666"
+        convs = get_conversation_store()
+        convs.create("default", cid, mic_source="retired-microphone", source_lang="en")
+        convs.add_segment("default", cid, Segment(f"{cid}-s1", "recorded on a retired mic", 0, 2000, lang="en"))
+        convs.finish("default", cid, status="ready")
+
+        r = client.get("/conversations")
+        assert r.status_code == 200
+        assert r.json()[0]["micSource"] == "retired-microphone"
+        detail = client.get(f"/conversations/{cid}")
+        assert detail.status_code == 200 and detail.json()["micSource"] == "retired-microphone"

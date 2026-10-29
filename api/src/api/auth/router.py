@@ -1,6 +1,6 @@
 """Auth REST API (master plan §7, Phase 6).
 
-The login surface for the companion/admin pages: exchange a username + password
+The login surface for the web UI and the Android app: exchange a username + password
 for a bearer token, and read back the current principal. Admins can also create
 additional household members.
 """
