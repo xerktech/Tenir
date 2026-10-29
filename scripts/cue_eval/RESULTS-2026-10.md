@@ -245,3 +245,68 @@ Findings:
 - An early run took 11 s because the model pasted a whole paragraph as its "conflicting words".
   Capping the quote at 20 words (and the reply at 150 tokens) fixed both the latency and that
   weakness in the quote check.
+
+## Claude Haiku vs Sonnet as the cue model (2026-10-29)
+
+Question: is `claude-haiku-5-5` good enough for cues, or is `claude-sonnet-5-5` needed? The local
+models were off, so both ran through the LiteLLM aliases `anthropic/claude-{haiku,sonnet}-5-5`.
+
+Setup:
+- Data: the four 2026-10-11..14 value-bar sessions (two whole, plus a 45 min and a 34 min slice;
+  1,192 segments). Shipped v8 prompt.
+- Replay: `replay.py --grounded --realtime --workers 4` (Anthropic has no shared GPU queue, so
+  four conversations at once don't slow each other).
+  - Each run had its own evidence cache, filled within the same hour.
+  - Wikipedia rate-limited (429) part of the time. Retrieval then fell back to Kiwix, as
+    production does.
+- Claude rejects `temperature: 0.0` with a 400 error (only 1 is allowed). Every run sent
+  `--extra '{"temperature": null, "chat_template_kwargs": null}'`.
+- Haiku 5.5 reasons by default (about 160 reasoning tokens per call). Sonnet 5.5 doesn't. Each
+  model ran at its default and at `reasoning_effort=low`.
+- Grading: `blind_judge.py`, 4 packs, Claude subagent reviewers. The rubric added a
+  GOOD/MARGINAL/BAD value grade, as in the value-bar round.
+  - The reviewers are the same model family as the candidates. Treat the gap between Haiku and
+    Sonnet as the signal, not the absolute wrong-rates.
+- Anchor: production Qwen3.8-27B cues from the same windows. They were made under the older v5
+  prompt, so this is context, not a like-for-like Qwen comparison.
+
+| run | call mean / p50 / p90 | cues | wrong | GOOD | MARGINAL | BAD | perfect |
+|---|---|---|---|---|---|---|---|
+| **Sonnet, default (no thinking)** | 1.9 / 1.4 / 3.8 s | 66 | 0 | **40** | 26 | **0** | **46** |
+| Sonnet, effort low | 1.4 / 1.3 / 1.9 s | 27 | 1 | 13 | 12 | 2 | 15 |
+| Haiku, default (thinks) | 2.0 / 1.7 / 3.6 s | 68 | 1 | 23 | 35 | 10 | 27 |
+| Haiku, effort low | 2.1 / 1.4 / 4.0 s | 58 | 0 | 21 | 29 | 8 | 21 |
+| anchor: production Qwen (v5, cap 512) | ~4.5 s | 102 | 11 | 15 | 49 | 38 | 17 |
+
+Findings:
+- Speed doesn't separate them. Every Claude config is about 2x faster than Qwen's 4.5 s mean,
+  and Sonnet at its default is no slower than Haiku.
+- Accuracy doesn't separate them either: both are about 0-1.5% wrong.
+- Value does separate them. Sonnet's default gave about 1.7x Haiku's GOOD cues, with no BAD
+  cues against Haiku's 8-10. The gap is far beyond the ±3 batch noise.
+- Haiku's BAD classes are the ones the v8 prompt targets, which Sonnet follows and Haiku
+  doesn't:
+  - Defining what the speakers obviously know (a savings-account type, a game mechanic, the
+    company whose app they are using).
+  - Off-topic trivia (founders, team histories).
+  - Confident tangents built on misheard STT.
+  - A suicide-crisis-line cue fired on a joking remark, in both Haiku runs. This is the most
+    user-visible failure.
+- Sonnet at effort low is too quiet: 27 cues from 1,177 attempts, declining almost every window.
+- Remaining unverifiable claims in every run are post-cutoff events (the 2026 NBA Finals) or
+  live figures (fund AUM). The fact check doesn't cover recent events.
+
+Decision input:
+- Haiku is accurate and fast enough, but it surfaces noticeably less value and more noise. Use
+  it only if cost forces it, and expect a Haiku-specific prompt pass (definitions, trivia,
+  crisis-line trigger).
+- Sonnet at its default is the clear quality pick.
+- Either one needs a code change first: the cue request must stop sending `temperature: 0.0`
+  and `chat_template_kwargs` to Claude models, or they 400. The self-check and the fact-check
+  requests also send `temperature: 0.0`.
+- Not measured:
+  - The fact check with Claude as its model.
+  - Translations.
+  - Cost per session. Replay doesn't record token usage, so use the LiteLLM spend logs.
+  - A second run of each config. The Haiku/Sonnet gap is large enough that a rerun is unlikely
+    to flip it.
