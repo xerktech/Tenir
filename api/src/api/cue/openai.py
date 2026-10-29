@@ -35,12 +35,11 @@ the payload builder and response parser below are pure and unit-tested.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Sequence
 
-from api.cue.base import CueGenerator, GeneratedCue
+from api.cue.base import CueGenerator, GeneratedCue, last_json_object
 from api.cue.retrieval.base import Evidence
 from api.cue.tuning import cue_guidance
 from api.llm import adapt, system_content
@@ -211,7 +210,6 @@ _EVIDENCE_RULES = (
     "material about the stray reading does not make it the topic."
 )
 
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _SENTENCE_END = re.compile(r"[.!?][\"')\u201d\u2019]?(?=\s)")
 _MIN_SENTENCE_CLIP = 80
 # A period after one of these, a dotted token ("U.S.", "e.g.") or a short capitalised word
@@ -383,14 +381,8 @@ class OpenAICueGenerator(CueGenerator):
     def _parse(
         self, content: str, evidence: Sequence[Evidence] = ()
     ) -> GeneratedCue | None:
-        match = _JSON_OBJECT.search(content)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-        if not data.get("cue"):
+        data = last_json_object(content)
+        if not data or not data.get("cue"):
             return None
         title = str(data.get("title") or "").strip()
         body = str(data.get("body") or "").strip()

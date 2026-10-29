@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import html
 import itertools
-import json
 import logging
 import re
 import threading
@@ -27,7 +26,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
-from api.cue.base import GeneratedCue
+from api.cue.base import GeneratedCue, last_json_object
 from api.llm import adapt
 
 log = logging.getLogger("api.cue.factcheck")
@@ -220,24 +219,7 @@ def passages(
 
 
 def _json(content: str) -> dict:
-    """The last JSON object in the reply, or {}. The last, not the first: Claude Sonnet
-    sometimes answers, then writes "Wait — corrected:" and a second object (QA, 2026-10-29).
-    A greedy first-to-last-brace match spanned both, failed to parse, and passed the cue
-    unchecked."""
-    decoder = json.JSONDecoder()
-    content = content or ""
-    found: dict = {}
-    i = content.find("{")
-    while i != -1:
-        try:
-            data, end = decoder.raw_decode(content, i)
-        except json.JSONDecodeError:
-            i = content.find("{", i + 1)
-            continue
-        if isinstance(data, dict):
-            found = data
-        i = content.find("{", end)
-    return found
+    return last_json_object(content or "") or {}
 
 
 def _readable(title) -> bool:

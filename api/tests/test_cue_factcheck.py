@@ -307,6 +307,11 @@ def test_json_reads_the_last_object_and_tolerates_junk() -> None:
     assert _json("[1, 2]") == {}
 
 
+def test_json_reads_the_last_object_after_a_self_correction() -> None:
+    raw = '{"titles": ["Mars"]}\nWait, corrected:\n{"titles": ["Venus"]}'
+    assert _json(raw) == {"titles": ["Venus"]}
+
+
 def test_check_prompt_spares_estimates_other_senses_and_unmentioned_claims() -> None:
     # Measured false drops each rule removed: "2-8 players" vs "2-10", a business
     # "inflection point" vs the mathematical one (Oct 2026 labelled set).
