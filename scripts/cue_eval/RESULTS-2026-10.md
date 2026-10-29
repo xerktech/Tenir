@@ -261,8 +261,9 @@ Setup:
     production does.
 - Claude rejects `temperature: 0.0` with a 400 error (only 1 is allowed). Every run sent
   `--extra '{"temperature": null, "chat_template_kwargs": null}'`.
-- Haiku 5.5 reasons by default (about 160 reasoning tokens per call). Sonnet 5.5 doesn't. Each
-  model ran at its default and at `reasoning_effort=low`.
+- Haiku 5.5 reasons on most calls by default (about 160-190 reasoning tokens per call in two
+  small probes). Sonnet 5.5 rarely reasons (0 tokens on 5 of 6 probed calls). Each model ran at
+  its default and at `reasoning_effort=low`.
 - Grading: `blind_judge.py`, 4 packs, Claude subagent reviewers. The rubric added a
   GOOD/MARGINAL/BAD value grade, as in the value-bar round.
   - The reviewers are the same model family as the candidates. Treat the gap between Haiku and
@@ -272,7 +273,7 @@ Setup:
 
 | run | call mean / p50 / p90 | cues | wrong | GOOD | MARGINAL | BAD | perfect |
 |---|---|---|---|---|---|---|---|
-| **Sonnet, default (no thinking)** | 1.9 / 1.4 / 3.8 s | 66 | 0 | **40** | 26 | **0** | **46** |
+| **Sonnet, default (rarely thinks)** | 1.9 / 1.4 / 3.8 s | 66 | 0 | **40** | 26 | **0** | **46** |
 | Sonnet, effort low | 1.4 / 1.3 / 1.9 s | 27 | 1 | 13 | 12 | 2 | 15 |
 | Haiku, default (thinks) | 2.0 / 1.7 / 3.6 s | 68 | 1 | 23 | 35 | 10 | 27 |
 | Haiku, effort low | 2.1 / 1.4 / 4.0 s | 58 | 0 | 21 | 29 | 8 | 21 |
@@ -281,7 +282,8 @@ Setup:
 Findings:
 - Speed doesn't separate them. Every Claude config is about 2x faster than Qwen's 4.5 s mean,
   and Sonnet at its default is no slower than Haiku.
-- Accuracy doesn't separate them either: both are about 0-1.5% wrong.
+- Accuracy doesn't separate them either: both defaults are about 0-1.5% wrong (Sonnet at effort
+  low: 1 of 27, 3.7%).
 - Value does separate them. Sonnet's default gave about 1.7x Haiku's GOOD cues, with no BAD
   cues against Haiku's 8-10. The gap is far beyond the ±3 batch noise.
 - Haiku's BAD classes are the ones the v8 prompt targets, which Sonnet follows and Haiku
