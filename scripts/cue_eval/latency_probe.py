@@ -121,7 +121,7 @@ def main() -> None:
     if not windows:
         raise SystemExit("no cue windows: the chosen conversations are all under 8 turns")
     with httpx.Client(timeout=180, headers=headers) as client:
-        run(client, url, [gen._build_payload("hello there")])  # warm-up
+        run(client, url, [merge_extra(gen._build_payload("hello there"), extra)])  # warm-up
         report = {"cue": run(client, url, [merge_extra(gen._build_payload(w), extra) for w in windows])}
         if args.translations and args.m > 0:
             items = json.loads(args.translations.read_text())
