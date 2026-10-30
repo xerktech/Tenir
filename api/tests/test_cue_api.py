@@ -4,9 +4,13 @@ with the stub backend pushes a `cue` frame (XERK-81)."""
 from __future__ import annotations
 
 import json
+import time
+from typing import Any
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketTestSession
 
 from api.config import settings
 from api.main import app
@@ -20,6 +24,24 @@ def _reset_store() -> None:
     convs = get_conversation_store()
     assert isinstance(convs, InMemoryConversationStore)
     convs._by_household.clear()
+
+
+def _receive_json_by(ws: WebSocketTestSession, deadline: float) -> Any:
+    """`ws.receive_json()` that fails at `deadline` (monotonic) instead of blocking forever.
+
+    The wait runs inside the client's portal under `anyio.fail_after`, so a missed frame
+    cancels cleanly rather than leaving a thread stuck on the socket (XERK-2451)."""
+
+    async def _receive() -> Any:
+        with anyio.fail_after(max(deadline - time.monotonic(), 0)):
+            return await ws._send_rx.receive()
+
+    try:
+        message = ws.portal.call(_receive)
+    except TimeoutError:
+        pytest.fail("no websocket frame before the deadline")
+    ws._raise_on_close(message)
+    return json.loads(message["text"])
 
 
 def test_history_detail_includes_cues_inline() -> None:
@@ -65,8 +87,9 @@ def test_live_session_pushes_cue_frame(monkeypatch: pytest.MonkeyPatch) -> None:
             ws.send_bytes(chunk)
 
         saw_cue = False
+        deadline = time.monotonic() + 10
         for _ in range(120):
-            msg = ws.receive_json()
+            msg = _receive_json_by(ws, deadline)
             if msg["type"] == "cue":
                 saw_cue = True
                 assert msg["cueId"] and msg["title"] and msg["body"]
