@@ -32,12 +32,15 @@ miscite-ing unrelated evidence; the one-sided wording passed. The grounded bar i
 used ONLY when evidence actually arrived (the payload builder picks per call), so
 a retrieval outage degrades to the memory bar, never to aggressive guessing.
 
-Two things are tuned here:
+Three things are tuned here:
   * ``MIN_INTERVAL_MS`` — the minimum gap the session waits between emitted cues.
     A floor, not a target: it keeps a burst of hits from stacking on top of each
     other. (Not the frequency lever: one cue attempt costs a few seconds of model
     call serialized one-in-flight, and the clients show one cue per ~10s band
     slot — the emission bar governs frequency.)
+  * ``ATTEMPT_INTERVAL_MS`` — the minimum gap between cue attempt starts (XERK-2411),
+    the cost lever: you pay per attempt and ~94% decline. Finals inside it still join
+    the context window.
   * ``CUE_GUIDANCE`` / ``CUE_GUIDANCE_GROUNDED`` — the time-varying-facts line
     slotted into the frame's accuracy rules: tight (stay silent) without
     evidence, evidence-gated (generous for covered facts; time-sensitive facts
@@ -53,6 +56,15 @@ from __future__ import annotations
 # Minimum gap between emitted cues. A floor that stops a run of hits from stacking;
 # the accuracy bar in CUE_GUIDANCE is what actually governs how often cues appear.
 MIN_INTERVAL_MS = 1500
+
+# Minimum gap between cue attempt starts (XERK-2411). You pay per attempt and ~94%
+# decline, so attempting on every final (one in flight) mostly buys declines. A turn held
+# by the floor gets one attempt when it lapses (Session._cue_floor_lapsed). Replayed on
+# Sonnet 5.5 (2.05 h, blind-judged): 37% fewer attempts, $2.59 -> $1.49 per
+# conversation-hour, 35-40 GOOD cues against the old gating's 42, cues ~5 s later on
+# average. Gating on a sentence end cost more for the same GOOD count and a longer tail
+# (scripts/cue_eval/RESULTS-2026-10-gating.md).
+ATTEMPT_INTERVAL_MS = 10_000
 
 # The time-varying-facts line slotted into the system prompt's accuracy rules
 # (openai.py `_SYSTEM`). Since the enrichment calibration the shared frame —
@@ -106,6 +118,10 @@ CUE_GUIDANCE_GROUNDED = (
 
 def min_interval_ms() -> int:
     return MIN_INTERVAL_MS
+
+
+def attempt_interval_ms() -> int:
+    return ATTEMPT_INTERVAL_MS
 
 
 def cue_guidance(*, grounded: bool = False) -> str:

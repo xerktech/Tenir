@@ -2,8 +2,9 @@
 
 Builds each request with ``api.cue.openai.OpenAICueGenerator._build_payload``
 from the installed ``api`` package — so what this measures is always the prompt
-that ships — and emulates the session's gating: an 8-turn rolling context, one
-attempt in flight at a time (a final that lands mid-call earns one catch-up call
+that ships — and emulates the session's gating: an 8-turn rolling context, attempts
+at least ``ATTEMPT_INTERVAL_MS`` apart (a final held by that floor gets one attempt when it
+lapses), one attempt in flight at a time (a final that lands mid-call earns one catch-up call
 when that call ends without a cue), the min interval between emitted cues, and all
 three dedupe backstops (normalized title + substance fingerprint +
 title-subject containment). Ungrounded by default; ``--grounded`` adds live
@@ -11,7 +12,8 @@ retrieval evidence (cached per transcript window so every model under
 comparison sees identical evidence), ``--realtime`` spaces attempts by the
 measured call latency instead of a fixed 2.5 s, ``--verify`` runs the
 self-check pass on every emitted cue, and ``--fact-check`` runs production's
-encyclopedia fact check after dedupe.
+encyclopedia fact check after dedupe. ``--attempt-interval-ms 0`` (the gating before
+XERK-2411) and ``--gate sentence`` model other attempt gating against the shipped one.
 
 Usage: see scripts/cue_eval/README.md.
 """
@@ -41,13 +43,23 @@ from api.cue.base import (
     normalize_cue_title,
 )
 from api.cue.openai import OpenAICueGenerator
-from api.cue.tuning import MIN_INTERVAL_MS
+from api.cue.tuning import ATTEMPT_INTERVAL_MS, MIN_INTERVAL_MS
 from api.llm import adapt as adapt_for_claude
 
 CONTEXT_SEGMENTS = 8  # settings.cue_context_segments default
 ATTEMPT_MS = 2500  # transcript time one serialized attempt occupies
 AVOID_LIMIT = 40  # session._CUE_AVOID_PROMPT_LIMIT
 DUP_THRESHOLD = 0.35  # session._CUE_SUBSTANCE_DUP_THRESHOLD
+# --gate sentence: a final ends a sentence when its last character, after closing
+# quotes/brackets and spaces, is terminal punctuation (Latin, CJK, Arabic, Urdu, Devanagari).
+_SENTENCE_END = re.compile(
+    "[.?!\u2026\u3002\uff1f\uff01\u061f\u06d4\u0964\u0965]"
+    "[\\s\"'\u201c\u201d\u2019)\\]\u00bb\u300d\u300f\u200b]*$"
+)
+
+
+def ends_sentence(text: str) -> bool:
+    return bool(_SENTENCE_END.search(text))
 
 # Self-check prompt for --verify: the same model, thinking off, decides whether a
 # generated cue is safe to show. Measured 2026-09 (RESULTS-2026-09-shootout.md):
@@ -273,7 +285,15 @@ def replay_conversation(
     verify_adapt=None,
     fact_check=None,
     clock=time.monotonic,
+    gate: str = "every",
+    attempt_interval_ms: int = ATTEMPT_INTERVAL_MS,
 ) -> dict:
+    """Replay one conversation. ``attempt_interval_ms`` is the minimum gap between attempt
+    starts (shipped: ``ATTEMPT_INTERVAL_MS``; 0 before XERK-2411). ``gate="sentence"``
+    attempts only on a final that ends a sentence; ``"every"`` (shipped) on any final.
+    Finals that don't attempt still join the context window. Each cue records
+    ``time_to_cue_ms``: from the end of the oldest final no earlier attempt had seen to
+    when the cue was shown — what gating and the call together cost a listener."""
     recent: collections.deque[str] = collections.deque(maxlen=CONTEXT_SEGMENTS)
     surfaced: list[GeneratedCue] = []
     norms: set[str] = set()
@@ -298,12 +318,19 @@ def replay_conversation(
     }
     next_free_ms = 0
     last_emit_ms = -(10**9)
+    last_attempt_ms = -(10**9)
+    # End of the oldest final that joined the window since the last attempt started.
+    unseen_since: int | None = None
 
     def attempt(at: int, stamp: int, i: int, turns: list[str]) -> bool:
         """One cue call starting at transcript time ``at``; True if it showed a cue."""
-        nonlocal next_free_ms, last_emit_ms, subjects
+        nonlocal next_free_ms, last_emit_ms, last_attempt_ms, subjects, unseen_since, held
         out["attempts"] += 1
         next_free_ms = at + ATTEMPT_MS
+        last_attempt_ms = at
+        held_since = at if unseen_since is None else unseen_since
+        unseen_since = None
+        held = None  # this call's window holds every turn so far
         found, retrieval_ms = evidence.get(turns) if evidence else ((), 0)
         if evidence:
             out["evidence_windows"] += 1
@@ -387,36 +414,70 @@ def replay_conversation(
         subjects |= subject
         # The min interval runs from when the cue is shown: after the call live.
         last_emit_ms = at + in_flight_ms if realtime else at
+        shown_ms = at + in_flight_ms
         out["cues"].append(
-            {"title": cue.title, "body": cue.body, "at_ms": stamp, "seg_index": i}
+            {
+                "title": cue.title, "body": cue.body, "at_ms": stamp, "seg_index": i,
+                "time_to_cue_ms": shown_ms - held_since,
+            }
         )
         return True
 
     # A final that lands while a call is in flight is not dropped: when that call
     # ends without showing a cue, the session starts one more call right away on
-    # the newest turns (Session._cue_catch_up), stamped at the missed final.
-    missed: tuple[int, int, list[str]] | None = None
+    # the newest turns (Session._cue_catch_up), stamped at the missed final. Its window
+    # is taken when that call starts, as the session's is: it also holds any mid-sentence
+    # final that landed after the missed one.
+    missed: tuple[int, int] | None = None
+    # A final inside the attempt floor waits in the window; when the floor lapses it gets
+    # one attempt, or the catch-up if a call is in flight then (Session._cue_floor_lapsed).
+    held: tuple[int, int] | None = None
     shown = False
+
+    def settle(until: float) -> None:
+        """Run the catch-up and floor-lapse attempts due before transcript time ``until``,
+        in time order."""
+        nonlocal missed, held, shown
+        while True:
+            catch_at = next_free_ms if missed is not None else None
+            lapse_at = last_attempt_ms + attempt_interval_ms if held is not None else None
+            due = [t for t in (catch_at, lapse_at) if t is not None and t <= until]
+            if not due:
+                return
+            if catch_at is not None and catch_at == min(due):
+                stamp, m_i = missed
+                missed = None
+                if not shown:
+                    shown = attempt(next_free_ms, stamp, m_i, list(recent))
+            else:
+                stamp, h_i = held
+                held = None
+                if lapse_at < next_free_ms:
+                    missed = (stamp, h_i)
+                elif lapse_at - last_emit_ms >= MIN_INTERVAL_MS:
+                    shown = attempt(lapse_at, stamp, h_i, list(recent))
+
     for i, seg in enumerate(segments):
         text = (seg.get("text") or "").strip()
         if not text:
             continue
         at = seg["end_ms"]
-        while missed is not None and at >= next_free_ms:
-            stamp, m_i, m_turns = missed
-            missed = None
-            if not shown:
-                shown = attempt(next_free_ms, stamp, m_i, m_turns)
+        settle(at)
         recent.append(text)
+        if unseen_since is None:
+            unseen_since = at
+        if gate == "sentence" and not ends_sentence(text):
+            continue
+        if at - last_attempt_ms < attempt_interval_ms:
+            held = (at, i)
+            continue
         if at < next_free_ms:
-            missed = (at, i, list(recent))
+            missed = (at, i)
             continue
         if at - last_emit_ms < MIN_INTERVAL_MS:
             continue
         shown = attempt(at, at, i, list(recent))
-    if missed is not None and not shown:
-        stamp, m_i, m_turns = missed
-        attempt(next_free_ms, stamp, m_i, m_turns)
+    settle(float("inf"))
     return out
 
 
@@ -487,6 +548,15 @@ def main() -> None:
     ap.add_argument(
         "--fact-check-model", default="",
         help="model for --fact-check (production uses API_LLM_MODEL); default --model",
+    )
+    ap.add_argument(
+        "--gate", default="every", choices=["every", "sentence"],
+        help="which finals may start an attempt: any (shipped) or only one ending a sentence",
+    )
+    ap.add_argument(
+        "--attempt-interval-ms", type=int, default=ATTEMPT_INTERVAL_MS,
+        help=f"minimum gap between attempt starts (shipped: {ATTEMPT_INTERVAL_MS}; 0 = "
+        "every final, one in flight, as before XERK-2411)",
     )
     ap.add_argument(
         "--refetch-empty", action="store_true",
@@ -590,6 +660,7 @@ def main() -> None:
                         extra=extra, evidence=evidence, realtime=args.realtime,
                         verify=args.verify, verify_adapt=adapt,
                         fact_check=make_checker() if make_checker else None,
+                        gate=args.gate, attempt_interval_ms=args.attempt_interval_ms,
                     )
                 except Exception as exc:  # a dead thread must fail the run, not shrink it
                     with lock:
@@ -620,6 +691,7 @@ def main() -> None:
             "max_tokens": args.max_tokens or None, "extra": extra,
             "reasoning_effort": args.reasoning_effort or None,
             "no_template_kwargs": args.no_template_kwargs,
+            "gate": args.gate, "attempt_interval_ms": args.attempt_interval_ms,
         },
         "conversations": [r for r in results if r],
     }

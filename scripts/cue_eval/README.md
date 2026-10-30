@@ -27,7 +27,9 @@ python scripts/cue_eval/replay.py segments.json \
 ```
 
 Replays each conversation with the exact session gating: an 8-turn rolling
-context window, one attempt in flight at a time (modelled as 2.5 s of
+context window, attempts at least 10 s apart (`--attempt-interval-ms 0`
+attempts on every final, as before XERK-2411; `--gate sentence` only on a
+final that ends a sentence), one attempt in flight at a time (modelled as 2.5 s of
 transcript time), the 1.5 s min interval between emitted cues, and all three
 dedupe backstops (normalized title + substance fingerprint + title-subject
 containment). Ungrounded by default.

@@ -38,3 +38,5 @@ paths:
 - Cost: input tokens are over 90% of a call. You pay per attempt, and about 94% of attempts
   decline, so cost per cue is about 17x the per-call price. LiteLLM spend logs
   (`/spend/logs`, admin key `LITELLM_MASTER_KEY` in bws) carry LiteLLM's computed cost per call.
+- Cue attempts start at least 10 s apart for that reason (`ATTEMPT_INTERVAL_MS`, XERK-2411).
+  Cost scales with attempts, so lowering it raises cost in proportion.

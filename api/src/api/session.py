@@ -39,6 +39,7 @@ from api.cue import (
     CueGenerator,
     make_cue_generator,
     make_fact_checker,
+    attempt_interval_ms,
     min_interval_ms,
     normalize_cue_title,
 )
@@ -384,12 +385,18 @@ class Session:
         self._surfaced_cue_substance: list[frozenset[str]] = []
         self._surfaced_cue_subjects: set[str] = set()
         self._last_cue_monotonic: float | None = None
+        # When the last cue attempt started: attempts are at least attempt_interval_ms apart.
+        self._last_cue_attempt_monotonic: float | None = None
         self._cue_inflight = False
         # The newest turn that finalized while a cue call was in flight (its endMs),
         # or None. Such a turn used to wait for the NEXT final before any call saw
         # it; the in-flight call now ends by trying again on it (`_cue_catch_up`).
         self._cue_missed_at_ms: int | None = None
         self._cue_tasks: set[asyncio.Task[None]] = set()
+        # The newest turn held back by the attempt floor (its endMs), and the timer that
+        # attempts on it once the floor lapses (`_cue_floor_lapsed`).
+        self._cue_held_at_ms: int | None = None
+        self._cue_floor_timer: asyncio.TimerHandle | None = None
         # Live translations (XERK-160): when a finalized turn's detected language
         # isn't English, it is translated off the caption path and delivered as a
         # `translation` message paired to the segment. Consecutive non-English
@@ -1180,7 +1187,8 @@ class Session:
         """On each finalized turn, maybe kick off cue generation in the background.
 
         Cheap gating happens here on the event loop (no model call): skip when cues
-        are off, while one is already in flight, or inside the fixed rate-limit
+        are off, inside the attempt floor since the last attempt started (XERK-2411: you
+        pay per attempt), while one is already in flight, or inside the fixed rate-limit
         window. Only past those does it spawn a task that calls the model off-loop.
         """
         if self._cue_generator is None or self._closed:
@@ -1200,6 +1208,19 @@ class Session:
             # aside exactly as they do for a translation run; they resume once the
             # song ends. The turn's text still joined the context window above.
             return
+        if self._last_cue_attempt_monotonic is not None:
+            wait_ms = attempt_interval_ms() - (
+                time.monotonic() - self._last_cue_attempt_monotonic
+            ) * 1000
+            if wait_ms > 0:
+                # Inside the floor: the turn waits in the window for the floor to lapse,
+                # then gets one attempt (or the catch-up, if a call is in flight then).
+                self._cue_held_at_ms = result.endMs
+                if self._cue_floor_timer is None:
+                    self._cue_floor_timer = asyncio.get_running_loop().call_later(
+                        wait_ms / 1000, self._cue_floor_lapsed
+                    )
+                return
         if self._cue_inflight:
             self._cue_missed_at_ms = result.endMs
             return
@@ -1211,9 +1232,28 @@ class Session:
 
     def _start_cue(self, at_ms: int) -> None:
         self._cue_inflight = True
+        self._last_cue_attempt_monotonic = time.monotonic()
+        # This call's window holds every turn so far, so nothing is waiting on the floor.
+        self._cue_held_at_ms = None
+        if self._cue_floor_timer is not None:
+            self._cue_floor_timer.cancel()
+            self._cue_floor_timer = None
         task = asyncio.create_task(self._generate_cue(at_ms))
         self._cue_tasks.add(task)
         task.add_done_callback(self._cue_tasks.discard)
+
+    def _cue_floor_lapsed(self) -> None:
+        """The attempt floor lapsed with turns no call has seen. Without this a turn held
+        by the floor waited for the next final, or never reached the model when the
+        speaker then went quiet. It goes the catch-up's way: started now, or when the
+        call in flight ends."""
+        self._cue_floor_timer = None
+        held, self._cue_held_at_ms = self._cue_held_at_ms, None
+        if held is None:
+            return
+        self._cue_missed_at_ms = held
+        if not self._cue_inflight:
+            self._cue_catch_up()
 
     async def _cue_contradicted(self, cue: GeneratedCue) -> bool:
         """Whether the encyclopedia check contradicts the cue. Fails open: an error or a check

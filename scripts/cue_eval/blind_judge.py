@@ -48,11 +48,14 @@ Grade EVERY NEW CUE:
   about a misrecognized name. Post-cutoff products/events are 1, not 0, unless
   internally inconsistent.
 - duplicate: true if its key info was already conveyed by an EARLIER CUE.
+- value: GOOD = a listener would be glad it appeared; BAD = it defines what the speakers
+  obviously know, lectures or advises unasked, restates or labels the moment, reacts to
+  background audio (lyrics, a sermon, a TV show), or is wrong; MARGINAL = neither.
 Accuracy matters most: a confident wrong cue is the worst failure.
 
 Write JSON Lines, one object per cue, every id exactly once:
 {"id": "c0123", "novelty": 2, "relevance": 2, "accuracy": 2, "duplicate": false,
- "reason": "<=20 words; required when accuracy < 2 or relevance 0"}
+ "value": "GOOD", "reason": "<=20 words; required when accuracy < 2, relevance 0 or BAD"}
 """
 
 
@@ -108,6 +111,9 @@ def pack(args: argparse.Namespace) -> None:
     print(f"{len(items)} cues -> {args.packs} packs in {args.out_dir}")
 
 
+_VALUES = ("GOOD", "MARGINAL", "BAD")
+
+
 def report(args: argparse.Namespace) -> None:
     key = json.loads((args.dir / "key.json").read_text())
     verdicts = {}
@@ -135,6 +141,8 @@ def report(args: argparse.Namespace) -> None:
                         f"{path.name}: {cid} needs 0/1/2 scores and a boolean duplicate "
                         f"(bad: {bad or ['duplicate']})"
                     )
+                if v.get("value", "GOOD") not in _VALUES:
+                    raise SystemExit(f"{path.name}: {cid} value must be one of {_VALUES}")
                 verdicts[cid] = v
     missing = len(key) - len(verdicts)
     by_run: dict[str, list[dict]] = collections.defaultdict(list)
@@ -142,7 +150,10 @@ def report(args: argparse.Namespace) -> None:
         if cid in verdicts:
             by_run[k["run"]].append(verdicts[cid])
     print(f"verdicts {len(key) - missing}/{len(key)}")
-    print(f"{'run':24}{'cues':>6}{'accuracy':>9}{'wrong':>7}{'wrong%':>8}{'off-topic':>10}{'dups':>6}{'perfect':>8}")
+    print(
+        f"{'run':24}{'cues':>6}{'accuracy':>9}{'wrong':>7}{'wrong%':>8}{'off-topic':>10}"
+        f"{'dups':>6}{'perfect':>8}{'good':>6}{'marginal':>9}{'bad':>5}"
+    )
     for run, vs in sorted(by_run.items()):
         n = len(vs)
         wrong = sum(v["accuracy"] == 0 for v in vs)
@@ -154,6 +165,10 @@ def report(args: argparse.Namespace) -> None:
             f"{run:24}{n:>6}{sum(v['accuracy'] for v in vs) / n:>9.2f}{wrong:>7}"
             f"{100 * wrong / n:>7.1f}%{sum(v['relevance'] == 0 for v in vs):>10}"
             f"{sum(bool(v['duplicate']) for v in vs):>6}{perfect:>8}"
+            + "".join(
+                f"{sum(v.get('value') == grade for v in vs):>{width}}"
+                for grade, width in zip(_VALUES, (6, 9, 5), strict=True)
+            )
         )
 
 

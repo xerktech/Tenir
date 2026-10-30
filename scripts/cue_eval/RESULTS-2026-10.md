@@ -335,5 +335,5 @@ rates: Sonnet 5.5 $2 / $10 per M input / output tokens, Haiku 5.5 $0.10 / $0.50.
     the second call on.
   - That cuts a Sonnet call's cost by about 55%, to an estimated **~$0.07 per cue and
     ~$2.3 per conversation-hour**.
-- The next lever is fewer attempts (gate on a pause or a sentence end). It trades cue latency
-  for cost and needs its own replay.
+- Fewer attempts is the next lever: a 10 s attempt floor (XERK-2411) brought it to $1.49 per
+  conversation-hour at some cost in good cues. See RESULTS-2026-10-gating.md.

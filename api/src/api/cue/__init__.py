@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from api.config import settings
 from api.cue.base import CueGenerator, GeneratedCue, normalize_cue_title
-from api.cue.tuning import cue_guidance, min_interval_ms
+from api.cue.tuning import attempt_interval_ms, cue_guidance, min_interval_ms
 
 __all__ = [
     "CueGenerator",
     "GeneratedCue",
+    "attempt_interval_ms",
     "cue_guidance",
     "make_cue_generator",
     "make_fact_checker",
