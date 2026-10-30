@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import types
 
 import pytest
 
@@ -13,6 +14,14 @@ from api.contract import CaptionFinal, Cue, MicSource, ServerMessage
 from api.cue import GeneratedCue
 from api.persistence import get_conversation_store
 from api.session import Session
+
+
+@pytest.fixture(autouse=True)
+def _attempt_on_every_final(request, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Most cases here drive per-final gating (in flight, catch-up, min interval); the
+    # attempt floor (XERK-2411) is lifted for them and pinned by its own tests.
+    if "attempt_floor" not in request.node.name:
+        monkeypatch.setattr("api.session.attempt_interval_ms", lambda: 0)
 
 
 def _final(text: str, *, segment_id: str = "s1", end_ms: int = 2000) -> CaptionFinal:
@@ -113,6 +122,137 @@ class _GatedGenerator:
         self.transcripts.append(transcript)
         self.release.wait(5)
         return self.cues[len(self.transcripts) - 1]
+
+
+_FLOOR_S = 0.2
+
+
+def _short_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    monkeypatch.setattr("api.session.attempt_interval_ms", lambda: int(_FLOOR_S * 1000))
+
+
+def test_attempt_floor_holds_finals_inside_it_out_of_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-2411: every attempt is billed, so a final inside the floor only joins the window.
+    _short_floor(monkeypatch)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None, None])
+        gen.release.set()
+        session._cue_generator = gen
+        session._consider_cue(_final("we drove out", segment_id="a", end_ms=1000))
+        await _drain_cues(session)
+        session._consider_cue(_final("to the old quarry", segment_id="b", end_ms=2000))
+        session._consider_cue(_final("and swam", segment_id="c", end_ms=3000))
+        await _drain_cues(session)
+        assert len(gen.transcripts) == 1
+        await asyncio.sleep(_FLOOR_S * 2)
+        await _drain_cues(session)
+        await session.close()
+        # One attempt when the floor lapses, seeing both held turns, stamped at the newest.
+        assert len(gen.transcripts) == 2
+        assert "to the old quarry" in gen.transcripts[1] and "and swam" in gen.transcripts[1]
+
+    asyncio.run(run())
+
+
+def test_attempt_floor_held_question_reaches_the_model_when_speech_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # QA repro: a question inside the floor, then silence, must still get its call.
+    _short_floor(monkeypatch)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, GeneratedCue(title="Sun", body="149.6 million km.")])
+        gen.release.set()
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a", end_ms=1000))
+        await _drain_cues(session)
+        session._consider_cue(_final("how far is the sun?", segment_id="b", end_ms=4000))
+        await asyncio.sleep(_FLOOR_S * 2)
+        await _drain_cues(session)
+        await session.close()
+        cues = _cues(sent)
+        assert [c.title for c in cues] == ["Sun"]
+        assert cues[0].atMs == 4000
+
+    asyncio.run(run())
+
+
+def test_attempt_floor_lapsing_mid_call_hands_the_turn_to_the_catch_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _short_floor(monkeypatch)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None, None])
+        session._cue_generator = gen
+        session._consider_cue(_final("we were chatting", segment_id="a", end_ms=1000))
+        session._consider_cue(_final("how far is the sun?", segment_id="b", end_ms=4000))
+        await asyncio.sleep(_FLOOR_S * 2)  # the floor lapses while call 1 is held
+        assert len(gen.transcripts) == 1
+        gen.release.set()
+        await _drain_cues(session)
+        await session.close()
+        assert len(gen.transcripts) == 2
+        assert "how far is the sun?" in gen.transcripts[1]
+
+    asyncio.run(run())
+
+
+def test_attempt_floor_timer_never_doubles_an_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A final past the floor attempts before the timer fires; the timer must not add one.
+    _short_floor(monkeypatch)
+    clock = [1000.0]
+    # Only the session's clock: patching time.monotonic itself would stop the event loop's.
+    monkeypatch.setattr("api.session.time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None, None])
+        gen.release.set()
+        session._cue_generator = gen
+        session._consider_cue(_final("one", segment_id="a", end_ms=1000))
+        await _drain_cues(session)
+        session._consider_cue(_final("two", segment_id="b", end_ms=1100))  # held, timer set
+        clock[0] += _FLOOR_S
+        session._consider_cue(_final("three", segment_id="c", end_ms=1300))  # past the floor
+        await _drain_cues(session)
+        await asyncio.sleep(_FLOOR_S * 2)
+        await _drain_cues(session)
+        await session.close()
+        assert len(gen.transcripts) == 2
+
+    asyncio.run(run())
+
+
+def test_attempt_floor_lapsing_after_close_starts_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _short_floor(monkeypatch)
+
+    async def run() -> None:
+        sent: list[ServerMessage] = []
+        session = await _fresh_session(sent)
+        gen = _GatedGenerator([None, None])
+        gen.release.set()
+        session._cue_generator = gen
+        session._consider_cue(_final("one", segment_id="a", end_ms=1000))
+        await _drain_cues(session)
+        session._consider_cue(_final("two", segment_id="b", end_ms=1100))
+        await session.close()
+        await asyncio.sleep(_FLOOR_S * 2)
+        await _drain_cues(session)
+        assert len(gen.transcripts) == 1
+
+    asyncio.run(run())
 
 
 def test_turn_finalized_mid_call_gets_a_catch_up_call(monkeypatch: pytest.MonkeyPatch) -> None:

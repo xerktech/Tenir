@@ -68,7 +68,7 @@ a floor — the hand read is authoritative.
 Harness: `scripts/cue_eval/` (README there has full usage). It replays
 exported conversations through the **installed** `api` package's
 `OpenAICueGenerator._build_payload` with the real session gating (8-turn
-window, one attempt in flight ≈ 2.5 s, 1.5 s min interval, both dedup
+window, attempts ≥10 s apart, one attempt in flight ≈ 2.5 s, 1.5 s min interval, both dedup
 backstops), then LLM-judges every cue.
 
 ```bash

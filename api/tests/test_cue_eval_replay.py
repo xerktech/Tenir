@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from api.cue import tuning
 from api.cue.retrieval.base import Evidence
 
 _EVAL = Path(__file__).resolve().parents[2] / "scripts" / "cue_eval"
@@ -86,7 +87,7 @@ class _FakeServer:
 
 def _segments(n: int = 20, gap_ms: int = 3000) -> list[dict]:
     return [
-        {"text": f"turn {i} about subject {i}", "start_ms": i * gap_ms, "end_ms": i * gap_ms + 1000}
+        {"text": f"turn {i} about subject {i}.", "start_ms": i * gap_ms, "end_ms": i * gap_ms + 1000}
         for i in range(n)
     ]
 
@@ -96,6 +97,8 @@ def _gen(replay):
 
 
 def _run(replay, server, segments=None, **kw):
+    # Most cases model attempt-on-every-final timing; the shipped floor has its own tests.
+    kw.setdefault("attempt_interval_ms", 0)
     return replay.replay_conversation(
         _gen(replay), server, "http://model/v1/chat/completions", "c1",
         segments or _segments(), clock=lambda: server.now, **kw,
@@ -813,6 +816,7 @@ def test_main_records_every_setting(replay, monkeypatch, tmp_path):
     assert settings == {
         "model": "gpt-x", "grounded": False, "realtime": False, "verify": "", "fact_check": False, "fact_check_model": None,
         "max_tokens": 77, "extra": {}, "reasoning_effort": "high", "no_template_kwargs": False,
+        "gate": "every", "attempt_interval_ms": 10000,
     }
 
 
@@ -902,15 +906,15 @@ def test_a_final_missed_mid_call_gets_a_catch_up_call(replay):
     # call ends with one more call on the newest turn instead of waiting for turn 4.
     server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=100)
     out = _run(replay, server, segments=_segments(4, gap_ms=1000))
-    assert server.newest == ["turn 0 about subject 0", "turn 2 about subject 2",
-                             "turn 3 about subject 3"]
+    assert server.newest == ["turn 0 about subject 0.", "turn 2 about subject 2.",
+                             "turn 3 about subject 3."]
     assert out["attempts"] == 3
 
 
 def test_a_trailing_missed_final_still_gets_its_call(replay):
     server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=100)
     _run(replay, server, segments=_segments(2, gap_ms=1000))
-    assert server.newest == ["turn 0 about subject 0", "turn 1 about subject 1"]
+    assert server.newest == ["turn 0 about subject 0.", "turn 1 about subject 1."]
 
 
 def test_no_catch_up_after_a_shown_cue(replay):
@@ -967,3 +971,179 @@ def test_verify_payload_has_the_claude_request_shape(replay) -> None:
     claude, qwen = sent
     assert "temperature" not in claude and claude["thinking"] == {"type": "between_tools"}
     assert qwen["temperature"] == 0.0 and qwen["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def _declining_server(replay) -> _DecliningServer:
+    return _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=500)
+
+
+@pytest.mark.parametrize(
+    ("text", "ends"),
+    [("Hello.", True), ('What?"', True), ("Yes!) ", True), ("wait…", True), ("so and", False),
+     ("3.5", False), ("", False), ("\u4f60\u597d\u3002", True), ("\u0643\u064a\u0641\u061f", True),
+     ("[stub segment]", False), ("\u201eHallo.\u201c", True), ("\u00ab Bonjour. \u00bb", True),
+     ("\u300c\u3053\u3093\u306b\u3061\u306f\u3002\u300d", True), ("\u06a9\u06cc\u0627\u06d4", True),
+     ("ok.\u200b", True), ("hello;", False)],
+)
+def test_ends_sentence(replay, text, ends):
+    assert replay.ends_sentence(text) is ends
+
+
+def test_sentence_gate_attempts_only_on_a_sentence_end(replay):
+    segments = _segments(10, gap_ms=5000)
+    for i in set(range(10)) - {2, 5, 9}:
+        segments[i]["text"] = segments[i]["text"].rstrip(".")
+    server = _declining_server(replay)
+    out = _run(replay, server, segments=segments, realtime=True, gate="sentence")
+    assert out["attempts"] == 3
+    # Unpunctuated turns still join the window the gated attempt sees.
+    assert "turn 3 about subject 3" in server.cue_payloads[1]["messages"][-1]["content"]
+    every = _run(replay, _declining_server(replay), segments=segments, realtime=True, gate="every")
+    assert every["attempts"] == 10
+
+
+def test_attempt_interval_spaces_attempt_starts(replay):
+    segments = _segments(20, gap_ms=3000)
+    out = _run(replay, _declining_server(replay), segments=segments, realtime=True,
+               attempt_interval_ms=10000)
+    # Turns end every 3 s (1-58 s); with a 10 s floor each held turn is attempted when
+    # the floor lapses: at 1, 11, 21, 31, 41, 51 and 61 s.
+    assert out["attempts"] == 7
+
+
+def test_time_to_cue_counts_the_gate_wait_and_the_call(replay):
+    segments = _segments(4, gap_ms=5000)  # turns end at 1, 6, 11, 16 s
+    for i in (0, 1, 3):
+        segments[i]["text"] = segments[i]["text"].rstrip(".")
+    out = _run(replay, _FakeServer(replay.VERIFY_SYSTEM, cue_ms=700), segments=segments,
+               realtime=True, gate="sentence")
+    # Held from the first turn's end (1 s) to the punctuated one (11 s), plus the call.
+    assert [c["time_to_cue_ms"] for c in out["cues"]] == [10700]
+
+
+def test_blind_report_counts_value_grades_and_rejects_unknown_ones(tmp_path, monkeypatch, capsys):
+    blind = _load("blind_judge")
+    segments = tmp_path / "segments.json"
+    segments.write_text(json.dumps([dict(s, conversation_id="c1") for s in _segments(5)]))
+    cues = [{"title": f"Title {k}", "body": "b", "at_ms": 0, "seg_index": k} for k in range(3)]
+    (tmp_path / "only.json").write_text(
+        json.dumps({"conversations": [{"conversation_id": "c1", "cues": cues}]})
+    )
+    out_dir = tmp_path / "blind"
+    monkeypatch.setattr(sys, "argv", [
+        "blind_judge.py", "pack", str(segments), str(tmp_path / "only.json"), "--packs", "1",
+        "--out-dir", str(out_dir),
+    ])
+    blind.main()
+    assert "value: GOOD" in (out_dir / "RUBRIC.md").read_text()
+    ids = list(json.loads((out_dir / "key.json").read_text()))
+    base = {"novelty": 2, "relevance": 2, "accuracy": 2, "duplicate": False}
+    grades = ["GOOD", "GOOD", "BAD"]
+    (out_dir / "verdicts_0.jsonl").write_text(
+        "\n".join(json.dumps({"id": i, **base, "value": g}) for i, g in zip(ids, grades, strict=True))
+    )
+    monkeypatch.setattr(sys, "argv", ["blind_judge.py", "report", str(out_dir)])
+    blind.main()
+    row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("only"))
+    assert row.split()[-3:] == ["2", "0", "1"]
+
+    (out_dir / "verdicts_0.jsonl").write_text(json.dumps({"id": ids[0], **base, "value": "OK"}))
+    with pytest.raises(SystemExit, match="value must be one of"):
+        blind.main()
+
+
+def test_replay_mid_sentence_final_during_a_call_earns_no_catch_up(replay):
+    # Session twin: test_a_mid_sentence_final_during_a_call_earns_no_catch_up.
+    segments = _segments(3, gap_ms=1000)
+    segments[1]["text"] = "and then he"
+    server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=5000)
+    out = _run(replay, server, segments=segments[:2], realtime=True, gate="sentence")
+    assert out["attempts"] == 1
+
+
+def test_replay_catch_up_window_includes_later_mid_sentence_finals(replay):
+    # The session builds the catch-up window when that call starts, so a mid-sentence
+    # final landing after the missed one is in it.
+    segments = [
+        {"text": "We met at noon.", "start_ms": 0, "end_ms": 1000},
+        {"text": "He asked about Kepler.", "start_ms": 1000, "end_ms": 1500},
+        {"text": "and then the", "start_ms": 1500, "end_ms": 2000},
+        {"text": "Fine.", "start_ms": 19000, "end_ms": 20000},
+    ]
+    server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=3000)
+    _run(replay, server, segments=segments, realtime=True, gate="sentence")
+    assert server.newest == ["We met at noon.", "and then the", "Fine."]
+
+
+def test_replay_defaults_to_the_shipped_attempt_floor(replay):
+    assert tuning.ATTEMPT_INTERVAL_MS == 10_000
+    server = _DecliningServer(replay.VERIFY_SYSTEM, cue_ms=500)
+    out = replay.replay_conversation(
+        _gen(replay), server, "http://model/v1/chat/completions", "c1",
+        _segments(20, gap_ms=3000), clock=lambda: server.now, realtime=True,
+    )
+    # Turns end every 3 s; the 10 s floor attempts at 1, 11, ..., 61 s.
+    assert out["attempts"] == 7
+
+
+class _ScriptedServer(_FakeServer):
+    """Per-call latencies; declines every call but the ``cue_on``-th (1-based)."""
+
+    def __init__(self, verify_system: str, latencies_ms: list[int], cue_on: int):
+        super().__init__(verify_system, cue_ms=0)
+        self.latencies_ms, self.cue_on = latencies_ms, cue_on
+
+    def post(self, url, json, timeout):  # noqa: A002
+        self.cue_payloads.append(json)
+        n = len(self.cue_payloads)
+        self.now += self.latencies_ms[n - 1] / 1000
+        if n != self.cue_on:
+            return _Resp('{"cue": false}')
+        return _Resp('{"cue": true, "title": "Sun distance", "body": "About 149.6 million km."}')
+
+
+def _seg(text: str, end_ms: int) -> dict:
+    return {"text": text, "start_ms": end_ms - 500, "end_ms": end_ms}
+
+
+def test_replay_floor_held_final_gets_an_attempt_when_the_floor_lapses(replay):
+    # Session twin: test_attempt_floor_held_question_reaches_the_model_when_speech_stops.
+    server = _ScriptedServer(replay.VERIFY_SYSTEM, [500, 500], cue_on=2)
+    out = _run(replay, server, segments=[_seg("we were chatting", 1000),
+                                          _seg("how far is the sun?", 4000)],
+               realtime=True, attempt_interval_ms=10000)
+    assert out["attempts"] == 2
+    # Held from 4 s to the lapse at 11 s, plus the 0.5 s call.
+    assert [(c["at_ms"], c["time_to_cue_ms"]) for c in out["cues"]] == [(4000, 7500)]
+
+
+def test_replay_floor_final_mid_call_waits_for_the_lapse_not_the_call(replay):
+    # Session twin: test_attempt_floor_lapsing_mid_call_hands_the_turn_to_the_catch_up.
+    # Inside the floor, a mid-call final is held: attempted at the lapse (11 s), never by a
+    # catch-up when the 3 s call ends.
+    server = _ScriptedServer(replay.VERIFY_SYSTEM, [3000, 500], cue_on=2)
+    out = _run(replay, server, segments=[_seg("we were chatting", 1000),
+                                          _seg("how far is the sun?", 2000)],
+               realtime=True, attempt_interval_ms=10000)
+    assert [c["time_to_cue_ms"] for c in out["cues"]] == [11500 - 2000]
+
+
+def test_replay_a_catch_up_counts_toward_the_floor(replay):
+    # Floor 2 s. A@1 s holds the call to 4 s; B@3.5 s (past the floor) is caught up at 4 s;
+    # C@5 s is inside the floor from that catch-up, so it waits for the lapse at 6 s.
+    server = _ScriptedServer(replay.VERIFY_SYSTEM, [3000, 500, 500], cue_on=3)
+    out = _run(replay, server, segments=[_seg("a", 1000), _seg("b", 3500), _seg("c", 5000)],
+               realtime=True, attempt_interval_ms=2000)
+    assert out["attempts"] == 3
+    assert [c["time_to_cue_ms"] for c in out["cues"]] == [6500 - 5000]
+
+
+def test_replay_floor_lapsing_mid_call_hands_the_turn_to_the_catch_up(replay):
+    # Session twin: test_attempt_floor_lapsing_mid_call_hands_the_turn_to_the_catch_up.
+    # Floor 2 s: B@2 s is held; the floor lapses at 3 s while A's call runs to 4 s, so B is
+    # caught up when that call ends.
+    server = _ScriptedServer(replay.VERIFY_SYSTEM, [3000, 500], cue_on=2)
+    out = _run(replay, server, segments=[_seg("a", 1000), _seg("b", 2000)],
+               realtime=True, attempt_interval_ms=2000)
+    assert out["attempts"] == 2
+    assert [(c["at_ms"], c["time_to_cue_ms"]) for c in out["cues"]] == [(2000, 4500 - 2000)]
