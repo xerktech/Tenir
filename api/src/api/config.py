@@ -71,8 +71,10 @@ class Settings(BaseSettings):
     # + litellm_api_key, POSTing /chat/completions instead of /audio/transcriptions).
     #   "off"    — no cues (default; the stripped core stays STT-only unless enabled).
     #   "stub"   — model-free, deterministic generator for CI/dev (no GPU).
-    #   "openai" — real chat model via the gateway (prod sets API_LLM_MODEL to the
-    #   cluster LiteLLM's qwen3.8-27b-int4 alias, vLLM — see ArgoCD ai/tenir).
+    #   "openai" — real chat model via the gateway. Prod sets API_LLM_MODEL in ArgoCD
+    #   ai/tenir: the self-hosted qwen3.8-27b-int4 alias, or a Claude alias such as
+    #   anthropic/claude-sonnet-5-5 (any alias containing "claude" gets the Claude
+    #   request shape, api/llm.py).
     cue_backend: str = "off"  # off | stub | openai
     # The chat-model alias sent to the gateway for cue generation. The default
     # matches this repo's local litellm/config.yaml route; prod overrides it via

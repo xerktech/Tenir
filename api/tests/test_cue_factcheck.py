@@ -295,8 +295,13 @@ def test_three_letter_words_count_as_keywords() -> None:
     assert "Ivy role" in passages(page, "Ivy")
 
 
-def test_json_reads_an_object_and_tolerates_junk() -> None:
+def test_json_reads_the_last_object_and_tolerates_junk() -> None:
     assert _json('sure: {"titles": ["A"]} done') == {"titles": ["A"]}
+    # Claude Sonnet, live (QA 2026-10-29): an answer, a self-correction, a second object. The
+    # old greedy match spanned both, failed to parse, and the wrong cue went unchecked.
+    corrected = '{"titles": ["Great Wall"]}\nWait — exact titles only. Corrected:\n{"titles": ["Great Wall of China"]}'
+    assert _json(corrected) == {"titles": ["Great Wall of China"]}
+    assert _json('{"verdict": {"nested": 1}} trailing {broken') == {"verdict": {"nested": 1}}
     assert _json("no json") == {}
     assert _json("{broken") == {}
     assert _json("[1, 2]") == {}

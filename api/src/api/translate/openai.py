@@ -18,6 +18,8 @@ import json
 import logging
 import re
 
+from api.llm import adapt
+
 log = logging.getLogger("api.translate")
 
 # Names the prompt uses for the source language, keyed by the contract's Lang
@@ -89,7 +91,7 @@ class OpenAITranslator:
             # JSON answer (same failure mode as cues, XERK-81); a server that
             # doesn't know the kwarg drops it harmlessly.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
-        return payload
+        return adapt(payload)
 
     @staticmethod
     def _message_content(message: dict) -> str:

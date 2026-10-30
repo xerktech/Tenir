@@ -309,6 +309,31 @@ Decision input:
 - Not measured:
   - The fact check with Claude as its model.
   - Translations.
-  - Cost per session. Replay doesn't record token usage, so use the LiteLLM spend logs.
   - A second run of each config. The Haiku/Sonnet gap is large enough that a rerun is unlikely
     to flip it.
+
+### Cost (2026-10-29, from LiteLLM spend logs)
+
+LiteLLM's `/spend/logs` (admin key) for the replay calls above. LiteLLM prices them at list
+rates: Sonnet 5.5 $2 / $10 per M input / output tokens, Haiku 5.5 $0.10 / $0.50.
+
+| | Sonnet, default | Haiku, default |
+|---|---|---|
+| tokens per call, in / out | ~4,240 / ~56 | ~4,440 / ~181 |
+| $ per call | ~$0.009 | ~$0.0005 |
+| $ per cue | ~$0.16 | ~$0.009 |
+| $ per GOOD cue | ~$0.26 | ~$0.027 |
+| $ per hour of conversation | ~$5.2 | ~$0.30 |
+
+- Both models' runs logged under one model name each, so per-config figures split the total
+  by attempt count.
+- You pay per attempt, not per cue. A call goes out about every 2 s while people talk, and
+  about 94% decline. Input is over 90% of a Sonnet call's cost.
+- Prompt caching (shipped with this section): the fixed cue instructions are now a cached
+  system block.
+  - Measured live through LiteLLM: 2,780 of ~3,300 input tokens served from the cache from
+    the second call on.
+  - That cuts a Sonnet call's cost by about 55%, to an estimated **~$0.07 per cue and
+    ~$2.3 per conversation-hour**.
+- The next lever is fewer attempts (gate on a pause or a sentence end). It trades cue latency
+  for cost and needs its own replay.

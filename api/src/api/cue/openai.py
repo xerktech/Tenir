@@ -25,6 +25,9 @@ cues at 4.5 s mean, and neither a 768 cap nor the self-check pass improved on it
 (scripts/cue_eval/RESULTS-2026-10.md). We still extract the first JSON object defensively, and fall back
 to ``reasoning_content`` if a gateway ever routes the answer there instead.
 
+A Claude alias (``anthropic/claude-sonnet-5-5``) gets the same prompt without the Qwen-only
+fields, with the fixed instructions as a prompt-cached block (``api/llm.py``).
+
 The network call is excluded from coverage — CI runs the deterministic stub and the
 session-level behaviour (rate-limit, dedupe, delivery) is covered against it — but
 the payload builder and response parser below are pure and unit-tested.
@@ -39,6 +42,7 @@ from collections.abc import Sequence
 from api.cue.base import CueGenerator, GeneratedCue, last_json_object
 from api.cue.retrieval.base import Evidence
 from api.cue.tuning import cue_guidance
+from api.llm import adapt, system_content
 
 log = logging.getLogger("api.cue.openai")
 
@@ -288,7 +292,8 @@ class OpenAICueGenerator(CueGenerator):
         # (XERK-120): generous for evidence-covered facts when it did, the tight
         # memory bar when it didn't — so a retrieval outage degrades to the
         # conservative pre-grounding behaviour, never to aggressive guessing.
-        system = _SYSTEM.format(guidance=cue_guidance(grounded=bool(evidence)))
+        fixed = _SYSTEM.format(guidance=cue_guidance(grounded=bool(evidence)))
+        system = ""  # the per-call part: evidence, then the already-surfaced cues
         if evidence:
             lines = []
             for i, item in enumerate(evidence, start=1):
@@ -319,7 +324,7 @@ class OpenAICueGenerator(CueGenerator):
         payload: dict = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": system},
+                {"role": "system", "content": system_content(self._model, fixed, system)},
                 {"role": "user", "content": transcript},
             ],
             # Greedy decoding. A/B on replayed deployment sessions (temperature
@@ -342,7 +347,7 @@ class OpenAICueGenerator(CueGenerator):
         # outcome never depends on the server's own default; a server that
         # doesn't know the kwarg drops it (LiteLLM's drop_params).
         payload["chat_template_kwargs"] = {"enable_thinking": not self._disable_thinking}
-        return payload
+        return adapt(payload)
 
     @staticmethod
     def _message_content(message: dict) -> str:

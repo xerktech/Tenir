@@ -950,3 +950,20 @@ def test_a_dropped_connection_is_waited_out_not_scored_or_timed(replay, monkeypa
                realtime=True)
     assert out["errors"] == 0 and len(out["cues"]) == 1
     assert out["call_ms"] == [100]
+
+
+def test_verify_payload_has_the_claude_request_shape(replay) -> None:
+    # Claude 400s on temperature 0; --verify sent it until QA (2026-10-29) found it.
+    sent: list[dict] = []
+
+    class Client:
+        def post(self, url, json, timeout):
+            sent.append(json)
+            raise RuntimeError("offline")
+
+    cue = replay.GeneratedCue("Wi-Fi 7", "IEEE 802.11be.")
+    for model in ("anthropic/claude-sonnet-5-5", "qwen3.8-27b-int4"):
+        replay.verify_cue(Client(), "http://gw/v1/chat/completions", model, "off", ["A: hi"], [], cue)
+    claude, qwen = sent
+    assert "temperature" not in claude and claude["thinking"] == {"type": "between_tools"}
+    assert qwen["temperature"] == 0.0 and qwen["chat_template_kwargs"] == {"enable_thinking": False}
