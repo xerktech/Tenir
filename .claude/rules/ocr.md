@@ -16,8 +16,9 @@ paths:
 - A busy pool refuses (503) instead of queueing: the api drops stale frames for the newest.
 - `OCR_MAX_PIXELS` (0.5 Mpx) is the memory AND time bound, sized against the pod limit: 4K frames
   OOM-killed a 4 GiB pod (QA). Raise it only with ai/tenir/ocr.yaml's memory limit in ArgoCD.
-- `OCR_MAX_BOXES` (16) is the time bound: it sets DBPostProcess.max_candidates through a private
-  paddlex path, asserted at startup. Without it dense text held a worker up to 184 s (QA).
+- `OCR_MAX_BOXES` (16) is the time bound: `_BoxLimit` wraps the detector's post_op and raises
+  `TooDense` before recognition. Never use DBPostProcess.max_candidates for it: that truncates
+  raw contours BEFORE the size/score filter, so noise used the slots and the caption was lost.
 - Pillow's bomb guard is off (`MAX_IMAGE_PIXELS = None`) because it fired before the 413 check.
 - Pixel size is checked from the header before decode; keep `/health` `async` (a sync one
   queued behind parked slot waiters and missed the probe timeout).

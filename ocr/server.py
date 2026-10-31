@@ -43,9 +43,10 @@ BUSY_TIMEOUT_S = float(os.environ.get("OCR_BUSY_TIMEOUT_S", "5"))
 # 4 GiB pod. 0.5 Mpx is ~3x the largest crop.
 MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", "500000"))
 MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(2 * 1024 * 1024)))
-# Recognition runs once per detected box and is the whole cost, so the box count is what bounds
-# a request's time. A caption crop has a handful of boxes; a dense slide mistaken for a caption
-# box has hundreds, and without this held a worker for up to ~3 minutes (QA, 2026-10-31).
+# Recognition runs once per detected box and is the whole cost; detection is cheap. A caption
+# crop has a handful of boxes (the 24 synthetic ones: under 6); a dense slide mistaken for a
+# caption box has dozens, and recognising them held a worker for up to ~3 minutes (QA). So an
+# image with more boxes than this is refused after detection, before recognition (`too_dense`).
 MAX_BOXES = int(os.environ.get("OCR_MAX_BOXES", "16"))
 MIN_SCORE = 0.5
 # PP-OCR's detector drops whole lines on a tight crop without a black border (XERK-2504).
@@ -73,18 +74,39 @@ def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace
         enable_mkldnn=False,
         cpu_threads=1,
     )
-    # paddleocr does not expose the detector's max_candidates (default 1000); set it on the
-    # post-processor. Private path: a Paddle bump that moves it fails startup here, loudly,
-    # instead of silently dropping the time bound.
-    post = ocr.paddlex_pipeline._pipeline.text_det_model.post_op
-    assert hasattr(post, "max_candidates"), "paddlex moved DBPostProcess.max_candidates"
-    post.max_candidates = MAX_BOXES
+    # Count the boxes the detector KEEPS (after its size/score filter) and stop before
+    # recognition. Not max_candidates: that truncates raw contours before the filter, so noise
+    # used up the slots and the real caption was silently dropped (QA). Private path: a Paddle
+    # bump that moves it fails startup here, loudly, instead of losing the time bound.
+    det = ocr.paddlex_pipeline._pipeline.text_det_model
+    assert callable(getattr(det, "post_op", None)), "paddlex moved text_det_model.post_op"
+    det.post_op = _BoxLimit(det.post_op)
 
     def run(bgr: np.ndarray) -> list[tuple[Any, str, float]]:
         res = ocr.predict(bgr)[0]
         return list(zip(res["rec_polys"], res["rec_texts"], res["rec_scores"], strict=False))
 
     return run
+
+
+class TooDense(Exception):
+    """More text boxes than a caption crop has; raised between detection and recognition."""
+
+
+class _BoxLimit:
+    """Wraps the detector's post-processor: (polys, scores) per image, after filtering."""
+
+    def __init__(self, post) -> None:
+        self._post = post
+
+    def __call__(self, *args, **kwargs):
+        polys, scores = self._post(*args, **kwargs)
+        if any(len(p) > MAX_BOXES for p in polys):
+            raise TooDense
+        return polys, scores
+
+    def __getattr__(self, name):
+        return getattr(self._post, name)
 
 
 def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> list[dict]:
@@ -123,13 +145,16 @@ def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> l
 
 
 def recognise(engine, img: Image.Image) -> tuple[list[dict], bool]:
-    """OCR one image -> (lines, truncated). Boxes are [x0, y0, x1, y1] in the submitted image's
-    pixels. truncated: the detector hit MAX_BOXES, so text was dropped (not a caption crop)."""
+    """OCR one image -> (lines, too_dense). Boxes are [x0, y0, x1, y1] in the submitted image's
+    pixels. too_dense: more than MAX_BOXES text boxes, so nothing was recognised (lines == [])."""
     padded = ImageOps.expand(img.convert("RGB"), border=DETECTOR_MARGIN, fill=(0, 0, 0))
     bgr = np.asarray(padded)[:, :, ::-1]
     m = DETECTOR_MARGIN
     boxes = []
-    raw = engine(bgr)
+    try:
+        raw = engine(bgr)
+    except TooDense:
+        return [], True
     for poly, text, score in raw:
         if not text.strip() or score <= MIN_SCORE:
             continue
@@ -144,7 +169,7 @@ def recognise(engine, img: Image.Image) -> tuple[list[dict], bool]:
                 float(score),
             )
         )
-    return group_lines(boxes), len(raw) >= MAX_BOXES
+    return group_lines(boxes), False
 
 
 def make_executor() -> Executor:
@@ -164,8 +189,8 @@ def _init_worker() -> None:
 
 def _ocr_in_worker(data: bytes) -> dict:
     t0 = time.perf_counter()
-    lines, truncated = recognise(_engine, Image.open(BytesIO(data)))
-    return {"lines": lines, "truncated": truncated, "ms": round((time.perf_counter() - t0) * 1000)}
+    lines, too_dense = recognise(_engine, Image.open(BytesIO(data)))
+    return {"lines": lines, "too_dense": too_dense, "ms": round((time.perf_counter() - t0) * 1000)}
 
 
 _executor: Executor | None = None

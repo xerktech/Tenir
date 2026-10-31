@@ -79,7 +79,7 @@ def test_lines_grouped_in_reading_order_with_unpadded_boxes(make_client):
     assert body["lines"][0]["box"] == [10, 10, 180, 31]
     assert body["lines"][0]["score"] == 0.91
     assert isinstance(body["ms"], int)
-    assert body["truncated"] is False
+    assert body["too_dense"] is False
     # The engine saw the image with the black detector margin on every side (plus the
     # warm-up call on the blank image first).
     assert engine.shapes[-1] == (40 + 2 * M, 200 + 2 * M, 3)
@@ -171,11 +171,25 @@ def test_oversize_pixels_refused_from_the_header(make_client, monkeypatch):
         assert loads == []
 
 
-def test_detector_box_cap_is_reported_as_truncated(make_client, monkeypatch):
+def test_box_limit_counts_kept_boxes_and_stops_before_recognition(monkeypatch):
+    # The wrapper sees the detector's FILTERED output: at the limit it passes, over it raises.
     monkeypatch.setattr(server, "MAX_BOXES", 3)
-    engine = FakeEngine([(_poly(0, 10 * i, 10, 10 * i + 8), f"w{i}", 0.9) for i in range(3)])
-    with make_client(engine) as c:
-        assert c.post("/v1/ocr", content=_png()).json()["truncated"] is True
+    limit = server._BoxLimit(lambda n: ([list(range(n))], [[0.9] * n]))
+    assert limit(3) == ([[0, 1, 2]], [[0.9] * 3])
+    with pytest.raises(server.TooDense):
+        limit(4)
+
+
+def test_too_dense_returns_no_lines(make_client):
+    class Dense(FakeEngine):
+        def __call__(self, bgr):
+            if bgr.shape[0] > 64 + 2 * M:  # let the 64x32 warm-up through
+                raise server.TooDense
+            return []
+
+    with make_client(Dense()) as c:
+        body = c.post("/v1/ocr", content=_png(200, 100)).json()
+    assert body["lines"] == [] and body["too_dense"] is True
 
 
 def test_health_does_not_need_a_worker_thread():

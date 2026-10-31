@@ -10,10 +10,11 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
 - `POST /v1/ocr` — body is the raw image (PNG or JPEG) of the caption-box crop, at most 2 MiB
   and 0.5 Mpx (~3x the largest 1080p-equivalent crop). Whole frames are refused: a 4K frame
   needs ~3.2 GB in one worker.
-  - `200` → `{"lines": [{"text", "score", "box": [x0, y0, x1, y1]}], "truncated", "ms"}`; lines in reading
+  - `200` → `{"lines": [{"text", "score", "box": [x0, y0, x1, y1]}], "too_dense", "ms"}`; lines in reading
     order, `box` in the submitted image's pixels, `score` the line's lowest segment confidence
-    (segments ≤ 0.5 are dropped), `ms` the OCR time. `truncated` is true when the detector hit
-    `OCR_MAX_BOXES` (16) and dropped text: the image was not a caption crop (a dense slide).
+    (segments ≤ 0.5 are dropped), `ms` the OCR time. `too_dense` is true, with no lines,
+    when the detector kept more than `OCR_MAX_BOXES` (16) boxes: not a caption crop (a dense
+    slide, a caption plus a ticker). Results are never partial.
   - `400` not an image or empty · `413` over the byte or pixel cap · `503` every worker busy for
     `OCR_BUSY_TIMEOUT_S` (default 5), still loading, or a worker died.
 - `GET /health` — `200 {"status": "ok", "workers"}` once every engine is loaded, else `503`.
@@ -23,19 +24,19 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
 ## Behaviour worth knowing
 
 - One process per engine (`OCR_WORKERS`, default 4). Paddle holds the GIL while predicting, so
-  4 threads ran at 0.97x of serial; 4 processes ran at 2.6–3.7x through the server (cluster,
+  4 threads ran at 0.97x of serial; 4 processes ran at 2.6–3.6x through the server (cluster,
   2026-10-31, 4–8 clients).
 - A busy pool refuses rather than queues: the caller drops stale frames for the newest.
 - The server pads every image with a 32 px black border before detection; PP-OCR drops whole
   lines from a tight crop without it. Returned boxes have the border subtracted.
-- Memory: ~550 MB per idle engine, ~850–890 MB peak at the pixel cap; the pod peaked at
-  4.06 GiB with 4 worst-case requests at once (5Gi limit).
+- Memory: ~550 MB per idle engine, ~850–890 MB peak at the pixel cap (5Gi pod limit).
 - Time: a real caption crop takes ~1 s. Nothing interrupts a running OCR; the bounds are the
-  pixel cap and `OCR_MAX_BOXES`, because recognition (once per detected box, longer for wider
-  boxes) is the cost. Dense text at the cap took up to 184 s before the box cap and ~18 s with
-  it (4 at once: ~19 s each). The 24 synthetic captions have fewer than 6 boxes each.
-- The box cap keeps the detector's FIRST N contours, not the best N, so a capped result is
-  partial: the api should discard `truncated` results rather than parse them.
+  pixel cap and `OCR_MAX_BOXES`, because recognition (once per detected box) is the cost and
+  detection is cheap. The box count is taken after the detector's own filter and checked before
+  recognition, so an over-limit image costs only detection.
+- Measured (5Gi pod, 2026-10-31): over-limit pages refused in ~0.5 s; the slowest image still
+  under the limit (14 long lines) took ~18 s alone and ~23–24 s with 4 at once. Pod memory
+  stayed ≤ 4.2 GB. Set the api's client timeout above that, e.g. 30 s.
 - Models are baked into the image; no egress at runtime.
 
 Tests: `pip install -r requirements-test.txt && pytest tests` (fake engine, no Paddle).
