@@ -905,3 +905,51 @@ def test_a_pending_stale_sweep_runs_before_the_meeting_row_exists() -> None:
         assert store.get("default", "left-live-by-a-crash").status == "ready"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("gap_s", [1, 2, 5, 8, 12, 30])
+def test_a_reply_said_again_after_someone_else_is_kept_at_any_gap(gap_s: int) -> None:
+    """QA delta D2: Ana "okay", Bo talks for gap_s seconds, Ana "okay" again — at 1 fps,
+    with the box scrolling the first "okay" away at some point."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    out += m.feed([blk("Ana", "okay")], 0)
+    for t in range(1, gap_s + 1):
+        out += m.feed([blk("Ana", "okay"), blk("Bo", "can you hear me")], t * 1000)
+    out += m.feed([blk("Bo", "can you hear me"), blk("Ana", "okay")], (gap_s + 1) * 1000)
+    out += m.feed([blk("Ana", "okay")], (gap_s + 2) * 1000)
+    out += m.flush((gap_s + 20) * 1000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "okay"),
+        ("Bo", "can you hear me"),
+        ("Ana", "okay"),
+    ]
+
+
+def test_an_ocr_miss_of_many_frames_does_not_store_a_line_twice() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Ana", "the release is blocked on review")], t * 1000)
+    for t in range(5, 15):  # OCR loses the line for 10 frames, the next one stays
+        out += m.feed([blk("Bo", "agreed")], t * 1000)
+    out += m.feed([blk("Ana", "the release is blocked on review"), blk("Bo", "agreed")], 15_000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["the release is blocked on review", "agreed"]
+
+
+def test_a_new_sentence_after_another_speaker_does_not_extend_an_old_final() -> None:
+    """QA delta finding 3: "okay" ... Bo ... "okay so lets start the review" is two lines."""
+    m = CaptionMerger(start_ms=0, stable_ms=1000)
+    out = []
+    out += m.feed([blk("Ana", "okay")], 0)
+    out += m.feed([blk("Ana", "okay")], 1000)
+    out += m.feed([blk("Bo", "can you hear me")], 2000)
+    out += m.feed([blk("Bo", "can you hear me")], 3000)
+    out += m.feed([blk("Ana", "okay so lets start the review")], 5000)
+    out += m.flush(9000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "okay"),
+        ("Bo", "can you hear me"),
+        ("Ana", "okay so lets start the review"),
+    ]

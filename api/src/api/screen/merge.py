@@ -10,10 +10,18 @@ pushes older ones out. Each OCR'd crop is a snapshot of that box. A line is **fi
 
 A final line is never stored twice: while it stays on screen it keeps matching its final and
 is skipped; if it grows after it was finalized (the speaker paused mid-line, then went on)
-the stored segment is extended in place (same segment id, so the store upserts it). Saying
-the same thing again is not a duplicate: a final only absorbs a line while it is still on
-screen (seen within ``_GONE_MS``), and absorbs at most one line per snapshot, so a second
-"okay" shown below the first is stored too.
+the stored segment is extended in place (same segment id, so the store upserts it).
+
+Saying the same thing again is not a duplicate. The box only ever adds lines at the bottom,
+so every line carries a creation order, and a snapshot read top to bottom is in that order:
+
+- a line can only be a re-read of a stored final if nothing newer sits above it in the
+  snapshot — Ana's second "okay" under Bo's reply is new, however soon it comes;
+- a final absorbs at most one line per snapshot (two "okay"s on screen are two lines);
+- only the newest line can still grow, so a final is extended only while nothing has been
+  created after it;
+- a final that no snapshot has shown for ``_GONE_MS`` has left the screen; the same words
+  after that are new, which covers a repeat after a silence that cleared the box.
 """
 
 from __future__ import annotations
@@ -33,9 +41,9 @@ _DUPLICATE = 0.88
 # How long a final can still be extended by its line growing.
 _EXTEND_MS = 30_000
 _RECENT_FINALS = 300
-# A final not seen on screen for this long has scrolled away: the same words again are a new
-# line. Long enough to ride out an OCR miss or a dropped frame at the 1 fps meeting cadence.
-_GONE_MS = 8_000
+# A final no snapshot has shown for this long has left the screen. Long, because the order
+# rule does the real work: this only separates a repeat after silence from an OCR miss.
+_GONE_MS = 20_000
 
 
 def _norm(text: str) -> str:
@@ -57,6 +65,7 @@ class _Live:
     first_ms: int
     changed_ms: int
     seen_ms: int
+    order: int  # creation order: lower is older, i.e. higher up the caption box
 
     @property
     def norm(self) -> str:
@@ -69,6 +78,7 @@ class _Final:
     norm: str
     at_ms: int  # when it was finalized or last extended
     seen_ms: int  # when it was last on screen
+    order: int  # its line's creation order
 
 
 class CaptionMerger:
@@ -78,16 +88,18 @@ class CaptionMerger:
         self._live: list[_Live] = []
         self._finals: deque[_Final] = deque(maxlen=_RECENT_FINALS)
         self.last_speaker: str | None = None
+        self._order = 0  # last creation order handed out
 
     def _rel(self, ms: int) -> int:
         return max(0, ms - self.start_ms)
 
     def _on_screen_final(
-        self, speaker: str | None, norm: str, ts: int, absorbed: set[int]
+        self, speaker: str | None, norm: str, ts: int, absorbed: set[int], floor: int
     ) -> _Final | None:
-        """The stored final this re-read of an on-screen line belongs to, if any."""
+        """The stored final this re-read of an on-screen line belongs to, if any.
+        ``floor`` is the newest order matched above this line in the snapshot."""
         for f in reversed(self._finals):
-            if ts - f.seen_ms > _GONE_MS:
+            if f.order < floor or ts - f.seen_ms > _GONE_MS:
                 continue
             if id(f) in absorbed or not _same_speaker(f.segment.speaker, speaker):
                 continue
@@ -101,11 +113,14 @@ class CaptionMerger:
         return None
 
     def _extendable(self, speaker: str | None, norm: str, ts: int) -> _Final | None:
-        for f in reversed(self._finals):
-            if ts - f.at_ms > _EXTEND_MS:
-                break
-            if _same_speaker(f.segment.speaker, speaker) and norm.startswith(f.norm + " "):
-                return f
+        """The final this line is a continuation of: only the newest line of all can grow."""
+        if not self._finals:
+            return None
+        f = self._finals[-1]
+        if f.order != self._order or ts - f.at_ms > _EXTEND_MS:
+            return None
+        if _same_speaker(f.segment.speaker, speaker) and norm.startswith(f.norm + " "):
+            return f
         return None
 
     def _finalize(self, live: _Live, ts: int) -> Segment | None:
@@ -118,7 +133,7 @@ class CaptionMerger:
             lang="en",
             speaker=live.speaker,
         )
-        self._finals.append(_Final(seg, live.norm, ts, live.seen_ms))
+        self._finals.append(_Final(seg, live.norm, ts, live.seen_ms, live.order))
         return seg
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
@@ -126,6 +141,7 @@ class CaptionMerger:
         out: list[Segment] = []
         seen: set[int] = set()
         absorbed: set[int] = set()
+        floor = 0  # newest creation order matched so far, top to bottom
         to_finalize: list[_Live] = []
         last_block = len(blocks) - 1
         for bi, block in enumerate(blocks):
@@ -145,13 +161,17 @@ class CaptionMerger:
                         ext.norm = norm
                         ext.at_ms = ext.seen_ms = ts
                         absorbed.add(id(ext))
+                        floor = max(floor, ext.order)
                         out.append(ext.segment)
                         continue
-                    if self._on_screen_final(speaker, norm, ts, absorbed) is not None:
+                    final = self._on_screen_final(speaker, norm, ts, absorbed, floor)
+                    if final is not None:
+                        floor = max(floor, final.order)
                         continue  # still on screen after it was stored
                     if not block.has_header:
                         speaker = self.last_speaker
-                    live = _Live(speaker, text, ts, ts, ts)
+                    self._order += 1
+                    live = _Live(speaker, text, ts, ts, ts, self._order)
                     self._live.append(live)
                 else:
                     if not block.has_header:
@@ -162,6 +182,7 @@ class CaptionMerger:
                     if live.speaker is None:
                         live.speaker = speaker
                 live.seen_ms = ts
+                floor = max(floor, live.order)
                 seen.add(id(live))
                 if speaker is not None:
                     self.last_speaker = speaker

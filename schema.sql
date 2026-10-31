@@ -204,6 +204,9 @@ CREATE TABLE IF NOT EXISTS participants (
     PRIMARY KEY (conversation_id, name)
 );
 
+-- Additive for databases created before the column existed.
+ALTER TABLE participants ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;
+
 -- Per-org display names for what a tile shows (e.g. an email -> "Kunal"). Applied to tile
 -- names and caption headers before they are stored as speakers. Edited from history (XERK-2507).
 CREATE TABLE IF NOT EXISTS speaker_aliases (

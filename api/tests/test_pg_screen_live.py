@@ -93,3 +93,17 @@ def test_schema_apply_is_idempotent_with_the_new_tables(store) -> None:
 
     apply_boot_schema(store._ensure_pool())
     apply_boot_schema(store._ensure_pool())
+
+
+def test_a_participants_table_without_position_is_migrated(store) -> None:
+    """A database first set up before participants.position existed (QA delta)."""
+    from api.persistence.postgres import apply_boot_schema
+
+    pool = store._ensure_pool()
+    with pool.connection() as conn:
+        conn.execute("ALTER TABLE participants DROP COLUMN position")
+    apply_boot_schema(pool)
+    cid = str(uuid.uuid4())
+    store.create(HH, cid, owner="u1", screen=ScreenMeta("tesoro", "Tesoro", "zoom"))
+    store.add_participants(HH, cid, [("Priya Raman", 0)])
+    assert store.get(HH, cid).participants == ["Priya Raman"]
