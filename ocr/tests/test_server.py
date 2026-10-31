@@ -146,3 +146,25 @@ def test_broken_worker_pool_fails_health(make_client, monkeypatch):
         monkeypatch.setattr(server, "_ocr_in_worker", boom)
         assert c.post("/v1/ocr", content=_png()).status_code == 503
         assert c.get("/health").status_code == 503
+
+
+def test_chunked_body_over_the_byte_cap_is_refused(make_client, monkeypatch):
+    # No Content-Length, so only the streaming cap can catch it.
+    with make_client(FakeEngine()) as c:
+        monkeypatch.setattr(server, "MAX_BYTES", 1000)
+        r = c.post("/v1/ocr", content=iter([b"x" * 600, b"x" * 600]))
+        assert r.status_code == 413
+
+
+def test_oversize_pixels_refused_from_the_header(make_client, monkeypatch):
+    # Over the cap but under Pillow's bomb limit, and far over it: both are 413, not 400.
+    with make_client(FakeEngine()) as c:
+        assert c.post("/v1/ocr", content=_png(2000, 300)).status_code == 413
+        monkeypatch.setattr(server, "MAX_PIXELS", 1000)
+        assert c.post("/v1/ocr", content=_png(200, 40)).status_code == 413
+
+
+def test_health_fails_as_soon_as_the_pool_is_broken(make_client):
+    with make_client(FakeEngine()) as c:
+        server._executor._broken = "a worker died"
+        assert c.get("/health").status_code == 503

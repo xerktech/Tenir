@@ -48,9 +48,12 @@ jobs:
             hadolint --failure-threshold error - < ocr/Dockerfile
       - name: Build
         run: docker build -f ocr/Dockerfile -t tenir-ocr:ci .
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Smoke
         run: |
           docker run -d --name ocr -p 8000:8000 -e OCR_WORKERS=2 tenir-ocr:ci
-          for i in $(seq 1 60); do curl -sf localhost:8000/health && break; sleep 2; done
+          for _ in $(seq 1 60); do curl -sf localhost:8000/health && break; sleep 2; done
           pip install pillow
           python ocr/smoke.py http://127.0.0.1:8000 || { docker logs ocr; exit 1; }

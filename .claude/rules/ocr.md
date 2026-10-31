@@ -14,4 +14,8 @@ paths:
 - Models are baked into the image under `PADDLE_PDX_CACHE_HOME`; paddlex writes locks there at
   runtime, so the runtime uid must own it.
 - A busy pool refuses (503) instead of queueing: the api drops stale frames for the newest.
+- `OCR_MAX_PIXELS` (0.5 Mpx) is the memory AND time bound, sized against the pod limit: 4K frames
+  OOM-killed a 4 GiB pod (QA). Raise it only with ai/tenir/ocr.yaml's memory limit in ArgoCD.
+- Pixel size is checked from the header before decode; keep `/health` `async` (a sync one
+  queued behind parked slot waiters and missed the probe timeout).
 - The api depends on the contract in `ocr/README.md`; change both in one PR.

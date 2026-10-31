@@ -4,4 +4,8 @@ paddlepaddle==3.3.1
 paddleocr==3.7.0
 fastapi==0.120.4
 uvicorn[standard]==0.38.0
-# pillow and numpy come in through paddleocr/paddlex, which pin their own ranges.
+# Transitive deps pinned too, so the unit tests and the image run the same Pillow/numpy.
+paddlex==3.7.2
+opencv-contrib-python==4.10.0.84
+pillow==13.0.0
+numpy==2.3.5

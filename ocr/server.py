@@ -27,23 +27,28 @@ from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 log = logging.getLogger("tenir-ocr")
 
 WORKERS = int(os.environ.get("OCR_WORKERS", "4"))
 BUSY_TIMEOUT_S = float(os.environ.get("OCR_BUSY_TIMEOUT_S", "5"))
-# A 1080p-equivalent caption crop is a few hundred KB as PNG; 8 MiB allows a full frame.
-MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(8 * 1024 * 1024)))
-# Larger than any window we capture; refuses decompression bombs before decoding them.
-MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", str(4096 * 4096)))
+# This service takes caption-box CROPS, never whole frames: at 1080p-equivalent a crop is at most
+# ~1025 x 145 px (0.15 Mpx, XERK-2504). Pixels set both memory and time, so the cap is sized from
+# the Deployment's budget, not from a screen: a worker peaks at ~0.5 GB on a 900x100 crop but
+# 1.2 GB on a 1080p frame and 3.2 GB on 4K (QA, 2026-10-31), and two 4K frames OOM-killed a
+# 4 GiB pod. 0.5 Mpx is ~3x the largest crop.
+MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", "500000"))
+MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(2 * 1024 * 1024)))
 MIN_SCORE = 0.5
 # PP-OCR's detector drops whole lines on a tight crop without a black border (XERK-2504).
 DETECTOR_MARGIN = 32
 
-Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+# Size is checked from the header before decoding (_decode); this is Pillow's own backstop.
+Image.MAX_IMAGE_PIXELS = 4 * MAX_PIXELS
 
 
 def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace it
@@ -177,45 +182,57 @@ app = FastAPI(title="tenir-ocr", lifespan=lifespan)
 
 
 @app.get("/health")
-def health():
-    if _executor is None:
+async def health():
+    # async: a sync handler would wait for an anyio worker thread, and under a burst those are
+    # all parked in _slots.acquire, which stalled /health past the probe timeout (QA).
+    # _broken is set as soon as any worker process dies, before a request notices.
+    if _executor is None or getattr(_executor, "_broken", False):
         return JSONResponse({"status": "unavailable"}, status_code=503)
     return {"status": "ok", "workers": WORKERS}
 
 
-def _decode(body: bytes) -> Image.Image:
+def _decode(body: bytes) -> None:
+    """Validate the image: 413 on size from the header alone, 400 if it does not decode."""
     try:
         img = Image.open(BytesIO(body))
-        img.load()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise HTTPException(400, f"not a decodable image: {type(e).__name__}") from e
     if img.width * img.height > MAX_PIXELS:
-        raise HTTPException(413, "image too large")
-    return img
+        raise HTTPException(413, f"image over {MAX_PIXELS} pixels; send the caption crop")
+    try:
+        img.load()
+    except (OSError, Image.DecompressionBombError) as e:
+        raise HTTPException(400, f"not a decodable image: {type(e).__name__}") from e
 
 
 @app.post("/v1/ocr")
 async def ocr(request: Request):
     """Body: the raw image bytes (PNG or JPEG). Returns ``{"lines": [...], "ms": n}``."""
     global _executor
-    if _executor is None:
+    ex = _executor
+    if ex is None:
         raise HTTPException(503, "unavailable")
     length = request.headers.get("content-length")
     if length is not None and length.isdigit() and int(length) > MAX_BYTES:
         raise HTTPException(413, "image too large")
     body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > MAX_BYTES:
-            raise HTTPException(413, "image too large")
+    try:
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_BYTES:
+                raise HTTPException(413, "image too large")
+    except ClientDisconnect:
+        return Response(status_code=499)  # nobody to answer; skip the traceback per disconnect
     if not body:
         raise HTTPException(400, "empty body")
     data = bytes(body)
-    _decode(data)  # validate here, so a bad image never reaches (or crashes) a worker
+    # On a thread: decoding even a capped image should not stall the event loop. Validated here
+    # so a bad image never reaches (or crashes) a worker.
+    await run_in_threadpool(_decode, data)
     if not await run_in_threadpool(_slots.acquire, True, BUSY_TIMEOUT_S):
         raise HTTPException(503, "all OCR workers busy")
     try:
-        return await asyncio.wrap_future(_executor.submit(_ocr_in_worker, data))
+        return await asyncio.wrap_future(ex.submit(_ocr_in_worker, data))
     except BrokenExecutor:
         # A worker died (OOM, native crash). Fail /health so the liveness probe restarts the pod.
         log.exception("OCR worker pool broken")
