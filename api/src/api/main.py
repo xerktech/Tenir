@@ -60,6 +60,8 @@ from api.persistence.postgres import (
 )
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
+from api.screen import meetings as screen_meetings
+from api.screen.ws import router as screen_router
 from api.session import (
     RecordingGone,
     Sender,
@@ -235,7 +237,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from api.cue.rss import ingest_loop
 
         rss_task = asyncio.create_task(ingest_loop())
+    # Screen meetings end after a stretch with no captions (XERK-2505); the sweep closes
+    # them even when the capture client has gone quiet or disconnected.
+    screen_task = asyncio.create_task(screen_meetings.sweep_loop())
     yield
+    screen_task.cancel()
+    try:
+        await asyncio.wait_for(screen_meetings.meetings.close_all(), _SHUTDOWN_FINALIZE_S)
+    except Exception:
+        log.exception("could not finish open screen meetings on shutdown")
     if stale_task is not None:
         stale_task.cancel()
     if rss_task is not None:
@@ -430,6 +440,7 @@ app.add_middleware(ShutdownCancelMiddleware)
 
 app.include_router(auth_router)
 app.include_router(history_router)
+app.include_router(screen_router)
 
 
 @app.get("/health")

@@ -24,8 +24,10 @@ from api.persistence.models import (
     ConversationStatus,
     ConversationSummary,
     Cue,
+    ScreenMeta,
     Segment,
     Song,
+    alias_key,
     utcnow,
 )
 
@@ -39,7 +41,11 @@ class ConversationStore(Protocol):
         owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
-    ) -> Conversation: ...
+        screen: ScreenMeta | None = None,
+    ) -> Conversation:
+        """Create (or reopen) the row. ``screen`` makes it a screen-captured meeting
+        (``source='screen'`` plus its org and platform, XERK-2505)."""
+        ...
     def reopen(self, household: str, conversation_id: str) -> Conversation | None:
         """Mark an existing recording live again for a cold resume; None when it is gone.
 
@@ -51,6 +57,16 @@ class ConversationStore(Protocol):
         self, household: str, conversation_id: str, segment_id: str, translation: str
     ) -> None: ...
     def add_cue(self, household: str, conversation_id: str, cue: Cue) -> None: ...
+    def set_meeting_title(self, household: str, conversation_id: str, title: str) -> None: ...
+    def add_participants(
+        self, household: str, conversation_id: str, names: list[tuple[str, int]]
+    ) -> None:
+        """Record ``(name, first_seen_ms)`` tile names; a name already recorded is kept."""
+        ...
+    def speaker_aliases(self, household: str, org_site_key: str) -> dict[str, str]:
+        """``alias_key(alias) -> display name`` for one org's speakers."""
+        ...
+    def set_speaker_alias(self, household: str, org_site_key: str, alias: str, name: str) -> None: ...
     def add_song(self, household: str, conversation_id: str, song: Song) -> None: ...
     def finish(
         self,
@@ -97,6 +113,7 @@ class InMemoryConversationStore:
 
     def __init__(self) -> None:
         self._by_household: dict[str, dict[str, Conversation]] = {}
+        self._aliases: dict[tuple[str, str], dict[str, str]] = {}
         self._lock = threading.Lock()
 
     def _conversations(self, household: str) -> dict[str, Conversation]:
@@ -110,6 +127,7 @@ class InMemoryConversationStore:
         owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
+        screen: ScreenMeta | None = None,
     ) -> Conversation:
         with self._lock:
             convs = self._conversations(household)
@@ -132,6 +150,11 @@ class InMemoryConversationStore:
                 mic_source=mic_source,
                 source_lang=source_lang,
             )
+            if screen is not None:
+                conv.source = "screen"
+                conv.org_site_key = screen.org_site_key
+                conv.org_name = screen.org_name
+                conv.platform = screen.platform
             conv.opened_at = conv.started_at
             convs[conversation_id] = conv
             return copy.deepcopy(conv)
@@ -185,6 +208,31 @@ class InMemoryConversationStore:
                     conv.cues[i] = cue
                     return
             conv.cues.append(cue)
+
+    def set_meeting_title(self, household: str, conversation_id: str, title: str) -> None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is not None:
+                conv.meeting_title = title
+
+    def add_participants(
+        self, household: str, conversation_id: str, names: list[tuple[str, int]]
+    ) -> None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is None:
+                return
+            for name, _first_seen_ms in names:
+                if name not in conv.participants:
+                    conv.participants.append(name)
+
+    def speaker_aliases(self, household: str, org_site_key: str) -> dict[str, str]:
+        with self._lock:
+            return dict(self._aliases.get((household, org_site_key), {}))
+
+    def set_speaker_alias(self, household: str, org_site_key: str, alias: str, name: str) -> None:
+        with self._lock:
+            self._aliases.setdefault((household, org_site_key), {})[alias_key(alias)] = name
 
     def add_song(self, household: str, conversation_id: str, song: Song) -> None:
         with self._lock:

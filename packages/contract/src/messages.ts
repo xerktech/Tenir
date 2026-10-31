@@ -8,7 +8,7 @@
 /**
  * Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.
  */
-export type TenirWsMessages = ClientMessage | ServerMessage;
+export type TenirWsMessages = ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence;
 export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
@@ -248,4 +248,46 @@ export interface ErrorMessage {
   code: "bad_request" | "unauthorized" | "session_not_found" | "rate_limited" | "internal" | "resumed_elsewhere";
   message: string;
   fatal?: boolean;
+}
+/**
+ * Client -> server on /ws/screen (XERK-2505), not /ws. Every binary frame is a 4-byte big-endian header length, this header as UTF-8 JSON, then the JPEG bytes. The image is never stored; only the text read off it is. The socket also takes ping (answered with pong) and replies error.
+ */
+export interface ScreenFrameHeader {
+  type: "screen.frame";
+  /**
+   * Title of the captured window.
+   */
+  windowTitle: string;
+  /**
+   * Turma site key of the org this window belongs to; one meeting at a time per site key.
+   */
+  orgSiteKey: string;
+  orgName: string;
+  /**
+   * Meeting app in the window. Only Zoom is parsed so far.
+   */
+  platform: "zoom";
+  /**
+   * Capture time (ms epoch).
+   */
+  ts: number;
+  /**
+   * caption: the caption-box crop, sent at the cadence's fps and only while a caption is on screen. full: the whole window (participant tiles, active-speaker border, meeting title), sent every fullFrameSeconds and right before the first caption crop after none.
+   */
+  region: "caption" | "full";
+}
+/**
+ * Server -> client on /ws/screen (XERK-2505). How often to send frames. Without orgSiteKey it is the default for every window (sent on connect); with it, it overrides that one window (sent when its meeting starts or ends).
+ */
+export interface ScreenCadence {
+  type: "screen.cadence";
+  orgSiteKey?: string;
+  /**
+   * Caption-crop frames per second: ~0.2 idle, 1 in a meeting.
+   */
+  fps: number;
+  /**
+   * Seconds between full window frames.
+   */
+  fullFrameSeconds: number;
 }

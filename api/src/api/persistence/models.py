@@ -14,6 +14,8 @@ from typing import Literal
 
 # live: session in progress · ready: finished and persisted.
 ConversationStatus = Literal["live", "ready"]
+# mic: a live audio session · screen: a meeting read off captured screen captions (XERK-2505).
+ConversationSource = Literal["mic", "screen"]
 
 
 def coerce_status(value: object, *, ended: bool = False) -> ConversationStatus:
@@ -36,6 +38,21 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class ScreenMeta:
+    """Where a screen-captured meeting was read from (XERK-2505): the org the capture client
+    maps the window to (Turma site key + display name) and the meeting platform."""
+
+    org_site_key: str
+    org_name: str
+    platform: str
+
+
+def alias_key(name: str) -> str:
+    """The lookup form of a speaker alias: case- and surrounding-space-insensitive."""
+    return " ".join(name.split()).casefold()
+
+
 @dataclass
 class Segment:
     """One finalized transcript turn (mirrors the ``caption.final`` contract)."""
@@ -48,6 +65,9 @@ class Segment:
     # English translation of a non-English turn (XERK-160). None for English
     # turns, with translations off, and on rows written before the feature.
     translation: str | None = None
+    # Who said it, on a screen-captured meeting (XERK-2505): the caption header, accepted only
+    # when it matches a participant tile name. None on mic conversations and unknown speakers.
+    speaker: str | None = None
 
 
 @dataclass
@@ -106,6 +126,14 @@ class ConversationSummary:
     ended_at: datetime | None = None
     status: ConversationStatus = "live"
     audio_key: str | None = None
+    source: ConversationSource = "mic"
+    # Screen meetings only (XERK-2505): the Turma site key and display name of the org whose
+    # window the meeting was read from, the meeting platform ("zoom"), and the meeting title
+    # when OCR could read one. None on mic conversations.
+    org_site_key: str | None = None
+    org_name: str | None = None
+    platform: str | None = None
+    meeting_title: str | None = None
     segment_count: int = 0
     duration_ms: int = 0
 
@@ -131,6 +159,16 @@ class Conversation:
     # When the latest sitting opened (or reopened) the row: that sitting's token for
     # finish(), and the stale sweep's floor for a resumed recording's ended_at.
     opened_at: datetime | None = None
+    source: ConversationSource = "mic"
+    # Screen meetings only (XERK-2505): the Turma site key and display name of the org whose
+    # window the meeting was read from, the meeting platform ("zoom"), and the meeting title
+    # when OCR could read one. None on mic conversations.
+    org_site_key: str | None = None
+    org_name: str | None = None
+    platform: str | None = None
+    meeting_title: str | None = None
+    # Participant names read off the meeting's video tiles, in first-seen order (screen only).
+    participants: list[str] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
     cues: list[Cue] = field(default_factory=list)
     songs: list[Song] = field(default_factory=list)
@@ -158,6 +196,11 @@ class Conversation:
             ended_at=self.ended_at,
             status=self.status,
             audio_key=self.audio_key,
+            source=self.source,
+            org_site_key=self.org_site_key,
+            org_name=self.org_name,
+            platform=self.platform,
+            meeting_title=self.meeting_title,
             segment_count=len(self.segments),
             duration_ms=self.duration_ms,
         )

@@ -56,6 +56,9 @@ class Principal:
     email: str | None = None  # email from the token (link key + stored, per T4)
     email_verified: bool = False  # the token's verified flag — T4's hard link guard
     groups: tuple[str, ...] = ()  # raw groups (role already derived; kept for audit)
+    # A device token's scope (XERK-2505): "screen" authenticates only /ws/screen and is
+    # refused everywhere else. None on a normal login token.
+    scope: str | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -127,6 +130,8 @@ def issue_token(
         "iat": issued,
         "exp": issued + ttl_seconds,
     }
+    if principal.scope is not None:
+        claims["scp"] = principal.scope
     payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
     return f"{payload_b64}.{_sign(payload_b64, secret)}"
 
@@ -155,6 +160,7 @@ def _principal_of(claims: dict) -> Principal:
         household=str(claims.get("hh", "")),
         role="admin" if role == "admin" else "member",
         username=str(claims.get("un", "")),
+        scope=str(claims["scp"]) if claims.get("scp") is not None else None,
     )
 
 
@@ -183,6 +189,10 @@ def renew_token_if_due(
     try:
         claims = _decode_claims(token, secret=secret, now=ts)
     except AuthError:
+        return None
+    if claims.get("scp") is not None:
+        # A device token never slides: renewing it here would also mint it into a
+        # full-access login token, since the renewal path is the REST middleware.
         return None
     iat, exp = claims.get("iat"), claims.get("exp", 0)
     if isinstance(iat, (int, float)) and exp > iat:

@@ -144,6 +144,65 @@ window stops delivering frames because DWM stops rendering it. RDM draws only th
 with the Dashboard in front the session isn't drawn; its window title may also change and then
 match nothing, which the probe reports as "no visible window matches".
 
+## Screen ingest in the api (XERK-2505)
+
+The capture client (XERK-2506) streams to `/ws/screen`; the api OCRs, parses and stores. Code in
+`api/src/api/screen/`, contract in `contract/ws-messages.schema.json` (`ScreenFrameHeader`,
+`ScreenCadence`).
+
+**Wire format: hybrid.** The spike sends only caption-box crops, but speaker validation needs
+the tile names and the active-speaker border, which are outside the crop. So frames carry
+`region`:
+
+- `caption`: the caption-box crop, at the cadence's `fps`, only while a caption is on screen.
+- `full`: the whole window, every `fullFrameSeconds` and right before the first caption crop
+  after none. Read for participant names, the green border and the meeting title.
+
+OCR cost stays near the spike's sizing: full frames are one in ~10 at the meeting cadence.
+
+**Frames.** Binary: 4-byte big-endian header length, `ScreenFrameHeader` JSON
+(`windowTitle`, `orgSiteKey`, `orgName`, `platform`, `ts`, `region`), then the JPEG. Frames
+are held in memory only; nothing but derived text is stored. Per window and region only the
+newest frame waits for OCR; a newer one replaces it (`screen.frames_dropped`).
+
+**Cadence.** On connect the server sends the idle default (`API_SCREEN_IDLE_FPS`, 0.2); when a
+window's meeting starts it sends that window `API_SCREEN_MEETING_FPS` (1), and the idle rate
+again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (10).
+
+**Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a
+`screen`-scoped token for the caller (`API_AUTH_DEVICE_TOKEN_TTL_SECONDS`, 365 days). It opens
+only `/ws/screen`, is refused on every other route, never slides, and dies with the user.
+Meetings it records are owned by that user. Login and OIDC tokens can't open `/ws/screen`.
+
+**tenir-ocr API** (what XERK-2512 deploys): `POST {API_OCR_URL}/v1/ocr`, body the JPEG
+(`Content-Type: image/jpeg`), answer
+`{"width", "height", "lines": [{"text", "box": [x0, y0, x1, y1], "score"}]}` in image pixels.
+The service owns the engine details (the crop border PP-OCR's detector needs, oneDNN off).
+Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
+
+**Zoom parser** (`zoom.py`):
+
+- Participants: name-shaped lines (capitalised, ≤5 tokens, or an email) on the tiles, minus
+  the title band, toolbar and caption box; `(Host)`-style suffixes dropped.
+- Active speaker: the tile label with Zoom-green border pixels around its bottom-left corner;
+  none when two tiles qualify. Used to break ties between near-equal roster matches and
+  counted when it disagrees with the caption header (`screen.speaker_border_mismatch`).
+- Caption blocks: a header is a line (or a `Name:` prefix) matching a roster name, exact or
+  fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
+  a name-shaped line followed by text is a header with no speaker.
+- Speaker aliases (`speaker_aliases`, per org) rename tile names, e.g. an email to a first name.
+
+**Merge** (`merge.py`): a line is final when another speaker's block follows it, when unchanged
+for `API_SCREEN_LINE_STABLE_SECONDS` (3), or at meeting end. A line still on screen after it
+was stored matches the recent finals and is skipped; one that grows after it was stored
+extends the same segment (upsert by segment id).
+
+**Meetings** (`meetings.py`): one per (user, `orgSiteKey`), kept in the process across
+reconnects. Starts when captions first appear, ends `API_SCREEN_MEETING_END_SECONDS` (180) after
+the last one (a 5 s sweep), and becomes a `ready` conversation with `source='screen'`,
+`org_site_key`, `org_name`, `platform`, `meeting_title`, `participants` and `segments.speaker`.
+A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
+
 ## Caveats
 
 - **Synthetic frames, not the operator's screenshot.** The screenshot was not reachable from the

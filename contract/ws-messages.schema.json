@@ -7,7 +7,9 @@
   "type": "object",
   "oneOf": [
     { "$ref": "#/$defs/ClientMessage" },
-    { "$ref": "#/$defs/ServerMessage" }
+    { "$ref": "#/$defs/ServerMessage" },
+    { "$ref": "#/$defs/ScreenFrameHeader" },
+    { "$ref": "#/$defs/ScreenCadence" }
   ],
 
   "$defs": {
@@ -323,6 +325,62 @@
         { "$ref": "#/$defs/Pong" },
         { "$ref": "#/$defs/ErrorMessage" }
       ]
+    },
+
+    "ScreenFrameHeader": {
+      "title": "ScreenFrameHeader",
+      "description": "Client -> server on /ws/screen (XERK-2505), not /ws. Every binary frame is a 4-byte big-endian header length, this header as UTF-8 JSON, then the JPEG bytes. The image is never stored; only the text read off it is. The socket also takes ping (answered with pong) and replies error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "windowTitle", "orgSiteKey", "orgName", "platform", "ts", "region"],
+      "properties": {
+        "type": { "const": "screen.frame" },
+        "windowTitle": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Title of the captured window."
+        },
+        "orgSiteKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Turma site key of the org this window belongs to; one meeting at a time per site key."
+        },
+        "orgName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "platform": {
+          "type": "string",
+          "enum": ["zoom"],
+          "description": "Meeting app in the window. Only Zoom is parsed so far."
+        },
+        "ts": { "type": "integer", "description": "Capture time (ms epoch)." },
+        "region": {
+          "type": "string",
+          "enum": ["caption", "full"],
+          "description": "caption: the caption-box crop, sent at the cadence's fps and only while a caption is on screen. full: the whole window (participant tiles, active-speaker border, meeting title), sent every fullFrameSeconds and right before the first caption crop after none."
+        }
+      }
+    },
+
+    "ScreenCadence": {
+      "title": "ScreenCadence",
+      "description": "Server -> client on /ws/screen (XERK-2505). How often to send frames. Without orgSiteKey it is the default for every window (sent on connect); with it, it overrides that one window (sent when its meeting starts or ends).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "fps", "fullFrameSeconds"],
+      "properties": {
+        "type": { "const": "screen.cadence" },
+        "orgSiteKey": { "type": "string" },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Caption-crop frames per second: ~0.2 idle, 1 in a meeting."
+        },
+        "fullFrameSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Seconds between full window frames."
+        }
+      }
     }
   }
 }

@@ -24,6 +24,9 @@ dependencies = [
     # Silero VAD (XERK-1819): finds pauses in rooms too loud for the energy gate.
     # CPU-only runtime for the bundled api/stt/silero_vad.onnx.
     "onnxruntime>=1.17",
+    # Screen-meeting captions (XERK-2505): decodes full window frames to find Zoom's green
+    # active-speaker border. The OCR itself runs in the tenir-ocr service.
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

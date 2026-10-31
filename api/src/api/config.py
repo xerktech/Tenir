@@ -382,6 +382,10 @@ class Settings(BaseSettings):
     # the clients adopt — so this is effectively the max *idle* time before a device
     # is asked to log in again, not a hard re-login cadence.
     auth_token_ttl_seconds: int = 2_592_000  # 30 days
+    # Lifetime of a screen-capture device token (XERK-2505, POST /auth/device-token). It
+    # authenticates only /ws/screen and never slides, so it is a hard expiry: re-mint it.
+    # Deleting the user revokes it at once (every connect re-checks the account).
+    auth_device_token_ttl_seconds: int = 31_536_000  # 365 days
     # Grace window a dropped session stays resumable: a reconnect carrying the same
     # sessionId rebinds to the live session instead of starting a fresh one.
     # 0 disables resume.
@@ -521,6 +525,14 @@ class Settings(BaseSettings):
     # a green "ready" with an empty component list, having probed nothing.
     @field_validator(
         "auth_token_ttl_seconds",
+        "auth_device_token_ttl_seconds",
+        "screen_idle_fps",
+        "screen_meeting_fps",
+        "screen_full_frame_seconds",
+        "screen_line_stable_seconds",
+        "screen_meeting_end_seconds",
+        "screen_max_frame_bytes",
+        "ocr_timeout_seconds",
         "stt_partial_interval_ms",
         "stt_max_segment_ms",
         "stt_silence_ms",
@@ -545,6 +557,24 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(f"session_resume_grace_seconds must be 0 or more (got {value})")
         return value
+
+    # ---- Screen-captured meeting captions (XERK-2505, docs/meeting-captions.md) -----
+    # Base URL of the tenir-ocr service (`POST {url}/v1/ocr`). Empty turns /ws/screen off:
+    # connections are accepted and closed 1013 with "ocr not configured".
+    ocr_url: str = ""
+    ocr_timeout_seconds: float = 10.0
+    # Frame cadence the server asks the capture client for, per window: idle (no meeting)
+    # vs during a meeting, plus how often a full window frame (participant tiles, active
+    # speaker border, title) is sent alongside the caption-box crops.
+    screen_idle_fps: float = 0.2
+    screen_meeting_fps: float = 1.0
+    screen_full_frame_seconds: float = 10.0
+    # A caption line is final once unchanged this long (or once another speaker's block
+    # follows it); a meeting ends after this long with no caption on screen.
+    screen_line_stable_seconds: float = 3.0
+    screen_meeting_end_seconds: float = 180.0
+    # Largest accepted binary frame (header + JPEG); bigger frames are refused.
+    screen_max_frame_bytes: int = 4_000_000
 
     @property
     def cors_origin_list(self) -> list[str]:
