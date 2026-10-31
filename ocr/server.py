@@ -78,9 +78,7 @@ def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace
     # recognition. Not max_candidates: that truncates raw contours before the filter, so noise
     # used up the slots and the real caption was silently dropped (QA). Private path: a Paddle
     # bump that moves it fails startup here, loudly, instead of losing the time bound.
-    det = ocr.paddlex_pipeline._pipeline.text_det_model
-    assert callable(getattr(det, "post_op", None)), "paddlex moved text_det_model.post_op"
-    det.post_op = _BoxLimit(det.post_op)
+    limit_boxes(ocr.paddlex_pipeline._pipeline)
 
     def run(bgr: np.ndarray) -> list[tuple[Any, str, float]]:
         res = ocr.predict(bgr)[0]
@@ -107,6 +105,14 @@ class _BoxLimit:
 
     def __getattr__(self, name):
         return getattr(self._post, name)
+
+
+def limit_boxes(pipeline) -> None:
+    """Install _BoxLimit on a paddlex OCR pipeline's detector (idempotent)."""
+    det = pipeline.text_det_model
+    assert callable(getattr(det, "post_op", None)), "paddlex moved text_det_model.post_op"
+    if not isinstance(det.post_op, _BoxLimit):
+        det.post_op = _BoxLimit(det.post_op)
 
 
 def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> list[dict]:

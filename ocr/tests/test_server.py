@@ -204,3 +204,31 @@ def test_health_fails_as_soon_as_the_pool_is_broken(make_client):
     with make_client(FakeEngine()) as c:
         server._executor._broken = "a worker died"
         assert c.get("/health").status_code == 503
+
+
+def test_exactly_max_boxes_is_recognised_not_refused(monkeypatch):
+    monkeypatch.setattr(server, "MAX_BOXES", 3)
+    engine = FakeEngine([(_poly(0, 20 * i, 50, 20 * i + 15), f"line{i}", 0.9) for i in range(3)])
+    lines, too_dense = server.recognise(engine, Image.new("RGB", (100, 80)))
+    assert too_dense is False and [ln["text"] for ln in lines] == ["line0", "line1", "line2"]
+
+
+def test_limit_boxes_wraps_the_detector_once():
+    class Det:
+        def post_op(self, *a):
+            return [[1, 2]], [[0.9, 0.9]]
+
+    class Pipeline:
+        text_det_model = Det()
+
+    p = Pipeline()
+    server.limit_boxes(p)
+    server.limit_boxes(p)
+    assert isinstance(p.text_det_model.post_op, server._BoxLimit)
+    assert not isinstance(p.text_det_model.post_op._post, server._BoxLimit)
+
+    class Moved:
+        text_det_model = object()
+
+    with pytest.raises(AssertionError):
+        server.limit_boxes(Moved())

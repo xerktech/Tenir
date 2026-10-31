@@ -35,8 +35,9 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
   detection is cheap. The box count is taken after the detector's own filter and checked before
   recognition, so an over-limit image costs only detection.
 - Measured (5Gi pod, 2026-10-31): over-limit pages refused in ~0.5 s; the slowest image still
-  under the limit (14 long lines) took ~18 s alone and ~23–24 s with 4 at once. Pod memory
-  stayed ≤ 4.2 GB. Set the api's client timeout above that, e.g. 30 s.
+  under the limit (1200x416, 16 full-width lines) took ~23 s alone and ~26 s with 4 at once.
+  Pod memory peaked at ~4.35 GB. Recognition caps each box at 3200 px wide, so 16 boxes is a
+  real ceiling. Set the api's client timeout well above it: 45 s.
 - Models are baked into the image; no egress at runtime.
 
 Tests: `pip install -r requirements-test.txt && pytest tests` (fake engine, no Paddle).
