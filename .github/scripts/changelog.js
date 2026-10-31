@@ -18,17 +18,19 @@
 const COMPONENT_HEADING = {
   api: "API",
   "parakeet-stt": "Parakeet STT",
+  ocr: "OCR",
   mobile: "Mobile",
 };
-const HEADING_ORDER = ["API", "Parakeet STT", "Mobile", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "OCR", "Mobile", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
   api: "API (image, incl. web UI)",
   "parakeet-stt": "Parakeet STT (image)",
+  ocr: "OCR (image)",
   mobile: "Android (.apk)",
 };
-const TABLE_ORDER = ["api", "parakeet-stt", "mobile"];
+const TABLE_ORDER = ["api", "parakeet-stt", "ocr", "mobile"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.
@@ -126,7 +128,7 @@ function renderComponentTable(manifest) {
 const INSTALL_DETAILS = [
   "<details><summary>Install / deploy</summary>",
   "",
-  "- **Images** (`API` — which serves the web UI — and `Parakeet STT`): pulled from GHCR",
+  "- **Images** (`API` — which serves the web UI —, `Parakeet STT` and `OCR`): pulled from GHCR",
   "  by the Docker Compose stack. `:latest` tracks main; pin a build with the",
   "  `ghcr.io/...` ref in the table above.",
   "- **Android** (`.apk`): download below and install (enable \"install unknown apps\").",

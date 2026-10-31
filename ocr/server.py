@@ -1,0 +1,225 @@
+"""tenir-ocr: caption OCR for meeting captions (epic XERK-2503, service XERK-2512).
+
+The capture client on the operator's PC crops each meeting window down to the caption box
+(docs/meeting-captions.md) and the api forwards that crop here. This service runs PaddleOCR
+PP-OCRv5 mobile on CPU and returns the caption lines in reading order. It knows nothing about
+Zoom, Teams or speakers: parsing ``Name: text`` and merging rolling captions is the api's job.
+
+Concurrency: ``OCR_WORKERS`` engine processes, one request per engine at a time. A single
+caption crop does not get faster with more threads (measured, XERK-2504), so throughput comes
+from running one crop per core. When every engine is busy a request waits up to
+``OCR_BUSY_TIMEOUT_S`` and then gets 503: the caller drops stale frames and sends the newest,
+so queueing old ones here would only add latency.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import multiprocessing as mp
+import os
+import threading
+import time
+from concurrent.futures import BrokenExecutor, Executor, ProcessPoolExecutor
+from contextlib import asynccontextmanager
+from io import BytesIO
+from typing import Any
+
+import numpy as np
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from PIL import Image, ImageOps, UnidentifiedImageError
+from starlette.concurrency import run_in_threadpool
+
+log = logging.getLogger("tenir-ocr")
+
+WORKERS = int(os.environ.get("OCR_WORKERS", "4"))
+BUSY_TIMEOUT_S = float(os.environ.get("OCR_BUSY_TIMEOUT_S", "5"))
+# A 1080p-equivalent caption crop is a few hundred KB as PNG; 8 MiB allows a full frame.
+MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(8 * 1024 * 1024)))
+# Larger than any window we capture; refuses decompression bombs before decoding them.
+MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", str(4096 * 4096)))
+MIN_SCORE = 0.5
+# PP-OCR's detector drops whole lines on a tight crop without a black border (XERK-2504).
+DETECTOR_MARGIN = 32
+
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+
+def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace it
+    """One PaddleOCR PP-OCRv5 mobile pipeline, CPU, single-threaded."""
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+    from paddleocr import PaddleOCR
+
+    ocr = PaddleOCR(
+        text_detection_model_name="PP-OCRv5_mobile_det",
+        text_recognition_model_name="en_PP-OCRv5_mobile_rec",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        device="cpu",
+        # oneDNN is Paddle's fast CPU path, but 3.3.1 (latest as of 2026-10-31) still fails
+        # startup with ConvertPirAttribute2RuntimeAttribute when it is on (XERK-2504, XERK-2512).
+        enable_mkldnn=False,
+        cpu_threads=1,
+    )
+
+    def run(bgr: np.ndarray) -> list[tuple[Any, str, float]]:
+        res = ocr.predict(bgr)[0]
+        return list(zip(res["rec_polys"], res["rec_texts"], res["rec_scores"], strict=False))
+
+    return run
+
+
+def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> list[dict]:
+    """Merge (y0, y1, x0, x1, text, score) segments into reading-order lines.
+
+    Two segments share a line when their vertical spans overlap by more than half the shorter
+    one; PaddleOCR sometimes splits ``Name:`` from the rest of a caption line. Same rule as
+    scripts/caption_ocr/caption_bench.py, which the accuracy numbers were measured with.
+    """
+    lines: list[list[tuple[float, float, float, float, str, float]]] = []
+    for box in sorted(boxes, key=lambda b: (b[0] + b[1]) / 2):
+        y0, y1 = box[0], box[1]
+        for line in lines:
+            ly0, ly1 = min(b[0] for b in line), max(b[1] for b in line)
+            if min(y1, ly1) - max(y0, ly0) > 0.5 * min(y1 - y0, ly1 - ly0):
+                line.append(box)
+                break
+        else:
+            lines.append([box])
+    out = []
+    for line in lines:
+        segs = sorted(line, key=lambda b: b[2])
+        out.append(
+            {
+                "text": " ".join(b[4] for b in segs),
+                "score": round(min(b[5] for b in segs), 4),
+                "box": [
+                    round(min(b[2] for b in segs)),
+                    round(min(b[0] for b in segs)),
+                    round(max(b[3] for b in segs)),
+                    round(max(b[1] for b in segs)),
+                ],
+            }
+        )
+    return out
+
+
+def recognise(engine, img: Image.Image) -> list[dict]:
+    """OCR one image; boxes are [x0, y0, x1, y1] in the submitted image's pixels."""
+    padded = ImageOps.expand(img.convert("RGB"), border=DETECTOR_MARGIN, fill=(0, 0, 0))
+    bgr = np.asarray(padded)[:, :, ::-1]
+    m = DETECTOR_MARGIN
+    boxes = []
+    for poly, text, score in engine(bgr):
+        if not text.strip() or score <= MIN_SCORE:
+            continue
+        p = np.asarray(poly, dtype=float)
+        boxes.append(
+            (
+                max(0.0, p[:, 1].min() - m),
+                max(0.0, p[:, 1].max() - m),
+                max(0.0, p[:, 0].min() - m),
+                max(0.0, p[:, 0].max() - m),
+                text.strip(),
+                float(score),
+            )
+        )
+    return group_lines(boxes)
+
+
+def make_executor() -> Executor:
+    """One process per engine. Paddle holds the GIL while it predicts, so threads gave no
+    speedup at all (4 threads: 0.97x of serial, measured in the cluster); processes do."""
+    return ProcessPoolExecutor(WORKERS, mp_context=mp.get_context("spawn"), initializer=_init_worker)
+
+
+_engine = None
+
+
+def _init_worker() -> None:
+    global _engine
+    _engine = make_engine()
+    recognise(_engine, Image.new("RGB", (64, 32)))  # the first predict initialises the predictor
+
+
+def _ocr_in_worker(data: bytes) -> dict:
+    t0 = time.perf_counter()
+    lines = recognise(_engine, Image.open(BytesIO(data)))
+    return {"lines": lines, "ms": round((time.perf_counter() - t0) * 1000)}
+
+
+_executor: Executor | None = None
+# One slot per engine; a request that cannot get one in BUSY_TIMEOUT_S is refused, not queued.
+_slots = threading.BoundedSemaphore(1)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global _executor, _slots
+    _slots = threading.BoundedSemaphore(WORKERS)
+    _executor = make_executor()
+    # Every worker runs its initializer (model load + warm-up) before taking a task, so a round
+    # of trivial tasks completing means the engines are loaded.
+    for f in [_executor.submit(os.getpid) for _ in range(WORKERS)]:
+        await asyncio.wrap_future(f)
+    log.info("tenir-ocr ready with %d engines", WORKERS)
+    try:
+        yield
+    finally:
+        ex, _executor = _executor, None
+        if ex is not None:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+
+app = FastAPI(title="tenir-ocr", lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    if _executor is None:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return {"status": "ok", "workers": WORKERS}
+
+
+def _decode(body: bytes) -> Image.Image:
+    try:
+        img = Image.open(BytesIO(body))
+        img.load()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
+        raise HTTPException(400, f"not a decodable image: {type(e).__name__}") from e
+    if img.width * img.height > MAX_PIXELS:
+        raise HTTPException(413, "image too large")
+    return img
+
+
+@app.post("/v1/ocr")
+async def ocr(request: Request):
+    """Body: the raw image bytes (PNG or JPEG). Returns ``{"lines": [...], "ms": n}``."""
+    global _executor
+    if _executor is None:
+        raise HTTPException(503, "unavailable")
+    length = request.headers.get("content-length")
+    if length is not None and length.isdigit() and int(length) > MAX_BYTES:
+        raise HTTPException(413, "image too large")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_BYTES:
+            raise HTTPException(413, "image too large")
+    if not body:
+        raise HTTPException(400, "empty body")
+    data = bytes(body)
+    _decode(data)  # validate here, so a bad image never reaches (or crashes) a worker
+    if not await run_in_threadpool(_slots.acquire, True, BUSY_TIMEOUT_S):
+        raise HTTPException(503, "all OCR workers busy")
+    try:
+        return await asyncio.wrap_future(_executor.submit(_ocr_in_worker, data))
+    except BrokenExecutor:
+        # A worker died (OOM, native crash). Fail /health so the liveness probe restarts the pod.
+        log.exception("OCR worker pool broken")
+        _executor = None
+        raise HTTPException(503, "OCR worker pool broken") from None
+    finally:
+        _slots.release()

@@ -1,0 +1,7 @@
+# Pinned to the versions XERK-2504 measured (docs/meeting-captions.md): a different Paddle can
+# change both the accuracy and the CPU cost the Deployment's request is sized from.
+paddlepaddle==3.3.1
+paddleocr==3.7.0
+fastapi==0.120.4
+uvicorn[standard]==0.38.0
+# pillow and numpy come in through paddleocr/paddlex, which pin their own ranges.

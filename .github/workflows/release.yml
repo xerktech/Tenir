@@ -40,6 +40,7 @@ on:
       - "packages/**"
       - "web/**"
       - "parakeet-stt/**"
+      - "ocr/**"
       - "mobile/**"
       - "package.json"
       - "package-lock.json"
@@ -95,6 +96,7 @@ jobs:
       release_type: ${{ steps.plan.outputs.release_type }}
       build_api: ${{ steps.plan.outputs.build_api }}
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
+      build_ocr: ${{ steps.plan.outputs.build_ocr }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
       sha: ${{ github.sha }}
@@ -462,6 +464,36 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
+  # ------------------------------------------------------------ build: ocr ---
+  # Hosted: python-slim + Paddle CPU fits a hosted runner (ocr.yml builds it on every PR).
+  # Not auto-deployed: ai/tenir/ocr.yaml in the ArgoCD repo pins the version by hand.
+  build-ocr:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_ocr == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - name: Lowercase owner for GHCR
+        id: owner
+        run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Build + push tenir-ocr
+        uses: ./.github/actions/build-push-image
+        with:
+          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-ocr
+          tags: |
+            latest
+            ${{ needs.plan.outputs.version }}
+            sha-${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+          context: .
+          dockerfile: ocr/Dockerfile
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push: ${{ needs.plan.outputs.dry_run != 'true' }}
+
   # -------------------------------------------------------- build: mobile -----
   # GitHub-hosted: ubuntu-latest ships a JDK + the Android SDK, so assembleRelease
   # is a first-class hosted workload. Version name from the unified version;
@@ -529,6 +561,7 @@ jobs:
         build-api,
         deploy-argocd,
         build-parakeet-stt,
+        build-ocr,
         build-mobile,
       ]
     # A release that claims an api change must have the gate AND the image: a
@@ -544,6 +577,7 @@ jobs:
       && (needs.plan.outputs.build_api != 'true'
           || (needs.schema-gate.result == 'success' && needs.build-api.result == 'success'))
       && needs.build-parakeet-stt.result != 'failure'
+      && needs.build-ocr.result != 'failure'
       && needs.build-mobile.result != 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 15
