@@ -67,7 +67,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 `changes.test.js`) is:
 
 ```
-api/**  contract/**  packages/**  web/**  parakeet-stt/**
+api/**  contract/**  packages/**  web/**  parakeet-stt/**  ocr/**
 mobile/**  package.json  package-lock.json
 ```
 
@@ -121,7 +121,7 @@ Turma's mechanism). Three jobs in `release.yml`:
    - **Fails loudly** if the key, the digest or the manifest line is missing.
    - **Skipped** on a dry run and off `main`.
 
-Only the api image is deployed this way; `tenir-parakeet-stt` and the clients are
+Only the api image is deployed this way; `tenir-parakeet-stt`, `tenir-ocr` and the clients are
 not. The deploy runs before `publish`, so a release whose other builds fail can
 still be serving in production without a tag. Re-run the failed jobs.
 

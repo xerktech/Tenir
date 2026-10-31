@@ -7,6 +7,7 @@ const M = require("../manifest.js");
 const ALL_CHANGED = {
   api: true,
   "parakeet-stt": true,
+  ocr: true,
   mobile: true,
 };
 
@@ -28,6 +29,7 @@ test("first release: every component fresh and built", () => {
   assert.equal(m.schema, 1);
   assert.equal(m.components.api.ref, "ghcr.io/xerktech/tenir:0.1.0");
   assert.equal(m.components["parakeet-stt"].ref, "ghcr.io/xerktech/tenir-parakeet-stt:0.1.0");
+  assert.equal(m.components.ocr.ref, "ghcr.io/xerktech/tenir-ocr:0.1.0");
   assert.equal(m.components.mobile.asset, "tenir-android-v0.1.0.apk");
   assert.equal(m.components.mobile.version_code, 10000);
   for (const c of Object.values(m.components)) assert.equal(c.built, true);
@@ -48,7 +50,7 @@ test("carried image keeps its OLDER version and ref; never retagged to the new v
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: false, "parakeet-stt": true, mobile: false },
+    changed: { api: false, "parakeet-stt": true, ocr: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
@@ -66,7 +68,7 @@ test("carried asset keeps its name/version but re-points release_tag to the new 
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": true, mobile: false },
+    changed: { api: true, "parakeet-stt": true, ocr: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });
@@ -86,7 +88,7 @@ test("unchanged component absent from prev manifest throws (never emit a hole)",
       tag: "v0.1.1",
       commit: "bbb",
       releasedAt: "2026-07-20T00:00:00Z",
-      changed: { api: true, "parakeet-stt": false, mobile: true },
+      changed: { api: true, "parakeet-stt": false, ocr: false, mobile: true },
       prevManifest: prev,
       androidVersionCode: 10001,
     }),
@@ -100,7 +102,7 @@ test("carryPlan emits copy-asset only for carried assets, not images or built on
     tag: "v0.1.1",
     commit: "bbb",
     releasedAt: "2026-07-20T00:00:00Z",
-    changed: { api: true, "parakeet-stt": false, mobile: false },
+    changed: { api: true, "parakeet-stt": false, ocr: false, mobile: false },
     prevManifest: prev,
     androidVersionCode: 10001,
   });

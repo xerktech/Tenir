@@ -36,7 +36,7 @@ tag namespace, `v<M>.<m>.<p>`, one release, all components (the api image
 
 - **`plan.js`** — in: `RELEASE_TYPE` (patch|minor|major), `FORCE_ALL`. out
   (`$GITHUB_OUTPUT`): `version`, `tag`, `prev_tag`, `changed` (json),
-  `android_version_code`, `build_api`/`build_parakeet_stt`/
+  `android_version_code`, `build_api`/`build_parakeet_stt`/`build_ocr`/
   `build_mobile`, `base_major`, `base_minor`.
 - **`publish.js`** — in: `VERSION_FULL`, `TAG`, `PREV_TAG`, `CHANGED` (json),
   `ANDROID_VERSION_CODE`, `COMMIT`, `RELEASED_AT`, `OUT_DIR`. out: writes

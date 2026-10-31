@@ -18,6 +18,7 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("packages/client-core/src/x.ts"), ["api", "mobile"]);
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
+  assert.deepEqual(C.componentsForPath("ocr/server.py"), ["ocr"]);
 });
 
 test("componentsForPath maps the root workspace manifest/lockfile to api + clients", () => {
@@ -40,6 +41,7 @@ test("detectChanges unions components across the diff", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
+    ocr: false,
     mobile: true,
   });
 });
@@ -49,6 +51,7 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
   assert.deepEqual(changed, {
     api: true,
     "parakeet-stt": false,
+    ocr: false,
     mobile: false,
   });
 });
@@ -83,4 +86,17 @@ test("release.yml's push paths cover exactly the component trigger paths", () =>
   const globs = [...block[1].matchAll(/^ {6}- "(.*)"$/gm)].map((m) => m[1]);
   const expected = C.componentTriggerPaths();
   assert.deepEqual(globs.slice().sort(), expected.slice().sort());
+});
+
+// A build job publish does not wait on and gate on would let a release tag ship over a failed
+// image build (the build-ocr gate was the mutant no other test caught).
+test("publish needs and gates on every build-* job", () => {
+  const yml = fs.readFileSync(path.join(__dirname, "..", "..", "workflows", "release.yml"), "utf8");
+  const jobs = [...yml.matchAll(/^ {2}(build-[\w-]+):$/gm)].map((m) => m[1]);
+  assert.ok(jobs.length >= 4, `found build jobs: ${jobs}`);
+  const publish = yml.slice(yml.indexOf("\n  publish:\n"));
+  for (const j of jobs) {
+    assert.match(publish, new RegExp(`\\n {8}${j},\\n`), `publish.needs lacks ${j}`);
+    assert.ok(publish.includes(`needs.${j}.result != 'failure'`), `publish.if lacks ${j}`);
+  }
 });

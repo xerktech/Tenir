@@ -62,6 +62,7 @@ function main() {
     force_all: forceAll,
     build_api: changed.api,
     build_parakeet_stt: changed["parakeet-stt"],
+    build_ocr: changed.ocr,
     build_mobile: changed.mobile,
   });
 
