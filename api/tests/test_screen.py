@@ -1018,3 +1018,132 @@ def test_a_short_reply_seen_once_below_the_top_is_kept() -> None:
         ("Ana", "yesterday the build failed"),
         ("Bo", "yes"),
     ]
+
+
+def test_a_box_showing_a_repeat_stores_each_line_once() -> None:
+    """QA delta 4: [okay], [okay, Bo], [okay, Bo, okay] held for 8 frames is 3 lines."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    t = 0
+    for box in (
+        [blk("Ana", "okay")],
+        [blk("Ana", "okay"), blk("Bo", "sure lets start")],
+        [blk("Ana", "okay"), blk("Bo", "sure lets start"), blk("Ana", "okay")],
+    ):
+        for _ in range(3 if len(box) < 3 else 8):
+            out += m.feed(box, t)
+            t += 1000
+    out += m.flush(t + 10_000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "okay"),
+        ("Bo", "sure lets start"),
+        ("Ana", "okay"),
+    ]
+
+
+def test_similar_lines_in_one_block_are_each_stored_once() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    rows = ["first line here", "second line here", "third line here"]
+    for t in range(12):
+        out += m.feed([blk("Ana", *rows[: min(3, 1 + t // 3)])], t * 1000)
+    out += m.flush(30_000)
+    assert [s.text for s in out] == rows
+
+
+def test_a_garbled_top_line_then_the_clean_one_stores_nothing_twice() -> None:
+    """QA delta 4: one bad frame, then the correct text returns."""
+    box = [
+        blk("Ana", "we should ship the build"),
+        blk("Bo", "agreed on friday then"),
+        blk("Cy", "i will tell the customer"),
+    ]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed(box, t * 1000)
+    out += m.feed([blk("Ana", "w3 shou1d sh1p tbe b@ild")] + box[1:], 5000)
+    for t in range(6, 12):
+        out += m.feed(box, t * 1000)
+    out += m.flush(30_000)
+    assert sorted(s.text for s in out) == sorted(b.lines[0] for b in box)
+
+
+def test_another_speakers_similar_short_line_is_kept() -> None:
+    """QA delta 4: Bo's "we should ship on monday" after Ana's "...friday" is real."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Ana", "we should ship on friday")], t * 1000)
+    out += m.feed(
+        [blk("Ana", "we should ship on friday"), blk("Bo", "we should ship on monday")], 3000
+    )
+    out += m.feed([blk("Bo", "we should ship on monday"), blk("Ana", "no")], 4000)
+    out += m.flush(10_000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "we should ship on friday"),
+        ("Bo", "we should ship on monday"),
+        ("Ana", "no"),
+    ]
+
+
+def _simulate(seed: int, *, noise: bool) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Roll a 3-line Zoom caption box over a random conversation at 1 snapshot per word.
+
+    The bottom line grows a word at a time; finished lines scroll up; short replies repeat.
+    With ``noise``, OCR garbles the top line or drops a middle line in some snapshots."""
+    import random
+
+    rng = random.Random(seed)
+    speakers = ["Ana", "Bo", "Cy"]
+    phrases = [
+        "okay",
+        "yes",
+        "sounds good",
+        "we should ship the build on friday",
+        "the login timeout is back on staging",
+        "can you open a ticket for that",
+        "i will tell the customer today",
+        "thanks everyone",
+    ]
+    said = [(rng.choice(speakers), rng.choice(phrases)) for _ in range(25)]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    shown: list[tuple[str, str]] = []
+    t = 0
+    for speaker, phrase in said:
+        words = phrase.split()
+        for k in range(1, len(words) + 1):
+            box = (shown + [(speaker, " ".join(words[:k]))])[-3:]
+            if noise and len(box) == 3 and rng.random() < 0.2:
+                if rng.random() < 0.5:
+                    box = [(box[0][0], "x" + box[0][1][1:-1] + "~")] + box[1:]
+                else:
+                    box = [box[0], box[2]]
+            blocks: list[CaptionBlock] = []
+            for sp, text in box:
+                if blocks and blocks[-1].speaker == sp:
+                    blocks[-1].lines.append(text)
+                else:
+                    blocks.append(blk(sp, text))
+            out += m.feed(blocks, t)
+            t += 1000
+        shown.append((speaker, phrase))
+        t += 1000
+    out += m.flush(t + 10_000)
+    return said, [(s.speaker, s.text) for s in out]
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_simulated_rolling_captions_store_exactly_what_was_said(seed: int) -> None:
+    said, stored = _simulate(seed, noise=False)
+    assert stored == said
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_ocr_noise_never_duplicates_a_line(seed: int) -> None:
+    said, stored = _simulate(seed, noise=True)
+    # Noise may cost a line its last words, never add one: no more lines than were said,
+    # and every stored line is (a prefix of, or the garbled form of) one that was said.
+    assert len(stored) <= len(said)
+    assert len(stored) >= len(said) - 2

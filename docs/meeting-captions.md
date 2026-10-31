@@ -192,14 +192,16 @@ Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
   a name-shaped line followed by text is a header with no speaker.
 - Speaker aliases (`speaker_aliases`, per org) rename tile names, e.g. an email to a first name.
 
-**Merge** (`merge.py`): a line is final when another speaker's block follows it, when unchanged
-for `API_SCREEN_LINE_STABLE_SECONDS` (3), or at meeting end. A line still on screen after it
-was stored matches its final and is skipped; one that grows after it was stored extends the
-same segment (upsert by segment id). The same words said again are stored again: lines
-carry a creation order, and a line is only a re-read of a stored one when no newer known
-line sits above it on screen (and the stored one was on screen within 20 s). A top line one
-frame showed that is a fragment of a known line (OCR on the half-scrolled top) is dropped.
-The same words repeated after a silence that cleared the box within 20 s are dropped.
+**Merge** (`merge.py`): each caption snapshot is a window onto the end of the transcript, so it
+is aligned in order against the recent known lines (an edit-distance alignment). Known lines
+above the window have scrolled off; snapshot lines below the last aligned one are new; an
+unmatched line above it is an OCR glitch and is ignored. A line is final when another
+speaker's block follows it, when unchanged for `API_SCREEN_LINE_STABLE_SECONDS` (3), or at
+meeting end; a final that grows while still the newest line is extended in place (upsert by
+segment id). The same words said again align as a new line; a line still on screen never
+does. Known limits: the same words after a silence that cleared the box within 20 s are
+dropped, and a short phrase repeated back to back by one speaker can lose a copy when OCR
+also drops a line.
 
 **Meetings** (`meetings.py`): one per (user, `orgSiteKey`), kept in the process across
 reconnects. Starts when captions first appear, ends `API_SCREEN_MEETING_END_SECONDS` (180) after
