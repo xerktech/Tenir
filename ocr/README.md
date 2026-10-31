@@ -10,9 +10,10 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
 - `POST /v1/ocr` — body is the raw image (PNG or JPEG) of the caption-box crop, at most 2 MiB
   and 0.5 Mpx (~3x the largest 1080p-equivalent crop). Whole frames are refused: a 4K frame
   needs ~3.2 GB in one worker.
-  - `200` → `{"lines": [{"text", "score", "box": [x0, y0, x1, y1]}], "ms"}`; lines in reading
+  - `200` → `{"lines": [{"text", "score", "box": [x0, y0, x1, y1]}], "truncated", "ms"}`; lines in reading
     order, `box` in the submitted image's pixels, `score` the line's lowest segment confidence
-    (segments ≤ 0.5 are dropped), `ms` the OCR time.
+    (segments ≤ 0.5 are dropped), `ms` the OCR time. `truncated` is true when the detector hit
+    `OCR_MAX_BOXES` (16) and dropped text: the image was not a caption crop (a dense slide).
   - `400` not an image or empty · `413` over the byte or pixel cap · `503` every worker busy for
     `OCR_BUSY_TIMEOUT_S` (default 5), still loading, or a worker died.
 - `GET /health` — `200 {"status": "ok", "workers"}` once every engine is loaded, else `503`.
@@ -27,10 +28,14 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
 - A busy pool refuses rather than queues: the caller drops stale frames for the newest.
 - The server pads every image with a 32 px black border before detection; PP-OCR drops whole
   lines from a tight crop without it. Returned boxes have the border subtracted.
-- Memory: ~530 MB per idle engine, ~850 MB peak at the pixel cap; 4 at once ≈ 3.5 GB.
-- Time: a real caption crop takes ~1 s. Nothing interrupts a running OCR, so the pixel cap is
-  what bounds it: dense text filling a 0.5 Mpx image took ~35 s. Keep the cap if you add a
-  bigger crop; raising it raises both numbers.
+- Memory: ~550 MB per idle engine, ~850–890 MB peak at the pixel cap; the pod peaked at
+  4.06 GiB with 4 worst-case requests at once (5Gi limit).
+- Time: a real caption crop takes ~1 s. Nothing interrupts a running OCR; the bounds are the
+  pixel cap and `OCR_MAX_BOXES`, because recognition (once per detected box, longer for wider
+  boxes) is the cost. Dense text at the cap took up to 184 s before the box cap and ~18 s with
+  it (4 at once: ~19 s each). The 24 synthetic captions have fewer than 6 boxes each.
+- The box cap keeps the detector's FIRST N contours, not the best N, so a capped result is
+  partial: the api should discard `truncated` results rather than parse them.
 - Models are baked into the image; no egress at runtime.
 
 Tests: `pip install -r requirements-test.txt && pytest tests` (fake engine, no Paddle).

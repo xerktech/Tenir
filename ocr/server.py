@@ -43,12 +43,17 @@ BUSY_TIMEOUT_S = float(os.environ.get("OCR_BUSY_TIMEOUT_S", "5"))
 # 4 GiB pod. 0.5 Mpx is ~3x the largest crop.
 MAX_PIXELS = int(os.environ.get("OCR_MAX_PIXELS", "500000"))
 MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(2 * 1024 * 1024)))
+# Recognition runs once per detected box and is the whole cost, so the box count is what bounds
+# a request's time. A caption crop has a handful of boxes; a dense slide mistaken for a caption
+# box has hundreds, and without this held a worker for up to ~3 minutes (QA, 2026-10-31).
+MAX_BOXES = int(os.environ.get("OCR_MAX_BOXES", "16"))
 MIN_SCORE = 0.5
 # PP-OCR's detector drops whole lines on a tight crop without a black border (XERK-2504).
 DETECTOR_MARGIN = 32
 
-# Size is checked from the header before decoding (_decode); this is Pillow's own backstop.
-Image.MAX_IMAGE_PIXELS = 4 * MAX_PIXELS
+# Pillow's own bomb guard is off: _decode checks the header's size against MAX_PIXELS before
+# anything is decoded, and Pillow's guard fired first for big frames, turning a 413 into a 400.
+Image.MAX_IMAGE_PIXELS = None
 
 
 def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace it
@@ -68,6 +73,12 @@ def make_engine():  # pragma: no cover - needs the Paddle runtime; tests replace
         enable_mkldnn=False,
         cpu_threads=1,
     )
+    # paddleocr does not expose the detector's max_candidates (default 1000); set it on the
+    # post-processor. Private path: a Paddle bump that moves it fails startup here, loudly,
+    # instead of silently dropping the time bound.
+    post = ocr.paddlex_pipeline._pipeline.text_det_model.post_op
+    assert hasattr(post, "max_candidates"), "paddlex moved DBPostProcess.max_candidates"
+    post.max_candidates = MAX_BOXES
 
     def run(bgr: np.ndarray) -> list[tuple[Any, str, float]]:
         res = ocr.predict(bgr)[0]
@@ -111,13 +122,15 @@ def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> l
     return out
 
 
-def recognise(engine, img: Image.Image) -> list[dict]:
-    """OCR one image; boxes are [x0, y0, x1, y1] in the submitted image's pixels."""
+def recognise(engine, img: Image.Image) -> tuple[list[dict], bool]:
+    """OCR one image -> (lines, truncated). Boxes are [x0, y0, x1, y1] in the submitted image's
+    pixels. truncated: the detector hit MAX_BOXES, so text was dropped (not a caption crop)."""
     padded = ImageOps.expand(img.convert("RGB"), border=DETECTOR_MARGIN, fill=(0, 0, 0))
     bgr = np.asarray(padded)[:, :, ::-1]
     m = DETECTOR_MARGIN
     boxes = []
-    for poly, text, score in engine(bgr):
+    raw = engine(bgr)
+    for poly, text, score in raw:
         if not text.strip() or score <= MIN_SCORE:
             continue
         p = np.asarray(poly, dtype=float)
@@ -131,7 +144,7 @@ def recognise(engine, img: Image.Image) -> list[dict]:
                 float(score),
             )
         )
-    return group_lines(boxes)
+    return group_lines(boxes), len(raw) >= MAX_BOXES
 
 
 def make_executor() -> Executor:
@@ -151,8 +164,8 @@ def _init_worker() -> None:
 
 def _ocr_in_worker(data: bytes) -> dict:
     t0 = time.perf_counter()
-    lines = recognise(_engine, Image.open(BytesIO(data)))
-    return {"lines": lines, "ms": round((time.perf_counter() - t0) * 1000)}
+    lines, truncated = recognise(_engine, Image.open(BytesIO(data)))
+    return {"lines": lines, "truncated": truncated, "ms": round((time.perf_counter() - t0) * 1000)}
 
 
 _executor: Executor | None = None
@@ -195,13 +208,13 @@ def _decode(body: bytes) -> None:
     """Validate the image: 413 on size from the header alone, 400 if it does not decode."""
     try:
         img = Image.open(BytesIO(body))
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
+    except (UnidentifiedImageError, OSError) as e:
         raise HTTPException(400, f"not a decodable image: {type(e).__name__}") from e
     if img.width * img.height > MAX_PIXELS:
         raise HTTPException(413, f"image over {MAX_PIXELS} pixels; send the caption crop")
     try:
         img.load()
-    except (OSError, Image.DecompressionBombError) as e:
+    except OSError as e:
         raise HTTPException(400, f"not a decodable image: {type(e).__name__}") from e
 
 

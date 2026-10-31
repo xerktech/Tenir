@@ -79,6 +79,7 @@ def test_lines_grouped_in_reading_order_with_unpadded_boxes(make_client):
     assert body["lines"][0]["box"] == [10, 10, 180, 31]
     assert body["lines"][0]["score"] == 0.91
     assert isinstance(body["ms"], int)
+    assert body["truncated"] is False
     # The engine saw the image with the black detector margin on every side (plus the
     # warm-up call on the blank image first).
     assert engine.shapes[-1] == (40 + 2 * M, 200 + 2 * M, 3)
@@ -157,11 +158,32 @@ def test_chunked_body_over_the_byte_cap_is_refused(make_client, monkeypatch):
 
 
 def test_oversize_pixels_refused_from_the_header(make_client, monkeypatch):
-    # Over the cap but under Pillow's bomb limit, and far over it: both are 413, not 400.
+    # Just over the cap, and a 4K frame far past where Pillow's own bomb guard would fire (it
+    # used to turn this into a 400): both 413, and neither is ever decoded.
+    loads = []
+    real_load = Image.Image.load
+    monkeypatch.setattr(Image.Image, "load", lambda self: (loads.append(self.size), real_load(self))[1])
+    bodies = [_png(2000, 300), _png(3840, 2160)]  # built first: saving a PNG calls load()
     with make_client(FakeEngine()) as c:
-        assert c.post("/v1/ocr", content=_png(2000, 300)).status_code == 413
-        monkeypatch.setattr(server, "MAX_PIXELS", 1000)
-        assert c.post("/v1/ocr", content=_png(200, 40)).status_code == 413
+        loads.clear()
+        for body in bodies:
+            assert c.post("/v1/ocr", content=body).status_code == 413
+        assert loads == []
+
+
+def test_detector_box_cap_is_reported_as_truncated(make_client, monkeypatch):
+    monkeypatch.setattr(server, "MAX_BOXES", 3)
+    engine = FakeEngine([(_poly(0, 10 * i, 10, 10 * i + 8), f"w{i}", 0.9) for i in range(3)])
+    with make_client(engine) as c:
+        assert c.post("/v1/ocr", content=_png()).json()["truncated"] is True
+
+
+def test_health_does_not_need_a_worker_thread():
+    # A sync handler waits for an anyio thread, and under a burst those are all parked in
+    # _slots.acquire: /health then stalled past the probe timeout (QA).
+    import inspect
+
+    assert inspect.iscoroutinefunction(server.health)
 
 
 def test_health_fails_as_soon_as_the_pool_is_broken(make_client):
