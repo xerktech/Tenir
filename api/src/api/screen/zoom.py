@@ -79,6 +79,10 @@ _MAX_DECODE_PIXELS = 3840 * 2400
 _TITLE_BAND = 0.07
 _TOOLBAR_BAND = 0.90
 
+# Zoom shows at most 49 tiles a page; a meeting's roster is bounded well above that so a
+# crafted frame full of names can't make every header match a fuzzy scan of thousands.
+_MAX_ROSTER = 200
+
 # A header matches a roster name at this similarity (OCR slips on one or two characters).
 _NAME_MATCH = 0.86
 
@@ -149,7 +153,7 @@ class Roster:
         """Add a tile name; returns its display form when it is new, else None."""
         display = self.display(name)
         key = norm_name(name)
-        if not key or key in self._names:
+        if not key or key in self._names or len(self._names) >= _MAX_ROSTER:
             return None
         self._names[key] = display
         return display

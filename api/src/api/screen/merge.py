@@ -52,9 +52,18 @@ _TAIL = 40
 # instead, swallowing the new line.
 _MATCH = 3.0
 _GLITCH = -1.0
+# A glitch is normally a misread of a known line in the same place (a garbled or half-cut top
+# line): that pairing is a substitution and costs _GLITCH. A shown line with no known line to
+# pair with, under a verified speaker header, is a line said between two snapshots (Bo's
+# "sure" above Ana's second "okay"); calling it a glitch costs more than calling it new.
+_UNPAIRED = -3.5
+# A Zoom box shows a handful of lines; a snapshot is cut to its bottom lines and each line to
+# a sane length, which bounds the alignment's cost on a crafted frame (it runs per frame).
+_MAX_SHOWN = 12
+_MAX_CHARS = 300
 _MISS = -2.5
 _UNSHOWN_NEWEST = -2.5
-_NEW = -0.2
+_NEW = -0.1
 
 
 def _norm(text: str) -> str:
@@ -122,14 +131,16 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
     # best[i][j]: best score with shown[:i] and tail[:j] consumed.
     best = [[neg] * (m + 1) for _ in range(n + 1)]
     move = [[""] * (m + 1) for _ in range(n + 1)]
+    unpaired = [_GLITCH if s.speaker is None else _UNPAIRED for s in shown]
     for j in range(m + 1):
         best[0][j] = 0.0  # skipping known lines above the window is free
         move[0][j] = "skip_known"
     for i in range(1, n + 1):
         for j in range(m + 1):
-            options: list[tuple[float, str]] = [(best[i - 1][j] + _GLITCH, "glitch")]
+            options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
+                options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
                 s = _score(shown[i - 1], known, growable=not known.final or j == m)
                 if s > 0:
@@ -148,6 +159,8 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
         step = move[i][j]
         if step == "match":
             out[i - 1] = j - 1
+            i, j = i - 1, j - 1
+        elif step == "misread":
             i, j = i - 1, j - 1
         elif step == "skip_known":
             j -= 1
@@ -180,11 +193,13 @@ class CaptionMerger:
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
         shown = [
-            _Shown(b.speaker if b.has_header else None, text, _norm(text), bi)
+            _Shown(
+                b.speaker if b.has_header else None, text[:_MAX_CHARS], _norm(text[:_MAX_CHARS]), bi
+            )
             for bi, b in enumerate(blocks)
             for text in b.lines
             if _norm(text)
-        ]
+        ][-_MAX_SHOWN:]
         tail = [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
         aligned = _align(shown, tail)
         last_aligned = max((i for i, a in enumerate(aligned) if a is not None), default=-1)

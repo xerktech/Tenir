@@ -131,7 +131,8 @@ class MeetingTracker:
                     # Captions lag the border by a few seconds, so a mismatch is a signal
                     # to watch (OCR misreads, a wrong roster match), not an error.
                     metrics.incr("screen.speaker_border_mismatch")
-        await self._store(self.merger.feed(blocks, ts))
+        # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
+        await self._store(await asyncio.to_thread(self.merger.feed, blocks, ts))
 
     async def _start(self, ts: int) -> None:
         if not await self._io(self.account_exists, self.owner):

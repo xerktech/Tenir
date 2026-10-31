@@ -1087,11 +1087,14 @@ def test_another_speakers_similar_short_line_is_kept() -> None:
     ]
 
 
-def _simulate(seed: int, *, noise: bool) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+def _simulate(
+    seed: int, *, noise: bool, skip: float = 0.0
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Roll a 3-line Zoom caption box over a random conversation at 1 snapshot per word.
 
     The bottom line grows a word at a time; finished lines scroll up; short replies repeat.
-    With ``noise``, OCR garbles the top line or drops a middle line in some snapshots."""
+    With ``noise``, OCR garbles the top line or drops a middle line in some snapshots; with
+    ``skip``, that share of snapshots is never read (latest-frame-wins drops it)."""
     import random
 
     rng = random.Random(seed)
@@ -1120,6 +1123,9 @@ def _simulate(seed: int, *, noise: bool) -> tuple[list[tuple[str, str]], list[tu
                     box = [(box[0][0], "x" + box[0][1][1:-1] + "~")] + box[1:]
                 else:
                     box = [box[0], box[2]]
+            if skip and rng.random() < skip and k < len(words):
+                t += 1000
+                continue
             blocks: list[CaptionBlock] = []
             for sp, text in box:
                 if blocks and blocks[-1].speaker == sp:
@@ -1147,3 +1153,54 @@ def test_ocr_noise_never_duplicates_a_line(seed: int) -> None:
     # and every stored line is (a prefix of, or the garbled form of) one that was said.
     assert len(stored) <= len(said)
     assert len(stored) >= len(said) - 2
+
+
+def test_a_reply_and_a_repeat_between_two_snapshots_are_both_kept() -> None:
+    """QA delta 5: [Ana okay] then [Bo sure, Ana okay] — Bo's line has a verified header and
+    resembles nothing known, so it is a real line, not an OCR glitch above a match."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Ana", "okay")], t * 1000)
+    for t in range(5, 10):
+        out += m.feed([blk("Bo", "sure"), blk("Ana", "okay")], t * 1000)
+    out += m.flush(20_000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "okay"),
+        ("Bo", "sure"),
+        ("Ana", "okay"),
+    ]
+
+
+def test_a_crafted_huge_caption_snapshot_is_bounded() -> None:
+    """QA delta 5: OCR text is attacker-controlled; the merge cuts a snapshot to its bottom
+    lines and each line's length, so one frame can't stall the server."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    rows = [f"line {i} " + "word " * 100 for i in range(200)]
+    started = time.monotonic()
+    m.feed([blk("Ana", *rows)], 0)
+    m.feed([blk("Ana", *rows)], 1000)
+    assert time.monotonic() - started < 2.0
+    out = m.flush(5000)
+    assert len(out) == 12 and all(len(s.text) <= 300 for s in out)
+
+
+def test_ocr_results_and_rosters_are_bounded() -> None:
+    from api.screen import ocr as ocr_mod
+    from api.screen import zoom as zoom_mod
+
+    many = {"width": 9, "height": 9, "lines": [{"text": "x", "box": [0, 0, 1, 1]}] * 1000}
+    assert len(parse_result(many).lines) == ocr_mod.MAX_LINES
+    roster = Roster()
+    for i in range(zoom_mod._MAX_ROSTER + 50):
+        roster.add(f"Person Number{i}")
+    assert len(roster) == zoom_mod._MAX_ROSTER
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_dropped_snapshots_never_duplicate_a_line(seed: int) -> None:
+    """Latest-frame-wins drops snapshots under load, so two lines can land between reads
+    (QA delta 5): nothing is stored twice and at most a line is lost."""
+    said, stored = _simulate(seed, noise=False, skip=0.3)
+    assert len(said) - 1 <= len(stored) <= len(said)
+    assert all(line in said for line in stored)

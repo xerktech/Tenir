@@ -216,7 +216,9 @@ async def screen_ws(ws: WebSocket) -> None:
                     await tracker.on_full(frame, ts)
                 else:
                     roster = await tracker.ensure_roster()
-                    blocks = parse_caption_crop(result, roster, active=tracker.active)
+                    blocks = await asyncio.to_thread(
+                        parse_caption_crop, result, roster, active=tracker.active
+                    )
                     await tracker.on_caption(blocks, ts)
         except AccountGone:
             log.warning("screen ws closed: account no longer exists")

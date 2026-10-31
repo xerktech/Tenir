@@ -42,6 +42,11 @@ class OcrResult:
     lines: tuple[OcrLine, ...]
 
 
+# More text lines than any meeting window shows; the rest of a crafted result is dropped so
+# parsing and merging stay cheap (they run per frame).
+MAX_LINES = 400
+
+
 class OcrError(RuntimeError):
     """The OCR service failed or answered something this client can't read."""
 
@@ -56,7 +61,7 @@ def parse_result(payload: object) -> OcrResult:
         raise OcrError("unreadable OCR response: not an object")
     try:
         lines = []
-        for raw in payload.get("lines") or []:
+        for raw in (payload.get("lines") or [])[:MAX_LINES]:
             x0, y0, x1, y1 = (float(v) for v in raw["box"])
             text = str(raw["text"]).strip()
             if text:

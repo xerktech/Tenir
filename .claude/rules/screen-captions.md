@@ -25,12 +25,18 @@ paths:
   rounds). Lines above the aligned region that match nothing are glitches, never new.
   - An alignment must end on a match (or match nothing): ending on a skip let the newest
     unshown line dodge its penalty and swallowed a repeat ("yes", "thanks", "yes").
+  - A glitch pairs with the known line it misreads ("misread" move, cheap). An unpaired line
+    under a verified header above a match costs more than "new": it is a line said between
+    two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
   - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
+  - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
+    (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
+    in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
   - Known limit: a short phrase the same speaker repeats back to back, with OCR dropping a
     line, can lose one copy (8 lines in 25,000 in the seeded simulation).
   - Tests: `test_simulated_rolling_captions_store_exactly_what_was_said`,
-    `test_ocr_noise_never_duplicates_a_line` (seeded box simulation, run 1000 seeds locally
-    after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
+    `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
+    and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - Final lines wait in `MeetingTracker._unsaved` until written: the merger counts a line final
