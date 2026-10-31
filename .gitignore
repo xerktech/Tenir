@@ -26,3 +26,7 @@ htmlcov/
 
 # setuptools build output (pip install . from api/)
 api/build/
+
+# caption_ocr capture probe: window titles name clients and frames show meetings (XERK-2504)
+windows.json
+captures/
