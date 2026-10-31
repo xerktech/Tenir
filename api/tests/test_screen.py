@@ -953,3 +953,68 @@ def test_a_new_sentence_after_another_speaker_does_not_extend_an_old_final() -> 
         ("Bo", "can you hear me"),
         ("Ana", "okay so lets start the review"),
     ]
+
+
+@pytest.mark.parametrize(
+    "glitch",
+    [
+        [blk("Ana", "w3 shou1d sh1p the b@ild")],  # garbled top line
+        [blk(None, "we sh~ ,,", header=False)],  # scroll fragment above the box
+        [blk("Ana", "we shou")],  # half-cut top line
+    ],
+)
+def test_a_one_frame_ocr_glitch_above_the_box_stores_nothing_twice(glitch) -> None:
+    """QA delta 3: a fresh (unknown) line on top must not push the known lines below it
+    out of matching their finals."""
+    box = [
+        blk("Ana", "we should ship the build"),
+        blk("Bo", "agreed on friday then"),
+        blk("Cy", "i will tell the customer"),
+    ]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed(box, t * 1000)
+    out += m.feed(glitch + box[1:], 5000)
+    for t in range(6, 9):
+        out += m.feed(box, t * 1000)
+    out += m.flush(20_000)
+    # Each real line once, and the glitch itself is not stored as something said.
+    assert sorted(s.text for s in out) == sorted(b.lines[0] for b in box)
+
+
+def test_a_user_deleted_during_the_handshake_is_closed(screen, monkeypatch) -> None:
+    """The delete lands after auth but before the socket registered for revocation."""
+    from api.auth import get_user_store
+    from api.main import app
+
+    _, _, token, admin = screen
+    real = screen_ws._screen_principal
+
+    def auth_then_delete(ws):
+        got = real(ws)
+        get_user_store().delete(admin.user_id)
+        assert screen_ws.revoke_user(admin.user_id) == 0  # nothing registered yet
+        return got
+
+    monkeypatch.setattr(screen_ws, "_screen_principal", auth_then_delete)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+        ws.send_text(json.dumps({"type": "ping"}))
+        # A socket left open answers the ping instead of closing (fails, never hangs).
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+        assert closed.value.code == 1008
+
+
+def test_a_short_reply_seen_once_below_the_top_is_kept() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Ana", "yesterday the build failed")], t * 1000)
+    out += m.feed([blk("Ana", "yesterday the build failed"), blk("Bo", "yes")], 3000)
+    out += m.flush(10_000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Ana", "yesterday the build failed"),
+        ("Bo", "yes"),
+    ]

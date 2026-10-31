@@ -15,8 +15,9 @@ the stored segment is extended in place (same segment id, so the store upserts i
 Saying the same thing again is not a duplicate. The box only ever adds lines at the bottom,
 so every line carries a creation order, and a snapshot read top to bottom is in that order:
 
-- a line can only be a re-read of a stored final if nothing newer sits above it in the
-  snapshot — Ana's second "okay" under Bo's reply is new, however soon it comes;
+- a line can only be a re-read of a stored final if no newer *known* line (one an earlier
+  snapshot already showed) sits above it — Ana's second "okay" under Bo's reply is new,
+  however soon it comes, while a garbled one-frame top line changes nothing below it;
 - a final absorbs at most one line per snapshot (two "okay"s on screen are two lines);
 - only the newest line can still grow, so a final is extended only while nothing has been
   created after it;
@@ -41,6 +42,9 @@ _DUPLICATE = 0.88
 # How long a final can still be extended by its line growing.
 _EXTEND_MS = 30_000
 _RECENT_FINALS = 300
+# A line one snapshot showed that is this close to (or inside) a known line is an OCR
+# fragment of it (a half-scrolled or garbled top line), not something said.
+_FRAGMENT = 0.6
 # A final no snapshot has shown for this long has left the screen. Long, because the order
 # rule does the real work: this only separates a repeat after silence from an OCR miss.
 _GONE_MS = 20_000
@@ -48,6 +52,10 @@ _GONE_MS = 20_000
 
 def _norm(text: str) -> str:
     return " ".join(text.casefold().split())
+
+
+def _alnum(text: str) -> str:
+    return "".join(c for c in text if c.isalnum())
 
 
 def _ratio(a: str, b: str) -> float:
@@ -66,6 +74,8 @@ class _Live:
     changed_ms: int
     seen_ms: int
     order: int  # creation order: lower is older, i.e. higher up the caption box
+    snapshots: int = 1  # how many snapshots showed it
+    top: bool = False  # it was the top line of the snapshot that first showed it
 
     @property
     def norm(self) -> str:
@@ -123,8 +133,24 @@ class CaptionMerger:
             return f
         return None
 
+    def _is_fragment(self, live: _Live, ts: int) -> bool:
+        # Fragments come from the half-scrolled top of the box; a short reply further down
+        # ("yes" under "yesterday's build") is real even if only one snapshot showed it.
+        if live.snapshots > 1 or not live.top:
+            return False
+        # Letters and digits only: OCR noise is mostly stray punctuation and tildes.
+        norm = _alnum(live.norm)
+        known = [f.norm for f in self._finals if ts - f.seen_ms <= _GONE_MS]
+        known += [lv.norm for lv in self._live if lv is not live and lv.snapshots > 1]
+        return not norm or any(
+            norm != (k := _alnum(k_norm)) and (norm in k or _ratio(norm, k) >= _FRAGMENT)
+            for k_norm in known
+        )
+
     def _finalize(self, live: _Live, ts: int) -> Segment | None:
         self._live.remove(live)
+        if self._is_fragment(live, ts):
+            return None
         seg = Segment(
             segment_id=uuid.uuid4().hex,
             text=live.text,
@@ -142,6 +168,7 @@ class CaptionMerger:
         seen: set[int] = set()
         absorbed: set[int] = set()
         floor = 0  # newest creation order matched so far, top to bottom
+        first_line = True
         to_finalize: list[_Live] = []
         last_block = len(blocks) - 1
         for bi, block in enumerate(blocks):
@@ -149,6 +176,7 @@ class CaptionMerger:
                 norm = _norm(text)
                 if not norm:
                     continue
+                first_line, was_first = False, first_line
                 # A header-less block continues one whose header scrolled off: match it
                 # against any speaker's lines first, then attribute it.
                 speaker = block.speaker if block.has_header else None
@@ -171,18 +199,22 @@ class CaptionMerger:
                     if not block.has_header:
                         speaker = self.last_speaker
                     self._order += 1
-                    live = _Live(speaker, text, ts, ts, ts, self._order)
+                    live = _Live(speaker, text, ts, ts, ts, self._order, top=was_first)
                     self._live.append(live)
                 else:
                     if not block.has_header:
                         speaker = live.speaker or self.last_speaker
+                    live.snapshots += 1
                     if live.text != text:
                         live.text = text
                         live.changed_ms = ts
                     if live.speaker is None:
                         live.speaker = speaker
+                    # Only a line already known raises the floor. A line first read in this
+                    # snapshot may be an OCR fragment of the half-scrolled top line, and
+                    # letting it raise the floor re-stored every final below it.
+                    floor = max(floor, live.order)
                 live.seen_ms = ts
-                floor = max(floor, live.order)
                 seen.add(id(live))
                 if speaker is not None:
                     self.last_speaker = speaker

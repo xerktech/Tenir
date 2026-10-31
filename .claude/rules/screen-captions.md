@@ -25,6 +25,11 @@ paths:
   lines OCR missed for longer. `_GONE_MS` (20 s) only splits a repeat after silence from a miss.
   Tests: `test_a_reply_said_again_after_someone_else_is_kept_at_any_gap`,
   `test_an_ocr_miss_of_many_frames_does_not_store_a_line_twice`.
+- Only a line an earlier snapshot showed may raise that order floor: a garbled one-frame top
+  line raising it re-stored every line below. A top line seen once that is a fragment of a
+  known line is dropped, never one lower down (a short "yes" is real).
+  Tests: `test_a_one_frame_ocr_glitch_above_the_box_stores_nothing_twice`,
+  `test_a_short_reply_seen_once_below_the_top_is_kept`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - Final lines wait in `MeetingTracker._unsaved` until written: the merger counts a line final
