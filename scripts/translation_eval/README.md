@@ -105,7 +105,7 @@ echo "$EVAL_PASSWORD" | kubectl -n ai exec -i mt-eval -c vllm -- tee /work/eval_
 #     python3 ws_driver.py data/clips.json --out results/stt_capture.json --concurrency 4 --no-wait \
 #     && echo STT_OK > stt.log
 #   setsid nohup bash run_all.sh > run_all.log 2>&1 < /dev/null &
-#   /work/venv/bin/python score.py results/*/text_*.json results/*/e2e_*.json --out results/scores.json
+#   /work/venv/bin/python public_score.py results/*/text_*.json results/*/e2e_*.json --out results/scores.json
 #   /work/venv/bin/python boot.py      # paired bootstrap vs Qwen, per set (--cpu off-GPU)
 kubectl -n ai delete pod mt-eval && kubectl -n ai delete resourceclaim mt-eval-rtx6000
 ```

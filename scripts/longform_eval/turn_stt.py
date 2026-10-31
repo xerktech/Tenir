@@ -7,7 +7,7 @@ per-session decode. The output is a ws_driver-shaped run — each final's text
 replaced by the candidate's, ``lang`` re-detected with the installed api's
 ``detect_lang`` (Parakeet reports none; this keeps every candidate on the same
 langid) and ``stt_ms`` = the request's wall time — so replay_trigger.py and
-score.py take it unchanged. A summary of latency percentiles prints at the end.
+longform_score.py take it unchanged. A summary of latency percentiles prints at the end.
 
 Usage: python turn_stt.py run.json --audio-dir chunks/ --endpoint http://host:8000/v1
        --model NAME --out cand.json [--language es] [--no-timestamps] [--workers 1]

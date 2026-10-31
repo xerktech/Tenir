@@ -17,7 +17,7 @@ turn is scored as one unit: chrF++ and BLEU (sacrebleu, corpus-level over units)
 with ``--comet``, COMET-22 per unit (src = the turn's Spanish reference cues, so STT
 errors count against the system). Turns the app left untranslated score as empty.
 
-Usage: python score.py refs.json run.json [run2.json ...] [--comet] [--out scores.json]
+Usage: python longform_score.py refs.json run.json [run2.json ...] [--comet] [--out scores.json]
 """
 
 from __future__ import annotations

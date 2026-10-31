@@ -8,7 +8,7 @@ uses, so wall-clock timings and hypotheses are directly comparable to what the
 live session would have produced.
 
 Output is a JSON file pairing each segment's stored production text with the
-candidate hypothesis and the request wall time; ``score.py`` turns that into
+candidate hypothesis and the request wall time; ``stt_score.py`` turns that into
 WER + latency numbers.
 
 Usage: see scripts/stt_eval/README.md.

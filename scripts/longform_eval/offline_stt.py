@@ -15,7 +15,7 @@ no-partials runs only with each other, and know that a knob changing how often f
 blank (max-segment length) also changes how much that mode loses.
 
 Output is a ws_driver-shaped run (no translations): feed it to replay_trigger.py, then
-score.py.
+longform_score.py.
 
 Usage: API_STT_ENDPOINT=http://tenir-stt.ai.svc.cluster.local:8000/v1 [API_STT_MAX_SEGMENT_MS=12000 ...]
        python offline_stt.py clips.json --out stt.json [--no-partials] [--workers 3]

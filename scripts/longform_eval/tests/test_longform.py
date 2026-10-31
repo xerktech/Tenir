@@ -12,7 +12,7 @@ pytest.importorskip("jiwer")
 pytest.importorskip("sacrebleu")
 
 from build_refs import json3_cues  # noqa: E402
-from score import align_units, norm, score_run, wer_counts  # noqa: E402
+from longform_score import align_units, norm, score_run, wer_counts  # noqa: E402
 
 
 def cue(t0, t1, text):

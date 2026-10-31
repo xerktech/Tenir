@@ -61,19 +61,21 @@ jobs:
       - name: Install the api package
         run: pip install -e 'api[dev]'
 
-      - name: Run the harness tests
-        run: python -m pytest scripts/translation_eval/public/tests -q
-
       # scripts/longform_eval (XERK-1414): scorer alignment, replay of the translation
       # trigger, OCR mask. Its tests importorskip the scoring libs, so install them —
       # otherwise a green run would mean "skipped".
       - name: Install the long-form harness deps
         run: pip install jiwer sacrebleu numpy pillow
 
-      - name: Run the long-form harness tests
-        run: python -m pytest scripts/longform_eval/tests -q -rs
-
-      # scripts/stt_eval: scorer, audio slicing and segment_sim's VAD replay, which
-      # hooks StreamingTranscriber internals and broke silently when they changed.
-      - name: Run the STT eval harness tests
-        run: python -m pytest scripts/stt_eval/tests -q -rs
+      # One pytest process over every harness, on purpose: each test dir puts its
+      # harness on sys.path and imports modules by bare name, so two harnesses sharing
+      # a module name (e.g. a top-level score.py) would import the wrong one. Separate
+      # calls hid that (XERK-2536). scripts/stt_eval covers the scorer, audio slicing
+      # and segment_sim's VAD replay, which hooks StreamingTranscriber internals and
+      # broke silently when they changed.
+      - name: Run the harness tests
+        run: >-
+          python -m pytest -q -rs
+          scripts/translation_eval/public/tests
+          scripts/longform_eval/tests
+          scripts/stt_eval/tests
