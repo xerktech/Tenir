@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from score import aggregate, normalize, score_pair  # noqa: E402
+from stt_score import aggregate, normalize, score_pair  # noqa: E402
 from transcribe import SAMPLE_RATE, SAMPLE_WIDTH, ConversationAudio  # noqa: E402
 
 

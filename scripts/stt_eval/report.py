@@ -1,6 +1,6 @@
 """Compare scored STT runs side by side.
 
-Takes one or more ``score.py`` outputs and prints a markdown table — one row
+Takes one or more ``stt_score.py`` outputs and prints a markdown table — one row
 per run — so candidate models/settings can be read against the baseline on
 identical audio. Accuracy columns stay split by reference source (corrected
 refs vs stored production text) because only the former measures accuracy.
@@ -23,7 +23,7 @@ def fmt_wer(agg: dict) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("scored", type=Path, nargs="+", help="score.py outputs to compare")
+    ap.add_argument("scored", type=Path, nargs="+", help="stt_score.py outputs to compare")
     args = ap.parse_args()
 
     rows = []

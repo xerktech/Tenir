@@ -1,10 +1,10 @@
 """Translate the *reference* Spanish through the shipped translator, on a run's turns.
 
 Separates translation error from STT error: takes a ws_driver run, groups the reference
-Spanish cues onto that run's final turns exactly as score.py does, and translates each
+Spanish cues onto that run's final turns exactly as longform_score.py does, and translates each
 turn's reference Spanish with the shipped translator class (source_lang="es", sequential
 like production). The output is a run file in ws_driver's shape — finals carry the
-reference Spanish as ``text`` — so score.py scores it unchanged (its WER is then ~0 by
+reference Spanish as ``text`` — so longform_score.py scores it unchanged (its WER is then ~0 by
 construction; read only the translation columns).
 
 Usage: python gold_translate.py refs.json run.json --out gold.json
@@ -18,7 +18,7 @@ import argparse
 import json
 import time
 
-from score import align_units, chunk_index, cues_in
+from longform_score import align_units, chunk_index, cues_in
 
 
 def make_translator(style: str, endpoint: str, model: str, api_key: str):

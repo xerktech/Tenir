@@ -22,7 +22,7 @@ The stored transcripts **are** the deployed model's output, so out of the box
 a run measures **divergence from production, not accuracy**. The tooling keeps
 the two separate at every step:
 
-- With no corrections, `score.py` reports `divergence vs stored production`.
+- With no corrections, `stt_score.py` reports `divergence vs stored production`.
 - `--review-out` writes a TSV of diverging segments ranked worst-first — the
   cheapest path to real references is hand-correcting those (listen to the
   span, write what was actually said).
@@ -72,10 +72,10 @@ honest per-decode latency including network.
 ## 3. Score and compare
 
 ```bash
-python scripts/stt_eval/score.py parakeet.json --review-out review.tsv
+python scripts/stt_eval/stt_score.py parakeet.json --review-out review.tsv
 # ... hand-correct diverging segments into refs.json, then:
-python scripts/stt_eval/score.py parakeet.json --refs refs.json
-python scripts/stt_eval/score.py candidate.json --refs refs.json
+python scripts/stt_eval/stt_score.py parakeet.json --refs refs.json
+python scripts/stt_eval/stt_score.py candidate.json --refs refs.json
 python scripts/stt_eval/report.py parakeet.scored.json candidate.scored.json
 ```
 

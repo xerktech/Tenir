@@ -40,7 +40,7 @@ API_AUTH_ADMIN_USERNAME=evaluser API_AUTH_ADMIN_PASSWORD=... API_AUTH_SECRET=...
 TENIR_USERNAME=evaluser TENIR_PASSWORD=... python ../translation_eval/public/ws_driver.py \
   clips.json --out run.json --base http://127.0.0.1:8181 --concurrency 7 --tail-idle 60
 
-python score.py refs.json run.json [--comet]                      # STT WER + translation
+python longform_score.py refs.json run.json [--comet]                      # STT WER + translation
 # compare STT models with segmentation held fixed (any /v1/audio/transcriptions server):
 python turn_stt.py run.json --audio-dir chunks --endpoint http://host:8000/v1 --model NAME \
   --language es --out cand.json        # --no-timestamps for Tenir's Parakeet server
@@ -49,7 +49,7 @@ API_STT_ENDPOINT=... python offline_stt.py clips.json --out stt.json
 python replay_trigger.py stt.json --out tr.json --endpoint ... --model milmmt-46-4b
 python gold_translate.py refs.json run.json --out gold.json \
   --endpoint http://tenir-translator.ai.svc.cluster.local:8000/v1 --model milmmt-46-4b
-python score.py refs.json gold.json                                # MT alone, same turns
+python longform_score.py refs.json gold.json                                # MT alone, same turns
 ```
 
 ## Reading the numbers

@@ -1,4 +1,4 @@
-"""Build refs.json for score.py from OCR'd Spanish cues + YouTube json3 English cues.
+"""Build refs.json for longform_score.py from OCR'd Spanish cues + YouTube json3 English cues.
 
 Usage: python build_refs.py es_caps.json subs.en.json3 --out refs.json
 """

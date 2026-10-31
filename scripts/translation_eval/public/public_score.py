@@ -5,7 +5,7 @@ Passthrough set (English in, should come back unchanged): exact-unchanged rate
 and chrF vs the input. A missing/failed translation scores as an empty
 hypothesis — the app would show nothing.
 
-Usage: python score.py results/*.json --out scores.json
+Usage: python public_score.py results/*.json --out scores.json
 """
 
 import argparse

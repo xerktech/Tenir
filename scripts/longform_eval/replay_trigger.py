@@ -11,7 +11,7 @@ inside a run inherits it, and the run also closes after ``--hold-ms`` without a 
 (an approximation: live, partials keep the hold alive too). Echoes (translation equal
 to the source) are dropped as the session does.
 
-Output is a run file in ws_driver's shape, scored by score.py like any other run.
+Output is a run file in ws_driver's shape, scored by longform_score.py like any other run.
 
 Usage: python replay_trigger.py run.json --out replay.json
        --endpoint http://tenir-translator.ai.svc.cluster.local:8000/v1 --model milmmt-46-4b

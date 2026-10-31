@@ -14,7 +14,7 @@ paths:
   The documented `maxai`/`10.10.10.x` endpoints may not be reachable; LiteLLM needs a key.
 - Run the app under test locally with `uvicorn api.main:app --ws-ping-interval 0` pointed at
   those two. Creating pods in the `ai` namespace may be refused by the permission policy.
-- Iterate offline (`offline_stt.py` → `replay_trigger.py` → `score.py`); a live
+- Iterate offline (`offline_stt.py` → `replay_trigger.py` → `longform_score.py`); a live
   `ws_driver.py` pass costs 10+ min per chunk. Turn boundaries count audio bytes, so
   offline finals match live at the production 350 ms partial cadence (the Settings
   default is 700); `--no-partials` runs lose the XERK-174 fallback.
