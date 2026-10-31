@@ -12,6 +12,7 @@ on:
       # segment_sim.py subclasses the live StreamingTranscriber, so a refactor there
       # must re-run its tests (a refactor once left it silently reporting 0 turns)
       - 'scripts/stt_eval/**'
+      - 'scripts/caption_ocr/**'
       - 'api/src/api/stt/streaming.py'
       # the long-form replay test decides language with the shipped langid
       - 'api/src/api/stt/langid.py'
@@ -67,6 +68,11 @@ jobs:
       - name: Install the long-form harness deps
         run: pip install jiwer sacrebleu numpy pillow
 
+      # scripts/caption_ocr (XERK-2504) needs rapidfuzz on top of numpy and pillow; its tests
+      # cover the harness only, no OCR engine is installed.
+      - name: Install the caption-OCR harness deps
+        run: pip install rapidfuzz
+
       # One pytest process over every harness, on purpose: each test dir puts its
       # harness on sys.path and imports modules by bare name, so two harnesses sharing
       # a module name (e.g. a top-level score.py) would import the wrong one. Separate
@@ -79,3 +85,4 @@ jobs:
           scripts/translation_eval/public/tests
           scripts/longform_eval/tests
           scripts/stt_eval/tests
+          scripts/caption_ocr/tests
