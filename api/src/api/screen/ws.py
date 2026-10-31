@@ -37,6 +37,21 @@ _HEADER_LEN = struct.Struct(">I")
 _MAX_HEADER = 4096
 
 _ocr: OcrClient | None = None
+# Windows (orgSiteKeys) one socket may feed: the capture PC watches four. Bounds the lanes,
+# and the decoded frames they hold, that one device token can open.
+MAX_WINDOWS = 8
+# Open screen sockets per user: each entry stops its socket (closes 1008). Deleting a user
+# calls revoke_user(), since auth is only checked at the handshake (XERK-236 parity).
+_revokers: dict[str, set[Callable[[], None]]] = {}
+
+
+def revoke_user(user_id: str) -> int:
+    """Close every open screen socket of a deleted user; returns how many."""
+    stops = list(_revokers.get(user_id, ()))
+    for stop in stops:
+        stop()
+    metrics.incr("screen.revoked", len(stops))
+    return len(stops)
 
 
 def get_ocr_client() -> OcrClient | None:
@@ -166,7 +181,6 @@ async def screen_ws(ws: WebSocket) -> None:
                     end_ms=int(settings.screen_meeting_end_seconds * 1000),
                 ),
             )
-        tracker.notify = send
         return tracker
 
     async def handle(header: ScreenFrameHeader, jpeg: bytes) -> None:
@@ -176,6 +190,8 @@ async def screen_ws(ws: WebSocket) -> None:
             metrics.incr("screen.frames_handled")
 
     async def read_frame(header: ScreenFrameHeader, jpeg: bytes) -> None:
+        if closing.is_set():
+            return
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
         try:
@@ -184,8 +200,15 @@ async def screen_ws(ws: WebSocket) -> None:
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")
             return
-        tracker = tracker_for(header)
+        if closing.is_set():
+            return  # the account was deleted while OCR ran
+        reattached = (tracker := tracker_for(header)).notify is not send
+        tracker.notify = send
         try:
+            if reattached and tracker.conversation_id is not None:
+                # A reconnect mid-meeting: this socket got the idle default on connect,
+                # so tell it the window is in a meeting.
+                await send(tracker.cadence.message(meeting=True, org_site_key=header.orgSiteKey))
             async with tracker.lock:
                 ts = tracker.clock(ts)
                 if header.region.value == "full":
@@ -206,6 +229,7 @@ async def screen_ws(ws: WebSocket) -> None:
             metrics.incr("screen.frame_errors")
 
     lanes: dict[tuple[str, str], _Lane] = {}
+    _revokers.setdefault(principal.user_id, set()).add(closing.set)
     await send(cadence().message(meeting=False))
     receive: asyncio.Task | None = None
     closed_by_us = asyncio.create_task(closing.wait())
@@ -232,6 +256,12 @@ async def screen_ws(ws: WebSocket) -> None:
                     continue
                 metrics.incr("screen.frames")
                 lane_key = (header.orgSiteKey, header.region.value)
+                if (
+                    lane_key not in lanes
+                    and len({k[0] for k in lanes} | {header.orgSiteKey}) > MAX_WINDOWS
+                ):
+                    await error(f"more than {MAX_WINDOWS} windows on one socket")
+                    continue
                 if lane_key not in lanes:
                     lanes[lane_key] = _Lane(handle)
                 lanes[lane_key].put(header, jpeg)
@@ -246,6 +276,11 @@ async def screen_ws(ws: WebSocket) -> None:
             else:
                 await error("expected a binary frame or ping")
     finally:
+        stops = _revokers.get(principal.user_id)
+        if stops is not None:
+            stops.discard(closing.set)
+            if not stops:
+                _revokers.pop(principal.user_id, None)
         for task in (receive, closed_by_us, *(lane.task for lane in lanes.values())):
             if task is not None and not task.done():
                 task.cancel()

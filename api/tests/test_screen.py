@@ -331,13 +331,25 @@ def test_line_that_grows_after_it_was_final_extends_the_same_segment() -> None:
     assert m.flush(3000) == []
 
 
-def test_short_lines_may_repeat_but_long_ones_inside_a_final_do_not() -> None:
+def test_a_line_said_again_is_stored_again() -> None:
+    """QA D2: "okay", someone else, "okay" - both shown at once, then the same words again
+    after the first scrolled away. Every utterance is stored; re-reads of one are not."""
     m = CaptionMerger(start_ms=0, stable_ms=1000)
-    m.feed([blk("A", "ok")], 0)
-    assert [s.text for s in m.feed([blk("A", "ok")], 1000)] == ["ok"]
-    m.feed([blk("B", "something else entirely")], 1500)
-    m.feed([blk("A", "ok")], 1600)
-    m.flush(1700)
+    m.feed([blk("A", "okay")], 0)
+    assert [s.text for s in m.feed([blk("A", "okay")], 1000)] == ["okay"]
+    out = m.feed([blk("A", "okay"), blk("B", "something else entirely"), blk("A", "okay")], 1500)
+    assert [s.text for s in out] == ["something else entirely"]
+    assert [(s.speaker, s.text) for s in m.flush(1700)] == [("A", "okay")]
+    # Gone from the screen (no snapshot shows it for 20 s), then said again: a new line.
+    m.feed([blk("A", "let me share my screen now")], 2000)
+    (first,) = m.feed([blk("A", "let me share my screen now")], 3000)
+    m.feed([blk("B", "go ahead")], 4000)
+    m.feed([blk("A", "let me share my screen now")], 25_000)
+    (again,) = m.flush(26_000)
+    assert again.text == first.text and again.segment_id != first.segment_id
+
+
+def test_long_lines_partly_scrolled_are_not_stored_again() -> None:
     m2 = CaptionMerger(start_ms=0, stable_ms=1000)
     m2.feed([blk("A", "the deployment is blocked on review")], 0)
     m2.feed([blk("A", "the deployment is blocked on review")], 1000)
@@ -462,7 +474,11 @@ def test_device_token_is_minted_for_the_caller_and_scoped_to_the_screen_socket(
         )
         assert (
             renew_token_if_due(
-                device, secret=settings.auth_secret, ttl_seconds=1, now=time.time() + 10**7
+                device,
+                secret=settings.auth_secret,
+                ttl_seconds=minted["expiresIn"],
+                # Past half its life: a login token would renew here (QA D5).
+                now=time.time() + 0.6 * minted["expiresIn"],
             )
             is None
         )
@@ -628,8 +644,16 @@ def test_a_reconnect_mid_meeting_continues_the_same_conversation(screen) -> None
             ws.receive_text()
             n = replay(client, ws, ocr, frames[:6], base)
         with client.websocket_connect(f"/ws/screen?token={token}") as ws:
-            ws.receive_text()
-            replay(client, ws, ocr, frames[6:], base, start=n)
+            assert "orgSiteKey" not in json.loads(ws.receive_text())  # idle default
+            replay(client, ws, ocr, frames[6:7], base, start=n)
+            # The meeting is still on: the new socket is told so (QA D3).
+            assert json.loads(ws.receive_text()) == {
+                "type": "screen.cadence",
+                "orgSiteKey": "tesoro",
+                "fps": settings.screen_meeting_fps,
+                "fullFrameSeconds": settings.screen_full_frame_seconds,
+            }
+            replay(client, ws, ocr, frames[7:], base, start=n + 1)
             client.portal.call(meetings.sweep, base + 10**7)
     (summary,) = store.list(admin.household)
     conv = store.get(admin.household, summary.id)
@@ -773,5 +797,111 @@ def test_cadence_to_a_dead_socket_is_ignored() -> None:
         t.notify = dead
         await t.on_caption([blk(None, "hello there", header=False)], 0)
         assert t.conversation_id is not None
+
+    asyncio.run(run())
+
+
+def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
+    """QA D1: auth is checked at the handshake, so a delete must stop a live socket."""
+    from api.auth import Principal, get_user_store, issue_token
+    from api.main import app
+
+    store, ocr, _, admin = screen
+    member = get_user_store().create("capture-op", "capture-op-pass-1", household=admin.household)
+    token = issue_token(
+        Principal(member.user_id, member.household, "member", member.username, scope="screen"),
+        secret=settings.auth_secret,
+        ttl_seconds=3600,
+    )
+    now = int(time.time() * 1000)
+    jpeg = ocr.register(unique_jpeg(1), crop("Ana Lopez", "first line here"))
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        ws.send_bytes(envelope(header(now, "caption"), jpeg))
+        wait_handled(1)
+        assert json.loads(ws.receive_text())["fps"] == settings.screen_meeting_fps
+        assert client.delete(f"/auth/users/{member.user_id}").status_code == 204
+        # Synchronous first, so a missing revoke fails here instead of hanging below.
+        assert metrics.snapshot()["counters"].get("screen.revoked") == 1
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                ws.receive_text()
+        assert closed.value.code == 1008
+    assert screen_ws._revokers.get(member.user_id) is None
+    assert screen_ws.revoke_user(member.user_id) == 0
+
+
+def test_one_socket_feeds_a_bounded_number_of_windows(screen) -> None:
+    from api.main import app
+
+    _, ocr, token, _ = screen
+    now = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i in range(screen_ws.MAX_WINDOWS):
+            jpeg = ocr.register(unique_jpeg(i), crop())
+            ws.send_bytes(envelope(header(now, "caption", site=f"site-{i}"), jpeg))
+        wait_handled(screen_ws.MAX_WINDOWS)
+        ws.send_bytes(envelope(header(now, "caption", site="one-too-many"), unique_jpeg(99)))
+        assert "windows" in json.loads(ws.receive_text())["message"]
+
+
+def test_oversized_or_mismatched_frames_are_not_decoded() -> None:
+    """QA D4: a small JPEG can decode to gigabytes; only frames the size OCR read, and at
+    most 4096x4096, are decoded for the border check."""
+    frame = FIXTURE["frames"][0]
+    wrong_size = dict(frame, width=640, height=360)
+    assert parse_full_frame(ocr_of(wrong_size), render_full(frame)).active_speaker is None
+    huge = OcrResult(5000, 5000, ocr_of(frame).lines)
+    buf = io.BytesIO()
+    Image.new("RGB", (5000, 5000)).save(buf, format="JPEG")
+    assert parse_full_frame(huge, buf.getvalue()).active_speaker is None
+
+
+def test_a_failed_segment_write_is_retried_not_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA D7: the merger counts a line final once; a failed write must be retried."""
+
+    async def run() -> None:
+        store = InMemoryConversationStore()
+        t = _tracker(store)
+        real = store.add_segment
+        fails = {"n": 1}
+
+        def flaky(*a, **k):
+            if fails["n"]:
+                fails["n"] -= 1
+                raise RuntimeError("db blip")
+            return real(*a, **k)
+
+        monkeypatch.setattr(store, "add_segment", flaky)
+        await t.on_caption([blk(None, "first important line", header=False)], 0)
+        with pytest.raises(RuntimeError):
+            await t.on_caption(
+                [blk(None, "first important line", header=False), blk(None, "next")], 500
+            )
+        await t.on_caption([blk(None, "next")], 900)
+        await t.end(10_000)
+        (conv,) = store.list("default")
+        assert [s.text for s in store.get("default", conv.id).segments] == [
+            "first important line",
+            "next",
+        ]
+
+    asyncio.run(run())
+
+
+def test_a_pending_stale_sweep_runs_before_the_meeting_row_exists() -> None:
+    """QA D8: the boot sweep retry must never finish a meeting this process started."""
+    from api.persistence import stale
+
+    async def run() -> None:
+        store = InMemoryConversationStore()
+        store.create("default", "left-live-by-a-crash")
+        stale.arm(store)
+        t = _tracker(store)
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert not stale.is_pending(store)
+        assert store.get("default", t.conversation_id).status == "live"
+        assert store.get("default", "left-live-by-a-crash").status == "ready"
 
     asyncio.run(run())

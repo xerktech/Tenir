@@ -194,14 +194,16 @@ Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
 
 **Merge** (`merge.py`): a line is final when another speaker's block follows it, when unchanged
 for `API_SCREEN_LINE_STABLE_SECONDS` (3), or at meeting end. A line still on screen after it
-was stored matches the recent finals and is skipped; one that grows after it was stored
-extends the same segment (upsert by segment id).
+was stored matches its final and is skipped; one that grows after it was stored extends the
+same segment (upsert by segment id). The same words said again are stored again: a final
+only absorbs a line while still on screen (seen in the last 8 s), once per snapshot.
 
 **Meetings** (`meetings.py`): one per (user, `orgSiteKey`), kept in the process across
 reconnects. Starts when captions first appear, ends `API_SCREEN_MEETING_END_SECONDS` (180) after
 the last one (a 5 s sweep), and becomes a `ready` conversation with `source='screen'`,
 `org_site_key`, `org_name`, `platform`, `meeting_title`, `participants` and `segments.speaker`.
 A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
+Deleting the user closes their open screen sockets.
 
 ## Caveats
 

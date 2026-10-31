@@ -70,6 +70,10 @@ _PAREN_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
 _NAME_TOKEN = re.compile(r"^[^\W\d_][\w.'@+-]*$", re.UNICODE)
 # Zoom's active-speaker border: a saturated green (#23D959-ish) ring around the tile.
 _BORDER_MIN_PIXELS = 24
+# Largest frame decoded for the border check: a 4K window is 8.3 Mpx. A JPEG is small on the
+# wire but huge decoded (13000x13000 in 2.6 MB is ~500 MB of RGB), so anything bigger, or
+# not the size OCR read, is skipped rather than decoded.
+_MAX_DECODE_PIXELS = 4096 * 4096
 
 # Full-frame bands, as fractions of the frame height.
 _TITLE_BAND = 0.07
@@ -223,11 +227,13 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
             out.participants.append(name)
             tiles.append((name, ln))
     if jpeg and tiles:
-        out.active_speaker = _active_tile(jpeg, tiles)
+        out.active_speaker = _active_tile(jpeg, tiles, (w, h))
     return out
 
 
-def _active_tile(jpeg: bytes, tiles: list[tuple[str, OcrLine]]) -> str | None:
+def _active_tile(
+    jpeg: bytes, tiles: list[tuple[str, OcrLine]], size: tuple[int, int]
+) -> str | None:
     """The tile name sitting inside Zoom's green active-speaker border, if exactly one does.
 
     Zoom labels a tile at its bottom-left corner, so the border runs just left of and below
@@ -237,7 +243,10 @@ def _active_tile(jpeg: bytes, tiles: list[tuple[str, OcrLine]]) -> str | None:
     try:
         from PIL import Image
 
-        img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        img = Image.open(io.BytesIO(jpeg))  # reads the header only
+        if img.size != size or size[0] * size[1] > _MAX_DECODE_PIXELS:
+            return None
+        img = img.convert("RGB")
     except Exception:
         return None
     width, height = img.size

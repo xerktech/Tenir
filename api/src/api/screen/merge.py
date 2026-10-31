@@ -8,9 +8,12 @@ pushes older ones out. Each OCR'd crop is a snapshot of that box. A line is **fi
 - it has not changed for ``stable_ms``, or
 - the meeting ends (``flush``).
 
-A final line is never stored twice: while it stays on screen it keeps matching a recent final
-and is skipped; if it grows after it was finalized (the speaker paused mid-line, then went on)
-the stored segment is extended in place (same segment id, so the store upserts it).
+A final line is never stored twice: while it stays on screen it keeps matching its final and
+is skipped; if it grows after it was finalized (the speaker paused mid-line, then went on)
+the stored segment is extended in place (same segment id, so the store upserts it). Saying
+the same thing again is not a duplicate: a final only absorbs a line while it is still on
+screen (seen within ``_GONE_MS``), and absorbs at most one line per snapshot, so a second
+"okay" shown below the first is stored too.
 """
 
 from __future__ import annotations
@@ -30,6 +33,9 @@ _DUPLICATE = 0.88
 # How long a final can still be extended by its line growing.
 _EXTEND_MS = 30_000
 _RECENT_FINALS = 300
+# A final not seen on screen for this long has scrolled away: the same words again are a new
+# line. Long enough to ride out an OCR miss or a dropped frame at the 1 fps meeting cadence.
+_GONE_MS = 8_000
 
 
 def _norm(text: str) -> str:
@@ -50,6 +56,7 @@ class _Live:
     text: str
     first_ms: int
     changed_ms: int
+    seen_ms: int
 
     @property
     def norm(self) -> str:
@@ -61,6 +68,7 @@ class _Final:
     segment: Segment
     norm: str
     at_ms: int  # when it was finalized or last extended
+    seen_ms: int  # when it was last on screen
 
 
 class CaptionMerger:
@@ -74,14 +82,21 @@ class CaptionMerger:
     def _rel(self, ms: int) -> int:
         return max(0, ms - self.start_ms)
 
-    def _recent_final(self, speaker: str | None, norm: str) -> _Final | None:
+    def _on_screen_final(
+        self, speaker: str | None, norm: str, ts: int, absorbed: set[int]
+    ) -> _Final | None:
+        """The stored final this re-read of an on-screen line belongs to, if any."""
         for f in reversed(self._finals):
-            if not _same_speaker(f.segment.speaker, speaker):
+            if ts - f.seen_ms > _GONE_MS:
+                continue
+            if id(f) in absorbed or not _same_speaker(f.segment.speaker, speaker):
                 continue
             # A long line inside a stored one is that line partly scrolled or re-wrapped;
             # a short one ("ok") may well be said again, so it must match whole.
             contained = len(norm) >= 12 and norm in f.norm
             if norm == f.norm or contained or _ratio(norm, f.norm) >= _DUPLICATE:
+                f.seen_ms = ts
+                absorbed.add(id(f))
                 return f
         return None
 
@@ -95,9 +110,6 @@ class CaptionMerger:
 
     def _finalize(self, live: _Live, ts: int) -> Segment | None:
         self._live.remove(live)
-        norm = live.norm
-        if self._recent_final(live.speaker, norm) is not None:
-            return None
         seg = Segment(
             segment_id=uuid.uuid4().hex,
             text=live.text,
@@ -106,13 +118,14 @@ class CaptionMerger:
             lang="en",
             speaker=live.speaker,
         )
-        self._finals.append(_Final(seg, norm, ts))
+        self._finals.append(_Final(seg, live.norm, ts, live.seen_ms))
         return seg
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
         out: list[Segment] = []
         seen: set[int] = set()
+        absorbed: set[int] = set()
         to_finalize: list[_Live] = []
         last_block = len(blocks) - 1
         for bi, block in enumerate(blocks):
@@ -130,14 +143,15 @@ class CaptionMerger:
                         ext.segment.text = text
                         ext.segment.end_ms = self._rel(ts)
                         ext.norm = norm
-                        ext.at_ms = ts
+                        ext.at_ms = ext.seen_ms = ts
+                        absorbed.add(id(ext))
                         out.append(ext.segment)
                         continue
-                    if self._recent_final(speaker, norm) is not None:
+                    if self._on_screen_final(speaker, norm, ts, absorbed) is not None:
                         continue  # still on screen after it was stored
                     if not block.has_header:
                         speaker = self.last_speaker
-                    live = _Live(speaker, text, ts, ts)
+                    live = _Live(speaker, text, ts, ts, ts)
                     self._live.append(live)
                 else:
                     if not block.has_header:
@@ -147,6 +161,7 @@ class CaptionMerger:
                         live.changed_ms = ts
                     if live.speaker is None:
                         live.speaker = speaker
+                live.seen_ms = ts
                 seen.add(id(live))
                 if speaker is not None:
                     self.last_speaker = speaker

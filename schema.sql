@@ -199,6 +199,8 @@ CREATE TABLE IF NOT EXISTS participants (
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     first_seen_ms   INTEGER NOT NULL DEFAULT 0,
+    -- Order among names first seen in the same frame (tile order), left to right.
+    position        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (conversation_id, name)
 );
 

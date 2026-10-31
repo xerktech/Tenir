@@ -51,13 +51,16 @@ def test_screen_meeting_round_trips(store) -> None:
         "zoom",
     )
     store.set_meeting_title(HH, cid, "Q3 Release Sync")
-    store.add_participants(HH, cid, [("Priya Raman", 0), ("Sean O'Neil", 500)])
+    # Tiles seen in one frame share their ms: they keep tile order, not name order.
+    store.add_participants(HH, cid, [("Priya Raman", 0), ("Sean O'Neil", 0)])
     store.add_participants(HH, cid, [("Priya Raman", 9000), ("Kunal", 700)])
     store.add_segment(HH, cid, Segment("s1", "hello", 0, 100, "en", speaker="Priya Raman"))
     store.finish(HH, cid)
     got = store.get(HH, cid)
     assert got.meeting_title == "Q3 Release Sync"
     assert got.participants == ["Priya Raman", "Sean O'Neil", "Kunal"]
+    store.add_participants(HH, cid, [("Zed", 800), ("Abe", 800)])
+    assert store.get(HH, cid).participants[-2:] == ["Zed", "Abe"]
     assert got.segments[0].speaker == "Priya Raman"
     (summary,) = store.list(HH)
     assert (summary.source, summary.org_name, summary.meeting_title) == (

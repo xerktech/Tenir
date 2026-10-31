@@ -408,3 +408,8 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
     for session, result in zip(doomed, results, strict=True):
         if isinstance(result, Exception):
             log.error("session %s revoke failed", session.session_id, exc_info=result)
+    # Meeting-capture sockets (XERK-2505) aren't registry sessions: stop them too. Imported
+    # here to keep the auth package free of the screen package at import time.
+    from api.screen.ws import revoke_user
+
+    revoke_user(user_id)

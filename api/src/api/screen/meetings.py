@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from api.contract import ScreenCadence
 from api.metrics import metrics
-from api.persistence import ConversationStore, ScreenMeta, Segment
+from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen.merge import CaptionMerger
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
@@ -79,6 +79,9 @@ class MeetingTracker:
         self.last_ts = 0
         self._stored_people: set[str] = set()
         self._stored_title: str | None = None
+        # Final lines not yet written. The merger counts a line final once, so a failed or
+        # cancelled write must be retried from here, never re-derived (it would dedup away).
+        self._unsaved: list[Segment] = []
 
     async def _io(self, fn: Callable[..., object], *args: object) -> object:
         return await asyncio.to_thread(fn, *args)
@@ -133,6 +136,10 @@ class MeetingTracker:
     async def _start(self, ts: int) -> None:
         if not await self._io(self.account_exists, self.owner):
             raise AccountGone(self.owner)
+        if stale.is_pending(self.store):
+            # The boot sweep of a previous process's live rows hasn't succeeded yet: run it
+            # before this meeting's row exists, so it can't finalize it (XERK-1428).
+            await self._io(stale.sweep_if_pending, self.store, get_audio_store())
         # A uuid4 string, the shape history accepts for a conversation id.
         conversation_id = str(uuid.uuid4())
         await self._io(
@@ -142,6 +149,7 @@ class MeetingTracker:
         )
         self.conversation_id = conversation_id
         self.merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms)
+        self._unsaved = []
         self._stored_people = set()
         self._stored_title = None
         metrics.incr("screen.meetings_started")
@@ -178,8 +186,12 @@ class MeetingTracker:
             self._stored_title = self.title
 
     async def _store(self, segments: list[Segment]) -> None:
-        for seg in segments:
+        """Write new final lines, after any a failed write left behind (upsert by id)."""
+        self._unsaved.extend(segments)
+        while self._unsaved:
+            seg = self._unsaved[0]
             await self._io(self.store.add_segment, self.household, self.conversation_id, seg)
+            self._unsaved.pop(0)
             metrics.incr("screen.lines")
 
     def expired(self, now_ms: int) -> bool:

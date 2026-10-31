@@ -191,8 +191,8 @@ def renew_token_if_due(
     except AuthError:
         return None
     if claims.get("scp") is not None:
-        # A device token never slides: renewing it here would also mint it into a
-        # full-access login token, since the renewal path is the REST middleware.
+        # A device token never slides: its expiry is the hard limit on a token that
+        # lives on a capture PC (XERK-2505).
         return None
     iat, exp = claims.get("iat"), claims.get("exp", 0)
     if isinstance(iat, (int, float)) and exp > iat:

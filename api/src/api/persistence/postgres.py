@@ -942,10 +942,11 @@ class SqlConversationStore:
             # household's meeting; a name already recorded keeps its first sighting.
             conn.execute(
                 """
-                INSERT INTO participants (conversation_id, name, first_seen_ms)
-                SELECT c.id, n.name, n.first_seen_ms
+                INSERT INTO participants (conversation_id, name, first_seen_ms, position)
+                SELECT c.id, n.name, n.first_seen_ms, n.position
                   FROM conversations c,
-                       unnest(%s::text[], %s::int[]) AS n(name, first_seen_ms)
+                       unnest(%s::text[], %s::int[]) WITH ORDINALITY
+                           AS n(name, first_seen_ms, position)
                  WHERE c.id = %s AND c.household = %s
                 ON CONFLICT (conversation_id, name) DO NOTHING
                 """,
@@ -1091,7 +1092,7 @@ class SqlConversationStore:
             songs[r["conversation_id"]].append(self._row_to_song(r))
         for r in cur.execute(
             "SELECT conversation_id, name FROM participants WHERE conversation_id = ANY(%s) "
-            "ORDER BY first_seen_ms, name",
+            "ORDER BY first_seen_ms, position, name",
             (ids,),
         ).fetchall():
             people[r["conversation_id"]].append(r["name"])
