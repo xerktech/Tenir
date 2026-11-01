@@ -43,6 +43,12 @@ paths:
     under a verified header above a match costs more than "new": it is a line said between
     two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
   - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
+  - A stored line extends only on whole-word growth, so the ASR finishing its last word after
+    it was stored ("deploy" -> "deployment failed") loses the rest of that line. Accepted
+    (XERK-2597): three char-growth rules each traded it for stray OCR chars stored ("yesl",
+    "timeout'" freezing the line). `_simulate` never appends chars; re-tune on real captures.
+    Tests: `test_ocr_jitter_on_the_stored_bottom_line_is_not_stored`,
+    `test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored`.
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
