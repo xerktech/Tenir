@@ -2,7 +2,10 @@
 
 import {
   history,
+  meetingSpeakers,
+  platformLabel,
   type Conversation,
+  type ConversationSummary,
   type CueView,
   type SegmentView,
   type SongView,
@@ -17,6 +20,7 @@ import { audioPlayerAvailable } from "../native/audioPlayer";
 import { AudioPlayer } from "../ui/AudioPlayer";
 import { CueDisclosure } from "../ui/cue";
 import {
+  Badge,
   Button,
   ConfirmButton,
   EmptyState,
@@ -75,6 +79,22 @@ function runs(items: TranscriptItem[]): Run[] {
   return out;
 }
 
+/** Title, org badge and platform of a screen-captured meeting (XERK-2507) — the web row's
+ *  meeting line. Nothing for a mic session. */
+function MeetingLine({ conv, title = true }: { conv: ConversationSummary; title?: boolean }): JSX.Element | null {
+  const { colors } = useTheme();
+  if (conv.source !== "screen") return null;
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+      {title && (
+        <Text style={{ color: colors.text, fontWeight: "600" }}>{conv.meetingTitle || "Meeting"}</Text>
+      )}
+      {conv.orgName ? <Badge>{conv.orgName}</Badge> : null}
+      {conv.platform ? <Muted>{platformLabel(conv.platform)}</Muted> : null}
+    </View>
+  );
+}
+
 export function HistoryScreen(): JSX.Element {
   const notify = useNotify();
   const ctrl = useHistory();
@@ -100,7 +120,11 @@ export function HistoryScreen(): JSX.Element {
   // nothing (XERK-65).
   if (selected) {
     return (
-      <Detail conv={selected} onDelete={() => void remove(selected.id)} onBack={() => setSelected(null)} />
+      <Detail
+        conv={selected}
+        onDelete={() => void remove(selected.id)}
+        onBack={() => setSelected(null)}
+      />
     );
   }
 
@@ -111,6 +135,20 @@ export function HistoryScreen(): JSX.Element {
         <Field placeholder="Search transcripts…" value={query} onChangeText={setQuery} />
         <Button title="Search" onPress={() => ctrl.setSearch(query)} />
       </Row>
+      {/* Org filter (XERK-2507): the web's select as a wrapping row of choices; only
+          shown once there are meetings to filter. */}
+      {ctrl.orgs.length > 0 && (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {[{ siteKey: "", name: "All orgs" }, ...ctrl.orgs].map((o) => (
+            <Button
+              key={o.siteKey || "all"}
+              title={o.name}
+              kind={ctrl.org === o.siteKey ? "primary" : "default"}
+              onPress={() => ctrl.setOrg(o.siteKey)}
+            />
+          ))}
+        </View>
+      )}
 
       {ctrl.loading && <Spinner />}
       {/* A failed listing used to render as an empty screen, indistinguishable from
@@ -127,6 +165,7 @@ export function HistoryScreen(): JSX.Element {
       {ctrl.data?.map((c) => (
         <ListItem key={c.id}>
           <ConversationRow label={conversationLabel(c)} />
+          <MeetingLine conv={c} />
           <Row>
             <Button title="Open" onPress={() => void open(c.id)} />
             {/* Destructive actions arm on the first press and commit on the
@@ -146,6 +185,14 @@ export function HistoryScreen(): JSX.Element {
 function ConversationRow({ label }: { label: string }): JSX.Element {
   const { colors } = useTheme();
   return <Text style={{ color: colors.text }}>{label}</Text>;
+}
+
+/** Everyone heard or seen in a meeting (XERK-2507) — the web `SpeakerList`. Read-only in
+ *  v1: renaming speakers (aliases) waits on XERK-2606. */
+function SpeakerList({ conv }: { conv: Conversation }): JSX.Element | null {
+  const speakers = meetingSpeakers(conv);
+  if (speakers.length === 0) return null;
+  return <Muted>Speakers: {speakers.join(", ")}</Muted>;
 }
 
 function Detail({
@@ -170,9 +217,11 @@ function Detail({
     <Screen>
       <Row>
         <Button title="← History" onPress={onBack} />
-        <Heading>Session detail</Heading>
+        <Heading>{conv.source === "screen" ? conv.meetingTitle || "Meeting" : "Session detail"}</Heading>
       </Row>
       <Muted>{conversationLabel(conv)}</Muted>
+      <MeetingLine conv={conv} title={false} />
+      {conv.source === "screen" && <SpeakerList conv={conv} />}
       {/* Toggle cues off to make the whole transcript one selectable block; only
           shown when the conversation actually has cues to toggle. */}
       {hasCues && (
@@ -221,6 +270,8 @@ function Detail({
                 <Text key={seg.segmentId}>
                   {j > 0 ? "\n" : null}
                   <Text style={{ color: colors.muted }}>[{msToClock(seg.startMs)}] </Text>
+                  {/* Who said it, on a screen-captured meeting (XERK-2507). */}
+                  {seg.speaker ? <Text style={{ fontWeight: "600" }}>{seg.speaker}: </Text> : null}
                   {/* Source-language chip on a translated turn's original
                       text (XERK-160) — the counterpart of the "EN" tag. */}
                   {seg.translation && seg.lang ? <LangTagText lang={seg.lang} /> : null}

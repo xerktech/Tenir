@@ -2,6 +2,8 @@
 
 import {
   history,
+  meetingSpeakers,
+  platformLabel,
   type Conversation,
   type ConversationSummary,
   type CueView,
@@ -13,6 +15,7 @@ import { useMemo, useState } from "react";
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
 import {
+  Badge,
   Button,
   Card,
   ConfirmButton,
@@ -61,11 +64,29 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Org badge + platform of a screen-captured meeting (XERK-2507); nothing for a mic session. */
+function MeetingTags({ conv }: { conv: ConversationSummary }): JSX.Element | null {
+  if (conv.source !== "screen") return null;
+  return (
+    <span className="meeting-tags">
+      {conv.orgName && <Badge>{conv.orgName}</Badge>}
+      {conv.platform && <span className="muted">{platformLabel(conv.platform)}</span>}
+    </span>
+  );
+}
+
 export function HistoryPanel(): JSX.Element {
   const notify = useNotify();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const { data, error, loading, reload } = useAsync(() => history.list(search.trim() || undefined), [search]);
+  // "" = every org. The filter only shows once there are meetings to filter (XERK-2507).
+  const [org, setOrg] = useState("");
+  const { data, error, loading, reload } = useAsync(
+    () => history.list(search.trim() || undefined, 50, 0, org || undefined),
+    [search, org],
+  );
+  // A failed org list just hides the filter: the history itself still loads.
+  const orgs = useAsync(() => history.orgs().catch(() => []), []);
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -141,6 +162,21 @@ export function HistoryPanel(): JSX.Element {
         <Button variant="primary" type="submit">
           Search
         </Button>
+        {(orgs.data?.length ?? 0) > 0 && (
+          <select
+            aria-label="Filter by org"
+            className="input history-org-filter"
+            value={org}
+            onChange={(e) => setOrg(e.target.value)}
+          >
+            <option value="">All orgs</option>
+            {orgs.data?.map((o) => (
+              <option key={o.siteKey} value={o.siteKey}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        )}
       </form>
 
       {loading && <Spinner />}
@@ -186,6 +222,12 @@ export function HistoryPanel(): JSX.Element {
                   <button className="link" onClick={() => void open(c.id)}>
                     {new Date(c.startedAt).toLocaleString()}
                   </button>
+                  {c.source === "screen" && (
+                    <div className="history-meeting">
+                      <span className="history-meeting-title">{c.meetingTitle || "Meeting"}</span>
+                      <MeetingTags conv={c} />
+                    </div>
+                  )}
                 </td>
                 <td>{formatDuration(c.durationMs)}</td>
                 <td className="history-col-turns">{c.segmentCount}</td>
@@ -243,6 +285,14 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "segment" ? 0 : 1) - (b.kind === "segment" ? 0 : 1));
 }
 
+/** Everyone heard or seen in a meeting (XERK-2507). Read-only in v1: renaming speakers
+ *  (aliases) waits on XERK-2606. */
+function SpeakerList({ conv }: { conv: Conversation }): JSX.Element | null {
+  const speakers = meetingSpeakers(conv);
+  if (speakers.length === 0) return null;
+  return <p className="muted speaker-list">Speakers: {speakers.join(", ")}</p>;
+}
+
 function ConversationDetail({
   conv,
   onDelete,
@@ -264,7 +314,9 @@ function ConversationDetail({
         <Button variant="ghost" onClick={onBack}>
           ← History
         </Button>
-        <h3 className="grow">Conversation detail</h3>
+        <h3 className="grow">
+          {conv.source === "screen" ? conv.meetingTitle || "Meeting" : "Conversation detail"}
+        </h3>
         <ConfirmButton confirmLabel="Confirm delete" onConfirm={onDelete}>
           Delete
         </ConfirmButton>
@@ -272,6 +324,8 @@ function ConversationDetail({
       <p className="muted">
         {new Date(conv.startedAt).toLocaleString()} · {formatDuration(conv.durationMs)} · {conv.segmentCount} turns
       </p>
+      <MeetingTags conv={conv} />
+      {conv.source === "screen" && <SpeakerList conv={conv} />}
       {/* Only shown when there are cues to toggle. */}
       {hasCues && (
         <label className="cue-toggle">
@@ -295,6 +349,8 @@ function ConversationDetail({
             item.kind === "segment" ? (
               <div className="item" key={item.seg.segmentId}>
                 <span className="muted">{segmentTiming(item.seg)}</span>{" "}
+                {/* Who said it, on a screen-captured meeting (XERK-2507). */}
+                {item.seg.speaker && <span className="speaker-name">{item.seg.speaker}: </span>}
                 {/* Source-language chip on a translated turn's original text
                     (XERK-160) — the counterpart of the translation's "EN" tag. */}
                 {item.seg.translation && item.seg.lang && <LangTag lang={item.seg.lang} />}

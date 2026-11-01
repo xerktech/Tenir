@@ -190,6 +190,20 @@ export interface ConversationSummary {
   durationMs: number;
   segmentCount: number;
   hasAudio: boolean;
+  /** "mic" for a live audio session, "screen" for a meeting read off captured captions
+   *  (XERK-2505). Absent on payloads from an older server. */
+  source?: string;
+  /** Screen meetings only: the org the window belongs to, the platform, the title. */
+  orgSiteKey?: string | null;
+  orgName?: string | null;
+  platform?: string | null;
+  meetingTitle?: string | null;
+}
+
+/** An org the caller has screen-captured meetings from — the history org filter. */
+export interface OrgView {
+  siteKey: string;
+  name: string;
 }
 
 export interface SegmentView {
@@ -200,6 +214,8 @@ export interface SegmentView {
   lang: string | null;
   /** English translation of a non-English turn (XERK-160); absent/null otherwise. */
   translation?: string | null;
+  /** Who said it, on a screen-captured meeting (XERK-2505); null otherwise. */
+  speaker?: string | null;
 }
 
 /** A private context cue, rendered inline in history at atMs (XERK-81). */
@@ -227,6 +243,23 @@ export interface Conversation extends ConversationSummary {
   /** Songs recognized playing during the session (XERK-184). Absent on payloads
    *  written before the feature. */
   songs?: SongView[];
+  /** Participant tile names of a screen meeting, first seen first (XERK-2505). */
+  participants?: string[];
+}
+
+const PLATFORM_LABELS: Record<string, string> = { zoom: "Zoom" };
+
+/** Display name of a meeting platform id ("zoom" -> "Zoom"); unknown ids pass through. */
+export function platformLabel(platform: string): string {
+  return PLATFORM_LABELS[platform] ?? platform;
+}
+
+/** Everyone heard or seen in a meeting (XERK-2507): the participant tiles, then any caption
+ *  speaker not among them, each once, in first-seen order. */
+export function meetingSpeakers(conv: Conversation): string[] {
+  const names = [...(conv.participants ?? [])];
+  for (const seg of conv.segments) if (seg.speaker) names.push(seg.speaker);
+  return [...new Set(names)];
 }
 
 export type ComponentState = "ready" | "connecting" | "down";
@@ -448,11 +481,15 @@ export function getStatus(): Promise<SystemStatus> {
 // ---- history ----------------------------------------------------------------
 
 export const history = {
-  list: (q?: string, limit = 50, offset = 0) => {
+  /** `org` keeps only screen meetings from that org site key (XERK-2507). */
+  list: (q?: string, limit = 50, offset = 0, org?: string) => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (q) params.set("q", q);
+    if (org) params.set("org", org);
     return request<ConversationSummary[]>("GET", `/conversations?${params.toString()}`);
   },
+  /** Orgs the caller has meetings from, by name — the options of the org filter. */
+  orgs: () => request<OrgView[]>("GET", "/conversations/orgs"),
   get: (id: string) => request<Conversation>("GET", `/conversations/${id}`),
   remove: (id: string) => request<void>("DELETE", `/conversations/${id}`),
   // Audio is opened by plain navigation (`<a href>` / Linking.openURL), which can't

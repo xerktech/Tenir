@@ -18,6 +18,7 @@ import {
   startOidcLogin,
   type Conversation,
   type ConversationSummary,
+  type OrgView,
   type Principal,
   type SystemStatus,
 } from "@tenir/client-core";
@@ -81,13 +82,24 @@ export function useAuth(): AuthController {
 export interface HistoryController extends AsyncState<ConversationSummary[]> {
   search: string;
   setSearch(q: string): void;
+  /** Org site key the list is filtered to; "" = every org (XERK-2507). */
+  org: string;
+  setOrg(siteKey: string): void;
+  /** Orgs the caller has meetings from; empty (filter hidden) when none or unloadable. */
+  orgs: OrgView[];
   open(id: string): Promise<Conversation>;
   remove(id: string): Promise<void>;
 }
 
 export function useHistory(): HistoryController {
   const [search, setSearch] = useState("");
-  const state = useAsync(() => history.list(search.trim() || undefined), [search]);
+  const [org, setOrg] = useState("");
+  const state = useAsync(
+    () => history.list(search.trim() || undefined, 50, 0, org || undefined),
+    [search, org],
+  );
+  // A failed org list just hides the filter: the history itself still loads.
+  const orgs = useAsync(() => history.orgs().catch((): OrgView[] => []), []);
   const remove = useCallback(
     async (id: string) => {
       await history.remove(id);
@@ -95,7 +107,16 @@ export function useHistory(): HistoryController {
     },
     [state],
   );
-  return { ...state, search, setSearch, open: (id) => history.get(id), remove };
+  return {
+    ...state,
+    search,
+    setSearch,
+    org,
+    setOrg,
+    orgs: orgs.data ?? [],
+    open: (id) => history.get(id),
+    remove,
+  };
 }
 
 // ---- component status dashboard ---------------------------------------------

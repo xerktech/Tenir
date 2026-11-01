@@ -71,6 +71,10 @@ class ConversationStore(Protocol):
     def set_speaker_alias(
         self, household: str, owner: str, org_site_key: str, alias: str, name: str
     ) -> None: ...
+    def orgs(self, household: str, *, owner: str | None = None) -> list[tuple[str, str]]:
+        """``(org_site_key, org_name)`` of every org the caller has a screen meeting from,
+        by name; the name is the most recent meeting's."""
+        ...
     def add_song(self, household: str, conversation_id: str, song: Song) -> None: ...
     def finish(
         self,
@@ -91,14 +95,23 @@ class ConversationStore(Protocol):
         self, household: str, conversation_id: str, *, owner: str | None = None
     ) -> Conversation | None: ...
     def list(
-        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
-    ) -> list[Conversation]: ...
+        self,
+        household: str,
+        *,
+        owner: str | None = None,
+        org: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Conversation]:
+        """Newest first; ``org`` keeps only screen meetings from that org site key."""
+        ...
     def search(
         self,
         household: str,
         query: str,
         *,
         owner: str | None = None,
+        org: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ConversationSummary]: ...
@@ -241,6 +254,18 @@ class InMemoryConversationStore:
             key = (household, owner, org_site_key)
             self._aliases.setdefault(key, {})[alias_key(alias)] = name
 
+    def orgs(self, household: str, *, owner: str | None = None) -> list[tuple[str, str]]:
+        with self._lock:
+            latest: dict[str, Conversation] = {}
+            for conv in self._conversations(household).values():
+                if conv.org_site_key is None or not self._owned(conv, owner):
+                    continue
+                seen = latest.get(conv.org_site_key)
+                if seen is None or conv.started_at > seen.started_at:
+                    latest[conv.org_site_key] = conv
+        pairs = [(key, conv.org_name or key) for key, conv in latest.items()]
+        return sorted(pairs, key=lambda p: (p[1].casefold(), p[0]))
+
     def add_song(self, household: str, conversation_id: str, song: Song) -> None:
         with self._lock:
             conv = self._conversations(household).get(conversation_id)
@@ -306,12 +331,26 @@ class InMemoryConversationStore:
             # not change the stored row behind the store's back.
             return copy.deepcopy(conv)
 
+    @staticmethod
+    def _in_org(conv: Conversation, org: str | None) -> bool:
+        return org is None or conv.org_site_key == org
+
     def list(
-        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        household: str,
+        *,
+        owner: str | None = None,
+        org: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[ConversationSummary]:
         with self._lock:
             convs = sorted(
-                (c for c in self._conversations(household).values() if self._owned(c, owner)),
+                (
+                    c
+                    for c in self._conversations(household).values()
+                    if self._owned(c, owner) and self._in_org(c, org)
+                ),
                 key=lambda c: c.started_at,
                 reverse=True,
             )
@@ -323,16 +362,17 @@ class InMemoryConversationStore:
         query: str,
         *,
         owner: str | None = None,
+        org: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ConversationSummary]:
         terms = [t for t in query.lower().split() if t]
         if not terms:
-            return self.list(household, owner=owner, limit=limit, offset=offset)
+            return self.list(household, owner=owner, org=org, limit=limit, offset=offset)
         with self._lock:
             scored: list[tuple[int, Conversation]] = []
             for conv in self._conversations(household).values():
-                if not self._owned(conv, owner):
+                if not self._owned(conv, owner) or not self._in_org(conv, org):
                     continue
                 hay = conv.transcript.lower()
                 score = sum(hay.count(term) for term in terms)

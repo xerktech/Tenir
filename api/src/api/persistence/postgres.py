@@ -978,6 +978,23 @@ class SqlConversationStore:
                 (household, owner, org_site_key, alias_key(alias), name),
             )
 
+    def orgs(  # pragma: no cover - requires a live database
+        self, household: str, *, owner: str | None = None
+    ) -> list[tuple[str, str]]:
+        owner_clause = "" if owner is None else "AND owner = %s"
+        owner_param: tuple = () if owner is None else (owner,)
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (org_site_key) org_site_key, COALESCE(org_name, org_site_key)
+                  FROM conversations
+                 WHERE household = %s {owner_clause} AND org_site_key IS NOT NULL
+                 ORDER BY org_site_key, started_at DESC
+                """,
+                (household, *owner_param),
+            ).fetchall()
+        return sorted(((k, n) for k, n in rows), key=lambda p: (p[1].casefold(), p[0]))
+
     def add_song(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, song: Song
     ) -> None:
@@ -1159,7 +1176,13 @@ class SqlConversationStore:
         )
 
     def list(  # pragma: no cover - requires a live database
-        self, household: str, *, owner: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        household: str,
+        *,
+        owner: str | None = None,
+        org: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[ConversationSummary]:
         from psycopg.rows import dict_row
 
@@ -1167,6 +1190,9 @@ class SqlConversationStore:
         # id restricts to their own rows. The owner index carries (household, owner, ...).
         where = "c.household = %s" if owner is None else "c.household = %s AND c.owner = %s"
         params: tuple = (household,) if owner is None else (household, owner)
+        if org is not None:
+            where += " AND c.org_site_key = %s"
+            params = (*params, org)
         with self._ensure_pool().connection() as conn:
             cur = conn.cursor(row_factory=dict_row)
             rows = cur.execute(
@@ -1186,6 +1212,7 @@ class SqlConversationStore:
         query: str,
         *,
         owner: str | None = None,
+        org: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ConversationSummary]:
@@ -1195,9 +1222,12 @@ class SqlConversationStore:
         # id restricts to rows they own, so search can never surface another user's match.
         if not query.split():
             # No terms: the whole list, as InMemoryConversationStore answers.
-            return self.list(household, owner=owner, limit=limit, offset=offset)
+            return self.list(household, owner=owner, org=org, limit=limit, offset=offset)
         owner_clause = "" if owner is None else "AND c.owner = %s"
         owner_param: tuple = () if owner is None else (owner,)
+        if org is not None:
+            owner_clause += " AND c.org_site_key = %s"
+            owner_param = (*owner_param, org)
         try:
             with self._ensure_pool().connection() as conn:
                 # Terms full-text search can't tokenise (see _split_search_terms) match
