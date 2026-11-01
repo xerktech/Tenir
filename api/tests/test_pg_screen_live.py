@@ -144,6 +144,7 @@ def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
         )
     apply_boot_schema(pool)
     apply_boot_schema(pool)
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {}  # the old row belongs to no one
     store.set_speaker_alias(HH, "u1", "tesoro", "kunal@tesoroxp.com", "K1")
     store.set_speaker_alias(HH, "u2", "tesoro", "kunal@tesoroxp.com", "K2")
     assert store.speaker_aliases(HH, "u1", "tesoro") == {"kunal@tesoroxp.com": "K1"}
