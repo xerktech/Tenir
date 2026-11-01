@@ -403,14 +403,14 @@ def test_start_needs_both_url_and_token(monkeypatch, caplog) -> None:
     store = InMemoryConversationStore()
     monkeypatch.setattr(settings, "turma_url", "http://hub")
     monkeypatch.setattr(settings, "turma_meetings_token", "")
-    with caplog.at_level("WARNING", logger="api.screen.turma"):
+    with caplog.at_level("ERROR", logger="api.screen.turma"):
         assert turma.start(store) is None and turma.get_delivery() is None
     assert "API_TURMA_MEETINGS_TOKEN is not set" in caplog.text
     turma.wake()  # a no-op when off
     monkeypatch.setattr(settings, "turma_url", "")
     monkeypatch.setattr(settings, "turma_meetings_token", "tok")
     caplog.clear()
-    with caplog.at_level("WARNING", logger="api.screen.turma"):
+    with caplog.at_level("ERROR", logger="api.screen.turma"):
         assert turma.start(store) is None
     assert "API_TURMA_URL is not set" in caplog.text
     for bad in ("turma.example:8300", "http://", "ftp://hub"):
@@ -482,9 +482,19 @@ def test_status_has_no_turma_light_when_delivery_is_off(monkeypatch) -> None:
     assert all(c.id != "turma" for c in asyncio.run(st.refresh()))
 
 
-def test_status_shows_half_configured_delivery(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "turma_url", "http://hub")
-    monkeypatch.setattr(settings, "turma_meetings_token", "")
-    monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
+@pytest.mark.parametrize(
+    ("url", "token", "detail"),
+    [
+        ("http://hub", "", "API_TURMA_MEETINGS_TOKEN is not set"),
+        ("", "tok", "API_TURMA_URL is not set"),
+        ("http://", "tok", "API_TURMA_URL must be an http(s) URL"),
+    ],
+)
+def test_status_shows_a_delivery_config_error_red_at_once(monkeypatch, url, token, detail):
+    # Delta QA: yellow for the 180 s grace window, and a hostless URL showed no reason.
+    monkeypatch.setattr(settings, "turma_url", url)
+    monkeypatch.setattr(settings, "turma_meetings_token", token)
+    monkeypatch.setattr(settings, "status_grace_seconds", 180.0)
     (c,) = [c for c in asyncio.run(st.refresh()) if c.id == "turma"]
-    assert (c.state, c.detail) == (st.STATE_DOWN, "API_TURMA_MEETINGS_TOKEN is not set")
+    assert (c.state, c.detail) == (st.STATE_DOWN, detail)
+    assert not turma.configured()

@@ -232,8 +232,9 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   both on the wire and by the hub's per-org transcript measure (sanitized segments, each with a
   `speaker`). Past that the earliest lines are sent and the `sent` row's `delivery_error` says
   how many.
-- A half-set config (URL or token alone) logs why delivery is off and shows red on `/status`; a
-  URL that isn't http(s) with a host logs an error and keeps delivery off.
+- A config that can't work (URL or token alone, or a URL that isn't http(s) with a host) keeps
+  delivery off, logs why, and shows red on `/status` at once (no grace window: waiting can't fix
+  it).
 - A meeting is tried as soon as it turns ready (the tracker wakes the loop), else on a 10 s poll,
   which also picks up meetings the boot stale sweep closed.
 - Exactly once at the hub: Tenir retries until a 200 `{ok: true}`, and the hub is idempotent on

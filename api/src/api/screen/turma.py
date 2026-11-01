@@ -286,16 +286,21 @@ def _ok(resp: httpx.Response) -> bool:
 _delivery: TurmaDelivery | None = None
 
 
-def half_configured() -> str | None:
-    """The setting missing when only one of URL and token is set, else None."""
+def config_problem() -> str | None:
+    """Why the delivery settings can't work, else None: one of URL and token set without the
+    other, or a URL that isn't http(s) with a host. Both empty is "off", not a problem."""
     url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
-    if bool(url) == bool(token):
-        return None
-    return "API_TURMA_MEETINGS_TOKEN" if url else "API_TURMA_URL"
+    if bool(url) != bool(token):
+        return f"{'API_TURMA_MEETINGS_TOKEN' if url else 'API_TURMA_URL'} is not set"
+    parts = urlsplit(url)
+    if url and (parts.scheme not in ("http", "https") or not parts.hostname):
+        return "API_TURMA_URL must be an http(s) URL"
+    return None
 
 
 def configured() -> bool:
-    return bool(settings.turma_url.strip() and settings.turma_meetings_token.strip())
+    """Delivery is on: both settings set and usable."""
+    return bool(settings.turma_url.strip()) and config_problem() is None
 
 
 def get_delivery() -> TurmaDelivery | None:
@@ -306,17 +311,13 @@ def start(store: ConversationStore | None) -> TurmaDelivery | None:
     """Build the process-wide delivery when configured (lifespan)."""
     global _delivery
     _delivery = None
-    url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
-    if missing := half_configured():
-        # Half set is a mistake, not a choice: say so, or meetings pile up pending silently.
-        log.warning("meeting delivery to turma is off: %s is not set", missing)
+    if problem := config_problem():
+        # A mistake, not a choice: say so, or meetings pile up pending silently.
+        log.error("meeting delivery to turma is off: %s", problem)
         return None
     if store is None or not configured():
         return None
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        log.error("meeting delivery to turma is off: API_TURMA_URL must be an http(s) URL")
-        return None
+    url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
     _delivery = TurmaDelivery(
         store,
         url=url,

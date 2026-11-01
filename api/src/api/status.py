@@ -52,6 +52,7 @@ logging.getLogger("httpx").addFilter(_QuietProbeRequests())
 READY = "ready"
 NOT_READY = "not_ready"  # reachable, but reports/looks not-yet-ready (loading)
 UNREACHABLE = "unreachable"
+MISCONFIGURED = "misconfigured"  # a setting that can't work: red at once, no grace window
 
 # Display states (the dashboard's red/yellow/green).
 STATE_READY = "ready"  # green
@@ -204,11 +205,9 @@ async def _gather() -> list[_RawResult]:
 
     # --- Turma hub delivery of finished meetings (XERK-2513) ---
     conv_store = get_conversation_store()
-    if missing := turma.half_configured():
-        # Meetings pile up pending while half-configured: show it, not just a boot log line.
-        results.append(
-            ("turma", "Meetings to Turma", "infra", UNREACHABLE, f"{missing} is not set")
-        )
+    if problem := turma.config_problem():
+        # Meetings pile up pending while misconfigured: show it, not just a boot log line.
+        results.append(("turma", "Meetings to Turma", "infra", MISCONFIGURED, problem))
     elif turma.configured() and conv_store is not None:
         raw, detail = await _delivery_probe(conv_store)
         results.append(("turma", "Meetings to Turma", "infra", raw, detail))
@@ -258,6 +257,10 @@ def _apply(cid: str, raw: str, detail: str) -> tuple[str, str]:
     if raw == READY:
         _down_since.pop(cid, None)
         return STATE_READY, detail
+    if raw == MISCONFIGURED:
+        # Waiting can't fix a config error, so it skips the "could still be loading" grace.
+        _down_since.pop(cid, None)
+        return STATE_DOWN, detail
     if raw == NOT_READY:
         # Reachable but warming up — that's yellow, and not "down" yet.
         _down_since.pop(cid, None)
