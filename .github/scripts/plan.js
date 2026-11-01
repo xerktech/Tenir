@@ -64,6 +64,7 @@ function main() {
     build_parakeet_stt: changed["parakeet-stt"],
     build_ocr: changed.ocr,
     build_mobile: changed.mobile,
+    build_desktop: changed.desktop,
   });
 
   // Human-readable summary for the Actions run log / step summary.

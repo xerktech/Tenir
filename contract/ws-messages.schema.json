@@ -9,7 +9,8 @@
     { "$ref": "#/$defs/ClientMessage" },
     { "$ref": "#/$defs/ServerMessage" },
     { "$ref": "#/$defs/ScreenFrameHeader" },
-    { "$ref": "#/$defs/ScreenCadence" }
+    { "$ref": "#/$defs/ScreenCadence" },
+    { "$ref": "#/$defs/ScreenNotice" }
   ],
 
   "$defs": {
@@ -380,6 +381,19 @@
           "exclusiveMinimum": 0,
           "description": "Seconds between full window frames."
         }
+      }
+    },
+
+    "ScreenNotice": {
+      "title": "ScreenNotice",
+      "description": "Server -> client on /ws/screen (XERK-2506). Something on a watched window the operator should fix; the capture client shows it as a desktop notification. captions_off: a Zoom meeting has been on screen (its toolbar seen) for a couple of minutes with no caption, so nothing is being recorded. Repeated at most every 15 minutes per window while it lasts.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "orgSiteKey", "kind"],
+      "properties": {
+        "type": { "const": "screen.notice" },
+        "orgSiteKey": { "type": "string" },
+        "kind": { "title": "ScreenNoticeKind", "type": "string", "enum": ["captions_off"] }
       }
     }
   }

@@ -647,3 +647,25 @@ def test_probe_requests_do_not_log_httpx_info(
     with caplog.at_level("INFO", logger="api.status"):
         asyncio.run(st._http_probe("http://probe/health"))
     assert "http://probe/health: HTTP 503" in caplog.text
+
+
+def test_status_publishes_the_desktop_clients_minimum_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows capture client (XERK-2506) reads its minimum version from /status."""
+    client = TestClient(app)
+    assert client.get("/status").json()["clients"] == {"desktop": {"minVersion": None}}
+    monkeypatch.setattr(settings, "desktop_min_version", "0.6.12")
+    assert client.get("/status").json()["clients"]["desktop"]["minVersion"] == "0.6.12"
+
+
+@pytest.mark.parametrize("bad", ["0.6", "v0.6.1", "0.6.1-rc1", "latest"])
+def test_desktop_min_version_must_be_x_y_z(bad: str) -> None:
+    from pydantic import ValidationError
+
+    from api.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(desktop_min_version=bad)
+    assert Settings(desktop_min_version=" 1.2.3 ").desktop_min_version == "1.2.3"
+    assert Settings(desktop_min_version="").desktop_min_version == ""
