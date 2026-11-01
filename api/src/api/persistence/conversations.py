@@ -121,6 +121,10 @@ class ConversationStore(Protocol):
         finished screen meetings, for ``/status``; failures count only for meetings that
         ended at or after ``since``."""
         ...
+    def requeue_failed_deliveries(self, reasons: tuple[str, ...]) -> int:
+        """Put every ``failed`` screen meeting whose error starts with one of ``reasons`` back
+        to ``pending``; returns how many (XERK-2605)."""
+        ...
 
 
 class InMemoryConversationStore:
@@ -434,6 +438,20 @@ class InMemoryConversationStore:
             "failed": len(failed),
             "error": failed[-1].delivery_error if failed else None,
         }
+
+    def requeue_failed_deliveries(self, reasons: tuple[str, ...]) -> int:
+        n = 0
+        with self._lock:
+            for convs in self._by_household.values():
+                for conv in convs.values():
+                    if (
+                        conv.source == "screen"
+                        and conv.delivery_state == "failed"
+                        and (conv.delivery_error or "").startswith(reasons)
+                    ):
+                        conv.delivery_state = "pending"
+                        n += 1
+        return n
 
 
 def _delivery_state(conv: Conversation) -> DeliveryState | None:

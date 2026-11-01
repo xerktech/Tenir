@@ -208,3 +208,25 @@ def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
             " VALUES (%s, 'tesoro', 'x@y.test', 'X')",
             (HH,),
         )
+
+
+def test_failed_deliveries_a_config_fix_can_change_are_requeued(store) -> None:
+    # XERK-2605: the boot re-queue's prefix match, with LIKE wildcards taken literally.
+    from api.screen.turma import REQUEUE_ON_BOOT
+
+    screen = ScreenMeta("tesoro", "Tesoro", "zoom")
+    tok, gave_up, bad, sent, wild = (str(uuid.uuid4()) for _ in range(5))
+    for cid in (tok, gave_up, bad, sent, wild):
+        store.create(HH, cid, owner="u1", screen=screen)
+        store.finish(HH, cid)
+    store.set_delivery(HH, tok, "failed", "hub answered 401: unauthorized")
+    store.set_delivery(HH, gave_up, "failed", "gave up retrying: hub answered 503")
+    store.set_delivery(HH, bad, "failed", "hub answered 400: bad")
+    store.set_delivery(HH, sent, "sent", "hub answered 401")
+    store.set_delivery(HH, wild, "failed", "hub answered 4019")
+    assert store.requeue_failed_deliveries(("hub answered 40_9",)) == 0
+    n = store.requeue_failed_deliveries(REQUEUE_ON_BOOT)
+    states = {cid: store.get(HH, cid).delivery_state for cid in (tok, gave_up, bad, sent)}
+    assert states == {tok: "pending", gave_up: "pending", bad: "failed", sent: "sent"}
+    assert n >= 2  # other tests' rows in this household may match too
+    assert store.requeue_failed_deliveries(()) == 0

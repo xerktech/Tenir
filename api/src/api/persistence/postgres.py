@@ -1369,3 +1369,24 @@ class SqlConversationStore:
                 (since, since),
             ).fetchone()
         return {"pending": row[0], "failed": row[1], "error": row[2]}
+
+    def requeue_failed_deliveries(  # pragma: no cover - requires a live database
+        self, reasons: tuple[str, ...]
+    ) -> int:
+        if not reasons:
+            return 0
+        # A prefix match, with LIKE's wildcards in the reasons taken literally.
+        patterns = [
+            r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            for r in reasons
+        ]
+        with self._ensure_pool().connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE conversations SET delivery_state = 'pending'
+                 WHERE source = 'screen' AND delivery_state = 'failed'
+                   AND delivery_error LIKE ANY(%s)
+                """,
+                (patterns,),
+            )
+        return cur.rowcount

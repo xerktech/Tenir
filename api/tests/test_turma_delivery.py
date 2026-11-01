@@ -367,6 +367,105 @@ def test_a_database_outage_does_not_kill_the_loop(clock) -> None:
     assert store.get("default", "c1").delivery_state == "sent"
 
 
+def _run_loop_until(d, done) -> None:
+    async def run() -> None:
+        task = asyncio.create_task(d.loop(interval=0.01))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if done():
+                break
+        task.cancel()
+
+    asyncio.run(run())
+
+
+def test_meetings_failed_on_a_wrong_token_are_resent_after_a_restart(clock) -> None:
+    # XERK-2605: the QA repro. A wrong token fails every meeting 401; the operator fixes the
+    # token and restarts, and the new process's loop re-queues and delivers them.
+    store = InMemoryConversationStore()
+    for cid in ("a", "b", "c"):
+        _meeting(store, cid)
+    bad = _delivery(store, Hub(httpx.Response(401, json={"error": "unauthorized"})), clock)
+    asyncio.run(bad.run_once())
+    assert {store.get("default", c).delivery_state for c in "abc"} == {"failed"}
+
+    hub = Hub(_ok())
+    fixed = _delivery(store, hub, clock)
+    _run_loop_until(
+        fixed, lambda: all(store.get("default", c).delivery_state == "sent" for c in "abc")
+    )
+    assert {store.get("default", c).delivery_state for c in "abc"} == {"sent"}
+    assert len(hub.requests) == 3
+
+
+@pytest.mark.parametrize(
+    "reason, requeued",
+    [
+        ("hub answered 401: unauthorized", True),
+        ("hub answered 403", True),
+        ("gave up retrying: hub answered 503", True),
+        ("hub answered 400: bad title", False),
+        ("hub answered 413", False),
+        ("no caption lines to send", False),
+        ("the first caption line is past the hub's limit", False),
+    ],
+)
+def test_only_failures_a_config_fix_can_change_are_requeued(clock, reason, requeued) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+    store.set_delivery("default", "c1", "failed", reason)
+    d = _delivery(store, Hub(_ok()), clock)
+    assert asyncio.run(d.requeue_failed()) == int(requeued)
+    assert store.get("default", "c1").delivery_state == ("pending" if requeued else "failed")
+
+
+def test_requeue_never_touches_sent_or_mic_rows(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store, "sent")
+    store.set_delivery("default", "sent", "sent", "hub answered 401")
+    store.create("default", "mic", owner="u1")
+    store.finish("default", "mic")
+    assert store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT) == 0
+    assert store.get("default", "sent").delivery_state == "sent"
+    assert store.get("default", "mic").delivery_state is None
+
+
+def test_the_written_failure_reasons_match_the_requeue_list(clock) -> None:
+    # The re-queue matches on the reason text: pin it to what _deliver really writes.
+    store = InMemoryConversationStore()
+    _meeting(store, "tok")
+    asyncio.run(_delivery(store, Hub(httpx.Response(403)), clock).run_once())
+    _meeting(store, "old")
+    clock["now"] += 2 * 86_400
+    asyncio.run(_delivery(store, Hub(httpx.Response(503)), clock).run_once())
+    assert store.get("default", "old").delivery_error.startswith(turma.GIVE_UP_PREFIX)
+    assert store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT) == 2
+
+
+def test_a_still_wrong_token_fails_the_requeued_meetings_again(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+    store.set_delivery("default", "c1", "failed", "hub answered 401: unauthorized")
+    hub = Hub(httpx.Response(401, json={"error": "unauthorized"}))
+    d = _delivery(store, hub, clock)
+    _run_loop_until(d, lambda: len(hub.requests) >= 1)
+    assert store.get("default", "c1").delivery_state == "failed"
+    assert len(hub.requests) == 1  # once per boot, not a hot loop
+
+
+def test_a_database_outage_during_requeue_does_not_kill_the_loop(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+
+    def down(*a, **k):
+        raise RuntimeError("db down")
+
+    store.requeue_failed_deliveries = down  # type: ignore[method-assign]
+    d = _delivery(store, Hub(_ok()), clock)
+    _run_loop_until(d, lambda: store.get("default", "c1").delivery_state == "sent")
+    assert store.get("default", "c1").delivery_state == "sent"
+
+
 def test_a_tracker_ending_a_meeting_wakes_the_delivery(monkeypatch, clock) -> None:
     store = InMemoryConversationStore()
     hub = Hub(_ok())
