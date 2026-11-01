@@ -532,6 +532,8 @@ class Settings(BaseSettings):
         "screen_line_stable_seconds",
         "screen_meeting_end_seconds",
         "screen_max_frame_bytes",
+        "turma_retry_max_seconds",
+        "turma_give_up_seconds",
         "ocr_timeout_seconds",
         "stt_partial_interval_ms",
         "stt_max_segment_ms",
@@ -578,6 +580,17 @@ class Settings(BaseSettings):
     screen_meeting_end_seconds: float = 180.0
     # Largest accepted binary frame (header + JPEG); bigger frames are refused.
     screen_max_frame_bytes: int = 4_000_000
+
+    # ---- Delivery of finished meetings to the Turma hub (XERK-2513) ----------------
+    # A ready screen meeting is POSTed to `{turma_url}/api/orgs/<site>/meetings` with this
+    # bearer (the hub's TURMA_MEETINGS_TOKEN). Both empty keeps delivery off: meetings stay
+    # pending and are sent once it is configured. Contract: Turma's contract-meetings.md.
+    turma_url: str = ""
+    turma_meetings_token: str = ""
+    # Retries back off exponentially from 5 s to this cap; a meeting still undelivered this
+    # long after it ended is marked failed.
+    turma_retry_max_seconds: float = 300.0
+    turma_give_up_seconds: float = 86_400.0
 
     @property
     def cors_origin_list(self) -> list[str]:

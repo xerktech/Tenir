@@ -24,13 +24,14 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from api.config import settings
 from api.persistence import get_audio_store, get_conversation_store
 from api.persistence.postgres import is_database_unavailable
+from api.screen import turma
 
 log = logging.getLogger("api.status")
 
@@ -151,6 +152,31 @@ async def _infra_probe(fn: Callable[[], object] | None) -> tuple[str, str]:
     return READY, "reachable"
 
 
+# Failed deliveries count on /status for meetings that ended within this window; older
+# failures stay recorded on their conversation but no longer hold the light red.
+DELIVERY_FAILURE_WINDOW = timedelta(days=7)
+
+
+async def _delivery_probe(store) -> tuple[str, str]:
+    """Meetings waiting for or refused by the Turma hub: any recent failure is red (after the
+    grace window), meetings still being retried yellow, all delivered green. Counts and the
+    hub's words only, never a meeting's title: /status is public."""
+    since = datetime.now(timezone.utc) - DELIVERY_FAILURE_WINDOW
+    try:
+        summary = await asyncio.to_thread(store.delivery_summary, since)
+    except Exception as exc:  # noqa: BLE001
+        return UNREACHABLE, _public_detail("delivery_summary", exc)
+    failed, pending = summary["failed"], summary["pending"]
+    if failed:
+        detail = f"{failed} meeting(s) not delivered"
+        if summary.get("error"):
+            detail += f": {summary['error']}"
+        return UNREACHABLE, detail
+    if pending:
+        return NOT_READY, f"{pending} meeting(s) waiting to be delivered"
+    return READY, "all meetings delivered"
+
+
 # ---- registry + state machine ------------------------------------------------
 
 # A raw probe result for one component, before the grace-window mapping.
@@ -172,6 +198,12 @@ async def _gather() -> list[_RawResult]:
         audio = get_audio_store()
         raw, detail = await _infra_probe(audio.ready if audio else None)
         results.append(("audio", "Audio store (disk)", "infra", raw, detail))
+
+    # --- Turma hub delivery of finished meetings (XERK-2513) ---
+    conv_store = get_conversation_store()
+    if turma.configured() and conv_store is not None:
+        raw, detail = await _delivery_probe(conv_store)
+        results.append(("turma", "Meetings to Turma", "infra", raw, detail))
 
     # --- LiteLLM gateway + the models behind it ---
     # Both the live STT engine and the cue LLM reach their model through the same

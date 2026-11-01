@@ -1,6 +1,7 @@
 ---
 paths:
   - "api/src/api/screen/**"
+  - "api/tests/test_turma_delivery.py"
   - "api/tests/test_screen.py"
   - "api/tests/test_pg_screen_live.py"
   - "api/tests/fixtures/screen/**"
@@ -64,3 +65,10 @@ paths:
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
   socket loop, and latest-frame-wins drops frames sent faster than they are handled.
+- Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
+  the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
+  never key the POST on anything but the conversation id, or a retry duplicates the meeting.
+  - A 200 that isn't JSON `{ok: true}` (a proxy or login page) is retried, not `sent`.
+  - 404 "no host is in that org" is retried: a restarted hub answers it until its hosts beat.
+  - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
+    SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.

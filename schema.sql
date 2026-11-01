@@ -190,6 +190,13 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS org_site_key TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS org_name TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS platform TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS meeting_title TEXT;
+-- Delivery of a finished screen meeting to the Turma hub (XERK-2513): 'pending' from creation,
+-- then 'sent' once the hub took it or 'failed' with `delivery_error` in the hub's words (also
+-- the last retry's reason while still pending). NULL on mic conversations, never delivered.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS delivery_state TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS delivery_error TEXT;
+CREATE INDEX IF NOT EXISTS conversations_delivery_pending_idx
+    ON conversations (ended_at) WHERE delivery_state = 'pending';
 -- Who said each caption line; NULL on mic conversations and unknown speakers.
 ALTER TABLE segments ADD COLUMN IF NOT EXISTS speaker TEXT;
 

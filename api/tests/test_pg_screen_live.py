@@ -107,3 +107,39 @@ def test_a_participants_table_without_position_is_migrated(store) -> None:
     store.create(HH, cid, owner="u1", screen=ScreenMeta("tesoro", "Tesoro", "zoom"))
     store.add_participants(HH, cid, [("Priya Raman", 0)])
     assert store.get(HH, cid).participants == ["Priya Raman"]
+
+
+def test_meeting_delivery_state_round_trips(store) -> None:
+    # XERK-2513: a screen meeting is pending from creation, listed once ready, and its
+    # sent/failed state + error persist; a mic row never gets a state.
+    from datetime import timedelta
+
+    from api.persistence.models import utcnow
+
+    screen = ScreenMeta("tesoro", "Tesoro", "zoom")
+    a, b, live, mic = (str(uuid.uuid4()) for _ in range(4))
+    for cid in (a, b, live):
+        assert store.create(HH, cid, owner="u1", screen=screen).delivery_state == "pending"
+    store.create(HH, mic, owner="u1")
+    store.finish(HH, a)
+    store.finish(HH, b)
+    store.finish(HH, mic)
+    assert store.pending_deliveries() == [(HH, a), (HH, b)]  # oldest end first, no live row
+    assert store.pending_deliveries(limit=1) == [(HH, a)]
+    since = utcnow() - timedelta(days=7)
+    assert store.delivery_summary(since) == {"pending": 2, "failed": 0, "error": None}
+
+    store.set_delivery(HH, a, "pending", "hub unreachable (ConnectError)")
+    assert store.get(HH, a).delivery_error == "hub unreachable (ConnectError)"
+    store.set_delivery(HH, a, "sent", None)
+    store.set_delivery(HH, b, "failed", "hub answered 400: bad")
+    store.set_delivery(HH, mic, "sent", None)
+    assert (store.get(HH, a).delivery_state, store.get(HH, a).delivery_error) == ("sent", None)
+    assert store.get(HH, mic).delivery_state is None
+    assert store.pending_deliveries() == []
+    assert store.delivery_summary(since) == {
+        "pending": 0,
+        "failed": 1,
+        "error": "hub answered 400: bad",
+    }
+    assert store.delivery_summary(utcnow() + timedelta(seconds=5))["failed"] == 0

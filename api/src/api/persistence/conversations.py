@@ -24,6 +24,7 @@ from api.persistence.models import (
     ConversationStatus,
     ConversationSummary,
     Cue,
+    DeliveryState,
     ScreenMeta,
     Segment,
     Song,
@@ -102,6 +103,18 @@ class ConversationStore(Protocol):
     def households(self) -> list[str]: ...
     def ready(self) -> None: ...
     def finish_stale(self) -> list[tuple[str, str]]: ...
+    def pending_deliveries(self, limit: int = 20) -> list[tuple[str, str]]:
+        """``(household, id)`` of finished screen meetings still waiting for the Turma hub,
+        oldest end first (XERK-2513)."""
+        ...
+    def set_delivery(
+        self, household: str, conversation_id: str, state: DeliveryState, error: str | None
+    ) -> None: ...
+    def delivery_summary(self, since: datetime) -> dict[str, object]:
+        """``{"pending": n, "failed": n, "error": newest failure's reason | None}`` over
+        finished screen meetings, for ``/status``; failures count only for meetings that
+        ended at or after ``since``."""
+        ...
 
 
 class InMemoryConversationStore:
@@ -155,6 +168,7 @@ class InMemoryConversationStore:
                 conv.org_site_key = screen.org_site_key
                 conv.org_name = screen.org_name
                 conv.platform = screen.platform
+                conv.delivery_state = "pending"
             conv.opened_at = conv.started_at
             convs[conversation_id] = conv
             return copy.deepcopy(conv)
@@ -369,3 +383,45 @@ class InMemoryConversationStore:
                 conv.status = "ready"
                 conv.ended_at = conv.ended_at or utcnow()
             return [(household, conv.id) for household, conv in stale]
+
+    def pending_deliveries(self, limit: int = 20) -> list[tuple[str, str]]:
+        with self._lock:
+            rows = [
+                (conv.ended_at or conv.started_at, household, conv.id)
+                for household, convs in self._by_household.items()
+                for conv in convs.values()
+                if conv.status == "ready" and conv.delivery_state == "pending"
+            ]
+        rows.sort()
+        return [(h, cid) for _, h, cid in rows[:limit]]
+
+    def set_delivery(
+        self, household: str, conversation_id: str, state: DeliveryState, error: str | None
+    ) -> None:
+        with self._lock:
+            conv = self._conversations(household).get(conversation_id)
+            if conv is not None and conv.delivery_state is not None:
+                conv.delivery_state = state
+                conv.delivery_error = error
+
+    def delivery_summary(self, since: datetime) -> dict[str, object]:
+        with self._lock:
+            done = [
+                c
+                for convs in self._by_household.values()
+                for c in convs.values()
+                if c.status == "ready" and c.delivery_state is not None
+            ]
+        failed = sorted(
+            (
+                c
+                for c in done
+                if c.delivery_state == "failed" and (c.ended_at or c.started_at) >= since
+            ),
+            key=lambda c: c.ended_at or c.started_at,
+        )
+        return {
+            "pending": sum(1 for c in done if c.delivery_state == "pending"),
+            "failed": len(failed),
+            "error": failed[-1].delivery_error if failed else None,
+        }
