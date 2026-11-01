@@ -178,8 +178,15 @@ class _Lane:
             await self._wake.wait()
             self._wake.clear()
             item, self._pending = self._pending, None
-            if item is not None:
+            if item is None:
+                continue
+            try:
                 await self._handle(*item)
+            except Exception:
+                # An unexpected error must cost one frame, not the lane: the task is never
+                # awaited, so an escaping exception silently stopped this window's captions.
+                log.exception("screen lane failed on a frame")
+                metrics.incr("screen.frame_errors")
 
 
 @router.websocket("/ws/screen")
