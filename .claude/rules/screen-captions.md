@@ -112,5 +112,9 @@ paths:
   - Count lines as the hub's `meetingSegmentBytes` does (sanitized, `"speaker":""` on each), not
     by wire size: its per-org 1 MiB budget 429s a meeting over it forever (delta QA).
     Test: `test_a_big_meeting_fits_the_hubs_per_org_transcript_budget`.
+  - Boot re-queue (XERK-2605) matches the start of `delivery_error` (`REQUEUE_ON_BOOT`): a
+    change to a reason `_deliver`/`_hub_error` writes must keep those prefixes, or failed
+    meetings silently stop being resent. Test:
+    `test_the_written_failure_reasons_match_the_requeue_list`.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.

@@ -298,6 +298,11 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
 - 400/401/403/413 fail at once; anything else (unreachable, 5xx, 404 while the restarted hub's
   hosts re-register, 409, 429) retries from 5 s, doubling to `API_TURMA_RETRY_MAX_SECONDS`
   (300), until `API_TURMA_GIVE_UP_SECONDS` (1 day) after the meeting ended.
+- A meeting failed for a reason a config fix can change (401/403 from a wrong token, or giving
+  up during a long hub outage) goes back to `pending` when Tenir starts (XERK-2605). To resend
+  them, fix the token or the hub and restart Tenir. Every meeting pending at boot gets a full
+  `API_TURMA_GIVE_UP_SECONDS` from that boot, so a hub still re-registering is ridden out.
+  400/413 and empty meetings stay failed.
 - `/status` shows a "Meetings to Turma" light: red for failures of meetings that ended in the
   last 7 days, yellow while any wait, green when all were delivered. Counts and errors only.
 

@@ -19,6 +19,15 @@ Tenir restart resumes too.
   backoff; still ``pending`` with the last reason, until ``API_TURMA_GIVE_UP_SECONDS`` after
   the meeting ended, then ``failed``.
 
+A ``failed`` meeting whose cause an operator can fix in config (a 401/403 from a wrong token,
+or giving up during a long hub outage) goes back to ``pending`` when the loop starts
+(XERK-2605): fixing the token needs a restart anyway, and the hub's idempotency makes the
+resend safe. Every meeting pending at boot (re-queued or not) gets a full
+``API_TURMA_GIVE_UP_SECONDS`` from that boot, so a hub still re-registering its hosts after a
+cluster restart is retried, not given up on at the first 404 — also when the pod bounces
+twice. A still-wrong token just fails them again, once per boot. Refusals no fix can change
+(400, 413, nothing to send) stay failed.
+
 A pass looks at EVERY pending meeting: one org's stuck backlog (its 404s or 429s) must never
 hide another org's meetings. After a retryable refusal the rest of that org waits for the
 next pass; an unreachable hub ends the pass (every request would wait out the timeout).
@@ -42,6 +51,14 @@ log = logging.getLogger("api.screen.turma")
 
 # Refusals no retry can fix; everything else is retried.
 PERMANENT = frozenset({400, 401, 403, 413})
+# The start of a ``failed`` reason a config fix can change: re-queued on boot (XERK-2605).
+# They must match what ``_hub_error`` and ``_deliver`` write.
+GIVE_UP_PREFIX = "gave up retrying: "
+REQUEUE_ON_BOOT = (
+    "hub answered 401",
+    "hub answered 403",
+    GIVE_UP_PREFIX,
+)
 BASE_DELAY_SECONDS = 5.0
 POLL_SECONDS = 10.0
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -156,6 +173,10 @@ class TurmaDelivery:
         # idempotency makes safe.
         self._backoff: dict[str, tuple[int, float]] = {}
         self._wake = asyncio.Event()
+        # When this process's loop started (set by ``requeue_failed``): no meeting gives up
+        # sooner than a full window after it. Not per meeting: a second restart must not lose
+        # the window a re-queued meeting got on the first (XERK-2605 QA).
+        self._booted_at: float | None = None
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -240,8 +261,9 @@ class TurmaDelivery:
                 return "failed"
             deferred.add(conv.org_site_key)
         ended = (conv.ended_at or conv.started_at).timestamp()
-        if self.clock() - ended >= self.give_up_seconds:
-            await self._fail(household, cid, f"gave up retrying: {reason}")
+        window_start = max(ended, self._booted_at or ended)
+        if self.clock() - window_start >= self.give_up_seconds:
+            await self._fail(household, cid, f"{GIVE_UP_PREFIX}{reason}")
             return "failed"
         failures = self._backoff.get(cid, (0, 0.0))[0] + 1
         delay = min(self.retry_max_seconds, BASE_DELAY_SECONDS * 2 ** (failures - 1))
@@ -257,7 +279,21 @@ class TurmaDelivery:
         metrics.incr("turma.meetings_failed")
         log.warning("meeting %s not delivered to turma: %s", cid, reason)
 
+    async def requeue_failed(self) -> int:
+        """Put meetings failed for a reason a restart with fixed config could change back to
+        pending; returns how many."""
+        self._booted_at = self.clock()
+        rows = await asyncio.to_thread(self.store.requeue_failed_deliveries, REQUEUE_ON_BOOT)
+        n = len(rows)
+        if n:
+            log.info("re-queued %d meeting(s) whose delivery to turma had failed", n)
+        return n
+
     async def loop(self, interval: float = POLL_SECONDS) -> None:
+        try:
+            await self.requeue_failed()
+        except Exception:  # a database outage: those meetings wait for the next boot
+            log.exception("could not re-queue failed turma meeting deliveries")
         while True:
             try:
                 await asyncio.wait_for(self._wake.wait(), interval)
