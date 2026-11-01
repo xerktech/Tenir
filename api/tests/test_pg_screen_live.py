@@ -224,9 +224,18 @@ def test_failed_deliveries_a_config_fix_can_change_are_requeued(store) -> None:
     store.set_delivery(HH, bad, "failed", "hub answered 400: bad")
     store.set_delivery(HH, sent, "sent", "hub answered 401")
     store.set_delivery(HH, wild, "failed", "hub answered 4019")
-    assert store.requeue_failed_deliveries(("hub answered 40_9",)) == 0
-    n = store.requeue_failed_deliveries(REQUEUE_ON_BOOT)
+    mic = str(uuid.uuid4())
+    store.create(HH, mic, owner="u1")
+    store.finish(HH, mic)
+    with store._ensure_pool().connection() as conn:
+        conn.execute(
+            "UPDATE conversations SET delivery_state = 'failed', delivery_error = %s WHERE id = %s",
+            ("hub answered 401", mic),
+        )
+    assert store.requeue_failed_deliveries(("hub answered 40_9",)) == []
+    got = store.requeue_failed_deliveries(REQUEUE_ON_BOOT)
     states = {cid: store.get(HH, cid).delivery_state for cid in (tok, gave_up, bad, sent)}
     assert states == {tok: "pending", gave_up: "pending", bad: "failed", sent: "sent"}
-    assert n >= 2  # other tests' rows in this household may match too
-    assert store.requeue_failed_deliveries(()) == 0
+    assert {(HH, tok), (HH, gave_up)} <= set(got)  # other tests' rows may match too
+    assert (HH, mic) not in got and store.get(HH, mic).delivery_state == "failed"
+    assert store.requeue_failed_deliveries(()) == []

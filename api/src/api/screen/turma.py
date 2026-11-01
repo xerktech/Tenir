@@ -22,7 +22,9 @@ Tenir restart resumes too.
 A ``failed`` meeting whose cause an operator can fix in config (a 401/403 from a wrong token,
 or giving up during a long hub outage) goes back to ``pending`` when the loop starts
 (XERK-2605): fixing the token needs a restart anyway, and the hub's idempotency makes the
-resend safe. A still-wrong token just fails them again, once per boot. Refusals no fix can
+resend safe. A re-queued meeting gets a fresh ``API_TURMA_GIVE_UP_SECONDS`` from the boot, so
+a hub still re-registering its hosts after a cluster restart is retried, not given up on at
+the first 404. A still-wrong token just fails them again, once per boot. Refusals no fix can
 change (400, 413, nothing to send) stay failed.
 
 A pass looks at EVERY pending meeting: one org's stuck backlog (its 404s or 429s) must never
@@ -170,6 +172,9 @@ class TurmaDelivery:
         # idempotency makes safe.
         self._backoff: dict[str, tuple[int, float]] = {}
         self._wake = asyncio.Event()
+        # conversation id -> when the boot re-queue put it back: its give-up window restarts
+        # there instead of at the meeting's end (it is long past that).
+        self._requeued: dict[str, float] = {}
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -183,6 +188,9 @@ class TurmaDelivery:
         for cid in list(self._backoff):
             if cid not in live:
                 self._backoff.pop(cid, None)
+        for cid in list(self._requeued):
+            if cid not in live:
+                self._requeued.pop(cid, None)
         deferred: set[str] = set()  # orgs the hub just refused for now: next pass
         for household, cid, org in pending:
             _, due = self._backoff.get(cid, (0, 0.0))
@@ -254,7 +262,8 @@ class TurmaDelivery:
                 return "failed"
             deferred.add(conv.org_site_key)
         ended = (conv.ended_at or conv.started_at).timestamp()
-        if self.clock() - ended >= self.give_up_seconds:
+        window_start = max(ended, self._requeued.get(cid, ended))
+        if self.clock() - window_start >= self.give_up_seconds:
             await self._fail(household, cid, f"{GIVE_UP_PREFIX}{reason}")
             return "failed"
         failures = self._backoff.get(cid, (0, 0.0))[0] + 1
@@ -274,7 +283,11 @@ class TurmaDelivery:
     async def requeue_failed(self) -> int:
         """Put meetings failed for a reason a restart with fixed config could change back to
         pending; returns how many."""
-        n = await asyncio.to_thread(self.store.requeue_failed_deliveries, REQUEUE_ON_BOOT)
+        rows = await asyncio.to_thread(self.store.requeue_failed_deliveries, REQUEUE_ON_BOOT)
+        now = self.clock()
+        for _, cid in rows:
+            self._requeued[cid] = now
+        n = len(rows)
         if n:
             log.info("re-queued %d meeting(s) whose delivery to turma had failed", n)
         return n

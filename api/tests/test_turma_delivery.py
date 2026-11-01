@@ -425,9 +425,12 @@ def test_requeue_never_touches_sent_or_mic_rows(clock) -> None:
     store.set_delivery("default", "sent", "sent", "hub answered 401")
     store.create("default", "mic", owner="u1")
     store.finish("default", "mic")
-    assert store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT) == 0
+    # set_delivery refuses a mic row: stamp it directly, as a bad migration might.
+    mic = store._by_household["default"]["mic"]
+    mic.delivery_state, mic.delivery_error = "failed", "hub answered 401"
+    assert store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT) == []
     assert store.get("default", "sent").delivery_state == "sent"
-    assert store.get("default", "mic").delivery_state is None
+    assert store.get("default", "mic").delivery_state == "failed"
 
 
 def test_the_written_failure_reasons_match_the_requeue_list(clock) -> None:
@@ -439,7 +442,38 @@ def test_the_written_failure_reasons_match_the_requeue_list(clock) -> None:
     clock["now"] += 2 * 86_400
     asyncio.run(_delivery(store, Hub(httpx.Response(503)), clock).run_once())
     assert store.get("default", "old").delivery_error.startswith(turma.GIVE_UP_PREFIX)
-    assert store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT) == 2
+    assert len(store.requeue_failed_deliveries(turma.REQUEUE_ON_BOOT)) == 2
+
+
+def test_a_requeued_gave_up_meeting_gets_a_fresh_retry_window(clock) -> None:
+    # QA of XERK-2605: re-queued after a cluster restart, a meeting days past its give-up
+    # window must ride out the hub's 404s while its hosts re-register, not fail at the first.
+    store = InMemoryConversationStore()
+    _meeting(store)
+    clock["now"] += 3 * 86_400
+    store.set_delivery("default", "c1", "failed", "gave up retrying: hub answered 503")
+    hub = Hub(httpx.Response(404, json={"error": "no host is in that org"}), _ok())
+    d = _delivery(store, hub, clock)
+    assert asyncio.run(d.requeue_failed()) == 1
+    asyncio.run(d.run_once())
+    assert store.get("default", "c1").delivery_state == "pending"
+    clock["now"] += 10
+    assert asyncio.run(d.run_once()) == 1
+    assert store.get("default", "c1").delivery_state == "sent"
+
+
+def test_a_requeued_meeting_still_gives_up_a_window_after_the_boot(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+    clock["now"] += 3 * 86_400
+    store.set_delivery("default", "c1", "failed", "gave up retrying: hub answered 503")
+    d = _delivery(store, Hub(httpx.Response(503)), clock, give_up_seconds=60)
+    asyncio.run(d.requeue_failed())
+    asyncio.run(d.run_once())
+    assert store.get("default", "c1").delivery_state == "pending"
+    clock["now"] += 61
+    asyncio.run(d.run_once())
+    assert store.get("default", "c1").delivery_error.startswith(turma.GIVE_UP_PREFIX)
 
 
 def test_a_still_wrong_token_fails_the_requeued_meetings_again(clock) -> None:
