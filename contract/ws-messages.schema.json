@@ -350,8 +350,8 @@
         "orgName": { "type": "string", "minLength": 1, "maxLength": 200 },
         "platform": {
           "type": "string",
-          "enum": ["zoom"],
-          "description": "Meeting app in the window. Only Zoom is parsed so far."
+          "enum": ["zoom", "teams"],
+          "description": "Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser."
         },
         "ts": { "type": "integer", "description": "Capture time (ms epoch)." },
         "region": {

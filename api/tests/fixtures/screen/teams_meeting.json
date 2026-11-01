@@ -1,0 +1,133 @@
+{
+ "description": "A Microsoft Teams meeting replayed as the tenir-ocr output of each frame (XERK-2515). Synthetic and redacted: names and geometry are made up, no real capture is committed. The full frame is a 1280x720 window (title, timer and toolbar in the top band; the People pane; tile labels with (Guest)/(org) suffixes and a camera-off initials tile; the left-aligned caption panel at the bottom). Caption frames are caption-panel crops: per entry an initials avatar spanning the name row and the first text row, the name, then wrapped text. Rolling captions: the newest entry is refined in place, entries scroll off the top, a header misread (Kunal Shan), a jittered re-read (l'll), a 'Last, First' directory name, and the same words said twice.",
+ "frames": [
+  {"t": 0, "region": "full", "width": 1280, "height": 720, "lines": [
+   {"text": "Sprint Planning", "box": [52, 14, 172, 34]},
+   {"text": "00:12:47", "box": [200, 14, 264, 34]},
+   {"text": "Chat", "box": [700, 14, 732, 34]},
+   {"text": "People", "box": [760, 14, 808, 34]},
+   {"text": "React", "box": [830, 14, 870, 34]},
+   {"text": "View", "box": [890, 14, 922, 34]},
+   {"text": "More", "box": [950, 14, 982, 34]},
+   {"text": "Camera", "box": [1010, 14, 1058, 34]},
+   {"text": "Mic", "box": [1080, 14, 1104, 34]},
+   {"text": "Share", "box": [1120, 14, 1160, 34]},
+   {"text": "Leave", "box": [1200, 14, 1240, 34]},
+   {"text": "In this meeting (3)", "box": [1010, 90, 1162, 110]},
+   {"text": "Raman, Priya (YPrime)", "box": [1010, 120, 1178, 140]},
+   {"text": "Sean O'Neil (Guest)", "box": [1010, 150, 1162, 170]},
+   {"text": "Kunal Shah", "box": [1010, 180, 1090, 200]},
+   {"text": "Raman, Priya (YPrime)", "box": [30, 300, 198, 320]},
+   {"text": "Sean O'Neil (Guest)", "box": [360, 300, 512, 320]},
+   {"text": "KS", "box": [800, 160, 830, 190]},
+   {"text": "Kunal Shah", "box": [690, 300, 770, 320]},
+   {"text": "Raman, Priya", "box": [56, 600, 152, 616]},
+   {"text": "Can everyone see the board? I shared it a minute ago.", "box": [56, 624, 480, 644]}
+  ]},
+  {"t": 500, "region": "caption", "width": 760, "height": 40, "lines": [
+   {"text": "Kunal Shah", "box": [20, 10, 100, 30]},
+   {"text": "Sean O'Neil (Guest)", "box": [300, 10, 452, 30]}
+  ]},
+  {"t": 1000, "region": "caption", "width": 760, "height": 60, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Okay, let's get", "box": [56, 26, 176, 46]}
+  ]},
+  {"t": 2000, "region": "caption", "width": 760, "height": 60, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Okay, let's get started with", "box": [56, 26, 280, 46]}
+  ]},
+  {"t": 3000, "region": "caption", "width": 760, "height": 60, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Okay, let's get started with the sprint review.", "box": [56, 26, 432, 46]}
+  ]},
+  {"t": 4000, "region": "caption", "width": 760, "height": 116, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Okay, let's get started with the sprint review.", "box": [56, 26, 432, 46]},
+   {"text": "SO", "box": [10, 60, 42, 100]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 60, 208, 76]},
+   {"text": "Sounds good. I'll share", "box": [56, 82, 240, 102]}
+  ]},
+  {"t": 5000, "region": "caption", "width": 760, "height": 142, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Okay, let's get started with the sprint review.", "box": [56, 26, 432, 46]},
+   {"text": "SO", "box": [10, 60, 42, 100]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 60, 208, 76]},
+   {"text": "Sounds good. I'll share my screen now,", "box": [56, 82, 360, 102]},
+   {"text": "give me a second.", "box": [56, 108, 192, 128]}
+  ]},
+  {"t": 6000, "region": "caption", "width": 760, "height": 176, "lines": [
+   {"text": "Okay, let's get started with the sprint review.", "box": [56, 4, 432, 24]},
+   {"text": "SO", "box": [10, 38, 42, 78]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 38, 208, 54]},
+   {"text": "Sounds good. I'll share my screen now,", "box": [56, 60, 360, 80]},
+   {"text": "give me a second.", "box": [56, 86, 192, 106]},
+   {"text": "KS", "box": [10, 120, 42, 160]},
+   {"text": "Kunal Shan", "box": [56, 120, 136, 136]},
+   {"text": "Yes, I can", "box": [56, 142, 136, 162]}
+  ]},
+  {"t": 7000, "region": "caption", "width": 760, "height": 142, "lines": [
+   {"text": "SO", "box": [10, 4, 42, 44]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 4, 208, 20]},
+   {"text": "Sounds good. l'll share my screen now,", "box": [56, 26, 360, 46]},
+   {"text": "give me a second.", "box": [56, 52, 192, 72]},
+   {"text": "KS", "box": [10, 86, 42, 126]},
+   {"text": "Kunal Shan", "box": [56, 86, 136, 102]},
+   {"text": "Yes, I can see it.", "box": [56, 108, 200, 128]}
+  ]},
+  {"t": 8000, "region": "caption", "width": 760, "height": 172, "lines": [
+   {"text": "SO", "box": [10, 4, 42, 44]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 4, 208, 20]},
+   {"text": "give me a second.", "box": [56, 26, 192, 46]},
+   {"text": "KS", "box": [10, 60, 42, 100]},
+   {"text": "Kunal Shah", "box": [56, 60, 136, 76]},
+   {"text": "Yes, I can see it.", "box": [56, 82, 200, 102]},
+   {"text": "PR", "box": [10, 116, 42, 156]},
+   {"text": "Raman, Priya", "box": [56, 116, 152, 132]},
+   {"text": "Thanks Kunal.", "box": [56, 138, 160, 158]}
+  ]},
+  {"t": 9000, "region": "caption", "width": 760, "height": 116, "lines": [
+   {"text": "KS", "box": [10, 4, 42, 44]},
+   {"text": "Kunal Shah", "box": [56, 4, 136, 20]},
+   {"text": "Yes, I can see it.", "box": [56, 26, 200, 46]},
+   {"text": "PR", "box": [10, 60, 42, 100]},
+   {"text": "Raman, Priya", "box": [56, 60, 152, 76]},
+   {"text": "Thanks Kunal.", "box": [56, 82, 160, 102]}
+  ]},
+  {"t": 10000, "region": "caption", "width": 760, "height": 172, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Thanks Kunal.", "box": [56, 26, 160, 46]},
+   {"text": "SO", "box": [10, 60, 42, 100]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 60, 208, 76]},
+   {"text": "Next item.", "box": [56, 82, 136, 102]},
+   {"text": "PR", "box": [10, 116, 42, 156]},
+   {"text": "Raman, Priya", "box": [56, 116, 152, 132]},
+   {"text": "Thanks Kunal.", "box": [56, 138, 160, 158]}
+  ]},
+  {"t": 14000, "region": "caption", "width": 760, "height": 172, "lines": [
+   {"text": "PR", "box": [10, 4, 42, 44]},
+   {"text": "Raman, Priya", "box": [56, 4, 152, 20]},
+   {"text": "Thanks Kunal.", "box": [56, 26, 160, 46]},
+   {"text": "SO", "box": [10, 60, 42, 100]},
+   {"text": "Sean O'Neil (Guest)", "box": [56, 60, 208, 76]},
+   {"text": "Next item.", "box": [56, 82, 136, 102]},
+   {"text": "PR", "box": [10, 116, 42, 156]},
+   {"text": "Raman, Priya", "box": [56, 116, 152, 132]},
+   {"text": "Thanks Kunal.", "box": [56, 138, 160, 158]}
+  ]}
+ ],
+ "expected": {"title": "Sprint Planning", "participants": ["Raman, Priya", "Sean O'Neil", "Kunal Shah"], "lines": [
+  {"speaker": "Raman, Priya", "text": "Okay, let's get started with the sprint review."},
+  {"speaker": "Sean O'Neil", "text": "Sounds good. I'll share my screen now,"},
+  {"speaker": "Sean O'Neil", "text": "give me a second."},
+  {"speaker": "Kunal Shah", "text": "Yes, I can see it."},
+  {"speaker": "Raman, Priya", "text": "Thanks Kunal."},
+  {"speaker": "Sean O'Neil", "text": "Next item."},
+  {"speaker": "Raman, Priya", "text": "Thanks Kunal."}
+ ]}
+}

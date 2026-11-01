@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -328,6 +329,11 @@ class CaptionBlock:
 
 def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
     """OCR boxes grouped into visual rows, top to bottom, each row's pieces left to right."""
+    return [" ".join(x.text for x in row).strip() for row in row_groups(lines)]
+
+
+def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
+    """The OCR boxes of each visual row, rows top to bottom, boxes left to right."""
     rows: list[list[OcrLine]] = []
     for ln in sorted(lines, key=lambda ln: (ln.cy, ln.box[0])):
         if rows:
@@ -339,22 +345,37 @@ def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
                 last.append(ln)
                 continue
         rows.append([ln])
-    return [" ".join(x.text for x in sorted(r, key=lambda x: x.box[0])).strip() for r in rows]
+    return [sorted(r, key=lambda x: x.box[0]) for r in rows]
 
 
 def parse_caption_crop(
     ocr: OcrResult, roster: Roster, *, active: str | None = None
 ) -> list[CaptionBlock]:
     """Split a caption-box crop into speaker blocks."""
-    rows = [r for r in _rows(ocr.lines) if sum(c.isalnum() for c in r) >= 2]
+    return caption_blocks(caption_rows(ocr), roster, active=active)
+
+
+def caption_rows(ocr: OcrResult) -> list[str]:
+    """The crop's visual rows, minus noise rows with fewer than two letters or digits."""
+    return [r for r in _rows(ocr.lines) if sum(c.isalnum() for c in r) >= 2]
+
+
+def caption_blocks(
+    rows: list[str],
+    roster: Roster,
+    *,
+    active: str | None = None,
+    name_like: Callable[[str], bool] = is_name_like,
+) -> list[CaptionBlock]:
+    """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape."""
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
-        speaker = roster.match(row, prefer=active) if is_name_like(row) else None
+        speaker = roster.match(row, prefer=active) if name_like(row) else None
         if speaker is not None:
             blocks.append(CaptionBlock(speaker, True))
             continue
         head, sep, rest = row.partition(":")
-        if sep and is_name_like(head.strip()):
+        if sep and name_like(head.strip()):
             speaker = roster.match(head.strip(), prefer=active)
             if speaker is not None:
                 blocks.append(CaptionBlock(speaker, True, [rest.strip()] if rest.strip() else []))
@@ -362,7 +383,7 @@ def parse_caption_crop(
         # Before any full frame has named the tiles there is nothing to validate a header
         # against: a short name-shaped row followed by more text is taken as a header with
         # no speaker rather than stored as a caption.
-        if not len(roster) and i + 1 < len(rows) and is_name_like(row) and len(row.split()) >= 2:
+        if not len(roster) and i + 1 < len(rows) and name_like(row) and len(row.split()) >= 2:
             blocks.append(CaptionBlock(None, True))
             continue
         if not blocks:

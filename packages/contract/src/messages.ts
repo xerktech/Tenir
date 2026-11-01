@@ -265,9 +265,9 @@ export interface ScreenFrameHeader {
   orgSiteKey: string;
   orgName: string;
   /**
-   * Meeting app in the window. Only Zoom is parsed so far.
+   * Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser.
    */
-  platform: "zoom";
+  platform: "zoom" | "teams";
   /**
    * Capture time (ms epoch).
    */

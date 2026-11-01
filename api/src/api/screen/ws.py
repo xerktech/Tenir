@@ -21,9 +21,17 @@ from pydantic import ValidationError
 from api.auth import AuthError, Principal, get_user_store, principal_from_bearer
 from api.auth.deps import SCREEN_SCOPE
 from api.config import settings
-from api.contract import ErrorMessage, Pong, ScreenCadence, ScreenFrameHeader, ScreenNotice
+from api.contract import (
+    ErrorMessage,
+    Platform,
+    Pong,
+    ScreenCadence,
+    ScreenFrameHeader,
+    ScreenNotice,
+)
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
+from api.screen import teams, zoom
 from api.screen.meetings import (
     CPU_POOL,
     AccountGone,
@@ -33,7 +41,6 @@ from api.screen.meetings import (
     now_ms,
 )
 from api.screen.ocr import HttpOcrClient, OcrClient, OcrError
-from api.screen.zoom import parse_caption_crop, parse_full_frame
 
 router = APIRouter()
 log = logging.getLogger("api.screen")
@@ -42,6 +49,8 @@ log = logging.getLogger("api.screen")
 _MAX_CLOCK_SKEW_MS = 60_000
 _HEADER_LEN = struct.Struct(">I")
 _MAX_HEADER = 4096
+# Layout parser per meeting app: participants/title from full frames, blocks from crops.
+_PARSERS = {Platform.zoom: zoom, Platform.teams: teams}
 
 _ocr: OcrClient | None = None
 # Windows (orgSiteKeys) one socket may feed: the capture PC watches four. Bounds the lanes,
@@ -219,13 +228,17 @@ async def screen_ws(ws: WebSocket) -> None:
                 await send(tracker.cadence.message(meeting=True, org_site_key=header.orgSiteKey))
             async with tracker.lock:
                 ts = tracker.clock(ts)
+                parser = _PARSERS[header.platform]
                 if header.region.value == "full":
-                    frame = await loop.run_in_executor(CPU_POOL, parse_full_frame, result, jpeg)
+                    frame = await loop.run_in_executor(
+                        CPU_POOL, parser.parse_full_frame, result, jpeg
+                    )
                     await tracker.on_full(frame, ts)
                 else:
                     roster = await tracker.ensure_roster()
                     blocks = await loop.run_in_executor(
-                        CPU_POOL, lambda: parse_caption_crop(result, roster, active=tracker.active)
+                        CPU_POOL,
+                        lambda: parser.parse_caption_crop(result, roster, active=tracker.active),
                     )
                     await tracker.on_caption(blocks, ts)
         except AccountGone:

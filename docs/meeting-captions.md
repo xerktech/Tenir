@@ -199,6 +199,26 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   first name. Only the meeting owner's aliases apply; one member's renames never show in
   another member's meetings (XERK-2606).
 
+**Teams parser** (`teams.py`, XERK-2515), picked by the frame's `platform`:
+
+- Layout: title, call timer and toolbar share the top band (title = leftmost non-chrome text);
+  tile labels sit bottom-left of each tile; the People pane's list counts as participants too.
+- Names: Zoom's shape plus directory `Last, First`; `(Guest)`, `(External)` or org suffixes
+  dropped. A trailing full stop marks a sentence ("Sure."), except after an initial ("Bo L.").
+- Captions are capitalised, so the caption panel (left-aligned, bottom of the stage) is excluded
+  from tile names by layout: its rows are packed tighter than People-pane rows or tile labels,
+  so lower-half rows pressed together into a stack holding caption-like text are all captions.
+- Caption crops: entries are avatar, name line, wrapped text. The initials avatar (any script,
+  or any box ~2 rows tall beside a name) is dropped before rows are grouped: it spans two rows
+  and would glue the name to the text. A row of tile labels is dropped; a crop with no caption
+  text yields nothing, so it starts no meeting.
+- Known limit: a caption row that reads as a participant's name ("Kunal Shah", or a near miss
+  like "Kunal Shaw") is taken as a speaker header, and an unpunctuated one-word interim caption
+  ("Okay") alone in the panel on a full frame joins the participants. Text alone can't tell
+  them apart; real captures should show whether name rows differ in font or position.
+- No active-speaker detection (Teams' speaking ring isn't a reliable colour): headers alone
+  name the speaker. Rolling refinement of the newest entry is folded by the shared merge.
+
 **Merge** (`merge.py`): each caption snapshot is a window onto the end of the transcript, so it
 is aligned in order against the recent known lines (an edit-distance alignment). Known lines
 above the window have scrolled off; snapshot lines below the last aligned one are new; an
@@ -260,8 +280,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   `python scripts/caption_ocr/caption_bench.py --images <dir with truth.json> --out <dir>`.
 - **The box finder is Zoom-specific and tuned on synthetic frames.** It assumes a centred box of
   white text at Zoom's default caption size (`BOX_MAX_LINE`); retune on real captures, and again
-  if the operator enlarges captions. Teams draws captions differently (XERK-2515) and needs its
-  own finder; three of the four meetings are Teams.
+  if the operator enlarges captions. Teams draws captions differently and has no client-side
+  finder yet: the client may send a fixed bottom-band crop, which the Teams parser tolerates.
+- **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
+  teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
+  captures; three of the four orgs' meetings are Teams.
 - **A dark slide with white text centred low on screen reads as a caption.** It is the same
   pixels as a caption box; the speaker-label parser (XERK-2505) is the next filter. Dark text on
   light slides is rejected (the box fill must be mostly dark): 1 false box in 1,620 random
