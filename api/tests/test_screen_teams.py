@@ -979,3 +979,159 @@ def test_replayed_teams_meeting_has_the_right_speakers_and_no_duplicate_lines(sc
     assert [{"speaker": s.speaker, "text": s.text} for s in conv.segments] == expected["lines"]
     starts = [s.start_ms for s in conv.segments]
     assert starts == sorted(starts)
+
+
+def _ended_window_tracker(platform: str = "teams"):  # type: ignore[no-untyped-def]
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+
+    store = InMemoryConversationStore()
+    t = MeetingTracker(
+        "default",
+        "user-1",
+        ScreenMeta("tesoro", "Tesoro", platform),
+        store=store,
+        account_exists=lambda _: True,
+        cadence=Cadence(0.2, 1.0, 10.0),
+        stable_ms=3000,
+        end_ms=180_000,
+    )
+    return t, store
+
+
+@pytest.mark.parametrize("platform", ["teams", "zoom"])
+def test_a_panel_re_sent_after_its_meeting_ended_starts_no_new_meeting(platform: str) -> None:
+    # XERK-2615: a break longer than the end timer, the panel still on screen. Its next crop
+    # re-reads only lines the ended meeting stored: no second conversation holding them again.
+    import asyncio
+
+    from api.screen.zoom import CaptionBlock
+
+    panel = [
+        CaptionBlock("Priya Raman", True, ["Okay, let's start."]),
+        CaptionBlock("Lee, Bo", True, ["Sounds good to me."]),
+    ]
+
+    async def run() -> None:
+        t, store = _ended_window_tracker(platform)
+        await t.on_caption(panel, 0)
+        await t.on_caption(list(panel), 5_000)
+        first = await t.end(200_000)
+        assert first is not None
+        for ts in range(400_000, 700_000, 10_000):  # long after the end timer
+            await t.on_caption(list(panel), ts)
+        assert t.conversation_id is None
+        assert list(store._conversations("default")) == [first]
+        # Then someone speaks again: a new meeting holding only the new line.
+        more = [*panel, CaptionBlock("Priya Raman", True, ["Welcome back, everyone."])]
+        await t.on_caption(more, 710_000)
+        second = await t.end(1_000_000)
+        assert second is not None and second != first
+        assert [(s.speaker, s.text) for s in store.get("default", second).segments] == [
+            ("Priya Raman", "Welcome back, everyone.")
+        ]
+        assert [s.text for s in store.get("default", first).segments] == [
+            "Okay, let's start.",
+            "Sounds good to me.",
+        ]
+
+    asyncio.run(run())
+
+
+def test_a_new_meeting_after_the_last_one_ended_still_starts() -> None:
+    # The carried lines only hide re-reads: a fresh panel with new text starts a meeting.
+    import asyncio
+
+    from api.screen.zoom import CaptionBlock
+
+    async def run() -> None:
+        t, store = _ended_window_tracker()
+        await t.on_caption([CaptionBlock("Priya Raman", True, ["Okay, let's start."])], 0)
+        first = await t.end(200_000)
+        await t.on_caption([CaptionBlock("Sean O'Neil", True, ["Morning, all."])], 900_000)
+        second = await t.end(1_200_000)
+        assert second is not None and second != first
+        assert [s.text for s in store.get("default", second).segments] == ["Morning, all."]
+
+    asyncio.run(run())
+
+
+def test_a_reconnect_over_the_break_still_starts_no_new_meeting() -> None:
+    # QA on XERK-2615: the sweep drops an idle tracker with no socket. The client reconnects
+    # (a network blip, a PC asleep over the break) and re-sends the panel to a fresh tracker.
+    import asyncio
+
+    from api.screen.meetings import ScreenMeetings
+    from api.screen.zoom import CaptionBlock
+
+    panel = [CaptionBlock("Kunal Shah", True, ["Thanks, both."])]
+    key = ("default", "user-1", "tesoro")
+
+    async def run() -> None:
+        reg = ScreenMeetings()
+        t, store = _ended_window_tracker()
+        reg.put(key, t)
+        await t.on_caption(panel, 0)
+        assert len(await reg.sweep(200_000)) == 1  # ends the meeting and drops the tracker
+        assert reg.get(key) is None  # idle, no socket: dropped
+        fresh, _ = _ended_window_tracker()
+        fresh.store = store
+        assert reg.put(key, fresh) is fresh
+        await fresh.on_caption(list(panel), 400_000)
+        assert fresh.conversation_id is None
+        assert len(store._conversations("default")) == 1
+
+    asyncio.run(run())
+
+
+def test_the_carried_lines_are_capped_oldest_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from api.screen import meetings as m
+    from api.screen.zoom import CaptionBlock
+
+    monkeypatch.setattr(m, "_MAX_CARRIES", 2)
+
+    async def run() -> None:
+        reg = m.ScreenMeetings()
+        for org in ("a", "b", "c"):
+            t, _ = _ended_window_tracker()
+            reg.put(("default", "user-1", org), t)
+            await t.on_caption([CaptionBlock("Ana", True, ["hi"])], 0)
+            await reg.sweep(200_000)
+        assert list(reg._carries) == [("default", "user-1", "b"), ("default", "user-1", "c")]
+
+    asyncio.run(run())
+
+
+def test_the_last_speaker_going_on_after_the_break_is_a_new_line() -> None:
+    # QA on XERK-2615: the carried newest line must not "grow" (its segment is the ended
+    # meeting's), or the continuation aligned onto it, was refused, and stored nothing.
+    # A short end timer (< merge._EXTEND_MS) also checks the ended segment stays as it was.
+    import asyncio
+
+    from api.screen.zoom import CaptionBlock
+
+    async def run() -> None:
+        t, store = _ended_window_tracker()
+        t.end_ms = 10_000
+        await t.on_caption([CaptionBlock("Kunal Shah", True, ["Thanks, both."])], 0)
+        first = await t.end(10_000)
+        grown = [CaptionBlock("Kunal Shah", True, ["Thanks, both. And see you tomorrow."])]
+        await t.on_caption(grown, 15_000)
+        second = await t.end(30_000)
+        assert second is not None
+        old = store.get("default", first).segments
+        new = store.get("default", second).segments
+        assert [s.text for s in old] == ["Thanks, both."]
+        assert [s.text for s in new] == ["Thanks, both. And see you tomorrow."]
+        assert not {s.segment_id for s in old} & {s.segment_id for s in new}
+        # A small addition still re-reads the carried line (similar enough): it must leave the
+        # ended meeting's segment as it was, not extend it after the meeting ended.
+        t, store = _ended_window_tracker()
+        await t.on_caption([CaptionBlock("Kunal Shah", True, ["Thanks, both."])], 0)
+        first = await t.end(10_000)
+        await t.on_caption([CaptionBlock("Kunal Shah", True, ["Thanks, both. Bye."])], 12_000)
+        assert [s.text for s in store.get("default", first).segments] == ["Thanks, both."]
+
+    asyncio.run(run())
