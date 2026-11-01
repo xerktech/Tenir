@@ -976,6 +976,43 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
     assert "screen.token_expired" not in metrics.snapshot()["counters"]
 
 
+def test_a_delete_racing_the_handshake_closes_the_screen_socket(
+    screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-registration account re-check closes a socket whose user just went."""
+    from api.main import app
+
+    _, _, token, admin = screen
+    with TestClient(app) as client:
+        # Auth at the handshake passes; the re-check after registering sees the delete.
+        monkeypatch.setattr(screen_ws, "_account_exists", lambda _uid: False)
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_text()
+            assert (closed.value.code, closed.value.reason) == (1008, "account removed")
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
+def test_a_client_gone_before_the_first_send_ends_the_socket_quietly(screen) -> None:
+    """XERK-2612 QA: a disconnect on the first send is a normal end, not an ASGI error."""
+    _, _, token, admin = screen
+
+    class GoneSocket:
+        headers: dict[str, str] = {}
+        query_params = {"token": token}
+
+        async def accept(self) -> None:
+            pass
+
+        async def send_text(self, _text: str) -> None:
+            raise WebSocketDisconnect(1006)
+
+    # Returns instead of raising (an escaping disconnect is uvicorn's ASGI error log).
+    asyncio.run(screen_ws.screen_ws(GoneSocket()))
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
 def test_one_socket_feeds_a_bounded_number_of_windows(screen) -> None:
     from api.main import app
 

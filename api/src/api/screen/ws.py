@@ -16,7 +16,7 @@ import struct
 import time
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from api.auth import AuthError, Principal, get_user_store, principal_from_bearer
@@ -322,6 +322,10 @@ async def screen_ws(ws: WebSocket) -> None:
                 await send(Pong(type="pong", t=t if isinstance(t, int) else None))
             else:
                 await error("expected a binary frame or ping")
+    except WebSocketDisconnect:
+        # The client went away mid-send (even before the first cadence): a normal end,
+        # not an ASGI error; the finally below still cleans up.
+        pass
     finally:
         if expiry is not None:
             expiry.cancel()
