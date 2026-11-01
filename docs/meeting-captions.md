@@ -271,6 +271,41 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 - **Release**: `tenir-desktop-v<version>.exe`, a PyInstaller one-file exe built by
   `release.yml` on `windows-latest`; `desktop.yml` builds it and smoke-tests WGC on every PR.
 
+## Delivery to Turma (XERK-2513)
+
+A ready screen meeting is posted to the Turma hub, which proposes work items from it. Code in
+`api/src/api/screen/turma.py`; the wire contract is Turma's `.claude/rules/contract-meetings.md`
+(`POST /api/orgs/<orgSiteKey>/meetings`, bearer = the hub's `TURMA_MEETINGS_TOKEN`).
+
+- On when `API_TURMA_URL` and `API_TURMA_MEETINGS_TOKEN` are both set. Off, meetings wait
+  `pending` and are sent once it is turned on.
+- State on the conversation: `delivery_state` `pending` (from creation; a screen row with none,
+  from before delivery existed, reads pending) → `sent` or `failed`, with `delivery_error` in
+  the hub's words (while pending: the last retry's reason).
+- Each pass looks at every pending meeting: after a retryable refusal the rest of that org waits
+  for the next pass, and an unreachable hub ends the pass. One org's backlog never blocks another.
+- The body fits the hub's limits: lines cut to 2000 characters, at most 10000 lines, and 1 MiB
+  both on the wire and by the hub's per-org transcript measure (sanitized segments, each with a
+  `speaker`). Past that the earliest lines are sent and the `sent` row's `delivery_error` says
+  how many.
+- A config that can't work (URL or token alone, or a URL that isn't http(s) with a host) keeps
+  delivery off, logs why, and shows red on `/status` at once (no grace window: waiting can't fix
+  it).
+- A meeting is tried as soon as it turns ready (the tracker wakes the loop), else on a 10 s poll,
+  which also picks up meetings the boot stale sweep closed.
+- Exactly once at the hub: Tenir retries until a 200 `{ok: true}`, and the hub is idempotent on
+  `meetingId` (the conversation id), so a request lost to a hub restart is just sent again.
+- 400/401/403/413 fail at once; anything else (unreachable, 5xx, 404 while the restarted hub's
+  hosts re-register, 409, 429) retries from 5 s, doubling to `API_TURMA_RETRY_MAX_SECONDS`
+  (300), until `API_TURMA_GIVE_UP_SECONDS` (1 day) after the meeting ended.
+- A meeting failed for a reason a config fix can change (401/403 from a wrong token, or giving
+  up during a long hub outage) goes back to `pending` when Tenir starts (XERK-2605). To resend
+  them, fix the token or the hub and restart Tenir. Every meeting pending at boot gets a full
+  `API_TURMA_GIVE_UP_SECONDS` from that boot, so a hub still re-registering is ridden out.
+  400/413 and empty meetings stay failed.
+- `/status` shows a "Meetings to Turma" light: red for failures of meetings that ended in the
+  last 7 days, yellow while any wait, green when all were delivered. Counts and errors only.
+
 ## Caveats
 
 - **Synthetic frames, not the operator's screenshot.** The screenshot was not reachable from the

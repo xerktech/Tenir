@@ -61,6 +61,7 @@ from api.persistence.postgres import (
 from api.protocol import ValidationError, parse_client_message, serialize
 from api.readiness import probe_backends
 from api.screen import meetings as screen_meetings
+from api.screen import turma as turma_delivery
 from api.screen.ws import router as screen_router
 from api.session import (
     RecordingGone,
@@ -240,12 +241,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Screen meetings end after a stretch with no captions (XERK-2505); the sweep closes
     # them even when the capture client has gone quiet or disconnected.
     screen_task = asyncio.create_task(screen_meetings.sweep_loop())
+    # Ready screen meetings are posted to the Turma hub, retried until it takes them
+    # (XERK-2513); the state is on the row, so this resumes whatever a crash left pending.
+    delivery = turma_delivery.start(conversations)
+    delivery_task = asyncio.create_task(delivery.loop()) if delivery is not None else None
     yield
     screen_task.cancel()
     try:
         await asyncio.wait_for(screen_meetings.meetings.close_all(), _SHUTDOWN_FINALIZE_S)
     except Exception:
         log.exception("could not finish open screen meetings on shutdown")
+    if delivery_task is not None:
+        # Meetings finished just above stay pending and are sent by the next process.
+        delivery_task.cancel()
+        await delivery.aclose()
     if stale_task is not None:
         stale_task.cancel()
     if rss_task is not None:

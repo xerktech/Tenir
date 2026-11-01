@@ -16,6 +16,8 @@ from typing import Literal
 ConversationStatus = Literal["live", "ready"]
 # mic: a live audio session · screen: a meeting read off captured screen captions (XERK-2505).
 ConversationSource = Literal["mic", "screen"]
+# A screen meeting's delivery to the Turma hub (XERK-2513); None on mic conversations.
+DeliveryState = Literal["pending", "sent", "failed"]
 
 
 def coerce_status(value: object, *, ended: bool = False) -> ConversationStatus:
@@ -169,6 +171,10 @@ class Conversation:
     meeting_title: str | None = None
     # Participant names read off the meeting's video tiles, in first-seen order (screen only).
     participants: list[str] = field(default_factory=list)
+    # Delivery to the Turma hub (screen only, XERK-2513): pending until the hub took it, then
+    # sent, or failed with the reason; while pending, the error is the last retry's reason.
+    delivery_state: DeliveryState | None = None
+    delivery_error: str | None = None
     segments: list[Segment] = field(default_factory=list)
     cues: list[Cue] = field(default_factory=list)
     songs: list[Song] = field(default_factory=list)

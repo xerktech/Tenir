@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
+from api.screen import turma
 from api.screen.merge import CaptionMerger
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
@@ -259,6 +260,8 @@ class MeetingTracker:
         await self._io(lambda: self.store.finish(self.household, conversation_id, status="ready"))
         log.info("screen meeting ended: %s", conversation_id)
         metrics.incr("screen.meetings_ended")
+        # Post it to the Turma hub now rather than on the delivery loop's next poll.
+        turma.wake()
         self.conversation_id = None
         self.merger = None
         # The next meeting on this window starts with whoever its tiles show then.

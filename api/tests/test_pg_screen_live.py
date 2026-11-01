@@ -121,7 +121,9 @@ def test_a_participants_table_without_position_is_migrated(store) -> None:
 def test_org_filter_and_orgs(store) -> None:
     """XERK-2507: list/search by org, and the org list."""
     northwind_old, northwind, acme, mic = (str(uuid.uuid4()) for _ in range(4))
-    store.create(HH, northwind_old, owner="u1", screen=ScreenMeta("northwind", "Northwind Old", "zoom"))
+    store.create(
+        HH, northwind_old, owner="u1", screen=ScreenMeta("northwind", "Northwind Old", "zoom")
+    )
     store.create(HH, acme, owner="u2", screen=ScreenMeta("acme", "acme corp", "zoom"))
     store.create(HH, northwind, owner="u1", screen=ScreenMeta("northwind", "Northwind", "zoom"))
     store.create(HH, mic, owner="u1", mic_source="phone-microphone")
@@ -135,6 +137,58 @@ def test_org_filter_and_orgs(store) -> None:
     assert [c.id for c in store.search(HH, "friday", owner="u1", org="acme")] == []
     assert store.orgs(HH) == [("acme", "acme corp"), ("northwind", "Northwind")]
     assert store.orgs(HH, owner="u1") == [("northwind", "Northwind")]
+
+
+def test_meeting_delivery_state_round_trips(store) -> None:
+    # XERK-2513: a screen meeting is pending from creation, listed once ready, and its
+    # sent/failed state + error persist; a mic row never gets a state.
+    from datetime import timedelta
+
+    from api.persistence.models import utcnow
+
+    screen = ScreenMeta("tesoro", "Tesoro", "zoom")
+    a, b, live, mic = (str(uuid.uuid4()) for _ in range(4))
+    for cid in (a, b, live):
+        assert store.create(HH, cid, owner="u1", screen=screen).delivery_state == "pending"
+    store.create(HH, mic, owner="u1")
+    store.finish(HH, a)
+    store.finish(HH, b)
+    store.finish(HH, mic)
+    assert store.pending_deliveries() == [
+        (HH, a, "tesoro"),
+        (HH, b, "tesoro"),
+    ]  # oldest end first, no live row
+    since = utcnow() - timedelta(days=7)
+    assert store.delivery_summary(since) == {"pending": 2, "failed": 0, "error": None}
+
+    # A screen row created before the column existed has no state: it still reads pending.
+    legacy = str(uuid.uuid4())
+    store.create(HH, legacy, owner="u1", screen=screen)
+    store.finish(HH, legacy)
+    with store._ensure_pool().connection() as conn:
+        conn.execute("UPDATE conversations SET delivery_state = NULL WHERE id = %s", (legacy,))
+    assert store.pending_deliveries() == [
+        (HH, a, "tesoro"),
+        (HH, b, "tesoro"),
+        (HH, legacy, "tesoro"),
+    ]
+    store.set_delivery(HH, legacy, "sent", None)
+    assert store.get(HH, legacy).delivery_state == "sent"
+
+    store.set_delivery(HH, a, "pending", "hub unreachable (ConnectError)")
+    assert store.get(HH, a).delivery_error == "hub unreachable (ConnectError)"
+    store.set_delivery(HH, a, "sent", None)
+    store.set_delivery(HH, b, "failed", "hub answered 400: bad")
+    store.set_delivery(HH, mic, "sent", None)
+    assert (store.get(HH, a).delivery_state, store.get(HH, a).delivery_error) == ("sent", None)
+    assert store.get(HH, mic).delivery_state is None
+    assert store.pending_deliveries() == []
+    assert store.delivery_summary(since) == {
+        "pending": 0,
+        "failed": 1,
+        "error": "hub answered 400: bad",
+    }
+    assert store.delivery_summary(utcnow() + timedelta(seconds=5))["failed"] == 0
 
 
 def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
@@ -175,3 +229,34 @@ def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
             " VALUES (%s, 'tesoro', 'x@y.test', 'X')",
             (HH,),
         )
+
+
+def test_failed_deliveries_a_config_fix_can_change_are_requeued(store) -> None:
+    # XERK-2605: the boot re-queue's prefix match, with LIKE wildcards taken literally.
+    from api.screen.turma import REQUEUE_ON_BOOT
+
+    screen = ScreenMeta("tesoro", "Tesoro", "zoom")
+    tok, gave_up, bad, sent, wild = (str(uuid.uuid4()) for _ in range(5))
+    for cid in (tok, gave_up, bad, sent, wild):
+        store.create(HH, cid, owner="u1", screen=screen)
+        store.finish(HH, cid)
+    store.set_delivery(HH, tok, "failed", "hub answered 401: unauthorized")
+    store.set_delivery(HH, gave_up, "failed", "gave up retrying: hub answered 503")
+    store.set_delivery(HH, bad, "failed", "hub answered 400: bad")
+    store.set_delivery(HH, sent, "sent", "hub answered 401")
+    store.set_delivery(HH, wild, "failed", "hub answered 4019")
+    mic = str(uuid.uuid4())
+    store.create(HH, mic, owner="u1")
+    store.finish(HH, mic)
+    with store._ensure_pool().connection() as conn:
+        conn.execute(
+            "UPDATE conversations SET delivery_state = 'failed', delivery_error = %s WHERE id = %s",
+            ("hub answered 401", mic),
+        )
+    assert store.requeue_failed_deliveries(("hub answered 40_9",)) == []
+    got = store.requeue_failed_deliveries(REQUEUE_ON_BOOT)
+    states = {cid: store.get(HH, cid).delivery_state for cid in (tok, gave_up, bad, sent)}
+    assert states == {tok: "pending", gave_up: "pending", bad: "failed", sent: "sent"}
+    assert {(HH, tok), (HH, gave_up)} <= set(got)  # other tests' rows may match too
+    assert (HH, mic) not in got and store.get(HH, mic).delivery_state == "failed"
+    assert store.requeue_failed_deliveries(()) == []

@@ -24,13 +24,14 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from api.config import settings
 from api.persistence import get_audio_store, get_conversation_store
 from api.persistence.postgres import is_database_unavailable
+from api.screen import turma
 
 log = logging.getLogger("api.status")
 
@@ -51,6 +52,7 @@ logging.getLogger("httpx").addFilter(_QuietProbeRequests())
 READY = "ready"
 NOT_READY = "not_ready"  # reachable, but reports/looks not-yet-ready (loading)
 UNREACHABLE = "unreachable"
+MISCONFIGURED = "misconfigured"  # a setting that can't work: red at once, no grace window
 
 # Display states (the dashboard's red/yellow/green).
 STATE_READY = "ready"  # green
@@ -98,7 +100,10 @@ def _public_detail(target: str, exc: BaseException) -> str:
     if name not in seen:
         seen.add(name)
         log.warning(
-            "status probe of %s failed: %s: %s", target, type(exc).__name__, " ".join(str(exc).split())
+            "status probe of %s failed: %s: %s",
+            target,
+            type(exc).__name__,
+            " ".join(str(exc).split()),
         )
     return f"unreachable: {name}"
 
@@ -151,6 +156,31 @@ async def _infra_probe(fn: Callable[[], object] | None) -> tuple[str, str]:
     return READY, "reachable"
 
 
+# Failed deliveries count on /status for meetings that ended within this window; older
+# failures stay recorded on their conversation but no longer hold the light red.
+DELIVERY_FAILURE_WINDOW = timedelta(days=7)
+
+
+async def _delivery_probe(store) -> tuple[str, str]:
+    """Meetings waiting for or refused by the Turma hub: any recent failure is red (after the
+    grace window), meetings still being retried yellow, all delivered green. Counts and the
+    hub's words only, never a meeting's title: /status is public."""
+    since = datetime.now(timezone.utc) - DELIVERY_FAILURE_WINDOW
+    try:
+        summary = await asyncio.to_thread(store.delivery_summary, since)
+    except Exception as exc:  # noqa: BLE001
+        return UNREACHABLE, _public_detail("delivery_summary", exc)
+    failed, pending = summary["failed"], summary["pending"]
+    if failed:
+        detail = f"{failed} meeting(s) not delivered"
+        if summary.get("error"):
+            detail += f": {summary['error']}"
+        return UNREACHABLE, detail
+    if pending:
+        return NOT_READY, f"{pending} meeting(s) waiting to be delivered"
+    return READY, "all meetings delivered"
+
+
 # ---- registry + state machine ------------------------------------------------
 
 # A raw probe result for one component, before the grace-window mapping.
@@ -172,6 +202,15 @@ async def _gather() -> list[_RawResult]:
         audio = get_audio_store()
         raw, detail = await _infra_probe(audio.ready if audio else None)
         results.append(("audio", "Audio store (disk)", "infra", raw, detail))
+
+    # --- Turma hub delivery of finished meetings (XERK-2513) ---
+    conv_store = get_conversation_store()
+    if problem := turma.config_problem():
+        # Meetings pile up pending while misconfigured: show it, not just a boot log line.
+        results.append(("turma", "Meetings to Turma", "infra", MISCONFIGURED, problem))
+    elif turma.configured() and conv_store is not None:
+        raw, detail = await _delivery_probe(conv_store)
+        results.append(("turma", "Meetings to Turma", "infra", raw, detail))
 
     # --- LiteLLM gateway + the models behind it ---
     # Both the live STT engine and the cue LLM reach their model through the same
@@ -218,6 +257,10 @@ def _apply(cid: str, raw: str, detail: str) -> tuple[str, str]:
     if raw == READY:
         _down_since.pop(cid, None)
         return STATE_READY, detail
+    if raw == MISCONFIGURED:
+        # Waiting can't fix a config error, so it skips the "could still be loading" grace.
+        _down_since.pop(cid, None)
+        return STATE_DOWN, detail
     if raw == NOT_READY:
         # Reachable but warming up — that's yellow, and not "down" yet.
         _down_since.pop(cid, None)

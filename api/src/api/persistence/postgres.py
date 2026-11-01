@@ -31,6 +31,7 @@ from api.persistence.models import (
     ConversationStatus,
     ConversationSummary,
     Cue,
+    DeliveryState,
     ScreenMeta,
     Segment,
     Song,
@@ -790,6 +791,8 @@ class SqlConversationStore:
             platform=row.get("platform"),
             meeting_title=row.get("meeting_title"),
             participants=participants or [],
+            delivery_state=row.get("delivery_state"),
+            delivery_error=row.get("delivery_error"),
             segments=segments,
             cues=cues,
             songs=songs,
@@ -817,8 +820,8 @@ class SqlConversationStore:
                 """
                 INSERT INTO conversations
                     (id, household, owner, mic_source, source_lang, started_at, status,
-                     opened_at, source, org_site_key, org_name, platform)
-                VALUES (%s, %s, %s, %s, %s, %s, 'live', %s, %s, %s, %s, %s)
+                     opened_at, source, org_site_key, org_name, platform, delivery_state)
+                VALUES (%s, %s, %s, %s, %s, %s, 'live', %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE
                    SET status = 'live', ended_at = NULL, opened_at = EXCLUDED.opened_at
                  WHERE conversations.household = EXCLUDED.household
@@ -836,6 +839,7 @@ class SqlConversationStore:
                     screen.org_site_key if screen else None,
                     screen.org_name if screen else None,
                     screen.platform if screen else None,
+                    "pending" if screen else None,
                 ),
             ).fetchone()
         got = self.get(household, conversation_id)
@@ -1347,5 +1351,73 @@ class SqlConversationStore:
                  WHERE status = 'live'
              RETURNING household, id
                 """
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def pending_deliveries(  # pragma: no cover - requires a live database
+        self,
+    ) -> list[tuple[str, str, str | None]]:
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT household, id, org_site_key FROM conversations
+                 WHERE source = 'screen' AND status = 'ready'
+                   AND COALESCE(delivery_state, 'pending') = 'pending'
+                 ORDER BY ended_at, id
+                """
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def set_delivery(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, state: DeliveryState, error: str | None
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            # Only a screen meeting is delivered; a mic row stays NULL.
+            conn.execute(
+                """
+                UPDATE conversations SET delivery_state = %s, delivery_error = %s
+                 WHERE id = %s AND household = %s AND source = 'screen'
+                """,
+                (state, error, conversation_id, household),
+            )
+
+    def delivery_summary(  # pragma: no cover - requires a live database
+        self, since: datetime
+    ) -> dict[str, object]:
+        with self._ensure_pool().connection(timeout=OPEN_TIMEOUT_SECONDS) as conn:
+            row = conn.execute(
+                """
+                SELECT count(*) FILTER (WHERE COALESCE(delivery_state, 'pending') = 'pending'),
+                       count(*) FILTER (WHERE delivery_state = 'failed' AND ended_at >= %s),
+                       (SELECT delivery_error FROM conversations
+                         WHERE source = 'screen' AND delivery_state = 'failed'
+                           AND status = 'ready' AND ended_at >= %s
+                         ORDER BY ended_at DESC, id DESC LIMIT 1)
+                  FROM conversations
+                 WHERE source = 'screen' AND status = 'ready'
+                """,
+                (since, since),
+            ).fetchone()
+        return {"pending": row[0], "failed": row[1], "error": row[2]}
+
+    def requeue_failed_deliveries(  # pragma: no cover - requires a live database
+        self, reasons: tuple[str, ...]
+    ) -> list[tuple[str, str]]:
+        if not reasons:
+            return []
+        # A prefix match, with LIKE's wildcards in the reasons taken literally.
+        patterns = [
+            r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            for r in reasons
+        ]
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                UPDATE conversations SET delivery_state = 'pending'
+                 WHERE source = 'screen' AND delivery_state = 'failed'
+                   AND delivery_error LIKE ANY(%s)
+                RETURNING household, id
+                """,
+                (patterns,),
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
