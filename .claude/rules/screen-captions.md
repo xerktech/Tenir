@@ -4,6 +4,8 @@ paths:
   - "api/tests/test_screen.py"
   - "api/tests/test_pg_screen_live.py"
   - "api/tests/fixtures/screen/**"
+  - "api/src/api/history.py"
+  - "api/tests/test_history_meetings.py"
 ---
 
 # Screen meeting captions (XERK-2505)
@@ -64,3 +66,9 @@ paths:
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
   socket loop, and latest-frame-wins drops frames sent faster than they are handled.
+- Speaker renames (`rename_speaker`, XERK-2507) keep aliases one hop: every alias already shown
+  as the old name is re-pointed too. History applies aliases once on read, so a chained alias
+  (raw -> A, A -> B) would show A for segments stored under the raw tile name.
+  Test: `test_renaming_a_speaker_relabels_every_meeting_of_the_org`.
+- A rename must name a speaker shown in a meeting the caller can read: that is the only check
+  keeping a member from writing aliases for an org they never recorded.

@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
   historyList: vi.fn(),
   historyGet: vi.fn(),
   historyRemove: vi.fn(),
+  historyOrgs: vi.fn(),
+  historyRename: vi.fn(),
   getSessionKind: vi.fn(),
   oidcLogout: vi.fn(),
   startOidcLogin: vi.fn(),
@@ -36,6 +38,8 @@ vi.mock("@tenir/client-core", () => ({
     list: api.historyList,
     get: api.historyGet,
     remove: api.historyRemove,
+    orgs: api.historyOrgs,
+    renameSpeaker: api.historyRename,
     audioUrl: vi.fn(),
   },
 }));
@@ -43,6 +47,7 @@ vi.mock("@tenir/client-core", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   api.getSessionKind.mockReturnValue("builtin");
+  api.historyOrgs.mockResolvedValue([]);
   // checkSession's contract (401 clears, server fault rethrows) is tested against
   // real fetch in client-core; here it follows `me` so the suites drive boot via `me`.
   api.checkSession.mockImplementation(() =>
@@ -186,10 +191,40 @@ describe("useHistory", () => {
     api.historyList.mockResolvedValue([summary]);
     const { result } = renderHook(() => useHistory());
     await waitFor(() => expect(result.current.data?.length).toBe(1));
-    expect(api.historyList).toHaveBeenCalledWith(undefined);
+    expect(api.historyList).toHaveBeenCalledWith(undefined, 50, 0, undefined);
 
     act(() => result.current.setSearch("budget"));
-    await waitFor(() => expect(api.historyList).toHaveBeenCalledWith("budget"));
+    await waitFor(() => expect(api.historyList).toHaveBeenCalledWith("budget", 50, 0, undefined));
+  });
+
+  it("filters by org and loads the org list (XERK-2507)", async () => {
+    api.historyList.mockResolvedValue([summary]);
+    api.historyOrgs.mockResolvedValue([{ siteKey: "northwind", name: "Northwind" }]);
+    const { result } = renderHook(() => useHistory());
+    await waitFor(() => expect(result.current.orgs).toEqual([{ siteKey: "northwind", name: "Northwind" }]));
+
+    act(() => result.current.setOrg("northwind"));
+    await waitFor(() => expect(api.historyList).toHaveBeenLastCalledWith(undefined, 50, 0, "northwind"));
+    act(() => result.current.setOrg(""));
+    await waitFor(() => expect(api.historyList).toHaveBeenLastCalledWith(undefined, 50, 0, undefined));
+  });
+
+  it("hides the org filter when the org list fails, but still lists history", async () => {
+    api.historyList.mockResolvedValue([summary]);
+    api.historyOrgs.mockRejectedValue(new Error("boom"));
+    const { result } = renderHook(() => useHistory());
+    await waitFor(() => expect(result.current.data?.length).toBe(1));
+    expect(result.current.orgs).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("renames a meeting speaker", async () => {
+    api.historyList.mockResolvedValue([summary]);
+    api.historyRename.mockResolvedValue({ ...summary, segments: [] });
+    const { result } = renderHook(() => useHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await result.current.renameSpeaker("c1", "sam@example.com", "Sam");
+    expect(api.historyRename).toHaveBeenCalledWith("c1", "sam@example.com", "Sam");
   });
 
   it("surfaces a failed listing rather than reporting an empty history", async () => {

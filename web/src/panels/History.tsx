@@ -2,6 +2,9 @@
 
 import {
   history,
+  MAX_SPEAKER_NAME,
+  meetingSpeakers,
+  platformLabel,
   type Conversation,
   type ConversationSummary,
   type CueView,
@@ -13,6 +16,7 @@ import { useMemo, useState } from "react";
 import { useAsync } from "../lib/hooks";
 import { errText, useNotify } from "../lib/toast";
 import {
+  Badge,
   Button,
   Card,
   ConfirmButton,
@@ -61,11 +65,29 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Org badge + platform of a screen-captured meeting (XERK-2507); nothing for a mic session. */
+function MeetingTags({ conv }: { conv: ConversationSummary }): JSX.Element | null {
+  if (conv.source !== "screen") return null;
+  return (
+    <span className="meeting-tags">
+      {conv.orgName && <Badge>{conv.orgName}</Badge>}
+      {conv.platform && <span className="muted">{platformLabel(conv.platform)}</span>}
+    </span>
+  );
+}
+
 export function HistoryPanel(): JSX.Element {
   const notify = useNotify();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const { data, error, loading, reload } = useAsync(() => history.list(search.trim() || undefined), [search]);
+  // "" = every org. The filter only shows once there are meetings to filter (XERK-2507).
+  const [org, setOrg] = useState("");
+  const { data, error, loading, reload } = useAsync(
+    () => history.list(search.trim() || undefined, 50, 0, org || undefined),
+    [search, org],
+  );
+  // A failed org list just hides the filter: the history itself still loads.
+  const orgs = useAsync(() => history.orgs().catch(() => []), []);
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -118,6 +140,7 @@ export function HistoryPanel(): JSX.Element {
         conv={selected}
         onDelete={() => void remove(selected.id)}
         onBack={() => setSelected(null)}
+        onChange={setSelected}
       />
     );
   }
@@ -141,6 +164,21 @@ export function HistoryPanel(): JSX.Element {
         <Button variant="primary" type="submit">
           Search
         </Button>
+        {(orgs.data?.length ?? 0) > 0 && (
+          <select
+            aria-label="Filter by org"
+            className="input history-org-filter"
+            value={org}
+            onChange={(e) => setOrg(e.target.value)}
+          >
+            <option value="">All orgs</option>
+            {orgs.data?.map((o) => (
+              <option key={o.siteKey} value={o.siteKey}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        )}
       </form>
 
       {loading && <Spinner />}
@@ -186,6 +224,12 @@ export function HistoryPanel(): JSX.Element {
                   <button className="link" onClick={() => void open(c.id)}>
                     {new Date(c.startedAt).toLocaleString()}
                   </button>
+                  {c.source === "screen" && (
+                    <div className="history-meeting">
+                      <span className="history-meeting-title">{c.meetingTitle || "Meeting"}</span>
+                      <MeetingTags conv={c} />
+                    </div>
+                  )}
                 </td>
                 <td>{formatDuration(c.durationMs)}</td>
                 <td className="history-col-turns">{c.segmentCount}</td>
@@ -243,14 +287,101 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "segment" ? 0 : 1) - (b.kind === "segment" ? 0 : 1));
 }
 
+/** A meeting's speakers, each renameable (e.g. sam@example.com -> Sam, XERK-2507).
+ *  A rename applies to every meeting from the same org, past and future. */
+function SpeakerList({
+  conv,
+  onChange,
+}: {
+  conv: Conversation;
+  onChange: (conv: Conversation) => void;
+}): JSX.Element | null {
+  const notify = useNotify();
+  const [editing, setEditing] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const speakers = meetingSpeakers(conv);
+  if (speakers.length === 0) return null;
+
+  const save = (speaker: string) => {
+    const next = name.trim();
+    if (!next || next === speaker) {
+      setEditing(null);
+      return;
+    }
+    setBusy(true);
+    history
+      .renameSpeaker(conv.id, speaker, next)
+      .then((updated) => {
+        setEditing(null);
+        onChange(updated);
+        notify(`Renamed to ${next}`);
+      })
+      .catch((e) => notify(errText(e), "err"))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="speaker-list">
+      <h4>Speakers</h4>
+      <ul>
+        {speakers.map((speaker) =>
+          editing === speaker ? (
+            <li key={speaker}>
+              <form
+                className="row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  save(speaker);
+                }}
+              >
+                <Input
+                  aria-label={`New name for ${speaker}`}
+                  autoFocus
+                  maxLength={MAX_SPEAKER_NAME}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+                <Button variant="primary" type="submit" disabled={busy}>
+                  Save
+                </Button>
+                <Button variant="ghost" type="button" onClick={() => setEditing(null)}>
+                  Cancel
+                </Button>
+              </form>
+            </li>
+          ) : (
+            <li key={speaker} className="row">
+              <span className="speaker-name">{speaker}</span>
+              <Button
+                variant="ghost"
+                aria-label={`Rename ${speaker}`}
+                onClick={() => {
+                  setEditing(speaker);
+                  setName(speaker);
+                }}
+              >
+                Rename
+              </Button>
+            </li>
+          ),
+        )}
+      </ul>
+      <p className="muted">A new name shows in every meeting from {conv.orgName || "this org"}.</p>
+    </div>
+  );
+}
+
 function ConversationDetail({
   conv,
   onDelete,
   onBack,
+  onChange,
 }: {
   conv: Conversation;
   onDelete: () => void;
   onBack: () => void;
+  onChange: (conv: Conversation) => void;
 }): JSX.Element {
   // Cues default to shown every time a conversation is opened (not persisted).
   // Hiding them drops the inline cue blocks so the transcript reads as one
@@ -264,7 +395,9 @@ function ConversationDetail({
         <Button variant="ghost" onClick={onBack}>
           ← History
         </Button>
-        <h3 className="grow">Conversation detail</h3>
+        <h3 className="grow">
+          {conv.source === "screen" ? conv.meetingTitle || "Meeting" : "Conversation detail"}
+        </h3>
         <ConfirmButton confirmLabel="Confirm delete" onConfirm={onDelete}>
           Delete
         </ConfirmButton>
@@ -272,6 +405,8 @@ function ConversationDetail({
       <p className="muted">
         {new Date(conv.startedAt).toLocaleString()} · {formatDuration(conv.durationMs)} · {conv.segmentCount} turns
       </p>
+      <MeetingTags conv={conv} />
+      {conv.source === "screen" && <SpeakerList conv={conv} onChange={onChange} />}
       {/* Only shown when there are cues to toggle. */}
       {hasCues && (
         <label className="cue-toggle">
@@ -295,6 +430,8 @@ function ConversationDetail({
             item.kind === "segment" ? (
               <div className="item" key={item.seg.segmentId}>
                 <span className="muted">{segmentTiming(item.seg)}</span>{" "}
+                {/* Who said it, on a screen-captured meeting (XERK-2507). */}
+                {item.seg.speaker && <span className="speaker-name">{item.seg.speaker}: </span>}
                 {/* Source-language chip on a translated turn's original text
                     (XERK-160) — the counterpart of the translation's "EN" tag. */}
                 {item.seg.translation && item.seg.lang && <LangTag lang={item.seg.lang} />}

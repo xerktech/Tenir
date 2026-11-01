@@ -24,6 +24,7 @@ from api.persistence import (
     Cue,
     Segment,
     Song,
+    alias_key,
     audio_key,
     coerce_status,
     get_audio_store,
@@ -150,15 +151,45 @@ class ConversationOut(ConversationSummaryOut):
     participants: list[str] = Field(default_factory=list)
 
     @classmethod
-    def of(cls, conv: Conversation) -> "ConversationOut":
+    def of(cls, conv: Conversation, aliases: dict[str, str] | None = None) -> "ConversationOut":
+        """``aliases`` (``alias_key -> name``, the org's speaker aliases) relabels speakers
+        renamed since the meeting was stored (XERK-2507)."""
         base = ConversationSummaryOut.of(conv.summary()).model_dump()
+
+        def shown(name: str) -> str:
+            return aliases.get(alias_key(name), name) if aliases else name
+
+        segments = [SegmentOut.of(s) for s in conv.segments]
+        for seg in segments:
+            if seg.speaker is not None:
+                seg.speaker = shown(seg.speaker)
         return cls(
             **base,
-            segments=[SegmentOut.of(s) for s in conv.segments],
+            segments=segments,
             cues=[CueOut.of(c) for c in conv.cues],
             songs=[SongOut.of(s) for s in conv.songs],
-            participants=list(conv.participants),
+            # Two tiles renamed to one name show once.
+            participants=list(dict.fromkeys(shown(p) for p in conv.participants)),
         )
+
+
+class OrgOut(BaseModel):
+    """An org the caller has screen-captured meetings from: the history org filter."""
+
+    siteKey: str
+    name: str
+
+
+# A display name, not free text: long enough for "Firstname Lastname (Team)".
+_MAX_SPEAKER_NAME = 80
+
+
+class SpeakerRenameIn(BaseModel):
+    """Show ``speaker`` (as the meeting currently displays it) as ``name`` in every meeting
+    from the same org, past and future (XERK-2507)."""
+
+    speaker: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=_MAX_SPEAKER_NAME)
 
 
 def _store():
@@ -224,9 +255,24 @@ def _with_stored_audio(conv: Conversation) -> Conversation:
     return dataclasses.replace(conv, audio_key=key)
 
 
+def _detail(conv: Conversation) -> ConversationOut:
+    """The detail view, with the org's current speaker names on a screen meeting."""
+    aliases = (
+        _store().speaker_aliases(conv.household, conv.org_site_key)
+        if conv.org_site_key is not None
+        else None
+    )
+    return ConversationOut.of(conv, aliases)
+
+
 @router.get("/conversations", response_model=list[ConversationSummaryOut])
 def list_conversations(
     q: str | None = Query(None, description="Keyword search over conversation transcripts."),
+    org: str | None = Query(
+        None,
+        max_length=200,
+        description="Only screen-captured meetings from this org site key (XERK-2507).",
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     principal: Principal = Depends(current_principal),
@@ -235,18 +281,28 @@ def list_conversations(
     hh = principal.household
     owner = _owner_scope(principal)
     convs = (
-        store.search(hh, q, owner=owner, limit=limit, offset=offset)
+        store.search(hh, q, owner=owner, org=org, limit=limit, offset=offset)
         if q
-        else store.list(hh, owner=owner, limit=limit, offset=offset)
+        else store.list(hh, owner=owner, org=org, limit=limit, offset=offset)
     )
     return [ConversationSummaryOut.of(c) for c in convs]
+
+
+# Declared before /conversations/{conversation_id} so "orgs" is not read as an id.
+@router.get("/conversations/orgs", response_model=list[OrgOut])
+def list_conversation_orgs(principal: Principal = Depends(current_principal)) -> list[OrgOut]:
+    # Owner-scoped like the listing: a member's filter offers only orgs they recorded.
+    return [
+        OrgOut(siteKey=key, name=name)
+        for key, name in _store().orgs(principal.household, owner=_owner_scope(principal))
+    ]
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationOut)
 def get_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
-    return ConversationOut.of(
+    return _detail(
         _with_stored_audio(
             _require(principal.household, conversation_id, owner=_owner_scope(principal))
         )
@@ -258,11 +314,38 @@ def export_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
     # Per-record export for the privacy controls; same shape as the detail view.
-    return ConversationOut.of(
+    return _detail(
         _with_stored_audio(
             _require(principal.household, conversation_id, owner=_owner_scope(principal))
         )
     )
+
+
+@router.put("/conversations/{conversation_id}/speakers", response_model=ConversationOut)
+def rename_speaker(
+    conversation_id: str,
+    body: SpeakerRenameIn,
+    principal: Principal = Depends(current_principal),
+) -> ConversationOut:
+    """Rename a speaker of a screen meeting (e.g. ``sam@example.com`` -> ``Sam``).
+
+    Aliases are per org, so the new name shows in every meeting from that org, and the
+    capture pipeline applies it to meetings recorded from now on. The caller must be able
+    to read this meeting, and the speaker must appear in it: that keeps a member from
+    writing aliases for an org they never recorded."""
+    owner = _owner_scope(principal)
+    conv = _require(principal.household, conversation_id, owner=owner)
+    if conv.org_site_key is None:
+        raise HTTPException(status_code=409, detail="only meeting speakers can be renamed")
+    shown = _detail(conv)
+    speakers = set(shown.participants) | {s.speaker for s in shown.segments if s.speaker}
+    if body.speaker not in speakers:
+        raise HTTPException(status_code=404, detail="no such speaker in this meeting")
+    name = " ".join(body.name.split())
+    if not name:
+        raise HTTPException(status_code=422, detail="name must not be blank")
+    _store().rename_speaker(conv.household, conv.org_site_key, body.speaker, name)
+    return _detail(_with_stored_audio(_require(principal.household, conversation_id, owner=owner)))
 
 
 def _parse_byte_range(range_header: str, size: int) -> tuple[int, int] | None:

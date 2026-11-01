@@ -105,6 +105,7 @@ export function Field(props: {
   label?: string;
   secureTextEntry?: boolean;
   multiline?: boolean;
+  maxLength?: number;
 }): JSX.Element {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -117,6 +118,7 @@ export function Field(props: {
       onChangeText={props.onChangeText}
       secureTextEntry={props.secureTextEntry}
       multiline={props.multiline}
+      maxLength={props.maxLength}
       autoCapitalize="none"
     />
   );

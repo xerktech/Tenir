@@ -7,15 +7,22 @@ import { ToastProvider } from "../src/lib/toast";
 const list = vi.fn();
 const get = vi.fn();
 const remove = vi.fn();
+const orgs = vi.fn();
+const renameSpeaker = vi.fn();
 
-vi.mock("@tenir/client-core", () => ({
+vi.mock("@tenir/client-core", async (importOriginal) => ({
+  // The pure meeting helpers (platformLabel, meetingSpeakers, MAX_SPEAKER_NAME) are real.
+  ...(await importOriginal<typeof import("@tenir/client-core")>()),
   ApiError: class ApiError extends Error {},
   langName: (lang?: string | null) =>
     ({ en: "English", es: "Spanish", fr: "French", de: "German", pt: "Portuguese", it: "Italian" })[
       lang ?? ""
     ],
   history: {
-    list: (q?: string) => list(q),
+    list: (q?: string, _limit?: number, _offset?: number, org?: string) =>
+      org === undefined ? list(q) : list(q, org),
+    orgs: () => orgs(),
+    renameSpeaker: (id: string, speaker: string, name: string) => renameSpeaker(id, speaker, name),
     get: (id: string) => get(id),
     remove: (id: string) => remove(id),
     audioUrl: (id: string) => `/conversations/${id}/audio`,
@@ -39,6 +46,9 @@ beforeEach(() => {
   list.mockReset();
   get.mockReset();
   remove.mockReset();
+  orgs.mockReset();
+  orgs.mockResolvedValue([]);
+  renameSpeaker.mockReset();
 });
 
 function renderPanel() {
@@ -379,5 +389,110 @@ describe("HistoryPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
     await waitFor(() => expect(list).toHaveBeenCalled());
+  });
+});
+
+describe("screen-captured meetings (XERK-2507)", () => {
+  const meeting = (over: Record<string, unknown> = {}) =>
+    summary({
+      id: "m1",
+      status: "ready",
+      micSource: null,
+      source: "screen",
+      orgSiteKey: "northwind",
+      orgName: "Northwind",
+      platform: "zoom",
+      meetingTitle: "Q3 Release Sync",
+      ...over,
+    });
+  const detail = (speaker = "sam@example.com") => ({
+    ...meeting(),
+    segments: [
+      { segmentId: "s1", text: "ship it friday", startMs: 0, endMs: 900, lang: "en", speaker },
+      { segmentId: "s2", text: "agreed", startMs: 1000, endMs: 1900, lang: "en", speaker: "Priya Raman" },
+    ],
+    cues: [],
+    participants: [speaker, "Priya Raman"],
+  });
+
+  it("shows the meeting title, org badge and platform on the row", async () => {
+    list.mockResolvedValue([meeting(), summary()]);
+    renderPanel();
+    const row = await screen.findByRole("row", { name: /Q3 Release Sync/ });
+    expect(within(row).getByText("Northwind")).toBeInTheDocument();
+    expect(within(row).getByText("Zoom")).toBeInTheDocument();
+    // A mic session gets no meeting line.
+    const mic = screen.getByRole("row", { name: /stored/ });
+    expect(within(mic).queryByText("Zoom")).not.toBeInTheDocument();
+  });
+
+  it("filters the list by org, and hides the filter with no meetings", async () => {
+    list.mockResolvedValue([summary()]);
+    const { unmount } = renderPanel();
+    await screen.findByRole("row", { name: /stored/ });
+    expect(screen.queryByRole("combobox", { name: "Filter by org" })).not.toBeInTheDocument();
+    unmount();
+
+    orgs.mockResolvedValue([
+      { siteKey: "acme", name: "Acme" },
+      { siteKey: "northwind", name: "Northwind" },
+    ]);
+    list.mockResolvedValue([meeting(), summary()]);
+    renderPanel();
+    const filter = await screen.findByRole("combobox", { name: "Filter by org" });
+    list.mockResolvedValue([meeting()]);
+    fireEvent.change(filter, { target: { value: "northwind" } });
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(undefined, "northwind"));
+    await waitFor(() => expect(screen.queryByRole("row", { name: /stored/ })).not.toBeInTheDocument());
+    fireEvent.change(filter, { target: { value: "" } });
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(undefined));
+  });
+
+  it("shows each segment's speaker and renames a speaker", async () => {
+    list.mockResolvedValue([meeting()]);
+    get.mockResolvedValue(detail());
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /2026/ }));
+    await screen.findByRole("heading", { name: "Q3 Release Sync" });
+    expect(screen.getByText("ship it friday").closest(".item")).toHaveTextContent(
+      "sam@example.com: ship it friday",
+    );
+
+    renameSpeaker.mockResolvedValue(detail("Sam"));
+    fireEvent.click(screen.getByRole("button", { name: "Rename sam@example.com" }));
+    const input = screen.getByRole("textbox", { name: "New name for sam@example.com" });
+    fireEvent.change(input, { target: { value: "Sam" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(renameSpeaker).toHaveBeenCalledWith("m1", "sam@example.com", "Sam"),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("ship it friday").closest(".item")).toHaveTextContent("Sam: ship it friday"),
+    );
+    expect(screen.getByRole("button", { name: "Rename Sam" })).toBeInTheDocument();
+  });
+
+  it("keeps the editor open and says why when a rename fails", async () => {
+    list.mockResolvedValue([meeting()]);
+    get.mockResolvedValue(detail());
+    renameSpeaker.mockRejectedValue(new Error("no such speaker in this meeting"));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /2026/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Rename Priya Raman" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New name for Priya Raman" }), {
+      target: { value: "Priya" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/no such speaker/);
+    expect(screen.getByRole("textbox", { name: "New name for Priya Raman" })).toBeInTheDocument();
+  });
+
+  it("does not offer speakers on a mic conversation", async () => {
+    list.mockResolvedValue([summary()]);
+    get.mockResolvedValue({ ...summary(), segments: [], cues: [] });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: /2026/ }));
+    await screen.findByRole("heading", { name: "Conversation detail" });
+    expect(screen.queryByText("Speakers")).not.toBeInTheDocument();
   });
 });

@@ -215,6 +215,13 @@ the last one (a 5 s sweep), and becomes a `ready` conversation with `source='scr
 A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
 Deleting the user closes their open screen sockets.
 
+**History** (XERK-2507, web and Android): a meeting row shows its title, org badge and
+platform; each segment shows its speaker. `GET /conversations?org=<siteKey>` filters the list
+(and search) to one org; `GET /conversations/orgs` lists the caller's orgs for the filter, both
+owner-scoped like the rest of history. `PUT /conversations/{id}/speakers` `{speaker, name}`
+renames a speaker as the meeting currently shows it, for every meeting of that org: the detail
+view applies the org's aliases on read, and later meetings pick the alias up at ingest.
+
 ## Caveats
 
 - **Synthetic frames, not the operator's screenshot.** The screenshot was not reachable from the

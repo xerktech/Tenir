@@ -7,6 +7,9 @@ import {
   describeLoginError,
   getStatus,
   history,
+  meetingSpeakers,
+  platformLabel,
+  type Conversation,
   login,
   me,
   NetworkError,
@@ -266,6 +269,35 @@ describe("history", () => {
     mockFetch(() => json([]));
     await history.list("budget review", 10, 20);
     expect(calls[0].url).toBe("http://gw/conversations?limit=10&offset=20&q=budget+review");
+  });
+
+  it("filters by org and lists the orgs (XERK-2507)", async () => {
+    mockFetch(() => json([]));
+    await history.list(undefined, 50, 0, "northwind");
+    expect(calls[0].url).toBe("http://gw/conversations?limit=50&offset=0&org=northwind");
+    await history.orgs();
+    expect(calls[1].url).toBe("http://gw/conversations/orgs");
+  });
+
+  it("renames a meeting speaker with a PUT (XERK-2507)", async () => {
+    mockFetch(() => json({ id: "c1", segments: [], cues: [] }));
+    await history.renameSpeaker("c1", "sam@example.com", "Sam");
+    expect(calls[0].url).toBe("http://gw/conversations/c1/speakers");
+    expect(calls[0].init.method).toBe("PUT");
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      speaker: "sam@example.com",
+      name: "Sam",
+    });
+  });
+
+  it("lists meeting speakers once, tiles first, and names platforms", () => {
+    const conv = {
+      participants: ["Priya", "Sam"],
+      segments: [{ speaker: "Sam" }, { speaker: null }, { speaker: "Lee" }],
+    } as unknown as Conversation;
+    expect(meetingSpeakers(conv)).toEqual(["Priya", "Sam", "Lee"]);
+    expect(platformLabel("zoom")).toBe("Zoom");
+    expect(platformLabel("teams")).toBe("teams");
   });
 
   it("audioUrl carries the token as a query param for plain navigation", () => {
