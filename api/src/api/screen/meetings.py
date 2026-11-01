@@ -298,17 +298,37 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# Ended meetings' lines kept for windows whose tracker was dropped (see ScreenMeetings).
+_MAX_CARRIES = 1000
+
+
 class ScreenMeetings:
     """Process-wide trackers, keyed by (household, user, org site key)."""
 
     def __init__(self) -> None:
         self._trackers: dict[tuple[str, str, str], MeetingTracker] = {}
+        # An idle tracker with no socket is dropped, but its ended meeting's lines outlive it
+        # (XERK-2615): a capture client that reconnects over a break re-sends the panel still
+        # on screen, and a fresh tracker without them re-stored it as a second conversation.
+        # Capped, oldest out: keys come from device-token clients.
+        self._carries: dict[tuple[str, str, str], list[_Line]] = {}
 
     def get(self, key: tuple[str, str, str]) -> MeetingTracker | None:
         return self._trackers.get(key)
 
     def put(self, key: tuple[str, str, str], tracker: MeetingTracker) -> MeetingTracker:
-        return self._trackers.setdefault(key, tracker)
+        kept = self._trackers.setdefault(key, tracker)
+        if kept is tracker and (lines := self._carries.pop(key, None)) is not None:
+            tracker._ended_lines = lines
+        return kept
+
+    def _drop(self, key: tuple[str, str, str], tracker: MeetingTracker) -> None:
+        self._trackers.pop(key, None)
+        if tracker._ended_lines:
+            self._carries.pop(key, None)
+            self._carries[key] = tracker._ended_lines
+            while len(self._carries) > _MAX_CARRIES:
+                del self._carries[next(iter(self._carries))]
 
     def open_count(self) -> int:
         return sum(1 for t in self._trackers.values() if t.conversation_id is not None)
@@ -332,8 +352,8 @@ class ScreenMeetings:
                         log.exception("could not end screen meeting %s", t.conversation_id)
                         continue
                 if t.conversation_id is None and t.notify is None:
-                    # Idle and no socket: nothing to keep for this window.
-                    self._trackers.pop(key, None)
+                    # Idle and no socket: only its ended meeting's lines are kept.
+                    self._drop(key, t)
         return ended
 
     async def close_all(self) -> None:
@@ -349,6 +369,7 @@ class ScreenMeetings:
 
     def clear(self) -> None:
         self._trackers.clear()
+        self._carries.clear()
 
 
 meetings = ScreenMeetings()

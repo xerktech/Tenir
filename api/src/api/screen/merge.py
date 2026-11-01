@@ -96,6 +96,7 @@ class _Line:
     changed_ms: int
     seen_ms: int
     segment: Segment | None = None  # set once final
+    carried: bool = False  # the ended meeting's line, seeded into the next merger
 
     @property
     def final(self) -> bool:
@@ -165,7 +166,10 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
                 if _misread(shown[i - 1], tail[j - 1]):
                     options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
-                s = _score(shown[i - 1], known, growable=not known.final or j == m)
+                # A carried line can't grow: its segment is the ended meeting's, so the
+                # speaker going on after the break is a new line, not lost in the old one.
+                growable = not known.carried and (not known.final or j == m)
+                s = _score(shown[i - 1], known, growable=growable)
                 if s > 0:
                     options.append((best[i - 1][j - 1] + s, "match"))
             best[i][j], move[i][j] = max(options)
@@ -212,6 +216,7 @@ class CaptionMerger:
                 min(ln.changed_ms, start_ms - _EXTEND_MS - 1),
                 start_ms,
                 ln.segment,
+                carried=True,
             )
             for ln in carried or []
             if ln.final
