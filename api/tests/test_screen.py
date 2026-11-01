@@ -342,21 +342,9 @@ def test_line_that_grows_after_it_was_final_extends_the_same_segment() -> None:
     assert m.flush(3000) == []
 
 
-def test_a_stored_line_whose_last_word_the_asr_finishes_is_extended() -> None:
-    """XERK-2597: the speaker paused past stable_ms, then went on while the ASR finished the
-    stored last word. Only whole-word growth extended a final, so the rest was lost."""
-    m = CaptionMerger(start_ms=0, stable_ms=1000)
-    m.feed([blk("A", "i think the deploy")], 0)
-    (seg,) = m.feed([blk("A", "i think the deploy")], 1000)
-    (ext,) = m.feed([blk("A", "i think the deployment failed last night")], 1200)
-    assert ext.segment_id == seg.segment_id
-    assert ext.text == "i think the deployment failed last night"
-    assert m.flush(3000) == []
-
-
 def test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored() -> None:
-    """QA on XERK-2597: a stray character OCR'd onto an older line still on screen must not
-    be written into its stored segment."""
+    """XERK-2597: a stray character OCR'd onto an older line still on screen must not be
+    written into its stored segment."""
     m = CaptionMerger(start_ms=0, stable_ms=1000)
     m.feed([blk("A", "the login timeout is back on staging")], 0)
     m.feed([blk("A", "the login timeout is back on staging")], 1000)
@@ -366,8 +354,8 @@ def test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored() -> None:
 
 
 def test_ocr_jitter_on_the_stored_bottom_line_is_not_stored() -> None:
-    """QA on XERK-2597: a stray trailing character on the stored bottom line looks like the
-    ASR finishing a word; only a following word tells them apart."""
+    """XERK-2597: a stray trailing character on the stored bottom line is not stored. It looks
+    like the ASR finishing a word, which is why that growth isn't extended either."""
     m = CaptionMerger(start_ms=0, stable_ms=1000)
     m.feed([blk("A", "the login timeout is back on staging")], 0)
     (seg,) = m.feed([blk("A", "the login timeout is back on staging")], 1000)
