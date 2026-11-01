@@ -214,11 +214,95 @@ def test_body_respects_the_hubs_caps() -> None:
     conv.meeting_title = "t" * 400
     conv.platform = "p" * 50
     conv.participants = [f"P{i}" for i in range(150)]
-    conv.segments = [Segment(f"s{i}", "x", i, i + 1) for i in range(10_050)]
-    body = turma.meeting_body(conv)
+    conv.segments = [
+        Segment(f"s{i}", "x" * 2100 if i == 0 else "x", i, i + 1) for i in range(10_050)
+    ]
+    body, total = turma.meeting_body(conv)
+    assert total == 10_050
     assert len(body["title"]) == 300 and len(body["platform"]) == 40
     assert len(body["participants"]) == 100 and len(body["segments"]) == 10_000
+    assert len(body["segments"][0]["text"]) == 2000
     assert "speaker" not in body["segments"][0]
+
+
+def test_a_meeting_past_the_hubs_byte_limit_sends_what_fits_and_says_so(clock) -> None:
+    # QA: 9000 lines x 130 chars was a 413, failed forever.
+    store = InMemoryConversationStore()
+    _meeting(store, lines=[f"{i:05d} " + "é" * 124 for i in range(9000)])
+    hub = Hub(_ok())
+    assert asyncio.run(_delivery(store, hub, clock).run_once()) == 1
+    (req,) = hub.requests
+    assert len(req.content) <= 1024 * 1024
+    assert req.headers["content-type"] == "application/json"
+    sent = json.loads(req.content)["segments"]
+    assert 0 < len(sent) < 9000 and sent[0]["text"].startswith("00000")
+    got = store.get("default", "c1")
+    assert got.delivery_state == "sent"
+    assert got.delivery_error == (
+        f"sent the first {len(sent)} of 9000 lines: the rest is past the hub's limit"
+    )
+
+
+def test_a_meeting_whose_tail_is_cut_by_the_line_cap_says_so(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store, lines=["x"] * 10_001)
+    asyncio.run(_delivery(store, Hub(_ok()), clock).run_once())
+    assert store.get("default", "c1").delivery_error == (
+        "sent the first 10000 of 10001 lines: the rest is past the hub's limit"
+    )
+
+
+def test_a_json_200_without_ok_is_retried(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+    hub = Hub(httpx.Response(200, json={"meeting": {}}))
+    asyncio.run(_delivery(store, hub, clock).run_once())
+    assert store.get("default", "c1").delivery_state == "pending"
+
+
+def test_one_orgs_stuck_backlog_never_starves_another_org(clock) -> None:
+    # QA: 20 meetings of an org the hub 404s hid every later meeting for a day.
+    store = InMemoryConversationStore()
+    for i in range(25):
+        _meeting(store, f"stuck{i}")
+    store.create("default", "other", screen=ScreenMeta("other.atlassian.net", "O", "zoom"))
+    store.add_segment("default", "other", Segment("o0", "hi", 0, 1))
+    store.finish("default", "other")
+
+    def hub(request: httpx.Request) -> httpx.Response:
+        hub.paths.append(request.url.path)
+        if SITE in request.url.path:
+            return httpx.Response(404, json={"error": "no host is in that org"})
+        return _ok()
+
+    hub.paths = []
+    d = _delivery(store, hub, clock)
+    assert asyncio.run(d.run_once()) == 1
+    assert store.get("default", "other").delivery_state == "sent"
+    # The refused org was asked once this pass, not 25 times.
+    assert hub.paths.count(f"/api/orgs/{SITE}/meetings") == 1
+    clock["now"] += 1
+    asyncio.run(d.run_once())  # the next stuck meeting (not backing off) gets its turn
+    assert hub.paths.count(f"/api/orgs/{SITE}/meetings") == 2
+
+
+def test_an_unreachable_hub_ends_the_pass(clock) -> None:
+    store = InMemoryConversationStore()
+    for i in range(5):
+        _meeting(store, f"m{i}")
+    hub = Hub(httpx.ConnectTimeout("timed out"))
+    asyncio.run(_delivery(store, hub, clock).run_once())
+    assert len(hub.requests) == 1  # not one 30 s timeout per meeting
+
+
+def test_a_screen_meeting_from_before_delivery_existed_is_sent(clock) -> None:
+    # QA: a meeting live across the upgrade had no state and was never posted.
+    store = InMemoryConversationStore()
+    _meeting(store)
+    store._by_household["default"]["c1"].delivery_state = None
+    assert store.delivery_summary(utcnow() - timedelta(days=1))["pending"] == 1
+    assert asyncio.run(_delivery(store, Hub(_ok()), clock).run_once()) == 1
+    assert store.get("default", "c1").delivery_state == "sent"
 
 
 def test_a_database_outage_does_not_kill_the_loop(clock) -> None:
@@ -281,13 +365,26 @@ def test_a_tracker_ending_a_meeting_wakes_the_delivery(monkeypatch, clock) -> No
     assert len(hub.requests) == 1
 
 
-def test_start_needs_both_url_and_token(monkeypatch) -> None:
+def test_start_needs_both_url_and_token(monkeypatch, caplog) -> None:
     store = InMemoryConversationStore()
     monkeypatch.setattr(settings, "turma_url", "http://hub")
     monkeypatch.setattr(settings, "turma_meetings_token", "")
-    assert turma.start(store) is None and turma.get_delivery() is None
+    with caplog.at_level("WARNING", logger="api.screen.turma"):
+        assert turma.start(store) is None and turma.get_delivery() is None
+    assert "API_TURMA_MEETINGS_TOKEN is not set" in caplog.text
     turma.wake()  # a no-op when off
+    monkeypatch.setattr(settings, "turma_url", "")
     monkeypatch.setattr(settings, "turma_meetings_token", "tok")
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="api.screen.turma"):
+        assert turma.start(store) is None
+    assert "API_TURMA_URL is not set" in caplog.text
+    monkeypatch.setattr(settings, "turma_url", "turma.example:8300")
+    with caplog.at_level("ERROR", logger="api.screen.turma"):
+        assert turma.start(store) is None
+    assert "must be an http(s) URL" in caplog.text
+    assert "tok" not in caplog.text
+    monkeypatch.setattr(settings, "turma_url", "http://hub")
     assert turma.start(None) is None
     d = turma.start(store)
     assert d is not None and turma.get_delivery() is d and d.url == "http://hub"

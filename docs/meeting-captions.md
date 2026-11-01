@@ -223,8 +223,14 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
 
 - On when `API_TURMA_URL` and `API_TURMA_MEETINGS_TOKEN` are both set. Off, meetings wait
   `pending` and are sent once it is turned on.
-- State on the conversation: `delivery_state` `pending` (from creation) → `sent` or `failed`,
-  with `delivery_error` in the hub's words (while pending: the last retry's reason).
+- State on the conversation: `delivery_state` `pending` (from creation; a screen row with none,
+  from before delivery existed, reads pending) → `sent` or `failed`, with `delivery_error` in
+  the hub's words (while pending: the last retry's reason).
+- Each pass looks at every pending meeting: after a retryable refusal the rest of that org waits
+  for the next pass, and an unreachable hub ends the pass. One org's backlog never blocks another.
+- The body fits the hub's limits: lines cut to 2000 characters, at most 10000 lines and 1 MiB.
+  Past that the earliest lines are sent and `delivery_error` on the `sent` row says how many.
+- A half-set config (URL or token alone) or a URL that isn't http(s) logs why delivery is off.
 - A meeting is tried as soon as it turns ready (the tracker wakes the loop), else on a 10 s poll,
   which also picks up meetings the boot stale sweep closed.
 - Exactly once at the hub: Tenir retries until a 200 `{ok: true}`, and the hub is idempotent on

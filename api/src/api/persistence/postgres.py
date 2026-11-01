@@ -1323,17 +1323,16 @@ class SqlConversationStore:
         return [(r[0], r[1]) for r in rows]
 
     def pending_deliveries(  # pragma: no cover - requires a live database
-        self, limit: int = 20
+        self,
     ) -> list[tuple[str, str]]:
         with self._ensure_pool().connection() as conn:
             rows = conn.execute(
                 """
                 SELECT household, id FROM conversations
-                 WHERE delivery_state = 'pending' AND status = 'ready'
+                 WHERE source = 'screen' AND status = 'ready'
+                   AND COALESCE(delivery_state, 'pending') = 'pending'
                  ORDER BY ended_at, id
-                 LIMIT %s
-                """,
-                (limit,),
+                """
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
@@ -1341,11 +1340,11 @@ class SqlConversationStore:
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None
     ) -> None:
         with self._ensure_pool().connection() as conn:
-            # Only a screen meeting has a delivery; a mic row stays NULL.
+            # Only a screen meeting is delivered; a mic row stays NULL.
             conn.execute(
                 """
                 UPDATE conversations SET delivery_state = %s, delivery_error = %s
-                 WHERE id = %s AND household = %s AND delivery_state IS NOT NULL
+                 WHERE id = %s AND household = %s AND source = 'screen'
                 """,
                 (state, error, conversation_id, household),
             )
@@ -1356,14 +1355,14 @@ class SqlConversationStore:
         with self._ensure_pool().connection(timeout=OPEN_TIMEOUT_SECONDS) as conn:
             row = conn.execute(
                 """
-                SELECT count(*) FILTER (WHERE delivery_state = 'pending'),
+                SELECT count(*) FILTER (WHERE COALESCE(delivery_state, 'pending') = 'pending'),
                        count(*) FILTER (WHERE delivery_state = 'failed' AND ended_at >= %s),
                        (SELECT delivery_error FROM conversations
-                         WHERE delivery_state = 'failed' AND status = 'ready'
-                           AND ended_at >= %s
+                         WHERE source = 'screen' AND delivery_state = 'failed'
+                           AND status = 'ready' AND ended_at >= %s
                          ORDER BY ended_at DESC, id DESC LIMIT 1)
                   FROM conversations
-                 WHERE delivery_state IS NOT NULL AND status = 'ready'
+                 WHERE source = 'screen' AND status = 'ready'
                 """,
                 (since, since),
             ).fetchone()

@@ -70,5 +70,10 @@ paths:
   never key the POST on anything but the conversation id, or a retry duplicates the meeting.
   - A 200 that isn't JSON `{ok: true}` (a proxy or login page) is retried, not `sent`.
   - 404 "no host is in that org" is retried: a restarted hub answers it until its hosts beat.
+  - `pending_deliveries` is unbounded and a pass skips only meetings backing off: a LIMIT let
+    one org's 20 stuck meetings (404/429) starve every other org for a day (XERK-2513 QA).
+    Test: `test_one_orgs_stuck_backlog_never_starves_another_org`.
+  - The body is fitted to the hub's 1 MiB / 10000-line caps (`meeting_body`): over them the hub
+    413s, which is permanent, so a long meeting would never be sent.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.

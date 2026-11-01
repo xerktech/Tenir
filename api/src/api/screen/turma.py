@@ -18,14 +18,19 @@ Tenir restart resumes too.
   re-register after a restart, 409 store full, 429 queue full) → retried with exponential
   backoff; still ``pending`` with the last reason, until ``API_TURMA_GIVE_UP_SECONDS`` after
   the meeting ended, then ``failed``.
+
+A pass looks at EVERY pending meeting: one org's stuck backlog (its 404s or 429s) must never
+hide another org's meetings. After a retryable refusal the rest of that org waits for the
+next pass; an unreachable hub ends the pass (every request would wait out the timeout).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -45,23 +50,35 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 TITLE_MAX = 300
 PLATFORM_MAX = 40
 SEGMENTS_MAX = 10_000
+SEGMENT_TEXT_MAX = 2000
 PARTICIPANTS_MAX = 100
 ERROR_MAX = 300
+# The hub refuses a body over 1 MiB (413). An hour of captions is ~60 KB; past the budget the
+# newest lines are left out and the conversation records how many were sent.
+BODY_BUDGET = 1024 * 1024 - 4096
 
 
 def _ms(dt) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def meeting_body(conv: Conversation) -> dict[str, object] | None:
-    """The POST body for one finished meeting; None when it has no caption text to send."""
+def _encode(body: dict[str, object]) -> bytes:
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def meeting_body(conv: Conversation) -> tuple[dict[str, object], int] | None:
+    """The POST body for one finished meeting and how many caption lines it had in all
+    (more than the body carries when the meeting is past the hub's limits); None when it has
+    no caption text to send."""
     segments = []
     for seg in sorted(conv.segments, key=lambda s: (s.start_ms, s.segment_id)):
-        if not seg.text.strip():
+        text = seg.text.strip()
+        if not text:
             continue
         start = max(0, seg.start_ms)
         item: dict[str, object] = {
-            "text": seg.text,
+            # Code points, as the hub counts them; it would cut there itself.
+            "text": text[:SEGMENT_TEXT_MAX],
             "startMs": start,
             "endMs": max(start, seg.end_ms),
         }
@@ -70,6 +87,7 @@ def meeting_body(conv: Conversation) -> dict[str, object] | None:
         segments.append(item)
     if not segments:
         return None
+    total = len(segments)
     started = _ms(conv.started_at)
     ended = max(started, _ms(conv.ended_at or conv.started_at))
     body: dict[str, object] = {
@@ -77,13 +95,23 @@ def meeting_body(conv: Conversation) -> dict[str, object] | None:
         "startedAt": started,
         "endedAt": ended,
         "participants": conv.participants[:PARTICIPANTS_MAX],
-        "segments": segments[:SEGMENTS_MAX],
+        "segments": [],
     }
     if conv.meeting_title:
         body["title"] = conv.meeting_title[:TITLE_MAX]
     if conv.platform:
         body["platform"] = conv.platform[:PLATFORM_MAX]
-    return body
+    # Keep the earliest lines that fit the hub's byte budget (+1 per comma between them).
+    room = BODY_BUDGET - len(_encode(body))
+    kept = []
+    for item in segments[:SEGMENTS_MAX]:
+        size = len(_encode(item)) + (1 if kept else 0)
+        if size > room:
+            break
+        room -= size
+        kept.append(item)
+    body["segments"] = kept
+    return body, total
 
 
 def _hub_error(resp: httpx.Response) -> str:
@@ -135,12 +163,16 @@ class TurmaDelivery:
         for cid in list(self._backoff):
             if cid not in live:
                 self._backoff.pop(cid, None)
+        deferred: set[str] = set()  # orgs the hub just refused for now: next pass
         for household, cid in pending:
             _, due = self._backoff.get(cid, (0, 0.0))
             if due > self.clock():
                 continue
-            if await self._deliver(household, cid):
+            outcome = await self._deliver(household, cid, deferred)
+            if outcome == "sent":
                 sent += 1
+            elif outcome == "unreachable":
+                break
         return sent
 
     async def _set(self, household: str, cid: str, state, error: str | None) -> None:
@@ -152,45 +184,66 @@ class TurmaDelivery:
             error[:ERROR_MAX] if error else None,
         )
 
-    async def _deliver(self, household: str, cid: str) -> bool:
+    async def _deliver(self, household: str, cid: str, deferred: set[str]) -> str:
+        """One attempt: "sent", "failed", "retry" (the hub refused for now; the org is
+        deferred), "unreachable" (no answer at all), or "skipped"."""
         conv = await asyncio.to_thread(self.store.get, household, cid)
-        if conv is None or conv.delivery_state != "pending" or not conv.org_site_key:
+        if conv is None or conv.source != "screen" or not conv.org_site_key:
             self._backoff.pop(cid, None)
-            return False
-        body = meeting_body(conv)
-        if body is None:
-            await self._set(household, cid, "failed", "no caption lines to send")
-            metrics.incr("turma.meetings_failed")
-            return False
+            return "skipped"
+        if conv.delivery_state not in (None, "pending") or conv.org_site_key in deferred:
+            return "skipped"
+        built = meeting_body(conv)
+        if built is None:
+            await self._fail(household, cid, "no caption lines to send")
+            return "failed"
+        body, total = built
+        if not body["segments"]:
+            await self._fail(household, cid, "the first caption line is past the hub's limit")
+            return "failed"
         endpoint = f"{self.url}/api/orgs/{quote(conv.org_site_key, safe='')}/meetings"
+        outcome = "retry"
         try:
             resp = await self.client.post(
-                endpoint, json=body, headers={"Authorization": f"Bearer {self.token}"}
+                endpoint,
+                content=_encode(body),
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                },
             )
         except httpx.HTTPError as exc:
             reason = f"hub unreachable ({type(exc).__name__})"
+            outcome = "unreachable"
         else:
             if resp.status_code == 200 and _ok(resp):
-                await self._set(household, cid, "sent", None)
+                sent = len(body["segments"])  # type: ignore[arg-type]
+                note = None
+                if sent < total:
+                    note = (
+                        f"sent the first {sent} of {total} lines: the rest is past the hub's limit"
+                    )
+                await self._set(household, cid, "sent", note)
                 self._backoff.pop(cid, None)
                 metrics.incr("turma.meetings_sent")
                 log.info("meeting %s delivered to turma (%s)", cid, conv.org_site_key)
-                return True
+                return "sent"
             reason = _hub_error(resp)
             if resp.status_code in PERMANENT:
                 await self._fail(household, cid, reason)
-                return False
+                return "failed"
+            deferred.add(conv.org_site_key)
         ended = (conv.ended_at or conv.started_at).timestamp()
         if self.clock() - ended >= self.give_up_seconds:
             await self._fail(household, cid, f"gave up retrying: {reason}")
-            return False
+            return "failed"
         failures = self._backoff.get(cid, (0, 0.0))[0] + 1
         delay = min(self.retry_max_seconds, BASE_DELAY_SECONDS * 2 ** (failures - 1))
         self._backoff[cid] = (failures, self.clock() + delay)
         await self._set(household, cid, "pending", reason)
         metrics.incr("turma.meetings_retried")
         log.info("meeting %s not delivered yet (%s); retry in %.0fs", cid, reason, delay)
-        return False
+        return outcome
 
     async def _fail(self, household: str, cid: str, reason: str) -> None:
         self._backoff.pop(cid, None)
@@ -238,13 +291,22 @@ def get_delivery() -> TurmaDelivery | None:
 def start(store: ConversationStore | None) -> TurmaDelivery | None:
     """Build the process-wide delivery when configured (lifespan)."""
     global _delivery
+    _delivery = None
+    url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
+    if bool(url) != bool(token):
+        # Half set is a mistake, not a choice: say so, or meetings pile up pending silently.
+        missing = "API_TURMA_MEETINGS_TOKEN" if url else "API_TURMA_URL"
+        log.warning("meeting delivery to turma is off: %s is not set", missing)
+        return None
     if store is None or not configured():
-        _delivery = None
+        return None
+    if urlsplit(url).scheme not in ("http", "https"):
+        log.error("meeting delivery to turma is off: API_TURMA_URL must be an http(s) URL")
         return None
     _delivery = TurmaDelivery(
         store,
-        url=settings.turma_url.strip(),
-        token=settings.turma_meetings_token.strip(),
+        url=url,
+        token=token,
         retry_max_seconds=settings.turma_retry_max_seconds,
         give_up_seconds=settings.turma_give_up_seconds,
     )

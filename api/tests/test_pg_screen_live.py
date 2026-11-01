@@ -125,9 +125,18 @@ def test_meeting_delivery_state_round_trips(store) -> None:
     store.finish(HH, b)
     store.finish(HH, mic)
     assert store.pending_deliveries() == [(HH, a), (HH, b)]  # oldest end first, no live row
-    assert store.pending_deliveries(limit=1) == [(HH, a)]
     since = utcnow() - timedelta(days=7)
     assert store.delivery_summary(since) == {"pending": 2, "failed": 0, "error": None}
+
+    # A screen row created before the column existed has no state: it still reads pending.
+    legacy = str(uuid.uuid4())
+    store.create(HH, legacy, owner="u1", screen=screen)
+    store.finish(HH, legacy)
+    with store._ensure_pool().connection() as conn:
+        conn.execute("UPDATE conversations SET delivery_state = NULL WHERE id = %s", (legacy,))
+    assert store.pending_deliveries() == [(HH, a), (HH, b), (HH, legacy)]
+    store.set_delivery(HH, legacy, "sent", None)
+    assert store.get(HH, legacy).delivery_state == "sent"
 
     store.set_delivery(HH, a, "pending", "hub unreachable (ConnectError)")
     assert store.get(HH, a).delivery_error == "hub unreachable (ConnectError)"
