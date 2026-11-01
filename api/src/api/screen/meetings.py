@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from api.contract import ScreenCadence
+from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen.merge import CaptionMerger
@@ -25,7 +25,17 @@ from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
 log = logging.getLogger("api.screen")
 
-Notify = Callable[[ScreenCadence], Awaitable[None]]
+Notify = Callable[[ScreenCadence | ScreenNotice], Awaitable[None]]
+
+# A meeting toolbar seen this recently counts as a meeting on screen. A caption read this
+# recently means captions are on and the meeting is just quiet: no warning. So a captioned
+# meeting that goes silent stays unwarned, while captions turned off mid-meeting, or a next
+# meeting in the same window without them, is warned this long + CAPTIONS_OFF_MS later.
+MEETING_SEEN_MS = 600_000
+# Meeting on screen this long with no caption: captions are off, so warn the operator...
+CAPTIONS_OFF_MS = 120_000
+# ...and again this often while it lasts (a desktop notification each time).
+CAPTIONS_OFF_REPEAT_MS = 900_000
 
 # Caption parsing and merging are CPU work on attacker-shaped input; they get their own two
 # threads so a flood of crafted frames queues here, not ahead of every store write in the
@@ -83,6 +93,10 @@ class MeetingTracker:
         self.merger: CaptionMerger | None = None
         self.last_caption_ms = 0
         self.last_ts = 0
+        # Captions-off warning: when the toolbar was last seen, and when to warn next.
+        self._meeting_seen_ms: int | None = None
+        self._captions_off_at: int | None = None
+        self._caption_seen_ms: int | None = None
         self._stored_people: set[str] = set()
         self._stored_title: str | None = None
         # Final lines not yet written. The merger counts a line final once, so a failed or
@@ -92,7 +106,7 @@ class MeetingTracker:
     async def _io(self, fn: Callable[..., object], *args: object) -> object:
         return await asyncio.to_thread(fn, *args)
 
-    async def _send(self, msg: ScreenCadence) -> None:
+    async def _send(self, msg: ScreenCadence | ScreenNotice) -> None:
         if self.notify is None:
             return
         try:
@@ -123,11 +137,42 @@ class MeetingTracker:
         if self.conversation_id is not None:
             await self._store_people(ts)
             await self._store_title()
+        if frame.in_meeting:
+            self._meeting_seen_ms = ts
+        await self._check_captions_off(ts)
+
+    async def _check_captions_off(self, ts: int) -> None:
+        """Warn when a meeting has been on screen CAPTIONS_OFF_MS with no caption read.
+
+        Full frames keep coming while no caption shows, so this runs on each one. A meeting
+        with captions on starts a conversation at its first caption, which clears it.
+        """
+        seen, caption = self._meeting_seen_ms, self._caption_seen_ms
+        if (
+            seen is None
+            or ts - seen > MEETING_SEEN_MS
+            or self.conversation_id is not None
+            or (caption is not None and ts - caption <= MEETING_SEEN_MS)
+        ):
+            self._captions_off_at = None
+        elif self._captions_off_at is None:
+            self._captions_off_at = ts + CAPTIONS_OFF_MS
+        elif ts >= self._captions_off_at:
+            self._captions_off_at = ts + CAPTIONS_OFF_REPEAT_MS
+            metrics.incr("screen.captions_off")
+            await self._send(
+                ScreenNotice(
+                    type="screen.notice",
+                    orgSiteKey=self.meta.org_site_key,
+                    kind=ScreenNoticeKind.captions_off,
+                )
+            )
 
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
         self.last_caption_ms = ts
+        self._caption_seen_ms = ts
         if self.conversation_id is None:
             await self._start(ts)
         assert self.merger is not None

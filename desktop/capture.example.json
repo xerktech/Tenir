@@ -1,0 +1,9 @@
+{
+  "server": "https://tenir.example.com",
+  "windows": [
+    { "title": "Horizon desktop 1", "orgSiteKey": "org-a", "orgName": "Org A", "platform": "teams" },
+    { "title": "Horizon desktop 2", "orgSiteKey": "org-b", "orgName": "Org B", "platform": "teams" },
+    { "title": "Horizon desktop 3", "orgSiteKey": "org-c", "orgName": "Org C", "platform": "zoom" },
+    { "title": "Remote Desktop Manager [laptop]", "orgSiteKey": "org-d", "orgName": "Org D", "platform": "teams" }
+  ]
+}

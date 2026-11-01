@@ -1376,3 +1376,160 @@ def test_participants_keep_tile_order_despite_jittered_boxes() -> None:
         "Priya Raman", "Sean ONeil", "Ana Lopez", "Bo Chen", "Kunal Shah", "Maria Diaz",
         "Omar Ali", "Lee Park", "Jo Kim",
     ]  # fmt: skip
+
+
+# --- captions-off notice (XERK-2506) -------------------------------------------------------
+
+
+def _toolbar_frame(*extra: OcrLine) -> OcrResult:
+    """A 1280x720 full frame with Zoom's meeting toolbar along the bottom."""
+    buttons = ("Mute", "Stop Video", "Participants", "Share Screen", "Leave")
+    toolbar = tuple(line(b, 100 + 200 * i, 680, 180 + 200 * i, 700) for i, b in enumerate(buttons))
+    return OcrResult(1280, 720, (*extra, *toolbar))
+
+
+def test_a_full_frame_is_in_a_meeting_only_when_the_toolbar_shows() -> None:
+    assert parse_full_frame(_toolbar_frame(line("Priya Raman", 40, 300, 160, 320))).in_meeting
+    # A remote desktop's icon labels are name-shaped, but no toolbar: not a meeting.
+    desktop = OcrResult(
+        1280,
+        720,
+        (line("Recycle Bin", 20, 100, 110, 115), line("Google Chrome", 20, 200, 130, 215)),
+    )
+    assert not parse_full_frame(desktop).in_meeting
+    # Two toolbar words alone (e.g. a chat line mentioning "Chat" and "Share") aren't enough.
+    two = OcrResult(1280, 720, (line("Chat", 100, 680, 150, 700), line("Share", 300, 680, 360, 700)))
+    assert not parse_full_frame(two).in_meeting
+    # Toolbar words higher up the window (a slide listing them) don't count.
+    high = OcrResult(
+        1280, 720, tuple(line(b, 100 + 200 * i, 300, 180 + 200 * i, 320) for i, b in enumerate(
+            ("Mute", "Stop Video", "Participants", "Leave")))
+    )
+    assert not parse_full_frame(high).in_meeting
+
+
+def test_a_meeting_on_screen_without_captions_sends_a_notice_then_repeats_slowly() -> None:
+    from api.contract import ScreenNotice
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        sent: list[object] = []
+
+        async def notify(msg: object) -> None:
+            sent.append(msg)
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        idle = parse_full_frame(OcrResult(1280, 720, ()))
+
+        def notices() -> list[ScreenNotice]:
+            return [m for m in sent if isinstance(m, ScreenNotice)]
+
+        await t.on_full(meeting, 0)
+        await t.on_full(idle, mt.CAPTIONS_OFF_MS - 1)  # toolbar hidden again: still a meeting
+        assert notices() == []
+        await t.on_full(idle, mt.CAPTIONS_OFF_MS)
+        (n,) = notices()
+        assert (n.orgSiteKey, n.kind.value) == ("tesoro", "captions_off")
+        await t.on_full(idle, mt.CAPTIONS_OFF_MS + 60_000)
+        assert len(notices()) == 1  # not every full frame
+        await t.on_full(meeting, mt.CAPTIONS_OFF_MS + mt.CAPTIONS_OFF_REPEAT_MS)
+        assert len(notices()) == 2
+        assert metrics.snapshot()["counters"]["screen.captions_off"] >= 2
+
+    metrics.reset()
+    asyncio.run(run())
+
+
+def test_captions_or_a_long_gone_toolbar_clear_the_captions_off_warning() -> None:
+    from api.contract import ScreenNotice
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        sent: list[object] = []
+
+        async def notify(msg: object) -> None:
+            sent.append(msg)
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        idle = parse_full_frame(OcrResult(1280, 720, ()))
+        await t.on_full(meeting, 0)
+        # Captions show: the meeting is recording, so no warning while it is open.
+        await t.ensure_roster()
+        await t.on_caption([blk(None, "hello there", header=False)], 1000)
+        await t.on_full(meeting, mt.CAPTIONS_OFF_MS * 2)
+        assert not any(isinstance(m, ScreenNotice) for m in sent)
+
+        # No toolbar for longer than MEETING_SEEN_MS: the meeting is over, nothing to warn.
+        t2 = _tracker(InMemoryConversationStore())
+        t2.notify = notify
+        await t2.on_full(meeting, 0)
+        await t2.on_full(idle, mt.MEETING_SEEN_MS + 1)
+        await t2.on_full(idle, mt.MEETING_SEEN_MS + mt.CAPTIONS_OFF_MS + 2)
+        assert not any(isinstance(m, ScreenNotice) for m in sent)
+
+    asyncio.run(run())
+
+
+def test_a_captions_off_notice_reaches_the_capture_client(screen, monkeypatch) -> None:
+    from api.screen import meetings as mt
+
+    store, ocr, token, _ = screen
+    monkeypatch.setattr(mt, "CAPTIONS_OFF_MS", 0)
+    frame = ocr.register(unique_jpeg(1), _toolbar_frame())
+    frame2 = ocr.register(unique_jpeg(2), _toolbar_frame())
+    from api.main import app
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/screen", headers={"Authorization": f"Bearer {token}"}) as ws:
+            assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+            now = int(time.time() * 1000)
+            ws.send_bytes(envelope(header(now, "full"), frame))
+            wait_handled(1)
+            ws.send_bytes(envelope(header(now + 1000, "full"), frame2))
+            assert json.loads(ws.receive_text()) == {
+                "type": "screen.notice",
+                "orgSiteKey": "tesoro",
+                "kind": "captions_off",
+            }
+
+
+def test_a_captioned_meeting_gone_quiet_is_not_warned_but_a_next_one_without_captions_is() -> None:
+    """QA D4 and its delta: silence after captions isn't "captions off" (within
+    MEETING_SEEN_MS of the last caption), but a later uncaptioned meeting in the same window
+    with the toolbar still up is warned once that has passed."""
+    from api.contract import ScreenNotice
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        sent: list[object] = []
+
+        async def notify(msg: object) -> None:
+            sent.append(msg)
+
+        def notices() -> int:
+            return sum(isinstance(m, ScreenNotice) for m in sent)
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        await t.on_full(meeting, 0)
+        await t.ensure_roster()
+        await t.on_caption([blk(None, "hello there", header=False)], 1_000)
+        await t.end(61_000)  # silence ended the meeting; the toolbar stays up
+        ts = 61_000
+        while ts < 1_000 + mt.MEETING_SEEN_MS:  # full frames every 30 s, still quiet
+            await t.on_full(meeting, ts)
+            ts += 30_000
+        assert notices() == 0
+        # Ten minutes without a caption: now it is a meeting with captions off.
+        end = ts + mt.CAPTIONS_OFF_MS + 30_000
+        while ts <= end:
+            await t.on_full(meeting, ts)
+            ts += 30_000
+        assert notices() == 1
+
+    asyncio.run(run())

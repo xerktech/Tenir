@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from api.auth import AuthError, Principal, get_user_store, principal_from_bearer
 from api.auth.deps import SCREEN_SCOPE
 from api.config import settings
-from api.contract import ErrorMessage, Pong, ScreenCadence, ScreenFrameHeader
+from api.contract import ErrorMessage, Pong, ScreenCadence, ScreenFrameHeader, ScreenNotice
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
 from api.screen.meetings import (
@@ -164,7 +164,7 @@ async def screen_ws(ws: WebSocket) -> None:
     send_lock = asyncio.Lock()
     closing = asyncio.Event()
 
-    async def send(msg: ScreenCadence | Pong | ErrorMessage) -> None:
+    async def send(msg: ScreenCadence | ScreenNotice | Pong | ErrorMessage) -> None:
         async with send_lock:
             await ws.send_text(msg.model_dump_json(exclude_none=True))
 

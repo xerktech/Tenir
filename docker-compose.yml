@@ -107,6 +107,8 @@ services:
       # tenir-ocr base URL for meeting captions (docs/meeting-captions.md). Empty keeps
       # /ws/screen off (it closes 1013).
       API_OCR_URL: ${API_OCR_URL:-}
+      # Oldest Windows capture client allowed (x.y.z, published on /status); empty: any.
+      API_DESKTOP_MIN_VERSION: ${API_DESKTOP_MIN_VERSION:-}
       API_AUTH_ADMIN_USERNAME: ${API_AUTH_ADMIN_USERNAME:-}
       API_AUTH_ADMIN_PASSWORD: ${API_AUTH_ADMIN_PASSWORD:-}
       API_AUTH_ADMIN_HOUSEHOLD: ${API_AUTH_ADMIN_HOUSEHOLD:-default}

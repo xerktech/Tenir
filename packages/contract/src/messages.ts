@@ -8,7 +8,7 @@
 /**
  * Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.
  */
-export type TenirWsMessages = ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence;
+export type TenirWsMessages = ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice;
 export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
@@ -31,6 +31,7 @@ export type ServerMessage =
   | SongDone
   | Pong
   | ErrorMessage;
+export type ScreenNoticeKind = "captions_off";
 
 /**
  * Client -> server. Opens a live session before any audio frames are sent.
@@ -290,4 +291,12 @@ export interface ScreenCadence {
    * Seconds between full window frames.
    */
   fullFrameSeconds: number;
+}
+/**
+ * Server -> client on /ws/screen (XERK-2506). Something on a watched window the operator should fix; the capture client shows it as a desktop notification. captions_off: a Zoom meeting has been on screen (its toolbar seen) for a couple of minutes with no caption, so nothing is being recorded. Repeated at most every 15 minutes per window while it lasts.
+ */
+export interface ScreenNotice {
+  type: "screen.notice";
+  orgSiteKey: string;
+  kind: ScreenNoticeKind;
 }

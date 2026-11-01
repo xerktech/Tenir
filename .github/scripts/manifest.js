@@ -43,6 +43,14 @@ function freshComponent(component, version, tag, opts) {
         release_tag: tag,
         built: true,
       };
+    case "desktop":
+      return {
+        version,
+        kind: "asset",
+        asset: `tenir-desktop-v${version}.exe`,
+        release_tag: tag,
+        built: true,
+      };
     default:
       throw new Error(`unknown component ${component}`);
   }

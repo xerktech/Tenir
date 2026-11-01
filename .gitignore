@@ -30,3 +30,9 @@ api/build/
 # caption_ocr capture probe: window titles name clients and frames show meetings (XERK-2504)
 windows.json
 captures/
+
+# Windows capture client (desktop/): PyInstaller output and the operator's local config
+desktop/build/
+desktop/dist/
+desktop/*.spec
+desktop/capture.json

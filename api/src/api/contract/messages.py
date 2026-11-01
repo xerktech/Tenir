@@ -424,10 +424,31 @@ class ScreenCadence(BaseModel):
     )
 
 
+class ScreenNoticeKind(StrEnum):
+    captions_off = 'captions_off'
+
+
+class ScreenNotice(BaseModel):
+    """
+    Server -> client on /ws/screen (XERK-2506). Something on a watched window the operator should fix; the capture client shows it as a desktop notification. captions_off: a Zoom meeting has been on screen (its toolbar seen) for a couple of minutes with no caption, so nothing is being recorded. Repeated at most every 15 minutes per window while it lasts.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['screen.notice']
+    orgSiteKey: str
+    kind: ScreenNoticeKind = Field(..., title='ScreenNoticeKind')
+
+
 class TenirWsMessages(
-    RootModel[ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence]
+    RootModel[
+        ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice
+    ]
 ):
-    root: ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence = Field(
+    root: (
+        ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice
+    ) = Field(
         ...,
         description='Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.',
         title='TenirWsMessages',

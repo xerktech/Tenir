@@ -2,7 +2,9 @@
 
 One release publishes **all components** under a single
 `v<MAJOR>.<MINOR>.<PATCH>` tag: the **api** image (which carries the built web
-UI), the **Parakeet STT** image, and the Android **`.apk`**. Driven by
+UI), the **Parakeet STT** and **OCR** images, the Android **`.apk`**, and the Windows
+capture client **`tenir-desktop-v<version>.exe`** (built on a hosted Windows runner;
+`desktop/README.md` installs it). Driven by
 `.github/workflows/release.yml`; the logic lives in `.github/scripts/` (see its
 README).
 
@@ -68,7 +70,7 @@ trigger's path filter (kept in lockstep with `.github/scripts/changes.js` by
 
 ```
 api/**  contract/**  packages/**  web/**  parakeet-stt/**  ocr/**
-mobile/**  package.json  package-lock.json
+mobile/**  desktop/**  package.json  package-lock.json
 ```
 
 `plan` diffs the merge against the previous release tag and decides, per

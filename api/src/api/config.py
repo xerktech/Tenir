@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -578,6 +580,18 @@ class Settings(BaseSettings):
     screen_meeting_end_seconds: float = 180.0
     # Largest accepted binary frame (header + JPEG); bigger frames are refused.
     screen_max_frame_bytes: int = 4_000_000
+    # Oldest Windows capture client (desktop/, XERK-2506) this server works with, as x.y.z;
+    # published on GET /status. A client older than this refuses to start and tells the
+    # operator to update. Empty: any version.
+    desktop_min_version: str = ""
+
+    @field_validator("desktop_min_version")
+    @classmethod
+    def _version_or_empty(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"\d+\.\d+\.\d+", value):
+            raise ValueError(f"desktop_min_version must be x.y.z or empty (got {value!r})")
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:
