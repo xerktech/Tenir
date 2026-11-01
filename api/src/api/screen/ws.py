@@ -212,7 +212,7 @@ async def screen_ws(ws: WebSocket) -> None:
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
         try:
-            result = await ocr.read(jpeg)
+            result = await ocr.read(jpeg, full=header.region.value == "full")
         except OcrError as exc:
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")

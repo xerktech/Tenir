@@ -181,7 +181,10 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - A full window frame doesn't: the api (`ocr.py`) cuts it into overlapping horizontal strips
   under the cap, drops lines touching a cut edge (the neighbouring strip reads them whole),
   and shifts boxes back into window coordinates. A 1080p frame is ~5 strips, ~5 OCR-seconds,
-  hence full frames every 30 s. A strip that is too dense contributes nothing.
+  hence full frames every 30 s. A too-dense strip (a camera-off gallery row: initials circles
+  plus labels pass 16 boxes) is halved and re-read while taller than 128 px, at most 24 halvings
+  per frame (XERK-2610); a strip still too dense (a slide) contributes nothing. A full frame
+  under the cap is read this way too; a caption crop is never split.
 - 413 / 503 / timeout (45 s) drop that frame; the next one retries.
 - Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
 
