@@ -121,6 +121,24 @@ paths:
     each fix traded one synthetic case for another. Re-tune on real captures before adding more.
   - A trailing "." is still a name after an initial, a dotted degree or Jr./Sr. ("Martin King
     Jr." was lost to the previous speaker). Test: `test_teams_name_shape`.
+  - Real OCR of rendered Teams windows (XERK-2609) is the regression set: tests under
+    "real OCR of rendered Teams windows" in `test_screen_teams.py` hold Paddle's boxes.
+    The QA kit (render + OCR pod + rescore) lived outside the repo; tenir-ocr's netpol admits
+    only `tenir` pods, so drive it through `kubectl port-forward` (restart it per batch).
+  - A crop yields nothing without a header: tile initials, misread labels and slides became
+    blocks, and a re-sent one kept the meeting open. A header-less block *above* a header stays
+    (merge continues the speaker). Cost: an entry longer than the panel loses its scrolled-off
+    header and is dropped until the next entry. Test: `test_a_crop_with_no_speaker_header_yields_nothing`.
+  - With a roster, a short name row followed by a non-name row is an unverified header
+    (`caption_blocks(unknown_headers=True)`): a gallery too dense to OCR leaves a partial roster,
+    and unknown speakers' names were stored as caption text. Zoom keeps it off.
+  - Mis-cased avatars ("So Sean O'Neil", a "so" box) count only as all of the name's initials,
+    two letters at least; off a row they also need a roster match when there is a roster.
+  - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
+    as one tall box whose height let the tile label above link in.
+  - Full frames: tile circles read "So"/"sO" are never participants (two letters max).
+  - Full frames: a 1280x720 or 960x540 gallery strip has over 16 OCR boxes, so tenir-ocr
+    refuses it (`too_dense`) and the roster comes back empty; the parser can't fix that.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and

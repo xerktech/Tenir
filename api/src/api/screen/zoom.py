@@ -366,8 +366,13 @@ def caption_blocks(
     *,
     active: str | None = None,
     name_like: Callable[[str], bool] = is_name_like,
+    unknown_headers: bool = False,
 ) -> list[CaptionBlock]:
-    """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape."""
+    """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
+
+    ``unknown_headers`` (Teams): with a roster too, a name-shaped row followed by a row that
+    isn't one is a header with no speaker. Teams captions are Title Case, but a caption line
+    that short is an entry's last line, and what follows it is the next entry's header."""
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
@@ -383,7 +388,12 @@ def caption_blocks(
         # Before any full frame has named the tiles there is nothing to validate a header
         # against: a short name-shaped row followed by more text is taken as a header with
         # no speaker rather than stored as a caption.
-        if not len(roster) and i + 1 < len(rows) and name_like(row) and len(row.split()) >= 2:
+        if (
+            i + 1 < len(rows)
+            and name_like(row)
+            and len(row.split()) >= 2
+            and (not len(roster) or (unknown_headers and not name_like(rows[i + 1])))
+        ):
             blocks.append(CaptionBlock(None, True))
             continue
         if not blocks:

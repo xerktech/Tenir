@@ -410,6 +410,271 @@ def test_without_a_roster_a_directory_name_line_is_an_unverified_header() -> Non
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [(None, True, ["Okay."])]
 
 
+# --- real OCR of rendered Teams windows (XERK-2609) ----------------------------------------
+# Boxes tenir-ocr (Paddle, HEAD ocr/) read off synthetic Teams windows rendered by the
+# XERK-2608 QA kit: full frames through the api's strip reader, crops from the client's band.
+
+CAPTIONS = [
+    "Okay, let's start with the quarterly numbers for the northern region.",
+    "Sure. The shipment arrived on Tuesday but two pallets were damaged in transit.",
+    "Can we get a replacement order in before the end of the month?",
+]
+SPEAKERS = ["Priya Raman", "Lee, Bo", "Sean O'Neil"]
+
+
+def full_1080p_2x2() -> OcrResult:
+    """1920x1080, four camera-off tiles, three caption entries."""
+    return result(
+        line("BL", 1395, 238, 1478, 299),
+        line("PR", 441, 239, 528, 298),
+        line("Priya Raman", 21, 446, 100, 466),
+        line("Lee, Bo", 973, 446, 1024, 468),
+        line("SO", 436, 659, 528, 718),
+        line("MK", 1383, 659, 1492, 719),
+        line("Sean O'Neil", 22, 867, 94, 885),
+        line("Marta Kowalski", 974, 868, 1068, 885),
+        line("PR Priya Raman", 15, 904, 134, 930),
+        line(CAPTIONS[0], 53, 925, 566, 947),
+        line("BL Lee, Bo", 17, 956, 102, 978),
+        line(CAPTIONS[1], 53, 976, 655, 996),
+        line("Sean O'Neil", 52, 1005, 126, 1022),
+        line("So", 20, 1018, 35, 1026),
+        line(CAPTIONS[2], 54, 1024, 541, 1048),
+        width=1920,
+        height=1080,
+    )
+
+
+def test_a_tile_label_just_above_the_caption_panel_stays_a_participant() -> None:
+    # "Sean O'Neil" (y 867-885) sits 19 px above the panel's first header (y 904): linked into
+    # the panel it was dropped from the roster, and his captions went to Lee, Bo.
+    frame = teams.parse_full_frame(full_1080p_2x2())
+    assert set(frame.participants) == {"Priya Raman", "Lee, Bo", "Sean O'Neil", "Marta Kowalski"}
+
+
+def test_a_tile_label_above_a_doubled_ocr_box_stays_a_participant() -> None:
+    # OCR read the avatar and first caption row as one tall box as well as separately; that
+    # box's height let the label link in when the pair's height set the gap.
+    frame = teams.parse_full_frame(
+        result(
+            line("PR", 867, 467, 1054, 596),
+            line("Priya Raman", 22, 967, 99, 985),
+            line("Priya Raman", 53, 1006, 134, 1022),
+            line("PR " + CAPTIONS[0], 17, 1016, 565, 1049),
+            line("PR", 18, 1016, 37, 1028),
+            line(CAPTIONS[0], 53, 1025, 565, 1047),
+            width=1920,
+            height=1080,
+        )
+    )
+    assert frame.participants == ["Priya Raman"]
+
+
+def test_speakers_with_an_avatar_in_the_panel_are_participants() -> None:
+    # Speaker view shows one tile; the other speakers are only in the caption panel.
+    frame = teams.parse_full_frame(
+        result(
+            line("Priya Raman", 18, 504, 104, 527),
+            line("PR Priya Raman", 16, 543, 135, 569),
+            line(CAPTIONS[0], 51, 563, 567, 588),
+            line("BL Lee, Bo", 17, 595, 103, 617),
+            line(CAPTIONS[1], 52, 614, 656, 637),
+            line("SO Sean O'Neil", 18, 645, 128, 665),
+            line("SO", 22, 658, 36, 666),
+            line(CAPTIONS[2], 52, 663, 542, 688),
+            width=1280,
+            height=720,
+        )
+    )
+    assert frame.participants == SPEAKERS
+
+
+@pytest.mark.parametrize("avatar", ["SO", "So", "so"])
+def test_a_mis_cased_avatar_read_into_the_header_is_stripped(avatar: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("BL Lee, Bo", 21, 154, 126, 183),
+            line(CAPTIONS[1], 65, 181, 798, 204),
+            line(f"{avatar} Sean O'Neil", 18, 246, 103, 263),
+            line(CAPTIONS[2], 43, 262, 440, 281),
+            width=1561,
+            height=307,
+        ),
+        roster(*SPEAKERS),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Lee, Bo", [CAPTIONS[1]]),
+        ("Sean O'Neil", [CAPTIONS[2]]),
+    ]
+
+
+@pytest.mark.parametrize("avatar", ["So", "so"])
+def test_a_mis_cased_avatar_box_beside_the_header_is_dropped(avatar: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Sean O'Neil", 52, 5, 126, 22),
+            line(avatar, 20, 18, 35, 26),
+            line(CAPTIONS[2], 54, 24, 541, 48),
+        ),
+        roster(*SPEAKERS),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [("Sean O'Neil", [CAPTIONS[2]])]
+
+
+@pytest.mark.parametrize("row", ["So Bo Lee", "so Sean O'Neil said", "Of Oscar Fry"])
+def test_a_lower_case_word_before_a_name_the_roster_lacks_stays_caption(row: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line("Raman, Priya", 56, 4, 150, 20), line(row, 56, 26, 200, 46)),
+        roster("Raman, Priya", "Sean O'Neil"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [("Raman, Priya", [row])]
+
+
+@pytest.mark.parametrize(
+    ("lines", "names"),
+    [
+        # Tile initials and labels a crop catches over camera-off tiles.
+        (
+            [
+                line("sO", 347, 68, 437, 125),
+                line("MK", 1116, 68, 1221, 125),
+                line("Sean O'Neil", 15, 273, 80, 292),
+                line("Marta Kowalski", 791, 274, 870, 291),
+            ],
+            ("Sean O'Neil", "Marta Kowalski"),
+        ),
+        # A misread row of labels over a gallery.
+        ([line("Marta KowalskI Tomas Berg (Guest) Alko lanaka", 28, 0, 1145, 14)], ("Tomas Berg",)),
+        # A shared slide, before any roster.
+        (
+            [
+                line("Total supplier region region supplier supplier order", 35, 13, 480, 43),
+                line("Forecast freight invoice total margin", 36, 43, 602, 73),
+                line("Delivery unit supplier invoice", 37, 104, 288, 130),
+            ],
+            (),
+        ),
+    ],
+)
+def test_a_crop_with_no_speaker_header_yields_nothing(lines: list, names: tuple) -> None:
+    # Any block from it would start a meeting, and re-sent it kept one open for good.
+    assert teams.parse_caption_crop(result(*lines, width=1561, height=307), roster(*names)) == []
+
+
+def test_text_scrolled_up_above_a_header_is_kept() -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("in transit.", 56, 4, 150, 20),
+            line("Sean O'Neil", 56, 30, 150, 46),
+            line("Next item.", 56, 52, 140, 72),
+        ),
+        roster("Lee, Bo", "Sean O'Neil"),
+    )
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        (None, False, ["in transit."]),
+        ("Sean O'Neil", True, ["Next item."]),
+    ]
+
+
+def test_headers_the_roster_lacks_still_split_the_entries() -> None:
+    # A gallery too dense to OCR left a roster of one; the other speakers' names were stored
+    # as caption text under the previous speaker.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Priya Raman", 42, 163, 109, 181),
+            line(CAPTIONS[0], 42, 180, 460, 200),
+            line("Lee,Bo", 43, 206, 84, 220),
+            line(CAPTIONS[1], 42, 221, 533, 239),
+            line("Sean O'Ne il", 42, 245, 104, 262),
+            line(CAPTIONS[2], 42, 262, 441, 281),
+            width=1561,
+            height=307,
+        ),
+        roster("Sean O'Neil"),
+    )
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        (None, True, [CAPTIONS[0]]),
+        (None, True, [CAPTIONS[1]]),
+        ("Sean O'Neil", True, [CAPTIONS[2]]),
+    ]
+
+
+def test_a_title_case_caption_line_before_the_next_header_stays_caption() -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Raman, Priya", 56, 4, 150, 20),
+            line("Sounds Good", 56, 26, 150, 46),
+            line("Kunal Shah", 56, 52, 150, 68),
+            line("Next item.", 56, 74, 140, 94),
+        ),
+        roster("Raman, Priya"),
+    )
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        ("Raman, Priya", True, ["Sounds Good"]),
+        (None, True, ["Next item."]),
+    ]
+
+
+def test_big_tile_initials_above_the_panel_are_not_caption_text() -> None:
+    # 2560x1440: the band caught the bottom tiles' circles, read "so" and "MK".
+    blocks = teams.parse_caption_crop(
+        result(
+            line("so", 353, 0, 431, 40),
+            line("MK", 1124, 0, 1215, 39),
+            line("Sean O'Neil", 11, 176, 60, 189),
+            line("Marta Kowalski", 789, 178, 846, 188),
+            line("PR Priya Raman", 10, 201, 81, 214),
+            line(CAPTIONS[0], 32, 211, 344, 227),
+            line("Lee, Bo", 33, 232, 62, 242),
+            line(CAPTIONS[1], 32, 242, 399, 257),
+            line("Sean O'Neil", 33, 262, 78, 272),
+            line(CAPTIONS[2], 32, 272, 330, 287),
+            width=1561,
+            height=307,
+        ),
+        roster(*SPEAKERS, "Marta Kowalski"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        (name, [text]) for name, text in zip(SPEAKERS, CAPTIONS, strict=True)
+    ]
+
+
+@pytest.mark.parametrize("circle", ["So", "sO", "SO"])
+def test_a_mis_cased_tile_circle_is_not_a_participant(circle: str) -> None:
+    frame = teams.parse_full_frame(
+        result(
+            line(circle, 1566, 200, 1625, 240),
+            line("Sean O'Neil", 1300, 330, 1420, 358),
+            line("Bob", 30, 330, 80, 358),  # a short display name is still a name
+            width=2560,
+            height=1440,
+        )
+    )
+    assert frame.participants == ["Bob", "Sean O'Neil"]
+
+
+def test_real_ocr_of_a_1080p_meeting_gives_each_caption_its_speaker() -> None:
+    frame = teams.parse_full_frame(full_1080p_2x2())
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Sean O'Neil", 14, 131, 80, 150),
+            line("Marta Kowalski", 791, 131, 871, 150),
+            line("PR Priya Raman", 16, 164, 109, 182),
+            line(CAPTIONS[0], 43, 181, 459, 199),
+            line("BL Lee, Bo", 16, 206, 84, 224),
+            line(CAPTIONS[1], 43, 221, 533, 239),
+            line("So Sean O'Neil", 18, 246, 103, 263),
+            line(CAPTIONS[2], 43, 262, 440, 281),
+            width=1561,
+            height=307,
+        ),
+        roster(*frame.participants),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        (name, [text]) for name, text in zip(SPEAKERS, CAPTIONS, strict=True)
+    ]
+
+
 def test_an_unknown_platform_is_refused() -> None:
     bad = dict(teams_header(1, "caption"), platform="webex")
     with pytest.raises(screen_ws.FrameError, match="bad frame header"):

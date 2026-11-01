@@ -139,6 +139,9 @@ _AVATAR_TALL = 1.4
 # attacker-controlled (a row of 100 "(x)" suffixes cost ~1 s).
 _MAX_NAME_TEXT = 100
 
+# A comma OCR read with no space after it, between letters ("Lee,Bo").
+_TIGHT_COMMA = re.compile(r"(?<=[^\W\d_]),(?=[^\W\d_])")
+
 # Top band holding the title, timer and toolbar, as a fraction of the frame height.
 _TOP_BAND = 0.09
 
@@ -165,23 +168,40 @@ def clean_name(text: str) -> str:
     return text if len(text) > _MAX_NAME_TEXT else clean_tile_name(text)
 
 
-def _initials(text: str) -> str | None:
-    """The letters of an initials circle as OCR read it ("P R" -> "PR"), else None."""
+def _initials(text: str, *, any_case: bool = False) -> str | None:
+    """The letters of an initials circle as OCR read it ("P R" -> "PR"), else None.
+
+    Capitals only unless ``any_case``: real OCR also reads a circle's "SO" as "So" or "so",
+    but a lone lower-case word is caption text everywhere else."""
     text = text.strip()
     if not _INITIALS.match(text):
         return None
     letters = text.replace(" ", "")
-    return letters if letters.isupper() else None
+    return letters if any_case or letters.isupper() else None
+
+
+def _is_circle_text(text: str) -> bool:
+    """An initials circle's letters, however OCR cased them ("SO", "So", "sO"). Teams draws
+    two letters at most, so "So" is a tile's circle, never a participant (XERK-2609)."""
+    letters = _initials(text, any_case=True)
+    return letters is not None and (letters.isupper() or len(letters) <= 2)
 
 
 def _initials_of(name: str) -> set[str]:
     return {t[0].upper() for t in name.replace(",", " ").split() if t[0].isalpha()}
 
 
-def _is_avatar(token: str, name: str) -> bool:
-    """``token`` is the initials circle drawn for ``name`` (any order: "Lee, Bo" may be BL)."""
-    letters = _initials(token)
-    return letters is not None and set(letters) <= _initials_of(name)
+def _is_avatar(token: str, name: str, *, any_case: bool = False) -> bool:
+    """``token`` is the initials circle drawn for ``name`` (any order: "Lee, Bo" may be BL).
+
+    With ``any_case`` a mis-cased reading ("So" for Sean O'Neil's "SO", XERK-2609) counts
+    only as all of the name's initials, two letters at least: "so" or "I" alone are words."""
+    letters = _initials(token, any_case=any_case)
+    if letters is None:
+        return False
+    if letters.isupper():
+        return set(letters) <= _initials_of(name)
+    return len(letters) >= 2 and set(letters.upper()) == _initials_of(name)
 
 
 def _is_ui(text: str) -> bool:
@@ -202,6 +222,14 @@ def _is_sentence(text: str) -> bool:
     )
 
 
+def _is_name_row(text: str) -> bool:
+    """A tile label or a caption header, its avatar initials read into the box or not."""
+    name = clean_name(text)
+    return is_teams_name(clean_name(_strip_avatar_token(name, Roster()))) and not _is_sentence(
+        name
+    )
+
+
 def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
     """Ids of the full-frame lines that belong to the caption panel.
 
@@ -215,8 +243,15 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
     Five QA rounds of boxes around "sentence" lines each traded one layout for another: a box
     stretched across the People pane wiped its names, one per column was set off by a status
     line or a lower-case guest name, and the edges leaked a Title-Case caption. Linking rows by
-    spacing needs no box: a pane row only joins a stack it really is pressed against."""
+    spacing needs no box: a pane row only joins a stack it really is pressed against.
+
+    A name row links only within half its own height: a tile label sits a little above the
+    panel (19 px under an 18 px label at 1080p, real OCR, XERK-2609), further than any two
+    panel rows are apart (under 0.4 of a row), and linked in it the label was lost from the
+    roster. Its own height, not the pair's: OCR can read the avatar and first caption line as
+    one tall box, and that box's height let the label in."""
     low = [ln for ln in lines if ln.cy > height * 0.5 and not _is_ui(ln.text)]
+    named = [_is_name_row(ln.text) for ln in low]
     parent = list(range(len(low)))
 
     def find(i: int) -> int:
@@ -232,7 +267,9 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
             gap = max(a.box[1], b.box[1]) - min(a.box[3], b.box[3])
             # Real Paddle boxes of stacked rows overlap by a few pixels (gap -1..-4 at normal
             # leading); half a line of overlap still reads as the next row, not the same one.
-            if -line_h / 2 <= gap <= line_h and abs(a.box[0] - b.box[0]) <= 3 * line_h:
+            name_h = [ln.height for ln, n in ((a, named[i]), (b, named[j])) if n]
+            near = min(name_h) / 2 if name_h else line_h
+            if -line_h / 2 <= gap <= near and abs(a.box[0] - b.box[0]) <= 3 * line_h:
                 parent[find(i)] = find(j)
     stacks: dict[int, list[OcrLine]] = {}
     for i, ln in enumerate(low):
@@ -264,40 +301,85 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
         if id(ln) in caption:
             continue
         name = clean_name(ln.text)
-        if _is_ui(name) or not is_teams_name(name) or _initials(name):
+        if _is_ui(name) or not is_teams_name(name) or _is_circle_text(name):
             continue
+        if name not in out.participants:
+            out.participants.append(name)
+    for name in _panel_speakers(ocr.lines, caption):
         if name not in out.participants:
             out.participants.append(name)
     return out
 
 
+def _avatar_for(box: OcrLine, lines: tuple[OcrLine, ...]) -> OcrLine | None:
+    """The name line ``box`` is the initials circle of, or None. A box is an avatar when it
+    reads as initials and a name with those initials starts just right of it, overlapping it
+    vertically."""
+    if _initials(box.text, any_case=True) is None:
+        return None
+    for other in lines:
+        if other is box or other.box[0] < box.box[2] - 2:
+            continue
+        if other.box[0] - box.box[2] > 4 * other.height:
+            continue  # too far right to be this name's avatar
+        if min(other.box[3], box.box[3]) <= max(other.box[1], box.box[1]):
+            continue
+        name = clean_name(other.text)
+        if not is_teams_name(name):
+            continue
+        # Its letters, or (misread, an email's initials) the circle's two-row height.
+        # Two letters at least for the height rule: a tall lone "I" is a caption word.
+        tall = len(box.text.replace(" ", "")) >= 2 and box.height >= _AVATAR_TALL * other.height
+        if _is_avatar(box.text, name, any_case=True) or tall:
+            return other
+    return None
+
+
 def _drop_avatar_boxes(ocr: OcrResult) -> OcrResult:
     """Remove the initials circles beside speaker names before rows are grouped: the circle
     is taller than the name line and would glue the name and the first text line into one
-    row. A box is an avatar when it reads as initials and a name with those initials starts
-    just right of it, overlapping it vertically."""
+    row."""
+    return OcrResult(
+        ocr.width, ocr.height, tuple(b for b in ocr.lines if _avatar_for(b, ocr.lines) is None)
+    )
 
-    def avatar(box: OcrLine) -> bool:
-        if _initials(box.text) is None:
-            return False
-        for other in ocr.lines:
-            if other is box or other.box[0] < box.box[2] - 2:
-                continue
-            if other.box[0] - box.box[2] > 4 * other.height:
-                continue  # too far right to be this name's avatar
-            if min(other.box[3], box.box[3]) <= max(other.box[1], box.box[1]):
-                continue
-            name = clean_name(other.text)
-            if not is_teams_name(name):
-                continue
-            # Its letters, or (misread, an email's initials) the circle's two-row height.
-            # Two letters at least for the height rule: a tall lone "I" is a caption word.
-            tall = len(box.text.replace(" ", "")) >= 2 and box.height >= _AVATAR_TALL * other.height
-            if _is_avatar(box.text, name) or tall:
-                return True
-        return False
 
-    return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not avatar(b)))
+def _panel_speakers(lines: tuple[OcrLine, ...], caption: set[int]) -> list[str]:
+    """Names of the caption panel's speaker headers: a panel row with an initials avatar,
+    read into its box ("BL Lee, Bo") or beside it. Speakers are participants even when no
+    tile shows them: speaker view shows one tile, and without these the other speakers'
+    headers matched no one and their captions went to the previous speaker (XERK-2609).
+    A Title-Case caption line has no avatar, so it isn't taken for a name."""
+    found: list[OcrLine] = []
+    for ln in lines:
+        if id(ln) not in caption:
+            continue
+        if _strip_avatar_token(clean_name(ln.text), Roster()) != clean_name(ln.text):
+            found.append(ln)
+        elif (name_line := _avatar_for(ln, lines)) is not None and id(name_line) in caption:
+            found.append(name_line)
+    out = []
+    for ln in found:
+        name = clean_name(_strip_avatar_token(clean_name(ln.text), Roster()))
+        if is_teams_name(name) and not _is_ui(name):
+            out.append(name)
+    return out
+
+
+def _drop_tile_initials(ocr: OcrResult) -> OcrResult:
+    """Remove the big initials circles of camera-off tiles a bottom-band crop catches: two
+    letters at least twice the height of the crop's text. Left in, a row of them ("so MK")
+    read as an older caption line above the panel (XERK-2609)."""
+    text_h = sorted(b.height for b in ocr.lines if _initials(b.text, any_case=True) is None)
+    if not text_h:
+        return ocr
+    median = text_h[len(text_h) // 2]
+
+    def circle(b: OcrLine) -> bool:
+        letters = _initials(b.text, any_case=True)
+        return letters is not None and len(letters) >= 2 and b.height >= 2 * median
+
+    return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not circle(b)))
 
 
 def _drop_tile_labels(ocr: OcrResult) -> OcrResult:
@@ -313,16 +395,37 @@ def _drop_tile_labels(ocr: OcrResult) -> OcrResult:
     return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if id(b) not in drop))
 
 
-def _strip_avatar_token(row: str) -> str:
-    """A name row whose OCR box swallowed the initials circle: "PR Raman, Priya"."""
+def _strip_avatar_token(row: str, roster: Roster) -> str:
+    """A name row whose OCR box swallowed the initials circle: "PR Raman, Priya".
+
+    Mis-cased initials ("So Sean O'Neil") are stripped too, but only off a name the roster
+    knows when it knows any: "So Bo Lee" is otherwise a caption."""
     for n in (3, 2, 1):  # longest first: "B L Lee, Bo" is not "B" + "L Lee, Bo"
         parts = row.split(" ", n)
         if len(parts) <= n:
             continue
         token, rest = " ".join(parts[:n]), parts[n]
-        if _is_avatar(token, clean_name(rest)) and is_teams_name(clean_name(rest)):
+        name = clean_name(rest)
+        if not is_teams_name(name):
+            continue
+        if _is_avatar(token, name):
+            return rest
+        if _is_avatar(token, name, any_case=True) and (not len(roster) or roster.match(name)):
             return rest
     return row
+
+
+def _respaced(row: str, roster: Roster) -> str:
+    """``row`` with OCR's spacing slips in a name undone, else unchanged: a split name
+    ("Sean O'Ne il") read as caption text, and a lost space ("Lee,Bo") as one word, too few
+    for a header. Only a roster name, or a ``Last, First`` name, is respelled."""
+    if len(row) > _MAX_NAME_TEXT:
+        return row
+    spaced = _TIGHT_COMMA.sub(", ", row)
+    if is_teams_name(spaced):
+        return spaced
+    key = norm_name(row).replace(" ", "")
+    return next((n for n in roster.names if norm_name(n).replace(" ", "") == key), row)
 
 
 def parse_caption_crop(
@@ -332,12 +435,21 @@ def parse_caption_crop(
 
     A crop showing no caption text at all (only names: tile labels caught by a fixed
     bottom-band crop, or an entry whose words haven't arrived) yields nothing, so it can't
-    start a meeting."""
+    start a meeting. Nor does one with no speaker header (a header the roster matches, or any
+    name-shaped header before there is a roster): text with no header is tile initials, a
+    misread label or a shared slide, and a re-sent crop of it kept a meeting open for good
+    (XERK-2609). A header-less block above a header stays: it is an older entry scrolled up."""
     rows = []
-    for row in map(_strip_avatar_token, caption_rows(_drop_tile_labels(_drop_avatar_boxes(ocr)))):
+    boxes = _drop_tile_labels(_drop_avatar_boxes(_drop_tile_initials(ocr)))
+    for raw in caption_rows(boxes):
+        row = _respaced(_strip_avatar_token(raw, roster), roster)
         cleaned = clean_name(row)
         # A header's "(Guest)" suffix goes; a caption ending in parentheses stays caption.
         header = cleaned != row and is_teams_name(cleaned)
         rows.append(cleaned if header and (not len(roster) or roster.match(cleaned)) else row)
-    blocks = caption_blocks(rows, roster, active=active, name_like=is_teams_name)
-    return blocks if any(b.lines for b in blocks) else []
+    blocks = caption_blocks(
+        rows, roster, active=active, name_like=is_teams_name, unknown_headers=True
+    )
+    if not any(b.lines for b in blocks) or not any(b.has_header for b in blocks):
+        return []
+    return blocks
