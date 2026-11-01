@@ -279,6 +279,7 @@ async def screen_ws(ws: WebSocket) -> None:
                             roster,
                             active=tracker.active,
                             live=tracker.conversation_id is not None,
+                            jpeg=jpeg,
                         ),
                     )
                     await tracker.on_caption(blocks, ts)

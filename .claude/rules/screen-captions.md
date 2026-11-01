@@ -154,8 +154,49 @@ paths:
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
   - A short token before a roster name on a box left of the text below it is a misread circle
     ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
-  - Open, needs pixel evidence (XERK-2614): photo-avatar speakers not on the roster, a new
-    speaker's name-shaped first line, slide text in the band mid-meeting.
+  - Caption crops read their pixels for avatars (`_pixel_avatars`, XERK-2614): a round run of
+    ink rows left of the text column marks the topmost box beside it (its top half). When one
+    is found, avatars alone decide headers the roster doesn't match (`caption_blocks(avatars=)`).
+    A photo has no OCR box, so text rules merged its speaker into the last one. Tests:
+    `test_a_photo_avatar_speaker_off_the_roster_gets_their_own_header`,
+    `test_a_name_shaped_first_caption_line_stays_under_its_speaker`.
+  - No avatar found (faint photo, odd layout) keeps the position rule. An avatar-only rule
+    there lost 11/96 real-OCR cases with no roster (QA). Test:
+    `test_with_no_avatar_found_a_roster_keeps_the_position_rule`.
+  - Real OCR reads name boxes from the avatar's initials ("DA Diego Alvarez" at x 13): the text
+    column is the median start of caption-text rows only, and a box counts as beside an avatar
+    by its right edge. Test: `test_a_name_box_that_swallowed_its_initials_keeps_the_other_avatars`.
+  - Background = the most common colour (`_mode_colour`) of the gap between avatar and text on
+    caption-text rows: the crop's median was a tile's grey (light panel all ink), and the gap's
+    median drifted onto an avatar edge (1920 hole_ok_only, real OCR). Test:
+    `test_avatars_are_found_when_the_gap_sample_catches_other_colours`. Round = ink *count* per line, not
+    span (JPEG speckles), and the column ends 0.2 rows from the text (nearer clipped circles).
+  - Read-in initials need an avatar-sized lit run (0.8-4 rows) starting by the box's middle and
+    reaching 0.25 rows under it: a slide page in the column lit it top to bottom and vouched
+    for every heading (QA, 1920). Test:
+    `test_a_slide_page_filling_the_avatar_column_vouches_for_no_heading`.
+  - Score any threshold change on the real-OCR corpora, roster own AND empty: with the QA kit's
+    `rescore2.py` (96-case matrix) and `score4.py`; one fix measured fine on own, -11 on empty.
+  - Mid-meeting, a Teams crop with no header the roster or an avatar vouches for
+    (`CaptionBlock.avatar`) must re-read a recent line (`CaptionMerger.knows_any`) or it is
+    dropped (a slide, its headings unknown headers). Requiring a roster match alone dropped
+    every off-roster speaker's lines (QA). Lines said while every frame of them was dropped are
+    lost. Test: `test_a_crop_sharing_no_recent_line_and_no_roster_header_is_dropped_mid_meeting`.
+  - Initials read into a name box ("DA Diego Alvarez", either strip route) are avatar evidence
+    only with the avatar column lit just under the box (`_ink_below`; no pixels: the box starts
+    left of the text column). "AI Artificial Intelligence" over indented bullets passed a
+    position gate and was stored as speech (QA x2). Tests:
+    `test_initials_read_into_a_name_box_are_avatar_evidence_when_its_circle_is_missed`,
+    `test_an_initials_heading_over_indented_slide_text_is_no_avatar`.
+  - A crop is verified by a header the roster matches or one with an avatar (`b.avatar`);
+    with no roster and pixels showing no avatar, it starts nothing. Lines said then are lost
+    if they scroll off before a full frame or an avatar is seen (QA demonstrated; accepted).
+  - Test the avatar flag through the parser, not hand-built blocks: a mutant dropping it at
+    the parser passed every tracker test. Test:
+    `test_a_photo_speaker_off_the_roster_alone_in_the_panel_is_stored`.
+  - Tuned on synthetic renders only (dark, light, pastel, dark photo); a photo within ~18
+    levels of the panel is missed. `test_ws_passes_the_crop_image_to_the_teams_parser` guards
+    the jpeg reaching the parser. Re-tune on XERK-2506 captures.
   - A 2-letter title-case token ("So", "Al") is a tile circle only when >= 1.4x the median text
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption

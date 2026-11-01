@@ -1135,3 +1135,497 @@ def test_the_last_speaker_going_on_after_the_break_is_a_new_line() -> None:
         assert [s.text for s in store.get("default", first).segments] == ["Thanks, both."]
 
     asyncio.run(run())
+
+
+# --- pixel evidence: avatars in the caption crop (XERK-2614) -------------------------------
+#
+# Synthetic panels laid out like teamsynth's renders: a 32 px avatar circle at the left (a photo:
+# no OCR box), its top level with the 16 px name line, text rows indented under the name. Only
+# the avatars are drawn: the parser reads text from the OCR boxes, not from pixels.
+
+_DARK = (31, 31, 31)
+_LIGHT = (245, 245, 245)
+
+
+def panel(
+    rows: list[tuple[str, str | None]],
+    *,
+    width: int = 760,
+    text_x: int = 44,
+    bg=_DARK,
+    above: int = 0,
+    fill=(196, 49, 75),
+) -> tuple[OcrResult, bytes]:
+    """OCR boxes and a JPEG for panel ``rows`` of (text, what is drawn beside it: "circle",
+    "square" (a slide's picture) or None). ``above`` px of a grey tile sit over the panel."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    height = above + 26 * len(rows) + 30
+    img = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img)
+    if above:
+        draw.rectangle((0, 0, width, above - 12), fill=(61, 61, 61))
+    lines = []
+    for i, (text, mark) in enumerate(rows):
+        y = above + 4 + 26 * i
+        if mark == "circle":
+            draw.ellipse((4, y, 36, y + 32), fill=fill)
+        elif mark == "square":
+            draw.rectangle((4, y, 36, y + 32), fill=fill)
+        lines.append(line(text, text_x, y, text_x + 8 * len(text), y + 16))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return OcrResult(width, height, tuple(lines)), buf.getvalue()
+
+
+def blocks_of(blocks) -> list[tuple[str | None, bool, list[str]]]:
+    return [(b.speaker, b.has_header, b.lines) for b in blocks]
+
+
+_PHOTO_AFTER_UNFINISHED = [
+    ("Priya Raman", "circle"),
+    ("Let's look at the numbers for the north region", None),
+    ("Diego Alvarez", "circle"),
+    ("Sure, I have them right here.", None),
+]
+
+
+@pytest.mark.parametrize(
+    ("bg", "fill"),
+    [(_DARK, (196, 49, 75)), (_DARK, (60, 56, 52)), (_LIGHT, (214, 226, 240))],
+    ids=["dark", "dark-photo", "light-pastel"],
+)
+def test_a_photo_avatar_speaker_off_the_roster_gets_their_own_header(bg, fill) -> None:
+    # Diego's photo avatar has no initials, so OCR gives no box for it; Priya's line before
+    # him is unfinished (no full stop), so position alone merged him into Priya. A dark photo
+    # on the dark panel and a pastel circle on a light one differ from it by ~25-45 levels.
+    # A tile's grey sits above the panel, as a fixed band catches it: the background must be
+    # the panel's own colour, not the crop's (on a light panel the crop's read as all ink).
+    ocr, jpeg = panel(_PHOTO_AFTER_UNFINISHED, bg=bg, fill=fill, above=300)
+    expected = [
+        ("Priya Raman", True, ["Let's look at the numbers for the north region"]),
+        (None, True, ["Sure, I have them right here."]),
+    ]
+    assert blocks_of(teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg)) == expected
+    # Without the image the old position rule still merges him (the regression guard).
+    assert blocks_of(teams.parse_caption_crop(ocr, roster("Priya Raman")))[0][2][1:] == [
+        "Diego Alvarez",
+        "Sure, I have them right here.",
+    ]
+
+
+def test_a_guest_with_a_photo_avatar_gets_their_own_header() -> None:
+    rows = [*_PHOTO_AFTER_UNFINISHED[:2], ("Tomas Berg (Guest)", "circle"), ("Hello all.", None)]
+    ocr, jpeg = panel(rows)
+    blocks = teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg)
+    assert blocks_of(blocks)[1:] == [(None, True, ["Hello all."])]
+
+
+@pytest.mark.parametrize("names", [(), ("Priya Raman",)])
+def test_a_name_shaped_first_caption_line_stays_under_its_speaker(names: tuple[str, ...]) -> None:
+    ocr, jpeg = panel(
+        [
+            ("Priya Raman", "circle"),
+            ("Acme Global Partners", None),
+            ("signed the deal today.", None),
+            ("Hank Ives", "circle"),
+            ("Lena Moss", None),
+            ("is joining us next week.", None),
+        ]
+    )
+    speaker = names[0] if names else None
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*names), jpeg=jpeg)) == [
+        (speaker, True, ["Acme Global Partners", "signed the deal today."]),
+        (None, True, ["Lena Moss", "is joining us next week."]),
+    ]
+
+
+_SLIDE = [
+    ("Quarterly Results", None),
+    ("Revenue grew in every region this year.", None),
+    ("Next Steps", None),
+    ("hire two more account managers", None),
+]
+
+
+@pytest.mark.parametrize("mark", [None, "square"])
+@pytest.mark.parametrize("names", [(), ("Priya Raman",)])
+def test_a_slide_in_the_band_starts_no_meeting(names: tuple[str, ...], mark: str | None) -> None:
+    # A slide's headings are name-shaped; a square picture beside one is no avatar either.
+    rows = [(_SLIDE[0][0], mark), *_SLIDE[1:]]
+    ocr, jpeg = panel(rows)
+    assert teams._pixel_avatars(jpeg, ocr) == set()
+    assert teams.parse_caption_crop(ocr, roster(*names), jpeg=jpeg) == []
+    # Mid-meeting it carries no roster-matched header; the tracker then drops it (test below).
+    live = teams.parse_caption_crop(ocr, roster(*names), jpeg=jpeg, live=True)
+    assert live and not any(b.speaker for b in live)
+
+
+def test_with_no_avatar_found_a_roster_keeps_the_position_rule() -> None:
+    # A crop whose avatars can't be seen (too faint) falls back to where the rows sit.
+    ocr, jpeg = panel(_PHOTO_AFTER_UNFINISHED, fill=(36, 36, 36))
+    assert teams._pixel_avatars(jpeg, ocr) == set()
+    rows = [("Priya Raman", None), ("Okay.", None), ("Diego Alvarez", None), ("Sure.", None)]
+    ocr, jpeg = panel(rows)
+    assert blocks_of(teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg)) == [
+        ("Priya Raman", True, ["Okay."]),
+        (None, True, ["Sure."]),
+    ]
+
+
+def test_a_tile_label_above_the_panel_is_no_caption_line_without_a_roster() -> None:
+    rows = [("Sean O'Neil", None), ("Priya Raman", "circle"), ("Okay, let's start.", None)]
+    ocr, jpeg = panel(rows, above=40)
+    assert [b.lines for b in teams.parse_caption_crop(ocr, Roster(), jpeg=jpeg)] == [
+        [],
+        ["Okay, let's start."],
+    ]
+
+
+def test_a_text_row_meeting_only_an_avatars_lower_half_is_no_header() -> None:
+    # The header row went unread: the first text row overlaps the avatar's lower half only.
+    ocr, jpeg = panel([("Priya Raman", "circle"), ("Thanks Everyone", None)])
+    unread = OcrResult(ocr.width, ocr.height, ocr.lines[1:])
+    assert teams._pixel_avatars(jpeg, unread) == set()
+
+
+def test_pixel_evidence_is_skipped_when_it_cannot_be_read() -> None:
+    ocr, jpeg = panel([("Priya Raman", "circle"), ("Sure, I have them right here.", None)])
+    assert teams._pixel_avatars(None, ocr) is None
+    assert teams._pixel_avatars(tiny_jpeg(), ocr) is None  # not the size OCR read
+    assert teams._pixel_avatars(b"\xff\xd8 not a jpeg", ocr) is None
+    flush, flush_jpeg = panel([("Priya Raman", None), ("okay", None)], text_x=4)
+    assert teams._pixel_avatars(flush_jpeg, flush) is None  # no column left of the text
+    assert teams._pixel_avatars(jpeg, OcrResult(ocr.width, ocr.height, ())) is None
+
+
+def test_a_name_box_that_swallowed_its_initials_keeps_the_other_avatars() -> None:
+    # Real OCR reads a name box from the avatar's initials ("DA Diego Alvarez" at x 13, text
+    # at 43): the column is the caption-text rows' median start, and such a box still counts
+    # as beside its avatar.
+    ocr, jpeg = panel(_PHOTO_AFTER_UNFINISHED)
+    y0, y1 = ocr.lines[2].box[1], ocr.lines[2].box[3]
+    swallowed = line("DA Diego Alvarez", 8, y0, 150, y1)
+    first = line("PR Priya Raman", 8, ocr.lines[0].box[1], 140, ocr.lines[0].box[3])
+    crop = OcrResult(ocr.width, ocr.height, (first, ocr.lines[1], swallowed, ocr.lines[3]))
+    assert teams._pixel_avatars(jpeg, crop) == {id(first), id(swallowed)}
+    blocks = teams.parse_caption_crop(crop, Roster(), jpeg=jpeg)
+    assert [(b.has_header, b.lines) for b in blocks] == [
+        (True, ["Let's look at the numbers for the north region"]),
+        (True, ["Sure, I have them right here."]),
+    ]
+
+
+def test_the_text_column_ignores_name_boxes_that_start_on_their_avatar() -> None:
+    # Most rows are names read from their initials (short entries, the last one's text not
+    # yet in): a median over every row would put the column on the avatars.
+    ocr, jpeg = panel(
+        [
+            ("Priya Raman", "circle"),
+            ("Okay.", None),
+            ("Diego Alvarez", "circle"),
+            ("Sure.", None),
+            ("Lee, Bo", "circle"),
+        ]
+    )
+    names = {0: "PR Priya Raman", 2: "DA Diego Alvarez", 4: "BL Lee, Bo"}
+    lines = tuple(
+        line(names[i], 8, b.box[1], 150, b.box[3]) if i in names else b
+        for i, b in enumerate(ocr.lines)
+    )
+    found = teams._pixel_avatars(jpeg, OcrResult(ocr.width, ocr.height, lines))
+    assert found == {id(lines[i]) for i in names}
+
+
+@pytest.mark.parametrize("names", [(), ("Priya Raman",)])
+def test_initials_read_into_a_name_box_are_avatar_evidence_when_its_circle_is_missed(
+    names: tuple[str, ...],
+) -> None:
+    # Diego's circle isn't found round (JPEG speckle, a cut edge: drawn square here), but OCR
+    # read its "DA" into his name box and the column is lit under it: he is a header. With no
+    # roster his name was stored as caption text, or the crop started nothing (QA). His line
+    # reads like a name ("OK Lee, Bo", 1680x1050 real OCR).
+    rows = [*_PHOTO_AFTER_UNFINISHED[:2], ("Diego Alvarez", "square"), ("OK Lee, Bo", None)]
+    ocr, jpeg = panel(rows)
+    b = ocr.lines[2]
+    diego = line("DA Diego Alvarez", 8, b.box[1], 150, b.box[3])
+    crop = OcrResult(ocr.width, ocr.height, (*ocr.lines[:2], diego, ocr.lines[3]))
+    assert teams._pixel_avatars(jpeg, crop) == {id(crop.lines[0])}
+    blocks = teams.parse_caption_crop(crop, roster(*names), jpeg=jpeg)
+    assert [(b.has_header, b.avatar, b.lines) for b in blocks][1:] == [(True, True, ["OK Lee, Bo"])]
+    # Alone (Priya's entry scrolled off, no roster), the crop still starts the meeting.
+    alone = OcrResult(ocr.width, ocr.height, (diego, ocr.lines[3]))
+    assert [b.lines for b in teams.parse_caption_crop(alone, Roster(), jpeg=jpeg)] == [["OK Lee, Bo"]]
+
+
+def test_the_panel_colour_is_the_gaps_most_common_colour() -> None:
+    # A gap sample that catches avatar edges and glyphs (40% panel, the rest five colours):
+    # its median drifted ~29 levels, past the ink threshold, and lit the whole column (QA).
+    import numpy as np
+
+    others = [(196, 90, 75), (0, 120, 212), (73, 130, 5), (214, 214, 214), (98, 100, 167)]
+    # The panel's own pixels vary by JPEG noise: only quantised do they share one colour.
+    panel_px = [(31 + d, 31 - d, 31 + d) for d in (-3, -2, -1, 0, 1, 2, 3, 0)] * 5
+    gap = np.array(panel_px + [c for c in others for _ in range(12)], dtype=np.int16)
+    assert np.abs(np.median(gap, axis=0) - 31).max() > teams._INK_DELTA
+    assert np.abs(teams._mode_colour(gap) - 31).max() < 4
+
+
+def test_avatars_are_found_when_the_gap_sample_catches_other_colours() -> None:
+    # Stripes in 3 of the gap's 5 columns on the text rows (an avatar edge, glyph fringes):
+    # a median of them reads ~120 for a 31 panel, which then lights every line.
+    import io
+
+    from PIL import Image, ImageDraw
+
+    ocr, _ = panel(_PHOTO_AFTER_UNFINISHED)
+    img = Image.new("RGB", (ocr.width, ocr.height), _DARK)
+    draw = ImageDraw.Draw(img)
+    for i, (_, mark) in enumerate(_PHOTO_AFTER_UNFINISHED):
+        y = 4 + 26 * i
+        if mark:
+            draw.ellipse((4, y, 36, y + 32), fill=(196, 49, 75))
+        else:
+            for x, v in zip((35, 36, 37), (200, 150, 120), strict=True):
+                draw.line((x, y, x, y + 16), fill=(v, v, v))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=100, subsampling=0)  # keeps the 1 px stripes
+    assert teams._pixel_avatars(buf.getvalue(), ocr) == {id(ocr.lines[0]), id(ocr.lines[2])}
+
+
+def test_an_avatar_patch_may_start_below_the_name_boxs_top() -> None:
+    # OCR boxes are padded: the circle's top can sit a few px under its name box's top, so
+    # the patch need only start by the box's middle.
+    import io
+
+    from PIL import Image, ImageDraw
+
+    rows = [*_PHOTO_AFTER_UNFINISHED[:2], ("Diego Alvarez", None), ("OK Lee, Bo", None)]
+    ocr, _ = panel(rows)
+    b = ocr.lines[2]
+    diego = line("DA Diego Alvarez", 8, b.box[1], 150, b.box[3])
+    crop = OcrResult(ocr.width, ocr.height, (*ocr.lines[:2], diego, ocr.lines[3]))
+    img = Image.new("RGB", (ocr.width, ocr.height), _DARK)
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((4, 4, 36, 36), fill=(196, 49, 75))
+    top = int(b.box[1]) + 5  # under the box's top, above its middle (box 16 px tall)
+    draw.rectangle((4, top, 36, top + 32), fill=(196, 49, 75))  # square: not found round
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    blocks = teams.parse_caption_crop(crop, Roster(), jpeg=buf.getvalue())
+    assert [(b.has_header, b.avatar) for b in blocks][1:] == [(True, True)]
+
+
+@pytest.mark.parametrize("indent", [30, 60])
+def test_an_initials_heading_over_indented_slide_text_is_no_avatar(indent: int) -> None:
+    # The heading box starts left of the text under it, as a name box read from its avatar's
+    # initials does, but no circle reaches below it (QA, real OCR of bulleted slides).
+    rows = [
+        ("AI Artificial Intelligence", None),
+        ("Revenue grew in every region this year.", None),
+        ("finalize the vendor shortlist by Friday", None),
+    ]
+    ocr, jpeg = panel(rows)
+    lines = tuple(
+        b if i == 0 else line(b.text, b.box[0] + indent, b.box[1], b.box[2] + indent, b.box[3])
+        for i, b in enumerate(ocr.lines)
+    )
+    live = teams.parse_caption_crop(
+        OcrResult(ocr.width, ocr.height, lines), roster("Priya Raman"), jpeg=jpeg, live=True
+    )
+    assert not any(b.avatar or b.speaker for b in live)
+
+
+def test_a_slide_page_filling_the_avatar_column_vouches_for_no_heading() -> None:
+    # 1920 real OCR (QA): a light slide page starts at x 10 inside the dark frame and most of
+    # its lines at x 25, so the avatar column straddles the page edge and is lit on every
+    # line. Ink under a box counts only as an avatar-sized patch, not a column-long one.
+    import io
+
+    from PIL import Image, ImageDraw
+
+    body = [line(f"Freight order unit audit margin {i}", 25, 20 * i, 400, 20 * i + 16) for i in range(8)]
+    slide = [
+        line("AI Artificial Intelligence", 63, 165, 278, 181),
+        line("Revenue grew twenty percent this year", 88, 190, 312, 206),
+        line("A New Approach", 63, 220, 211, 236),
+        line("finalize the vendor shortlist by Friday", 86, 250, 302, 266),
+    ]
+    crop = OcrResult(760, 300, (*body, *slide))
+    img = Image.new("RGB", (760, 300), _DARK)
+    ImageDraw.Draw(img).rectangle((10, 0, 760, 300), fill=_LIGHT)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    for names in ((), ("Priya Raman",)):
+        assert teams.parse_caption_crop(crop, roster(*names), jpeg=buf.getvalue()) == []
+        live = teams.parse_caption_crop(crop, roster(*names), jpeg=buf.getvalue(), live=True)
+        assert not any(b.avatar or b.speaker for b in live)
+
+
+@pytest.mark.parametrize(
+    "picture",
+    [(4, 4, 36, 20), (4, 18, 36, 50)],
+    ids=["icon-as-tall-as-the-heading", "picture-starting-under-it"],
+)
+def test_ink_beside_a_heading_is_no_avatar_unless_it_starts_level_and_reaches_below(
+    picture: tuple[int, int, int, int],
+) -> None:
+    # An avatar starts level with its name line and outlasts it. An icon the heading's own
+    # height ends with it; a picture beside the bullets starts under it.
+    import io
+
+    from PIL import Image, ImageDraw
+
+    heading = line("AI Artificial Intelligence", 44, 4, 252, 20)
+    body = [line(f"bullet point number {i} here", 74, 30 + 26 * i, 300, 46 + 26 * i) for i in range(3)]
+    crop = OcrResult(760, 120, (heading, *body))
+    img = Image.new("RGB", (760, 120), _DARK)
+    ImageDraw.Draw(img).rectangle(picture, fill=(196, 49, 75))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    live = teams.parse_caption_crop(crop, roster("Priya Raman"), jpeg=buf.getvalue(), live=True)
+    assert not any(b.avatar for b in live)
+
+
+def test_an_initials_shaped_slide_heading_is_no_avatar() -> None:
+    # "AI Artificial Intelligence" reads like a name behind its circle's initials, but starts
+    # where the slide's text does, not left of it on an avatar (QA).
+    rows = [
+        ("AI Artificial Intelligence", None),
+        ("Revenue grew in every region this year.", None),
+        ("A New Approach", None),
+        ("finalize the vendor shortlist by Friday", None),
+    ]
+    ocr, jpeg = panel(rows)
+    live = teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg, live=True)
+    assert not any(b.avatar or b.speaker for b in live)
+
+
+def test_a_photo_speaker_off_the_roster_alone_in_the_panel_is_stored() -> None:
+    """The parser's avatar flag reaches the tracker: Diego's entry, with Priya's scrolled off,
+    shares no line with what was stored and has no roster header, only his photo."""
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+
+    async def run() -> list[tuple[str | None, str]]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "teams"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ros = await t.ensure_roster()
+        ros.add("Priya Raman")
+        for ts, rows in (
+            (0, _PHOTO_AFTER_UNFINISHED[:2]),
+            (1000, [("Diego Alvarez", "circle"), ("Sure, I have them right here.", None)]),
+        ):
+            ocr, jpeg = panel(rows)
+            live = t.conversation_id is not None
+            await t.on_caption(teams.parse_caption_crop(ocr, ros, jpeg=jpeg, live=live), ts)
+        await t.end(70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [(s.speaker, s.text) for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    assert asyncio.run(run()) == [
+        ("Priya Raman", "Let's look at the numbers for the north region"),
+        (None, "Sure, I have them right here."),
+    ]
+
+
+def test_ws_passes_the_crop_image_to_the_teams_parser(screen) -> None:
+    """The pixels reach the parser end to end: without them Diego merges into Priya."""
+    from api.main import app
+
+    store, ocr, token, admin = screen
+    base = int(time.time() * 1000)
+    tiles, full_jpeg = (
+        result(line("Weekly sync", 10, 4, 200, 20), line("Priya Raman", 300, 400, 380, 416),
+               width=1280, height=720),
+        unique_jpeg(1),
+    )
+    crop, crop_jpeg = panel(_PHOTO_AFTER_UNFINISHED)
+    ocr.register(full_jpeg, tiles)
+    ocr.register(crop_jpeg, crop)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()  # idle cadence
+        ws.send_bytes(envelope(teams_header(base, "full"), full_jpeg))
+        wait_handled(1)
+        ws.send_bytes(envelope(teams_header(base + 1000, "caption"), crop_jpeg))
+        wait_handled(2)
+        (summary,) = store.list(admin.household)
+        end = base + 1000 + int(settings.screen_meeting_end_seconds * 1000)
+        assert client.portal.call(meetings.sweep, end) == [summary.id]
+    conv = store.get(admin.household, summary.id)
+    assert conv is not None
+    assert [(s.speaker, s.text) for s in conv.segments] == [
+        ("Priya Raman", "Let's look at the numbers for the north region"),
+        (None, "Sure, I have them right here."),
+    ]
+
+
+def test_a_crop_sharing_no_recent_line_and_no_roster_header_is_dropped_mid_meeting() -> None:
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+    from api.screen.zoom import CaptionBlock
+
+    async def run(platform: str) -> list[str]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", platform),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        await t.ensure_roster()
+        entry = ["We shipped the north region numbers.", "the pallets arrived on Tuesday"]
+        await t.on_caption([CaptionBlock("Priya Raman", True, entry)], 0)
+        # Her header scrolled off: still the panel, it re-reads a known line and adds one.
+        cont = [entry[1], "and two were damaged."]
+        await t.on_caption([CaptionBlock(None, False, cont)], 1000)
+        # A new unknown speaker under her last line: re-reads it, so it stays.
+        diego = [CaptionBlock(None, False, [cont[1]]), CaptionBlock(None, True, ["Sure."])]
+        await t.on_caption(diego, 2000)
+        # Her lines scrolled off: only his avatar vouches for the crop, and it stays (QA).
+        more = [CaptionBlock(None, True, ["I have them here."], avatar=True)]
+        await t.on_caption(more, 2500)
+        # A slide in the band: header-less, or headings read as unknown headers; nothing it
+        # shows was said.
+        slide = [
+            [CaptionBlock(None, False, ["Quarterly Results", "Revenue grew this year."])],
+            [CaptionBlock(None, True, ["Revenue grew this year."]), CaptionBlock(None, True, ["hire two"])],
+        ]
+        for ts, blocks in zip((3000, 4000), slide, strict=True):
+            await t.on_caption(blocks, ts)
+        await t.end(70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [s.text for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    said = [
+        "We shipped the north region numbers.",
+        "the pallets arrived on Tuesday",
+        "and two were damaged.",
+        "Sure.",
+        "I have them here.",
+    ]
+    assert asyncio.run(run("teams")) == said
+    assert asyncio.run(run("zoom"))[-1] == "hire two"  # Zoom keeps storing what it is sent

@@ -238,8 +238,11 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   text or no roster-matched header yields nothing, so tile text or a slide starts no meeting;
   during one, a header-less crop (a long entry) still feeds the merge, but re-sent unchanged it
   doesn't keep the meeting open. A short name row before text is a header even when the roster
-  lacks it (speaker unknown) if it opens the crop, follows a finished (punctuated) line or
-  carries an avatar.
+  lacks it (speaker unknown) if it carries an avatar. When the crop's pixels can be read, the
+  round avatars in the column left of the text decide that (a photo avatar gives OCR nothing to
+  read); only when none is found does a name row opening the crop or following a finished line
+  count, and then, with no roster yet, the crop starts no meeting. Mid-meeting, a crop with no
+  roster-matched header that re-reads no recent line (a slide in the band) is dropped.
 - Known limit: a caption row that reads as a participant's name ("Kunal Shah", or a near miss
   like "Kunal Shaw") is taken as a speaker header, and an unpunctuated one-word interim caption
   ("Okay") alone in the panel on a full frame joins the participants. Text alone can't tell
