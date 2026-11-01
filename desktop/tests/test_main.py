@@ -207,3 +207,22 @@ def test_list_and_logon_task_commands(
         ("install", ("-m", "tenir_capture"), str(path.resolve())),
         ("uninstall",),
     ]
+
+
+def test_a_pip_installed_logon_task_prefers_pythonw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_win: FakeWin
+) -> None:
+    calls: list[list[str]] = []
+    fake_win.install_logon_task = lambda exe, config: calls.append(list(exe)) or 0
+    (tmp_path / "python.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+    cli.main(["--install-startup"])
+    (tmp_path / "pythonw.exe").write_text("")
+    cli.main(["--install-startup"])
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    cli.main(["--install-startup"])
+    assert calls == [
+        [str(tmp_path / "python.exe"), "-m", "tenir_capture"],
+        [str(tmp_path / "pythonw.exe"), "-m", "tenir_capture"],
+        [str(tmp_path / "python.exe")],
+    ]

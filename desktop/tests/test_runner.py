@@ -450,3 +450,12 @@ def test_a_failing_window_logs_one_traceback_not_one_per_tick(zoom_frame, caplog
             r.step(Sink())
     errors = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert len(errors) == 1
+    # After a good frame, a new failure is news again and gets its traceback.
+    with caplog.at_level(logging.INFO, logger="tenir_capture"):
+        platform.captures["Horizon 3"].img = zoom_frame(caption=True)
+        clock["t"] = 60
+        r.step(Sink())
+        platform.captures["Horizon 3"].img = Image.new("RGB", (300, 1))
+        clock["t"] = 70
+        r.step(Sink())
+    assert len([rec for rec in caplog.records if rec.levelno >= logging.ERROR]) == 2
