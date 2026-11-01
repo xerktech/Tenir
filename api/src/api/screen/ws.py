@@ -254,11 +254,6 @@ async def screen_ws(ws: WebSocket) -> None:
             metrics.incr("screen.frame_errors")
 
     lanes: dict[tuple[str, str], _Lane] = {}
-    _revokers.setdefault(principal.user_id, set()).add(closing.set)
-    # A delete between the handshake's auth and this registration never saw this socket:
-    # re-check now that a delete would (the mic socket does the same, XERK-1504).
-    if not await asyncio.to_thread(_account_exists, principal.user_id):
-        closing.set()
 
     def expire() -> None:
         # Auth runs only at the handshake, so the token's expiry is enforced here: the
@@ -271,13 +266,21 @@ async def screen_ws(ws: WebSocket) -> None:
             closing.set()
 
     expiry: asyncio.TimerHandle | None = None
-    if principal.expires_at is not None:
-        delay = max(0.0, principal.expires_at - time.time())
-        expiry = asyncio.get_running_loop().call_later(delay, expire)
-    await send(cadence().message(meeting=False))
     receive: asyncio.Task | None = None
-    closed_by_us = asyncio.create_task(closing.wait())
+    closed_by_us: asyncio.Task | None = None
+    _revokers.setdefault(principal.user_id, set()).add(closing.set)
+    # Everything after registering runs under the try, so a client that is gone before
+    # the first send still unregisters and cancels its expiry timer.
     try:
+        if principal.expires_at is not None:
+            delay = max(0.0, principal.expires_at - time.time())
+            expiry = asyncio.get_running_loop().call_later(delay, expire)
+        # A delete between the handshake's auth and this registration never saw this
+        # socket: re-check now that a delete would (the mic socket does the same, XERK-1504).
+        if not await asyncio.to_thread(_account_exists, principal.user_id):
+            closing.set()
+        await send(cadence().message(meeting=False))
+        closed_by_us = asyncio.create_task(closing.wait())
         while True:
             receive = asyncio.create_task(ws.receive())
             done, _ = await asyncio.wait(

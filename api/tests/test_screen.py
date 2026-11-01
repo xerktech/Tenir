@@ -952,6 +952,30 @@ def test_screen_socket_closes_when_its_device_token_expires(screen) -> None:
     assert screen_ws._revokers.get(admin.user_id) is None
 
 
+def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
+    screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XERK-2612 QA: a client gone before the first send must still be cleaned up."""
+    from api.auth import Principal, issue_token
+    from api.main import app
+
+    _, _, _, admin = screen
+    principal = Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen")
+    token = issue_token(principal, secret=settings.auth_secret, ttl_seconds=1)
+
+    def gone() -> Cadence:
+        raise RuntimeError("client went away")
+
+    monkeypatch.setattr(screen_ws, "cadence", gone)
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError), client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+        assert screen_ws._revokers.get(admin.user_id) is None
+        # A leaked timer would fire after exp and count an expiry for a dead socket.
+        time.sleep(2.1)
+    assert "screen.token_expired" not in metrics.snapshot()["counters"]
+
+
 def test_one_socket_feeds_a_bounded_number_of_windows(screen) -> None:
     from api.main import app
 
