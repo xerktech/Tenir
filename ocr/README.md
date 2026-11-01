@@ -13,7 +13,8 @@ Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
   and 0.5 Mpx (~3x the largest 1080p-equivalent crop). Whole frames are refused: a 4K frame
   needs ~3.2 GB in one worker.
   - `200` → `{"lines": [{"text", "score", "box": [x0, y0, x1, y1]}], "too_dense", "ms"}`; lines in reading
-    order, `box` in the submitted image's pixels, `score` the line's lowest segment confidence
+    order (segments on one row join into a line unless a gap over `OCR_ROW_GAP` line heights,
+    default 1.5, separates them: side-by-side tile labels stay separate lines), `box` in the submitted image's pixels, `score` the line's lowest segment confidence
     (segments ≤ 0.5 are dropped), `ms` the OCR time. `too_dense` is true, with no lines,
     when the detector kept more than `OCR_MAX_BOXES` (16) boxes: not a caption crop (a dense
     slide, a caption plus a ticker). Results are never partial.

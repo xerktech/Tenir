@@ -23,3 +23,6 @@ paths:
 - Pixel size is checked from the header before decode; keep `/health` `async` (a sync one
   queued behind parked slot waiters and missed the probe timeout).
 - The api depends on the contract in `ocr/README.md`; change both in one PR.
+- `group_lines` splits a row at gaps over `ROW_GAP` (1.5) line heights: the api reads full
+  window frames (in strips) for tile names, and joining a row made "Priya Raman Sean ONeil" one
+  participant (XERK-2505 QA, real Paddle). Test: `test_a_row_splits_at_wide_gaps_but_not_word_gaps`.
