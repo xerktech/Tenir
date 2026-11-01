@@ -7,6 +7,7 @@ every other device (which rotating ``API_AUTH_SECRET`` would).
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import pytest
@@ -294,8 +295,6 @@ def test_expired_rows_are_purged_on_the_next_mint() -> None:
 def test_a_screen_socket_closes_when_its_token_expires(client: TestClient) -> None:
     """XERK-2612: auth is handshake-only, so the socket itself must end at the token's
     expiry; otherwise a mint that purges the expired row leaves it unrevocable."""
-    import time
-
     user = get_user_store().get_by_username("op")
     row = get_user_store().create_device_token(user.user_id, name="short", ttl_seconds=2)
     token = issue_token(
@@ -317,3 +316,31 @@ def test_a_screen_socket_closes_when_its_token_expires(client: TestClient) -> No
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
     assert closed.value.code == 1008
+
+
+def test_a_closed_screen_socket_leaves_no_expiry_timer(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The expiry timer is cancelled when the socket ends; a leak would hold each closed
+    socket's state until its token expires (up to a year) on a reconnecting client."""
+    import asyncio
+
+    timers: list[asyncio.TimerHandle] = []
+    real_call_later = asyncio.BaseEventLoop.call_later
+
+    def recording_call_later(self, delay, callback, *args, **kwargs):
+        handle = real_call_later(self, delay, callback, *args, **kwargs)
+        if getattr(callback, "__name__", "") == "set":  # the socket's closing.set
+            timers.append(handle)
+        return handle
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "call_later", recording_call_later)
+    minted = _mint(client, _login(client, "op"))
+    for _ in range(3):
+        with client.websocket_connect(f"/ws/screen?token={minted['token']}") as ws:
+            ws.receive_text()
+    assert len(timers) == 3
+    deadline = time.monotonic() + 5
+    while not all(t.cancelled() for t in timers) and time.monotonic() < deadline:
+        time.sleep(0.05)  # the handler's finally runs after the client closes
+    assert all(t.cancelled() for t in timers)
