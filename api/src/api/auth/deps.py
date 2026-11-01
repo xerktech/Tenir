@@ -132,7 +132,11 @@ def _is_oidc_token(token: str) -> bool:
     return token.count(".") == 2
 
 
-def principal_from_bearer(token: str) -> Principal:
+# The device-token scope that authenticates the screen-capture socket (XERK-2505).
+SCREEN_SCOPE = "screen"
+
+
+def principal_from_bearer(token: str, *, scope: str | None = None) -> Principal:
     """Resolve a bearer to a Principal via whichever backend accepts it.
 
     A built-in HMAC token goes through :func:`principal_from_live_token` exactly as
@@ -143,7 +147,15 @@ def principal_from_bearer(token: str) -> Principal:
     local ``users.id``, never the raw ``sub``. Both backends coexist — a request is
     authenticated by whichever one accepts its token — and both yield the same
     :class:`Principal` seam. Raises ``AuthError`` on rejection.
+
+    ``scope`` names the device-token scope the caller requires (XERK-2505): None (every
+    normal route) refuses device tokens; ``"screen"`` (/ws/screen) accepts only a
+    built-in token of that scope, never an OIDC one (OIDC is the browser's login).
     """
+    if scope is not None:
+        if _is_oidc_token(token):
+            raise AuthError("a device token is required")
+        return principal_from_live_token(token, scope=scope)
     if settings.oidc_enabled and _is_oidc_token(token):
         principal = get_oidc_verifier().verify(token)
         try:
@@ -164,7 +176,7 @@ def _bearer(authorization: str | None) -> str | None:
     return None
 
 
-def principal_from_live_token(token: str) -> Principal:
+def principal_from_live_token(token: str, *, scope: str | None = None) -> Principal:
     """Decode a bearer token AND check the account behind it still exists.
 
     Deleting a user has to end their access now, not whenever their token
@@ -175,6 +187,10 @@ def principal_from_live_token(token: str) -> Principal:
     request is the price of revocation actually revoking.
     """
     principal = principal_from_token(token)
+    # A device token is good only where its scope is asked for, and a login token is not
+    # a device token: a leaked capture-PC token must not read history (XERK-2505).
+    if principal.scope != scope:
+        raise AuthError("token not valid for this endpoint")
     if get_user_store().get_by_id(principal.user_id) is None:
         raise AuthError("account no longer exists")
     return principal

@@ -43,6 +43,8 @@ class SegmentOut(BaseModel):
     # English translation of a non-English turn (XERK-160); clients render it
     # alongside the original.
     translation: str | None = None
+    # Who said it, on a screen-captured meeting (XERK-2505); None otherwise.
+    speaker: str | None = None
 
     @classmethod
     def of(cls, seg: Segment) -> "SegmentOut":
@@ -53,6 +55,7 @@ class SegmentOut(BaseModel):
             endMs=seg.end_ms,
             lang=seg.lang,
             translation=seg.translation,
+            speaker=seg.speaker,
         )
 
 
@@ -105,6 +108,13 @@ class ConversationSummaryOut(BaseModel):
     durationMs: int
     segmentCount: int
     hasAudio: bool
+    # "mic" for a live audio session, "screen" for a meeting read off captured captions
+    # (XERK-2505); the org/platform/title fields are set on screen meetings only.
+    source: str = "mic"
+    orgSiteKey: str | None = None
+    orgName: str | None = None
+    platform: str | None = None
+    meetingTitle: str | None = None
 
     @classmethod
     def of(cls, conv: ConversationSummary) -> "ConversationSummaryOut":
@@ -121,6 +131,11 @@ class ConversationSummaryOut(BaseModel):
             durationMs=conv.duration_ms,
             segmentCount=conv.segment_count,
             hasAudio=conv.audio_key is not None,
+            source=conv.source,
+            orgSiteKey=conv.org_site_key,
+            orgName=conv.org_name,
+            platform=conv.platform,
+            meetingTitle=conv.meeting_title,
         )
 
 
@@ -131,6 +146,8 @@ class ConversationOut(ConversationSummaryOut):
     segments: list[SegmentOut] = Field(default_factory=list)
     cues: list[CueOut] = Field(default_factory=list)
     songs: list[SongOut] = Field(default_factory=list)
+    # Participant tile names of a screen meeting, first seen first (XERK-2505).
+    participants: list[str] = Field(default_factory=list)
 
     @classmethod
     def of(cls, conv: Conversation) -> "ConversationOut":
@@ -140,6 +157,7 @@ class ConversationOut(ConversationSummaryOut):
             segments=[SegmentOut.of(s) for s in conv.segments],
             cues=[CueOut.of(c) for c in conv.cues],
             songs=[SongOut.of(s) for s in conv.songs],
+            participants=list(conv.participants),
         )
 
 

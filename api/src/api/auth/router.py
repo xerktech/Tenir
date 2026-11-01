@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from api import registry
-from api.auth.deps import current_principal, require_admin
+from api.auth.deps import SCREEN_SCOPE, current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
 from api.auth.users import (
     DuplicateUser,
@@ -162,6 +162,36 @@ def login(body: LoginIn) -> TokenOut:
         username=user.username,
         household=user.household,
         role=user.role,
+    )
+
+
+class DeviceTokenOut(BaseModel):
+    token: str
+    expiresIn: int
+    scope: str
+
+
+@router.post("/device-token", response_model=DeviceTokenOut)
+def device_token(principal: Principal = Depends(current_principal)) -> DeviceTokenOut:
+    """Mint a screen-capture device token for the caller (XERK-2505).
+
+    The meeting-capture client on the operator's PC can't run a browser login, so the
+    operator mints this once while logged in and pastes it into the client's config. It
+    is bound to the caller's own user (meetings it records are theirs), authenticates only
+    /ws/screen, and never slides; deleting the user revokes it.
+    """
+    scoped = Principal(
+        user_id=principal.user_id,
+        username=principal.username,
+        household=principal.household,
+        role=principal.role,
+        scope=SCREEN_SCOPE,
+    )
+    ttl = settings.auth_device_token_ttl_seconds
+    return DeviceTokenOut(
+        token=issue_token(scoped, secret=settings.auth_secret, ttl_seconds=ttl),
+        expiresIn=ttl,
+        scope=SCREEN_SCOPE,
     )
 
 
@@ -378,3 +408,8 @@ async def delete_user(user_id: str, admin: Principal = Depends(require_admin)) -
     for session, result in zip(doomed, results, strict=True):
         if isinstance(result, Exception):
             log.error("session %s revoke failed", session.session_id, exc_info=result)
+    # Meeting-capture sockets (XERK-2505) aren't registry sessions: stop them too. Imported
+    # here to keep the auth package free of the screen package at import time.
+    from api.screen.ws import revoke_user
+
+    revoke_user(user_id)

@@ -49,6 +49,9 @@ MAX_BYTES = int(os.environ.get("OCR_MAX_BYTES", str(2 * 1024 * 1024)))
 # image with more boxes than this is refused after detection, before recognition (`too_dense`).
 MAX_BOXES = int(os.environ.get("OCR_MAX_BOXES", "16"))
 MIN_SCORE = 0.5
+# Segments on one row further apart than this many line heights are separate lines (tile
+# labels side by side on a full window frame), never one caption line.
+ROW_GAP = float(os.environ.get("OCR_ROW_GAP", "1.5"))
 # PP-OCR's detector drops whole lines on a tight crop without a black border (XERK-2504).
 DETECTOR_MARGIN = 32
 
@@ -134,20 +137,40 @@ def group_lines(boxes: list[tuple[float, float, float, float, str, float]]) -> l
             lines.append([box])
     out = []
     for line in lines:
-        segs = sorted(line, key=lambda b: b[2])
-        out.append(
-            {
-                "text": " ".join(b[4] for b in segs),
-                "score": round(min(b[5] for b in segs), 4),
-                "box": [
-                    round(min(b[2] for b in segs)),
-                    round(min(b[0] for b in segs)),
-                    round(max(b[3] for b in segs)),
-                    round(max(b[1] for b in segs)),
-                ],
-            }
-        )
+        for segs in _split_at_gaps(sorted(line, key=lambda b: b[2])):
+            out.append(
+                {
+                    "text": " ".join(b[4] for b in segs),
+                    "score": round(min(b[5] for b in segs), 4),
+                    "box": [
+                        round(min(b[2] for b in segs)),
+                        round(min(b[0] for b in segs)),
+                        round(max(b[3] for b in segs)),
+                        round(max(b[1] for b in segs)),
+                    ],
+                }
+            )
     return out
+
+
+def _split_at_gaps(
+    segs: list[tuple[float, float, float, float, str, float]],
+) -> list[list[tuple[float, float, float, float, str, float]]]:
+    """Split one row (segments sorted left to right) at gaps much wider than a word space.
+
+    A caption row is continuous text, but a full window frame (the api reads it in strips for
+    the participant tiles, XERK-2505) has several tile labels on one row: joined, "Priya Raman
+    Sean ONeil" read as one name and the roster broke. A gap over ROW_GAP line heights splits
+    them; word gaps, and Paddle splitting ``Name:`` off a caption line, are far smaller.
+    """
+    height = max(b[1] for b in segs) - min(b[0] for b in segs)
+    runs = [[segs[0]]]
+    for seg in segs[1:]:
+        if seg[2] - max(b[3] for b in runs[-1]) > ROW_GAP * height:
+            runs.append([seg])
+        else:
+            runs[-1].append(seg)
+    return runs
 
 
 def recognise(engine, img: Image.Image) -> tuple[list[dict], bool]:

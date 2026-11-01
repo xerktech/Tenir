@@ -31,8 +31,10 @@ from api.persistence.models import (
     ConversationStatus,
     ConversationSummary,
     Cue,
+    ScreenMeta,
     Segment,
     Song,
+    alias_key,
     coerce_status,
     utcnow,
 )
@@ -762,7 +764,11 @@ class SqlConversationStore:
 
     @staticmethod
     def _row_to_conversation(  # pragma: no cover
-        row, segments: list[Segment], cues: list[Cue], songs: list[Song]
+        row,
+        segments: list[Segment],
+        cues: list[Cue],
+        songs: list[Song],
+        participants: list[str] | None = None,
     ) -> Conversation:
         return Conversation(
             id=row["id"],
@@ -778,6 +784,12 @@ class SqlConversationStore:
             status=coerce_status(row["status"], ended=row["ended_at"] is not None),
             audio_key=row["audio_key"],
             opened_at=row.get("opened_at"),
+            source=row.get("source") or "mic",
+            org_site_key=row.get("org_site_key"),
+            org_name=row.get("org_name"),
+            platform=row.get("platform"),
+            meeting_title=row.get("meeting_title"),
+            participants=participants or [],
             segments=segments,
             cues=cues,
             songs=songs,
@@ -791,6 +803,7 @@ class SqlConversationStore:
         owner: str | None = None,
         mic_source: str | None = None,
         source_lang: str | None = None,
+        screen: ScreenMeta | None = None,
     ) -> Conversation:
         with self._ensure_pool().connection() as conn:
             # A resume keeps the row's original owner and start (a resume never
@@ -804,14 +817,26 @@ class SqlConversationStore:
                 """
                 INSERT INTO conversations
                     (id, household, owner, mic_source, source_lang, started_at, status,
-                     opened_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'live', %s)
+                     opened_at, source, org_site_key, org_name, platform)
+                VALUES (%s, %s, %s, %s, %s, %s, 'live', %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE
                    SET status = 'live', ended_at = NULL, opened_at = EXCLUDED.opened_at
                  WHERE conversations.household = EXCLUDED.household
              RETURNING opened_at
                 """,
-                (conversation_id, household, owner, mic_source, source_lang, now, now),
+                (
+                    conversation_id,
+                    household,
+                    owner,
+                    mic_source,
+                    source_lang,
+                    now,
+                    now,
+                    "screen" if screen else "mic",
+                    screen.org_site_key if screen else None,
+                    screen.org_name if screen else None,
+                    screen.platform if screen else None,
+                ),
             ).fetchone()
         got = self.get(household, conversation_id)
         assert got is not None
@@ -852,12 +877,13 @@ class SqlConversationStore:
             conn.execute(
                 """
                 INSERT INTO segments
-                    (segment_id, conversation_id, text, start_ms, end_ms, lang, translation)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (segment_id, conversation_id, text, start_ms, end_ms, lang, translation,
+                     speaker)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (segment_id) DO UPDATE SET
                     text = EXCLUDED.text, start_ms = EXCLUDED.start_ms,
                     end_ms = EXCLUDED.end_ms, lang = EXCLUDED.lang,
-                    translation = EXCLUDED.translation
+                    translation = EXCLUDED.translation, speaker = EXCLUDED.speaker
                 """,
                 (
                     segment.segment_id,
@@ -867,6 +893,7 @@ class SqlConversationStore:
                     segment.end_ms,
                     segment.lang,
                     segment.translation,
+                    segment.speaker,
                 ),
             )
 
@@ -894,6 +921,59 @@ class SqlConversationStore:
                     source = EXCLUDED.source
                 """,
                 (cue.cue_id, conversation_id, cue.title, cue.body, cue.at_ms, cue.source),
+            )
+
+    def set_meeting_title(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, title: str
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            conn.execute(
+                "UPDATE conversations SET meeting_title = %s WHERE id = %s AND household = %s",
+                (title, conversation_id, household),
+            )
+
+    def add_participants(  # pragma: no cover - requires a live database
+        self, household: str, conversation_id: str, names: list[tuple[str, int]]
+    ) -> None:
+        if not names:
+            return
+        with self._ensure_pool().connection() as conn:
+            # The household guard keeps an id collision from writing into another
+            # household's meeting; a name already recorded keeps its first sighting.
+            conn.execute(
+                """
+                INSERT INTO participants (conversation_id, name, first_seen_ms, position)
+                SELECT c.id, n.name, n.first_seen_ms, n.position
+                  FROM conversations c,
+                       unnest(%s::text[], %s::int[]) WITH ORDINALITY
+                           AS n(name, first_seen_ms, position)
+                 WHERE c.id = %s AND c.household = %s
+                ON CONFLICT (conversation_id, name) DO NOTHING
+                """,
+                ([n for n, _ in names], [ms for _, ms in names], conversation_id, household),
+            )
+
+    def speaker_aliases(  # pragma: no cover - requires a live database
+        self, household: str, org_site_key: str
+    ) -> dict[str, str]:
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT alias, name FROM speaker_aliases WHERE household = %s AND org_site_key = %s",
+                (household, org_site_key),
+            ).fetchall()
+        return {alias: name for alias, name in rows}
+
+    def set_speaker_alias(  # pragma: no cover - requires a live database
+        self, household: str, org_site_key: str, alias: str, name: str
+    ) -> None:
+        with self._ensure_pool().connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO speaker_aliases (household, org_site_key, alias, name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (household, org_site_key, alias) DO UPDATE SET name = EXCLUDED.name
+                """,
+                (household, org_site_key, alias_key(alias), name),
             )
 
     def add_song(  # pragma: no cover - requires a live database
@@ -996,6 +1076,7 @@ class SqlConversationStore:
         segs: dict[str, list[Segment]] = {i: [] for i in ids}
         cues: dict[str, list[Cue]] = {i: [] for i in ids}
         songs: dict[str, list[Song]] = {i: [] for i in ids}
+        people: dict[str, list[str]] = {i: [] for i in ids}
         for r in cur.execute(
             "SELECT * FROM segments WHERE conversation_id = ANY(%s) ORDER BY start_ms, segment_id",
             (ids,),
@@ -1009,8 +1090,17 @@ class SqlConversationStore:
             "SELECT * FROM songs WHERE conversation_id = ANY(%s) ORDER BY at_ms, song_id", (ids,)
         ).fetchall():
             songs[r["conversation_id"]].append(self._row_to_song(r))
+        for r in cur.execute(
+            "SELECT conversation_id, name FROM participants WHERE conversation_id = ANY(%s) "
+            "ORDER BY first_seen_ms, position, name",
+            (ids,),
+        ).fetchall():
+            people[r["conversation_id"]].append(r["name"])
         return [
-            self._row_to_conversation(r, segs[r["id"]], cues[r["id"]], songs[r["id"]]) for r in rows
+            self._row_to_conversation(
+                r, segs[r["id"]], cues[r["id"]], songs[r["id"]], people[r["id"]]
+            )
+            for r in rows
         ]
 
     @staticmethod
@@ -1025,6 +1115,11 @@ class SqlConversationStore:
             ended_at=row["ended_at"],
             status=coerce_status(row["status"], ended=row["ended_at"] is not None),
             audio_key=row["audio_key"],
+            source=row.get("source") or "mic",
+            org_site_key=row.get("org_site_key"),
+            org_name=row.get("org_name"),
+            platform=row.get("platform"),
+            meeting_title=row.get("meeting_title"),
             segment_count=row["segment_count"],
             duration_ms=row["duration_ms"],
         )
@@ -1038,6 +1133,7 @@ class SqlConversationStore:
             end_ms=row["end_ms"],
             lang=row["lang"],
             translation=row["translation"],
+            speaker=row.get("speaker"),
         )
 
     @staticmethod

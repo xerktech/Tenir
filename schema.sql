@@ -178,3 +178,41 @@ CREATE TABLE IF NOT EXISTS news_items (
 CREATE INDEX IF NOT EXISTS news_items_published_idx ON news_items (published_at DESC);
 CREATE INDEX IF NOT EXISTS news_items_fts_idx
     ON news_items USING GIN (to_tsvector('simple', title || ' ' || summary));
+
+-- Screen-captured meetings (XERK-2505): a conversation read off a meeting's live captions on
+-- a captured window instead of recorded from a mic. `source` tells the two apart; the org
+-- columns come from the capture client's window config (the Turma site key + display name),
+-- `platform` is the meeting app ("zoom") and `meeting_title` what OCR read off the window.
+-- Additive columns for existing data dirs (applied idempotently on every pool open). A
+-- constant DEFAULT makes the NOT NULL column metadata-only on Postgres 11+, no table rewrite.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'mic';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS org_site_key TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS org_name TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS platform TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS meeting_title TEXT;
+-- Who said each caption line; NULL on mic conversations and unknown speakers.
+ALTER TABLE segments ADD COLUMN IF NOT EXISTS speaker TEXT;
+
+-- The names read off a screen meeting's participant tiles, the roster caption headers are
+-- validated against. first_seen_ms is the conversation-timeline position it first appeared.
+CREATE TABLE IF NOT EXISTS participants (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    first_seen_ms   INTEGER NOT NULL DEFAULT 0,
+    -- Order among names first seen in the same frame (tile order), left to right.
+    position        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, name)
+);
+
+-- Additive for databases created before the column existed.
+ALTER TABLE participants ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;
+
+-- Per-org display names for what a tile shows (e.g. an email -> "Kunal"). Applied to tile
+-- names and caption headers before they are stored as speakers. Edited from history (XERK-2507).
+CREATE TABLE IF NOT EXISTS speaker_aliases (
+    household    TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    org_site_key TEXT NOT NULL,
+    alias        TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    PRIMARY KEY (household, org_site_key, alias)
+);

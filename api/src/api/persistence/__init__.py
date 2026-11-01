@@ -20,11 +20,14 @@ from api.persistence.audio import (
 from api.persistence.conversations import ConversationStore, InMemoryConversationStore
 from api.persistence.models import (
     Conversation,
+    ConversationSource,
     ConversationStatus,
     ConversationSummary,
     Cue,
+    ScreenMeta,
     Segment,
     Song,
+    alias_key,
     coerce_status,
 )
 from api.persistence.wav import pcm16_to_wav, wav_to_pcm16
@@ -32,13 +35,16 @@ from api.persistence.wav import pcm16_to_wav, wav_to_pcm16
 __all__ = [
     "AudioStore",
     "Conversation",
+    "ConversationSource",
     "ConversationStatus",
     "ConversationStore",
     "ConversationSummary",
     "Cue",
     "LocalDiskAudioStore",
+    "ScreenMeta",
     "Segment",
     "Song",
+    "alias_key",
     "audio_key",
     "coerce_status",
     "get_audio_store",

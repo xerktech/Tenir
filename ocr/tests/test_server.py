@@ -232,3 +232,23 @@ def test_limit_boxes_wraps_the_detector_once():
 
     with pytest.raises(AssertionError):
         server.limit_boxes(Moved())
+
+
+def test_a_row_splits_at_wide_gaps_but_not_word_gaps():
+    """Side-by-side tile labels on a full window frame are separate lines (XERK-2505 QA:
+    joined, "Priya Raman Sean ONeil" broke the api's roster); a caption row stays one line,
+    including Paddle splitting ``Name:`` off it."""
+    tiles = [
+        (232, 252, 30, 190, "Priya Raman (Host)", 0.9),
+        (233, 252, 450, 560, "Sean O'Neil", 0.9),
+        (232, 251, 870, 1040, "kunal@tesoroxp.com", 0.9),
+    ]
+    caption = [(8, 28, 10, 70, "Priya:", 0.9), (8, 28, 76, 400, "we ship on friday", 0.9)]
+    lines = server.group_lines(tiles + caption)
+    assert [ln["text"] for ln in lines] == [
+        "Priya: we ship on friday",
+        "Priya Raman (Host)",
+        "Sean O'Neil",
+        "kunal@tesoroxp.com",
+    ]
+    assert lines[2]["box"] == [450, 233, 560, 252]

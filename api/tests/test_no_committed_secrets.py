@@ -55,6 +55,12 @@ _PASSWORD_ALLOWLIST = {
     # `!`+mixed-case reads as generated, but it is a config directive, not a secret.
     # (The other tags there — !Env, !Find, !Format — are under 8 chars and never match.)
     "!Context",
+    # PaddleOCR model names in the caption-OCR benchmark (XERK-2504, scripts/caption_ocr):
+    # mixed case plus a digit, but they are published model ids, not secrets.
+    "PP-OCRv5_mobile_det",
+    "en_PP-OCRv5_mobile_rec",
+    "PP-OCRv5_server_det",
+    "PP-OCRv5_server_rec",
 }
 
 

@@ -6,7 +6,16 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, confloat, conint
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveFloat,
+    RootModel,
+    confloat,
+    conint,
+    constr,
+)
 
 
 class MicSource(StrEnum):
@@ -353,8 +362,72 @@ class ServerMessage(
     ) = Field(..., title='ServerMessage')
 
 
-class TenirWsMessages(RootModel[ClientMessage | ServerMessage]):
-    root: ClientMessage | ServerMessage = Field(
+class Platform(StrEnum):
+    """
+    Meeting app in the window. Only Zoom is parsed so far.
+    """
+
+    zoom = 'zoom'
+
+
+class Region(StrEnum):
+    """
+    caption: the caption-box crop, sent at the cadence's fps and only while a caption is on screen. full: the whole window (participant tiles, active-speaker border, meeting title), sent every fullFrameSeconds and right before the first caption crop after none.
+    """
+
+    caption = 'caption'
+    full = 'full'
+
+
+class ScreenFrameHeader(BaseModel):
+    """
+    Client -> server on /ws/screen (XERK-2505), not /ws. Every binary frame is a 4-byte big-endian header length, this header as UTF-8 JSON, then the JPEG bytes. The image is never stored; only the text read off it is. The socket also takes ping (answered with pong) and replies error.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['screen.frame']
+    windowTitle: constr(max_length=512) = Field(
+        ..., description='Title of the captured window.'
+    )
+    orgSiteKey: constr(min_length=1, max_length=128) = Field(
+        ...,
+        description='Turma site key of the org this window belongs to; one meeting at a time per site key.',
+    )
+    orgName: constr(min_length=1, max_length=200)
+    platform: Platform = Field(
+        ..., description='Meeting app in the window. Only Zoom is parsed so far.'
+    )
+    ts: int = Field(..., description='Capture time (ms epoch).')
+    region: Region = Field(
+        ...,
+        description="caption: the caption-box crop, sent at the cadence's fps and only while a caption is on screen. full: the whole window (participant tiles, active-speaker border, meeting title), sent every fullFrameSeconds and right before the first caption crop after none.",
+    )
+
+
+class ScreenCadence(BaseModel):
+    """
+    Server -> client on /ws/screen (XERK-2505). How often to send frames. Without orgSiteKey it is the default for every window (sent on connect); with it, it overrides that one window (sent when its meeting starts or ends).
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['screen.cadence']
+    orgSiteKey: str | None = None
+    fps: PositiveFloat = Field(
+        ..., description='Caption-crop frames per second: ~0.2 idle, 1 in a meeting.'
+    )
+    fullFrameSeconds: PositiveFloat = Field(
+        ..., description='Seconds between full window frames.'
+    )
+
+
+class TenirWsMessages(
+    RootModel[ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence]
+):
+    root: ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence = Field(
         ...,
         description='Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.',
         title='TenirWsMessages',
