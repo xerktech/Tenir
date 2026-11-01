@@ -114,10 +114,25 @@ def unique_jpeg(n: int) -> bytes:
     return b"\xff\xd8" + n.to_bytes(4, "big") + b"\xff\xd9"
 
 
+def device_token(user, ttl_seconds: int = 3600) -> str:
+    """A screen device token for ``user`` backed by a live device_tokens row (XERK-2594)."""
+    from api.auth import Principal, get_user_store, issue_token
+
+    row = get_user_store().create_device_token(user.user_id, name="test PC", ttl_seconds=ttl_seconds)
+    return issue_token(
+        Principal(
+            user.user_id, user.household, user.role, user.username,
+            scope="screen", token_id=row.token_id,
+        ),
+        secret=settings.auth_secret,
+        ttl_seconds=ttl_seconds,
+    )
+
+
 @pytest.fixture
 def screen(monkeypatch: pytest.MonkeyPatch):
     """In-memory store + stub OCR wired into /ws/screen; returns (store, ocr, device token)."""
-    from api.auth import Principal, get_user_store, issue_token
+    from api.auth import get_user_store
 
     store = InMemoryConversationStore()
     ocr = StubOcr()
@@ -127,11 +142,7 @@ def screen(monkeypatch: pytest.MonkeyPatch):
     meetings.clear()
     metrics.reset()
     admin = get_user_store().get_by_username("test-admin")
-    token = issue_token(
-        Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen"),
-        secret=settings.auth_secret,
-        ttl_seconds=3600,
-    )
+    token = device_token(admin)
     yield store, ocr, token, admin
     meetings.clear()
 
@@ -1018,16 +1029,12 @@ def test_cadence_to_a_dead_socket_is_ignored() -> None:
 
 def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
     """QA D1: auth is checked at the handshake, so a delete must stop a live socket."""
-    from api.auth import Principal, get_user_store, issue_token
+    from api.auth import get_user_store
     from api.main import app
 
     store, ocr, _, admin = screen
     member = get_user_store().create("capture-op", "capture-op-pass-1", household=admin.household)
-    token = issue_token(
-        Principal(member.user_id, member.household, "member", member.username, scope="screen"),
-        secret=settings.auth_secret,
-        ttl_seconds=3600,
-    )
+    token = device_token(member)
     now = int(time.time() * 1000)
     jpeg = ocr.register(unique_jpeg(1), crop("Ana Lopez", "first line here"))
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import unicodedata
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -18,6 +20,7 @@ from api import registry
 from api.auth.deps import SCREEN_SCOPE, current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
 from api.auth.users import (
+    DeviceToken,
     DuplicateUser,
     InvalidUserValue,
     get_user_store,
@@ -165,34 +168,117 @@ def login(body: LoginIn) -> TokenOut:
     )
 
 
+# What a device is called when the pairing client names nothing.
+_DEFAULT_DEVICE_NAME = "Screen capture"
+_MAX_DEVICE_NAME = 80
+
+
+class DeviceTokenIn(BaseModel):
+    # A label for the list/revoke UI (XERK-2594); the capture client sends its hostname.
+    name: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _clean_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        # Control, format and surrogate characters would render invisibly or not at all.
+        if any(unicodedata.category(ch).startswith("C") for ch in value):
+            raise ValueError("device name contains invisible or control characters")
+        if len(value) > _MAX_DEVICE_NAME:
+            raise ValueError(f"device name is longer than {_MAX_DEVICE_NAME} characters")
+        return value or None
+
+
 class DeviceTokenOut(BaseModel):
     token: str
     expiresIn: int
     scope: str
+    id: str
+
+
+class DeviceOut(BaseModel):
+    """A live (unrevoked, unexpired) screen-capture device token, without the token."""
+
+    id: str
+    name: str
+    createdAt: str
+    expiresAt: str
+
+    @classmethod
+    def of(cls, token: DeviceToken) -> DeviceOut:
+        return cls(
+            id=token.token_id,
+            name=token.name,
+            createdAt=_iso(token.created_at),
+            expiresAt=_iso(token.expires_at),
+        )
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
 @router.post("/device-token", response_model=DeviceTokenOut)
-def device_token(principal: Principal = Depends(current_principal)) -> DeviceTokenOut:
+def device_token(
+    body: DeviceTokenIn | None = None, principal: Principal = Depends(current_principal)
+) -> DeviceTokenOut:
     """Mint a screen-capture device token for the caller (XERK-2505).
 
     The meeting-capture client on the operator's PC can't run a browser login, so the
     operator mints this once while logged in and pastes it into the client's config. It
     is bound to the caller's own user (meetings it records are theirs), authenticates only
-    /ws/screen, and never slides; deleting the user revokes it.
+    /ws/screen, and never slides. Each token gets a device_tokens row (XERK-2594): revoking
+    the row (``DELETE /auth/device-tokens/{id}``) or deleting the user ends it.
     """
+    ttl = settings.auth_device_token_ttl_seconds
+    name = (body.name if body else None) or _DEFAULT_DEVICE_NAME
+    try:
+        row = get_user_store().create_device_token(principal.user_id, name=name, ttl_seconds=ttl)
+    except KeyError as exc:  # deleted between auth and mint
+        raise HTTPException(status_code=401, detail="account no longer exists") from exc
+    except InvalidUserValue as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     scoped = Principal(
         user_id=principal.user_id,
         username=principal.username,
         household=principal.household,
         role=principal.role,
         scope=SCREEN_SCOPE,
+        token_id=row.token_id,
     )
-    ttl = settings.auth_device_token_ttl_seconds
     return DeviceTokenOut(
         token=issue_token(scoped, secret=settings.auth_secret, ttl_seconds=ttl),
         expiresIn=ttl,
         scope=SCREEN_SCOPE,
+        id=row.token_id,
     )
+
+
+@router.get("/device-tokens", response_model=list[DeviceOut])
+def list_device_tokens(principal: Principal = Depends(current_principal)) -> list[DeviceOut]:
+    """The caller's own live screen-capture devices (XERK-2594), oldest first."""
+    return [DeviceOut.of(t) for t in get_user_store().list_device_tokens(principal.user_id)]
+
+
+@router.delete("/device-tokens/{token_id}", status_code=204)
+async def revoke_device_token(
+    token_id: str, principal: Principal = Depends(current_principal)
+) -> None:
+    """Revoke one of the caller's own device tokens and close its open capture sockets.
+
+    Another user's token is a 404, not a 403, so ids don't leak across users.
+    """
+    revoked = await asyncio.to_thread(
+        get_user_store().revoke_device_token, principal.user_id, token_id
+    )
+    if not revoked:
+        raise HTTPException(status_code=404, detail="device not found")
+    # Imported here to keep the auth package free of the screen package at import time.
+    from api.screen.ws import revoke_token
+
+    revoke_token(token_id)
 
 
 @router.get("/me", response_model=PrincipalOut)

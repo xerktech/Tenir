@@ -22,6 +22,7 @@ import uuid
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import (
+    DeviceToken,
     DuplicateUser,
     InvalidUserValue,
     User,
@@ -87,6 +88,20 @@ _ENSURE_SCHEMA = (
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_sub TEXT",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT",
     "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL",
+    # Screen-capture device tokens (XERK-2594): the token is stateless HMAC carrying this
+    # row's id as ``jti``; /ws/screen opens only while the row is live (not revoked, not
+    # expired), so one capture device can be revoked without touching any other login.
+    """
+    CREATE TABLE IF NOT EXISTS device_tokens (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at  TIMESTAMPTZ NOT NULL,
+        revoked_at  TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS device_tokens_user_idx ON device_tokens (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_idx ON users (oidc_sub) WHERE oidc_sub IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email)) WHERE email IS NOT NULL",
@@ -144,6 +159,14 @@ _NAME_TAKEN = f"SELECT 1 FROM users WHERE {_USERNAME_KEY} = lower(%s) AND id IS 
 # transaction (XERK-1508). Without it a non-default API_AUTH_ADMIN_HOUSEHOLD, or any
 # member/OIDC user created or moved into a new household, failed users_household_fkey.
 _ENSURE_HOUSEHOLD = "INSERT INTO households (id) VALUES (%s) ON CONFLICT (id) DO NOTHING"
+
+# A device token row as ``DeviceToken`` wants it (epoch seconds).
+_DEVICE_TOKEN_COLUMNS = (
+    "id::text AS token_id, user_id::text AS user_id, name,"
+    " extract(epoch FROM created_at)::float8 AS created_at,"
+    " extract(epoch FROM expires_at)::float8 AS expires_at"
+)
+_LIVE_DEVICE_TOKEN = "revoked_at IS NULL AND expires_at > now()"
 
 # Every read selects the same column set so a row maps cleanly to ``User``.
 _USER_COLUMNS = "id, household, username, role, password_hash, oidc_sub, email"
@@ -566,3 +589,63 @@ class SqlUserStore:
         if row is None:
             raise KeyError(user_id)
         return self._row_to_user(row)
+
+    # --- screen-capture device tokens (XERK-2594) ------------------------------
+
+    def create_device_token(  # pragma: no cover - requires a live database
+        self, user_id: str, *, name: str, ttl_seconds: int
+    ) -> DeviceToken:
+        from psycopg.errors import ForeignKeyViolation
+        from psycopg.rows import dict_row
+
+        if not _is_uuid(user_id):
+            raise KeyError(user_id)
+        try:
+            with self._ensure_pool().connection() as conn:
+                row = conn.cursor(row_factory=dict_row).execute(
+                    "INSERT INTO device_tokens (user_id, name, expires_at)"
+                    " VALUES (%s, %s, now() + make_interval(secs => %s))"
+                    f" RETURNING {_DEVICE_TOKEN_COLUMNS}",
+                    (user_id, name, ttl_seconds),
+                ).fetchone()
+        except ForeignKeyViolation as exc:
+            raise KeyError(user_id) from exc  # the user was deleted meanwhile
+        except Exception as exc:
+            if is_unstorable_value(exc):
+                raise InvalidUserValue("the database can't store this device name") from exc
+            raise
+        return DeviceToken(**row)
+
+    def list_device_tokens(self, user_id: str) -> list[DeviceToken]:  # pragma: no cover
+        from psycopg.rows import dict_row
+
+        if not _is_uuid(user_id):
+            return []
+        with self._ensure_pool().connection() as conn:
+            rows = conn.cursor(row_factory=dict_row).execute(
+                f"SELECT {_DEVICE_TOKEN_COLUMNS} FROM device_tokens"
+                f" WHERE user_id = %s AND {_LIVE_DEVICE_TOKEN} ORDER BY created_at, id",
+                (user_id,),
+            ).fetchall()
+        return [DeviceToken(**row) for row in rows]
+
+    def device_token_is_live(self, user_id: str, token_id: str) -> bool:  # pragma: no cover
+        if not (_is_uuid(user_id) and _is_uuid(token_id)):
+            return False
+        with self._ensure_pool().connection() as conn:
+            row = conn.execute(
+                f"SELECT 1 FROM device_tokens WHERE id = %s AND user_id = %s AND {_LIVE_DEVICE_TOKEN}",
+                (token_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def revoke_device_token(self, user_id: str, token_id: str) -> bool:  # pragma: no cover
+        if not (_is_uuid(user_id) and _is_uuid(token_id)):
+            return False
+        with self._ensure_pool().connection() as conn:
+            cur = conn.execute(
+                "UPDATE device_tokens SET revoked_at = now()"
+                " WHERE id = %s AND user_id = %s AND revoked_at IS NULL",
+                (token_id, user_id),
+            )
+            return cur.rowcount > 0

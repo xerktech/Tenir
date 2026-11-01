@@ -59,6 +59,9 @@ class Principal:
     # A device token's scope (XERK-2505): "screen" authenticates only /ws/screen and is
     # refused everywhere else. None on a normal login token.
     scope: str | None = None
+    # A device token's id (``jti``, XERK-2594): the device_tokens row that must still be
+    # live for the token to work, so one device can be revoked alone. None on login tokens.
+    token_id: str | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -132,6 +135,8 @@ def issue_token(
     }
     if principal.scope is not None:
         claims["scp"] = principal.scope
+    if principal.token_id is not None:
+        claims["jti"] = principal.token_id
     payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
     return f"{payload_b64}.{_sign(payload_b64, secret)}"
 
@@ -161,6 +166,7 @@ def _principal_of(claims: dict) -> Principal:
         role="admin" if role == "admin" else "member",
         username=str(claims.get("un", "")),
         scope=str(claims["scp"]) if claims.get("scp") is not None else None,
+        token_id=str(claims["jti"]) if claims.get("jti") is not None else None,
     )
 
 

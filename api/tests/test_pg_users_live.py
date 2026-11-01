@@ -754,3 +754,35 @@ def test_new_usernames_are_nfkc_and_refuse_format_chars(make_store, client) -> N
     with pytest.raises(DuplicateUser):
         store.create("emma", "longpassword", household="default")
     assert store.get_by_username("dave​").username == "dave​"
+
+
+def test_device_tokens_round_trip_and_revoke(make_store) -> None:
+    """XERK-2594: the SQL device_tokens contract matches InMemoryUserStore's."""
+    make, _ = make_store
+    store = make()
+    user = store.create("capture-op", "capture-op-pass-1", household="default")
+    other = store.create("someone-else", "someone-else-pass", household="default")
+    first = store.create_device_token(user.user_id, name="meeting PC", ttl_seconds=3600)
+    second = store.create_device_token(user.user_id, name="spare", ttl_seconds=3600)
+    expired = store.create_device_token(user.user_id, name="old", ttl_seconds=-1)
+    assert first.expires_at - first.created_at == pytest.approx(3600, abs=1)
+    assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [
+        first.token_id,
+        second.token_id,
+    ]
+    assert store.device_token_is_live(user.user_id, first.token_id)
+    assert not store.device_token_is_live(user.user_id, expired.token_id)
+    # Bound to its own user, and a non-uuid id is "no such token", never a 22P02.
+    assert not store.device_token_is_live(other.user_id, first.token_id)
+    assert not store.revoke_device_token(other.user_id, first.token_id)
+    assert not store.revoke_device_token(user.user_id, "nope")
+    assert store.list_device_tokens("nope") == []
+    assert store.revoke_device_token(user.user_id, first.token_id)
+    assert not store.revoke_device_token(user.user_id, first.token_id)
+    assert not store.device_token_is_live(user.user_id, first.token_id)
+    assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [second.token_id]
+    # A user's tokens die with the user (ON DELETE CASCADE); minting for a gone user fails.
+    store.delete(user.user_id)
+    assert not store.device_token_is_live(user.user_id, second.token_id)
+    with pytest.raises(KeyError):
+        store.create_device_token(user.user_id, name="late", ttl_seconds=60)
