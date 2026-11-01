@@ -134,3 +134,7 @@ def test_org_filter_orgs_and_speaker_rename(store) -> None:
         "sam": "Sam B.",
     }
     assert store.speaker_aliases(HH, "acme") == {}
+    # Shown names re-point ignoring case, as lookups do.
+    store.rename_speaker(HH, "northwind", "SAM B.", "Samuel")
+    assert set(store.speaker_aliases(HH, "northwind").values()) == {"Samuel"}
+    assert "sam b." in store.speaker_aliases(HH, "northwind")

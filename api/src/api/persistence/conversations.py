@@ -70,8 +70,8 @@ class ConversationStore(Protocol):
     def rename_speaker(self, household: str, org_site_key: str, current: str, name: str) -> None:
         """Show ``current`` (a displayed speaker name) as ``name`` from now on (XERK-2507).
 
-        Every alias already displayed as ``current`` is re-pointed too, so a raw tile name
-        renamed twice still resolves in one hop."""
+        Every alias already displayed as ``current`` (compared by ``alias_key``, as lookups
+        are) is re-pointed too, so a raw tile name renamed twice still resolves in one hop."""
         ...
     def orgs(self, household: str, *, owner: str | None = None) -> list[tuple[str, str]]:
         """``(org_site_key, org_name)`` of every org the caller has a screen meeting from,
@@ -257,7 +257,7 @@ class InMemoryConversationStore:
         with self._lock:
             aliases = self._aliases.setdefault((household, org_site_key), {})
             for key, shown in aliases.items():
-                if shown == current:
+                if alias_key(shown) == alias_key(current):
                     aliases[key] = name
             aliases[alias_key(current)] = name
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import unicodedata
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -189,7 +190,14 @@ class SpeakerRenameIn(BaseModel):
     from the same org, past and future (XERK-2507)."""
 
     speaker: str = Field(min_length=1, max_length=200)
-    name: str = Field(min_length=1, max_length=_MAX_SPEAKER_NAME)
+    # Capped again after whitespace is collapsed; this bound only limits the body.
+    name: str = Field(min_length=1, max_length=400)
+
+
+def _has_control_chars(text: str) -> bool:
+    """Control (Cc) or format (Cf) characters: NUL 500s Postgres, and zero-width or
+    bidi-override characters make a name blank or spoof how it reads."""
+    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
 
 
 def _store():
@@ -277,6 +285,9 @@ def list_conversations(
     offset: int = Query(0, ge=0),
     principal: Principal = Depends(current_principal),
 ) -> list[ConversationSummaryOut]:
+    if org is not None and _has_control_chars(org):
+        # A NUL reached psycopg as a 500; no site key holds one.
+        raise HTTPException(status_code=422, detail="org must not contain control characters")
     store = _store()
     hh = principal.household
     owner = _owner_scope(principal)
@@ -344,6 +355,26 @@ def rename_speaker(
     name = " ".join(body.name.split())
     if not name:
         raise HTTPException(status_code=422, detail="name must not be blank")
+    if len(name) > _MAX_SPEAKER_NAME:
+        raise HTTPException(
+            status_code=422, detail=f"name must be at most {_MAX_SPEAKER_NAME} characters"
+        )
+    if _has_control_chars(name):
+        raise HTTPException(status_code=422, detail="name must not contain control characters")
+    # Lookups fold case, so a name that folds to another person's would merge the two for
+    # good (every later rename moves both). A case-only change of this speaker is fine.
+    mine = alias_key(body.speaker)
+    if alias_key(name) != mine:
+        aliases = _store().speaker_aliases(conv.household, conv.org_site_key)
+        # Names (raw or shown) that already stand for someone in this org...
+        taken = {alias_key(s) for s in speakers} | set(aliases)
+        taken |= {alias_key(shown) for shown in aliases.values()}
+        # ...minus this speaker's own: renaming back to a raw tile name is fine.
+        taken -= {k for k, shown in aliases.items() if alias_key(shown) == mine} | {mine}
+        if alias_key(name) in taken:
+            raise HTTPException(
+                status_code=409, detail="another speaker in this org already has that name"
+            )
     _store().rename_speaker(conv.household, conv.org_site_key, body.speaker, name)
     return _detail(_with_stored_audio(_require(principal.household, conversation_id, owner=owner)))
 
