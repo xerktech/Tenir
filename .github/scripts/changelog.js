@@ -20,8 +20,9 @@ const COMPONENT_HEADING = {
   "parakeet-stt": "Parakeet STT",
   ocr: "OCR",
   mobile: "Mobile",
+  desktop: "Desktop capture",
 };
-const HEADING_ORDER = ["API", "Parakeet STT", "OCR", "Mobile", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "OCR", "Mobile", "Desktop capture", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
@@ -29,8 +30,9 @@ const COMPONENT_LABEL = {
   "parakeet-stt": "Parakeet STT (image)",
   ocr: "OCR (image)",
   mobile: "Android (.apk)",
+  desktop: "Windows capture client (.exe)",
 };
-const TABLE_ORDER = ["api", "parakeet-stt", "ocr", "mobile"];
+const TABLE_ORDER = ["api", "parakeet-stt", "ocr", "mobile", "desktop"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.
@@ -132,6 +134,7 @@ const INSTALL_DETAILS = [
   "  by the Docker Compose stack. `:latest` tracks main; pin a build with the",
   "  `ghcr.io/...` ref in the table above.",
   "- **Android** (`.apk`): download below and install (enable \"install unknown apps\").",
+  "- **Windows capture client** (`.exe`): replace the exe on the meeting PC (desktop/README.md).",
   "",
   "Carried components are unchanged since the version shown; their artifact name reflects the",
   "build it actually is. `manifest.json` (attached) is the machine-readable source of truth.",

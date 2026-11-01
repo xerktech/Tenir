@@ -958,26 +958,28 @@ class SqlConversationStore:
             )
 
     def speaker_aliases(  # pragma: no cover - requires a live database
-        self, household: str, org_site_key: str
+        self, household: str, owner: str, org_site_key: str
     ) -> dict[str, str]:
         with self._ensure_pool().connection() as conn:
             rows = conn.execute(
-                "SELECT alias, name FROM speaker_aliases WHERE household = %s AND org_site_key = %s",
-                (household, org_site_key),
+                "SELECT alias, name FROM speaker_aliases"
+                " WHERE household = %s AND owner = %s AND org_site_key = %s",
+                (household, owner, org_site_key),
             ).fetchall()
         return {alias: name for alias, name in rows}
 
     def set_speaker_alias(  # pragma: no cover - requires a live database
-        self, household: str, org_site_key: str, alias: str, name: str
+        self, household: str, owner: str, org_site_key: str, alias: str, name: str
     ) -> None:
         with self._ensure_pool().connection() as conn:
             conn.execute(
                 """
-                INSERT INTO speaker_aliases (household, org_site_key, alias, name)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (household, org_site_key, alias) DO UPDATE SET name = EXCLUDED.name
+                INSERT INTO speaker_aliases (household, owner, org_site_key, alias, name)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (household, owner, org_site_key, alias)
+                DO UPDATE SET name = EXCLUDED.name
                 """,
-                (household, org_site_key, alias_key(alias), name),
+                (household, owner, org_site_key, alias_key(alias), name),
             )
 
     def add_song(  # pragma: no cover - requires a live database

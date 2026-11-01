@@ -1,6 +1,7 @@
 ---
 paths:
   - "scripts/caption_ocr/**"
+  - "desktop/tenir_capture/caption_box.py"
   - "docs/meeting-captions.md"
 ---
 
@@ -14,6 +15,8 @@ paths:
 - Paddle-mobile's cost is recognition, not detection: skipping detection saves nothing.
 - Paddle CPU threads don't speed up a single caption crop; parallelise across windows.
 - Tesseract needs white-on-dark captions inverted and `--psm 6` on a crop; thresholding loses.
+- `find_caption_box` lives in `desktop/tenir_capture/caption_box.py` (the capture client ships
+  it); `caption_bench.py` imports it from there, so the bench measures the code that runs.
 - `find_caption_box` keys on centred white glyphs, not the box's dark fill: dark fill fails on
   camera-off meetings. Any change must keep the camera-off and no-caption tests green.
 - Its thresholds trade recall against slide false positives (`FILL_DARK` 85 → 65 missed

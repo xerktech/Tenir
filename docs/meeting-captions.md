@@ -195,7 +195,9 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - Caption blocks: a header is a line (or a `Name:` prefix) matching a roster name, exact or
   fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
   a name-shaped line followed by text is a header with no speaker.
-- Speaker aliases (`speaker_aliases`, per org) rename tile names, e.g. an email to a first name.
+- Speaker aliases (`speaker_aliases`, per member and org) rename tile names, e.g. an email to a
+  first name. Only the meeting owner's aliases apply; one member's renames never show in
+  another member's meetings (XERK-2606).
 
 **Merge** (`merge.py`): each caption snapshot is a window onto the end of the transcript, so it
 is aligned in order against the recent known lines (an edit-distance alignment). Known lines
@@ -214,6 +216,34 @@ the last one (a 5 s sweep), and becomes a `ready` conversation with `source='scr
 `org_site_key`, `org_name`, `platform`, `meeting_title`, `participants` and `segments.speaker`.
 A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
 Deleting the user closes their open screen sockets.
+
+## Capture client (XERK-2506)
+
+`desktop/` is the Windows client on the central PC (install and config: `desktop/README.md`).
+It stays dumb: it captures, crops and sends; the api reads and decides.
+
+- **Capture**: Windows Graphics Capture by window handle (`windows-capture`), newest frame
+  copied at most every 0.2 s. Windows come from a local `capture.json`: title (exact, or a
+  substring matching one window) → `orgSiteKey`, `orgName`, `platform`. A title matching
+  nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
+- **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
+  bench imports it from there. Only `zoom` has a finder; Teams windows are skipped until
+  XERK-2515 adds one.
+- **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
+  frame per 5 s, and treats a faster cadence as due at once.
+- **Notices**: a minimized window is paused with a desktop notification (WGC gets no frames
+  from it). `screen.notice` `captions_off` comes from the api: a Zoom toolbar (3+ of its
+  buttons in the bottom band) seen in the last 10 min, and no caption for 2 min while no
+  meeting is open; repeated every 15 min. The toolbar, not tile names, is the evidence,
+  because a desktop's icon labels are name-shaped too. A caption read in the last 10 min silences
+  it: a captioned meeting that goes quiet isn't "captions off". The cost: captions turned off
+  mid-meeting, or a next meeting without them, is warned ~12 min in, not 2 (OCR can't tell
+  silence from captions off).
+- **Version gate**: `GET /status` carries `clients.desktop.minVersion`
+  (`API_DESKTOP_MIN_VERSION`); an older client notifies and exits, an unreachable `/status`
+  doesn't block start.
+- **Release**: `tenir-desktop-v<version>.exe`, a PyInstaller one-file exe built by
+  `release.yml` on `windows-latest`; `desktop.yml` builds it and smoke-tests WGC on every PR.
 
 ## Delivery to Turma (XERK-2513)
 

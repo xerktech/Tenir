@@ -320,6 +320,8 @@ def snapshot() -> dict:
         "overall": _overall(components),
         "generatedAt": _iso(generated),
         "reasons": _reasons(components),
+        # Client compatibility: the Windows capture client checks this on start (XERK-2506).
+        "clients": {"desktop": {"minVersion": settings.desktop_min_version or None}},
         "components": [
             {
                 "id": c.id,

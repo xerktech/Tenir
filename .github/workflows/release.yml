@@ -42,6 +42,7 @@ on:
       - "parakeet-stt/**"
       - "ocr/**"
       - "mobile/**"
+      - "desktop/**"
       - "package.json"
       - "package-lock.json"
       - "schema.sql"
@@ -98,6 +99,7 @@ jobs:
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
       build_ocr: ${{ steps.plan.outputs.build_ocr }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
+      build_desktop: ${{ steps.plan.outputs.build_desktop }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
       sha: ${{ github.sha }}
     steps:
@@ -548,6 +550,40 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  # ------------------------------------------------------- build: desktop -----
+  # The Windows capture client (desktop/, XERK-2506): a PyInstaller one-file exe, so it
+  # builds on a hosted Windows runner. desktop/build.sh stamps the version and runs the
+  # same build desktop.yml smoke-tests on every PR.
+  build-desktop:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_desktop == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build tenir-capture.exe
+        run: desktop/build.sh "${{ needs.plan.outputs.version }}"
+      - name: Check the exe reports its version
+        run: test "$(desktop/dist/tenir-capture.exe --version)" = "${{ needs.plan.outputs.version }}"
+      - name: Name the asset
+        run: cp desktop/dist/tenir-capture.exe "tenir-desktop-v${{ needs.plan.outputs.version }}.exe"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: asset-desktop
+          path: tenir-desktop-v${{ needs.plan.outputs.version }}.exe
+          if-no-files-found: error
+          retention-days: 3
+
   # --------------------------------------------------------------- publish ----
   # Runs last. Assembles manifest.json + release notes, carries unchanged assets
   # forward, and (unless dry_run) creates the tag + release. Runs unless a build
@@ -563,6 +599,7 @@ jobs:
         build-parakeet-stt,
         build-ocr,
         build-mobile,
+        build-desktop,
       ]
     # A release that claims an api change must have the gate AND the image: a
     # cancelled (e.g. timed-out) gate or build-api is not 'failure', and without the
@@ -579,6 +616,7 @@ jobs:
       && needs.build-parakeet-stt.result != 'failure'
       && needs.build-ocr.result != 'failure'
       && needs.build-mobile.result != 'failure'
+      && needs.build-desktop.result != 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -593,11 +631,11 @@ jobs:
         with:
           node-version: "24"
       # Collect the built release assets into dist/ (flattened). The Android
-      # .apk is the only asset-* producer, so only download when it actually
-      # built — a zero-match pattern must not be able to fail a release that
-      # carries mobile.
+      # .apk and the Windows .exe are the asset-* producers, so only download
+      # when one actually built — a zero-match pattern must not be able to fail
+      # a release that carries both.
       - uses: actions/download-artifact@v5
-        if: needs.plan.outputs.build_mobile == 'true'
+        if: needs.plan.outputs.build_mobile == 'true' || needs.plan.outputs.build_desktop == 'true'
         with:
           pattern: asset-*
           path: dist

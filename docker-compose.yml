@@ -110,6 +110,8 @@ services:
       # Turma hub that finished meetings are posted to (XERK-2513); empty keeps delivery off.
       API_TURMA_URL: ${API_TURMA_URL:-}
       API_TURMA_MEETINGS_TOKEN: ${API_TURMA_MEETINGS_TOKEN:-}
+      # Oldest Windows capture client allowed (x.y.z, published on /status); empty: any.
+      API_DESKTOP_MIN_VERSION: ${API_DESKTOP_MIN_VERSION:-}
       API_AUTH_ADMIN_USERNAME: ${API_AUTH_ADMIN_USERNAME:-}
       API_AUTH_ADMIN_PASSWORD: ${API_AUTH_ADMIN_PASSWORD:-}
       API_AUTH_ADMIN_HOUSEHOLD: ${API_AUTH_ADMIN_HOUSEHOLD:-default}

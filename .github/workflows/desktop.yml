@@ -1,0 +1,72 @@
+name: Desktop
+
+# PR gate for the Windows meeting-caption capture client (desktop/, XERK-2506). The client's
+# logic runs against fakes and a local WebSocket server on Linux; the Windows job builds the
+# one-file exe the release ships and smoke-tests Windows Graphics Capture on a real window.
+# Publishing is the unified release pipeline (release.yml, build-desktop).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      # the client's tests draw their Zoom frames with the spike's synthesiser
+      - 'scripts/caption_ocr/caption_synth.py'
+      # the encoder is checked against the ScreenFrameHeader contract
+      - 'contract/ws-messages.schema.json'
+      - '.github/workflows/desktop.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Client tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: desktop/pyproject.toml
+      - run: pip install -e '.[dev]'
+      - name: Lint (ruff)
+        run: ruff check . && ruff format --check .
+      - name: Tests (85% coverage gate)
+        run: pytest -q
+
+  windows:
+    name: Windows exe build + capture smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: desktop/pyproject.toml
+      - name: Build tenir-capture.exe
+        run: desktop/build.sh 0.0.0
+      - name: The exe starts and reports its version
+        run: test "$(desktop/dist/tenir-capture.exe --version)" = "0.0.0"
+      - name: The exe lists windows (ctypes + the packaged Windows layer)
+        run: desktop/dist/tenir-capture.exe --list-windows
+      - name: The exe refuses a missing config cleanly
+        run: |
+          set +e
+          desktop/dist/tenir-capture.exe --config missing.json
+          test $? -eq 2
+      - name: WGC captures a real window
+        run: python desktop/smoke_windows.py
