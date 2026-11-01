@@ -332,9 +332,11 @@ class CaptionMerger:
         # On the bottom line growth is by characters, as ``_score`` aligns it: the ASR
         # finishing a stored last word as the speaker goes on ("deploy" -> "deployment
         # failed") is the line growing; requiring a word boundary lost the rest (XERK-2597).
-        # A line above it is no longer spoken, so a longer re-read there that isn't a new word
-        # is OCR jitter ("staging" read "stagingl") and would corrupt the stored text.
-        grew = grew or (bottom and shown.norm.startswith(line.norm))
+        # It counts once a new word follows: one frame can't tell "deploy" -> "deployment"
+        # from OCR jitter ("staging" read "stagingl"), but the speaker going on adds a word and
+        # jitter doesn't. A line above the bottom is no longer spoken: whole words only.
+        added = shown.norm[len(line.norm) :]
+        grew = grew or (bottom and shown.norm.startswith(line.norm) and " " in added)
         seg = line.segment
         assert seg is not None
         if grew and ts - line.changed_ms <= _EXTEND_MS:

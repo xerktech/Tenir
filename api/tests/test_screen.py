@@ -365,6 +365,17 @@ def test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored() -> None:
     assert [s.text for s in out] == []
 
 
+def test_ocr_jitter_on_the_stored_bottom_line_is_not_stored() -> None:
+    """QA on XERK-2597: a stray trailing character on the stored bottom line looks like the
+    ASR finishing a word; only a following word tells them apart."""
+    m = CaptionMerger(start_ms=0, stable_ms=1000)
+    m.feed([blk("A", "the login timeout is back on staging")], 0)
+    (seg,) = m.feed([blk("A", "the login timeout is back on staging")], 1000)
+    assert m.feed([blk("A", "the login timeout is back on stagingl")], 1500) == []
+    assert m.feed([blk("A", "the login timeout is back on staging")], 2000) == []
+    assert m.flush(3000) == [] and seg.text == "the login timeout is back on staging"
+
+
 def test_a_stored_line_extends_only_within_the_extend_window() -> None:
     def run(grow_at: int) -> list[str]:
         m = CaptionMerger(start_ms=0, stable_ms=1000)

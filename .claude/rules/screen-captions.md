@@ -43,11 +43,13 @@ paths:
     under a verified header above a match costs more than "new": it is a line said between
     two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
   - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
-  - A final on the bottom line extends when its text grows by characters, not only whole words:
-    the ASR finishing the stored last word lost the rest of the line (XERK-2597). Above the
-    bottom only whole-word growth extends: a stray OCR char ("stagingl") corrupted stored text
-    (QA). `_simulate`'s noise never appends chars, so its sweep can't show this. Tests:
+  - A final on the bottom line extends on character growth once a new word follows ("deploy"
+    -> "deployment failed"): whole-word growth only lost the rest of the line (XERK-2597).
+    No following word, or above the bottom, is whole-word growth only: a stray OCR char
+    ("stagingl", "yesl") corrupted stored text (QA x2). `_simulate`'s noise never appends
+    chars, so its sweep can't show this. Tests:
     `test_a_stored_line_whose_last_word_the_asr_finishes_is_extended`,
+    `test_ocr_jitter_on_the_stored_bottom_line_is_not_stored`,
     `test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored`.
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
