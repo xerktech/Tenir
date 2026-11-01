@@ -20,7 +20,7 @@ import hmac
 import json
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 Role = Literal["member", "admin"]
@@ -59,6 +59,10 @@ class Principal:
     # A device token's scope (XERK-2505): "screen" authenticates only /ws/screen and is
     # refused everywhere else. None on a normal login token.
     scope: str | None = None
+    # The token's ``exp`` (epoch seconds) on the built-in path, so a long-lived socket can
+    # close when its token runs out (XERK-2612). Not part of identity: two principals of
+    # the same user compare equal whatever their tokens' expiries.
+    expires_at: float | None = field(default=None, compare=False)
 
     @property
     def is_admin(self) -> bool:
@@ -161,6 +165,7 @@ def _principal_of(claims: dict) -> Principal:
         role="admin" if role == "admin" else "member",
         username=str(claims.get("un", "")),
         scope=str(claims["scp"]) if claims.get("scp") is not None else None,
+        expires_at=float(claims["exp"]) if isinstance(claims.get("exp"), (int, float)) else None,
     )
 
 

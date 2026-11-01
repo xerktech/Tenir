@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import struct
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket
@@ -172,6 +173,7 @@ async def screen_ws(ws: WebSocket) -> None:
 
     send_lock = asyncio.Lock()
     closing = asyncio.Event()
+    close_reason = "account removed"
 
     async def send(msg: ScreenCadence | ScreenNotice | Pong | ErrorMessage) -> None:
         async with send_lock:
@@ -257,6 +259,21 @@ async def screen_ws(ws: WebSocket) -> None:
     # re-check now that a delete would (the mic socket does the same, XERK-1504).
     if not await asyncio.to_thread(_account_exists, principal.user_id):
         closing.set()
+
+    def expire() -> None:
+        # Auth runs only at the handshake, so the token's expiry is enforced here: the
+        # socket closes when it runs out, like a revoke (XERK-2612).
+        nonlocal close_reason
+        if not closing.is_set():
+            close_reason = "device token expired"
+            log.info("screen ws closed: device token expired")
+            metrics.incr("screen.token_expired")
+            closing.set()
+
+    expiry: asyncio.TimerHandle | None = None
+    if principal.expires_at is not None:
+        delay = max(0.0, principal.expires_at - time.time())
+        expiry = asyncio.get_running_loop().call_later(delay, expire)
     await send(cadence().message(meeting=False))
     receive: asyncio.Task | None = None
     closed_by_us = asyncio.create_task(closing.wait())
@@ -267,7 +284,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 {receive, closed_by_us}, return_when=asyncio.FIRST_COMPLETED
             )
             if closed_by_us in done:
-                await ws.close(code=1008, reason="account removed")
+                await ws.close(code=1008, reason=close_reason)
                 break
             frame = receive.result()
             if frame["type"] == "websocket.disconnect":
@@ -303,6 +320,8 @@ async def screen_ws(ws: WebSocket) -> None:
             else:
                 await error("expected a binary frame or ping")
     finally:
+        if expiry is not None:
+            expiry.cancel()
         stops = _revokers.get(principal.user_id)
         if stops is not None:
             stops.discard(closing.set)

@@ -926,6 +926,32 @@ def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
     assert screen_ws.revoke_user(member.user_id) == 0
 
 
+def test_screen_socket_closes_when_its_device_token_expires(screen) -> None:
+    """XERK-2612: auth runs only at the handshake, so the token's expiry closes the socket."""
+    from api.auth import Principal, issue_token
+    from api.auth.tokens import decode_token
+    from api.main import app
+
+    _, _, _, admin = screen
+    principal = Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen")
+    token = issue_token(principal, secret=settings.auth_secret, ttl_seconds=2)
+    decoded = decode_token(token, secret=settings.auth_secret)
+    # Expiry rides on the Principal but is not part of its identity.
+    assert decoded.expires_at is not None and decoded == principal
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+        ws.send_text(json.dumps({"type": "ping", "t": 1}))
+        assert json.loads(ws.receive_text())["type"] == "pong"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                ws.receive_text()
+        assert closed.value.code == 1008
+        assert closed.value.reason == "device token expired"
+        assert time.time() >= decoded.expires_at
+    assert metrics.snapshot()["counters"].get("screen.token_expired") == 1
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
 def test_one_socket_feeds_a_bounded_number_of_windows(screen) -> None:
     from api.main import app
 
