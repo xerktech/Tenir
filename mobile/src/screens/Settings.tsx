@@ -6,7 +6,8 @@
  * re-applied on launch); "Connect" re-points an already-signed-in user at another
  * instance. Appearance offers the same System/Light/Dark choice as the web SPA's
  * header toggle (persisted under the same `tenir.theme` key). The account card
- * shows who is signed in and offers log-out.
+ * shows who is signed in and offers log-out. Devices lists and revokes the user's
+ * screen-capture PCs (XERK-2594, the web Devices tab's twin).
  */
 
 import { type Principal } from "@tenir/client-core";
@@ -17,6 +18,7 @@ import { useNotify } from "../lib/notify";
 import { isValidServerUrl } from "../lib/serverUrl";
 import { Button, Card, Field, Heading, Label, Row, Screen } from "../ui/components";
 import { useTheme } from "../ui/ThemeContext";
+import { DevicesCard } from "./DevicesCard";
 import type { ThemeMode } from "../ui/theme";
 
 const THEME_MODES: { mode: ThemeMode; label: string }[] = [
@@ -76,6 +78,8 @@ export function SettingsScreen({
           ))}
         </Row>
       </Card>
+
+      <DevicesCard />
 
       <Card>
         <Label>Account</Label>

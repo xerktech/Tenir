@@ -201,14 +201,14 @@ describe("App auth gating", () => {
 
     const nav = screen.getByRole("navigation", { name: "Sections" });
     // Each page button renders exactly one icon glyph...
-    for (const tab of ["Live", "History", "Status", "Users"]) {
+    for (const tab of ["Live", "History", "Status", "Devices", "Users"]) {
       const button = screen.getByRole("button", { name: tab });
       expect(button.querySelectorAll("svg")).toHaveLength(1);
       // ...and the icon is decorative, so the label still names the button.
       expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     }
     // Every nav button has an icon (one svg per page button in the sidebar).
-    expect(nav.querySelectorAll("button svg")).toHaveLength(4);
+    expect(nav.querySelectorAll("button svg")).toHaveLength(5);
   });
 
   it("marks only the active nav item with aria-current and moves it on tab change", async () => {

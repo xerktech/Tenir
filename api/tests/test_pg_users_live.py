@@ -754,3 +754,75 @@ def test_new_usernames_are_nfkc_and_refuse_format_chars(make_store, client) -> N
     with pytest.raises(DuplicateUser):
         store.create("emma", "longpassword", household="default")
     assert store.get_by_username("dave​").username == "dave​"
+
+
+def test_device_tokens_round_trip_and_revoke(make_store) -> None:
+    """XERK-2594: the SQL device_tokens contract matches InMemoryUserStore's."""
+    make, _ = make_store
+    store = make()
+    user = store.create("capture-op", "capture-op-pass-1", household="default")
+    other = store.create("someone-else", "someone-else-pass", household="default")
+    first = store.create_device_token(user.user_id, name="meeting PC", ttl_seconds=3600)
+    second = store.create_device_token(user.user_id, name="spare", ttl_seconds=3600)
+    expired = store.create_device_token(user.user_id, name="old", ttl_seconds=-1)
+    assert first.expires_at - first.created_at == pytest.approx(3600, abs=1)
+    assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [
+        first.token_id,
+        second.token_id,
+    ]
+    assert store.device_token_is_live(user.user_id, first.token_id)
+    assert not store.device_token_is_live(user.user_id, expired.token_id)
+    # Bound to its own user, and a non-uuid id is "no such token", never a 22P02.
+    assert not store.device_token_is_live(other.user_id, first.token_id)
+    assert not store.revoke_device_token(other.user_id, first.token_id)
+    assert not store.revoke_device_token(user.user_id, "nope")
+    assert store.list_device_tokens("nope") == []
+    assert store.revoke_device_token(user.user_id, first.token_id)
+    assert not store.revoke_device_token(user.user_id, first.token_id)
+    assert not store.device_token_is_live(user.user_id, first.token_id)
+    assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [second.token_id]
+    # An expired token can still be revoked (closing a socket opened before expiry); it is
+    # purged, with the revoked one, by the next mint; live tokens are capped per user.
+    assert store.revoke_device_token(user.user_id, expired.token_id)
+    from api.auth.users import MAX_DEVICE_TOKENS, TooManyDevices
+
+    store.create_device_token(user.user_id, name="purger", ttl_seconds=3600)
+    _, admin = make_store
+    assert admin.execute(
+        "SELECT count(*) FROM device_tokens WHERE user_id = %s", (user.user_id,)
+    ).fetchone()[0] == 2
+    for _ in range(MAX_DEVICE_TOKENS - 2):
+        store.create_device_token(user.user_id, name="n", ttl_seconds=3600)
+    with pytest.raises(TooManyDevices):
+        store.create_device_token(user.user_id, name="one too many", ttl_seconds=3600)
+    # A user's tokens die with the user (ON DELETE CASCADE); minting for a gone user fails.
+    store.delete(user.user_id)
+    assert not store.device_token_is_live(user.user_id, second.token_id)
+    with pytest.raises(KeyError):
+        store.create_device_token(user.user_id, name="late", ttl_seconds=60)
+
+
+def test_concurrent_device_token_mints_never_pass_the_cap(make_store) -> None:
+    """XERK-2594: the mint locks the user row, so two api processes minting at once can't
+    both see a free slot. Without the lock this overshot in ~2 of 3 runs, so run it thrice."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from api.auth.users import MAX_DEVICE_TOKENS, TooManyDevices
+
+    make, _ = make_store
+    a, b = make(), make()
+    for attempt in range(3):
+        user = a.create(f"racer-{attempt}", "racer-password-1", household="default")
+        for _ in range(MAX_DEVICE_TOKENS - 5):
+            a.create_device_token(user.user_id, name="n", ttl_seconds=3600)
+
+        def mint(i: int) -> bool:
+            try:
+                (a, b)[i % 2].create_device_token(user.user_id, name="race", ttl_seconds=3600)
+                return True
+            except TooManyDevices:
+                return False
+
+        with ThreadPoolExecutor(8) as pool:
+            assert sum(pool.map(mint, range(30))) == 5
+        assert len(a.list_device_tokens(user.user_id)) == MAX_DEVICE_TOKENS

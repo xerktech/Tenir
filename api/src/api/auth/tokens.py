@@ -59,9 +59,12 @@ class Principal:
     # A device token's scope (XERK-2505): "screen" authenticates only /ws/screen and is
     # refused everywhere else. None on a normal login token.
     scope: str | None = None
-    # The token's ``exp`` (epoch seconds) on the built-in path, so a long-lived socket can
-    # close when its token runs out (XERK-2612). Not part of identity: two principals of
-    # the same user compare equal whatever their tokens' expiries.
+    # A device token's id (``jti``, XERK-2594): the device_tokens row that must still be
+    # live for the token to work, so one device can be revoked alone. None on login tokens.
+    token_id: str | None = None
+    # A device token's expiry (epoch seconds): /ws/screen closes its socket then, since auth
+    # is otherwise checked only at the handshake (XERK-2612). None on login tokens. Not part
+    # of identity: two principals of the same user compare equal whatever their expiries.
     expires_at: float | None = field(default=None, compare=False)
 
     @property
@@ -136,6 +139,8 @@ def issue_token(
     }
     if principal.scope is not None:
         claims["scp"] = principal.scope
+    if principal.token_id is not None:
+        claims["jti"] = principal.token_id
     payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
     return f"{payload_b64}.{_sign(payload_b64, secret)}"
 
@@ -165,7 +170,8 @@ def _principal_of(claims: dict) -> Principal:
         role="admin" if role == "admin" else "member",
         username=str(claims.get("un", "")),
         scope=str(claims["scp"]) if claims.get("scp") is not None else None,
-        expires_at=float(claims["exp"]) if isinstance(claims.get("exp"), (int, float)) else None,
+        token_id=str(claims["jti"]) if claims.get("jti") is not None else None,
+        expires_at=float(claims.get("exp", 0)) if claims.get("scp") is not None else None,
     )
 
 

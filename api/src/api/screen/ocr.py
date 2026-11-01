@@ -8,7 +8,9 @@ lines. 413 is over the size cap, 503 a busy pool: both drop this frame, the next
 A caption-box crop fits in one request. A full window frame (read for the participant tiles,
 the active-speaker border and the title) does not, so it is cut into overlapping horizontal
 strips under the cap, read one by one, and its lines shifted back into window coordinates.
-A strip that is too dense (a shared slide) just contributes nothing.
+A strip refused as too dense (a gallery row of initials circles and name labels is over the
+16 boxes, XERK-2610) is cut in two and re-read, within a per-frame budget; a strip still too
+dense at the smallest height (a shared slide) contributes nothing.
 """
 
 from __future__ import annotations
@@ -26,6 +28,17 @@ MAX_LINES = 400
 STRIP_PIXELS = 480_000
 # Strips overlap so a text line cut by one boundary is whole in the next strip.
 STRIP_OVERLAP = 48
+# A too-dense strip is halved only while it is taller than this. Real OCR read 7x7 gallery
+# pieces of ~90 px but refused 130-150 px ones (QA), so 129 px still halves. A 4K frame's
+# strips (125 px) never do: halving them all cost a slide frame 76 requests and 54 s, and its
+# tiles are big enough that unsplit strips already read 46/49 names.
+MIN_SPLIT_HEIGHT = 128
+# Halvings per frame: each adds two reads, so a frame of slides costs at most twice this many
+# more requests (a refused read is only detection, ~0.5 s). A 7x7 gallery at 1280x720 needs
+# ~14 to reach row height on every strip (8 lost a row, QA).
+MAX_SPLITS = 24
+# Never a wall-clock cap on halving: it made name recall depend on OCR latency (a 15 s cap
+# lost 7-14 of 49 names on a 1080p 7x7 gallery, and more with the pool busy, QA).
 # A line box this close to a strip's cut edge was cut by it.
 _EDGE = 3
 # The largest frame the api decodes to cut into strips (a 4K window and a little more).
@@ -64,7 +77,7 @@ class OcrError(RuntimeError):
 
 
 class OcrClient(Protocol):
-    async def read(self, jpeg: bytes) -> OcrResult: ...
+    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult: ...
 
 
 def parse_lines(payload: object) -> list[OcrLine]:
@@ -111,6 +124,13 @@ def strips(width: int, height: int) -> list[tuple[int, int]]:
         top = bottom - STRIP_OVERLAP
 
 
+def halves(top: int, bottom: int) -> list[tuple[int, int]]:
+    """A strip cut in two, overlapping by ``STRIP_OVERLAP`` so a line on the cut is whole once."""
+    mid = (top + bottom) // 2
+    half = STRIP_OVERLAP // 2
+    return [(top, mid + half), (mid - half, bottom)]
+
+
 def _dedupe(lines: list[OcrLine]) -> list[OcrLine]:
     """Drop the second reading of a line two overlapping strips both saw whole."""
     kept: list[OcrLine] = []
@@ -142,9 +162,12 @@ class HttpOcrClient:
         except ValueError as exc:  # body is not JSON
             raise OcrError(f"OCR response is not JSON: {exc!r}") from exc
 
-    async def read(self, jpeg: bytes) -> OcrResult:
+    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult:
+        """``full``: a whole window frame, whose too-dense strips are halved and re-read even
+        when it fits one request (a small window's gallery is still over 16 boxes). A caption
+        crop (``full=False``) is never split: too dense there means a slide, store nothing."""
         width, height = image_size(jpeg)
-        if width * height <= STRIP_PIXELS:
+        if width * height <= STRIP_PIXELS and not full:
             return parse_result(await self._post(jpeg), (width, height))
         if width * height > MAX_FRAME_PIXELS:
             raise OcrError(f"frame too large to read: {width}x{height}")
@@ -152,10 +175,23 @@ class HttpOcrClient:
 
         img = Image.open(io.BytesIO(jpeg)).convert("RGB")
         lines: list[OcrLine] = []
-        for top, bottom in strips(width, height):
+        pending, splits = strips(width, height), 0
+        while pending:
+            top, bottom = pending.pop(0)
             buf = io.BytesIO()
             img.crop((0, top, width, bottom)).save(buf, format="JPEG", quality=90)
-            for ln in parse_lines(await self._post(buf.getvalue())):
+            payload = await self._post(buf.getvalue())
+            if (
+                isinstance(payload, dict)
+                and payload.get("too_dense") is True
+                and full
+                and bottom - top > MIN_SPLIT_HEIGHT
+                and splits < MAX_SPLITS
+            ):
+                splits += 1
+                pending[:0] = halves(top, bottom)
+                continue
+            for ln in parse_lines(payload):
                 # A line touching a cut edge is a fragment ("Priya Ra"); the overlap is taller
                 # than a text line, so the neighbouring strip reads it whole.
                 if (top > 0 and ln.box[1] <= _EDGE) or (

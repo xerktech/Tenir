@@ -95,13 +95,15 @@ class StubOcr:
 
     def __init__(self) -> None:
         self.by_jpeg: dict[bytes, OcrResult] = {}
+        self.full: dict[bytes, bool] = {}  # what ws passed as read(full=) per frame
         self.fail = False
 
     def register(self, jpeg: bytes, result: OcrResult) -> bytes:
         self.by_jpeg[jpeg] = result
         return jpeg
 
-    async def read(self, jpeg: bytes) -> OcrResult:
+    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult:
+        self.full[jpeg] = full
         if self.fail:
             raise OcrError("down")
         return self.by_jpeg[jpeg]
@@ -112,10 +114,25 @@ def unique_jpeg(n: int) -> bytes:
     return b"\xff\xd8" + n.to_bytes(4, "big") + b"\xff\xd9"
 
 
+def device_token(user, ttl_seconds: int = 3600) -> str:
+    """A screen device token for ``user`` backed by a live device_tokens row (XERK-2594)."""
+    from api.auth import Principal, get_user_store, issue_token
+
+    row = get_user_store().create_device_token(user.user_id, name="test PC", ttl_seconds=ttl_seconds)
+    return issue_token(
+        Principal(
+            user.user_id, user.household, user.role, user.username,
+            scope="screen", token_id=row.token_id,
+        ),
+        secret=settings.auth_secret,
+        ttl_seconds=ttl_seconds,
+    )
+
+
 @pytest.fixture
 def screen(monkeypatch: pytest.MonkeyPatch):
     """In-memory store + stub OCR wired into /ws/screen; returns (store, ocr, device token)."""
-    from api.auth import Principal, get_user_store, issue_token
+    from api.auth import get_user_store
 
     store = InMemoryConversationStore()
     ocr = StubOcr()
@@ -125,11 +142,7 @@ def screen(monkeypatch: pytest.MonkeyPatch):
     meetings.clear()
     metrics.reset()
     admin = get_user_store().get_by_username("test-admin")
-    token = issue_token(
-        Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen"),
-        secret=settings.auth_secret,
-        ttl_seconds=3600,
-    )
+    token = device_token(admin)
     yield store, ocr, token, admin
     meetings.clear()
 
@@ -465,6 +478,122 @@ def test_a_full_frame_is_read_in_strips_under_the_service_cap() -> None:
     assert (got.width, got.height) == (1280, 720)
 
 
+def test_a_too_dense_full_frame_strip_is_halved_and_re_read() -> None:
+    """XERK-2610: a 4x4 camera-off gallery strip holds over tenir-ocr's 16 boxes (initials
+    circles and labels), so the whole strip came back too_dense and the roster was empty.
+    A refused strip is cut in two overlapping halves and each half is read."""
+    from api.screen import ocr as ocr_mod
+
+    spans: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _, h = Image.open(io.BytesIO(request.content)).size
+        spans.append(h)
+        if h > 300:  # a full strip: a whole tile row and more
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        name = f"Name {len(spans)}"
+        return httpx.Response(
+            200, json={"lines": [{"text": name, "box": [10, 60, 90, 80]}], "too_dense": False}
+        )
+
+    async def run() -> OcrResult:
+        return await _mock_ocr(handler).read(_jpeg(1280, 720), full=True)
+
+    got = asyncio.run(run())
+    first = ocr_mod.strips(1280, 720)[0]
+    top_half, bottom_half = ocr_mod.halves(*first)
+    assert spans[:3] == [first[1], top_half[1] - top_half[0], bottom_half[1] - bottom_half[0]]
+    # Each half's line is shifted by that half's own top, in reading order.
+    assert [ln.box[1] for ln in got.lines][:2] == [top_half[0] + 60, bottom_half[0] + 60]
+    assert top_half[1] - bottom_half[0] == ocr_mod.STRIP_OVERLAP
+
+
+def test_a_frame_of_slides_stops_splitting_within_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strip that stays too dense (a shared slide) is never halved below MIN_SPLIT_HEIGHT,
+    and at most MAX_SPLITS times per frame, so one frame can't flood tenir-ocr."""
+    from api.screen import ocr as ocr_mod
+
+    heights: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        heights.append(Image.open(io.BytesIO(request.content)).size[1])
+        return httpx.Response(200, json={"lines": [], "too_dense": True})
+
+    def read(width: int, height: int) -> OcrResult:
+        heights.clear()
+        return asyncio.run(_mock_ocr(handler).read(_jpeg(width, height), full=True))
+
+    # 1080p: six 250 px strips each halve to 149 and then 99 px; none goes below that.
+    assert read(1920, 1080).lines == ()
+    assert len(heights) == 6 + 2 * 15 and min(heights) > ocr_mod.MIN_SPLIT_HEIGHT // 2
+    # 4K: strips are already under MIN_SPLIT_HEIGHT, so a slide costs no extra requests.
+    read(3840, 2160)
+    assert len(heights) == len(ocr_mod.strips(3840, 2160))
+    # The budget binds when it is the smaller bound.
+    monkeypatch.setattr(ocr_mod, "MAX_SPLITS", 4)
+    read(1920, 1080)
+    assert len(heights) == 6 + 2 * 4
+
+
+def test_a_7x7_gallery_frame_is_halved_down_to_row_height_on_every_strip() -> None:
+    """QA on XERK-2610: a 7x7 gallery at 1280x720 is dense down to ~130 px pieces; with too
+    small a budget the lower strips got none and a whole tile row was lost. Model: any piece
+    taller than 100 px is too dense; every strip must still be read to the end."""
+    heights: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        h = Image.open(io.BytesIO(request.content)).size[1]
+        heights.append(h)
+        if h > 100:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        line = {"text": f"Row {len(heights)}", "box": [10, 40, 90, 56]}
+        return httpx.Response(200, json={"lines": [line], "too_dense": False})
+
+    async def run() -> OcrResult:
+        return await _mock_ocr(handler).read(_jpeg(1280, 720), full=True)
+
+    got = asyncio.run(run())
+    read = [h for h in heights if h <= 100]
+    # Strips 375, 375 and 66 px tall: the two full ones halve three times (8 pieces each).
+    assert len(got.lines) == len(read) == 2 * 8 + 1
+    assert max(ln.box[1] for ln in got.lines) > 600  # the bottom strip was read too
+
+
+def test_a_small_window_frame_is_split_but_a_caption_crop_never_is() -> None:
+    """QA on XERK-2610: an 800x600 window fits one request and was sent whole, so its 3x3
+    gallery stayed too_dense. A full frame is halved however small; a crop never is."""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        h = Image.open(io.BytesIO(request.content)).size[1]
+        calls.append(h)
+        if h > 400:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        line = {"text": "Ana Lopez", "box": [10, 40, 90, 56]}
+        return httpx.Response(200, json={"lines": [line], "too_dense": False})
+
+    async def run(full: bool) -> OcrResult:
+        return await _mock_ocr(handler).read(_jpeg(800, 600), full=full)
+
+    assert asyncio.run(run(False)).lines == () and calls == [600]
+    calls.clear()
+    assert asyncio.run(run(True)).lines and calls[0] == 600 and len(calls) == 3
+
+    # A caption crop over the cap is cut into strips, but a dense strip is never halved.
+    dense: list[int] = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        dense.append(Image.open(io.BytesIO(request.content)).size[1])
+        return httpx.Response(200, json={"lines": [], "too_dense": True})
+
+    async def crop() -> OcrResult:
+        return await _mock_ocr(refuse).read(_jpeg(1600, 400), full=False)
+
+    assert asyncio.run(crop()).lines == () and dense == [300, 148]
+
+
 def test_strips_cover_the_frame_with_overlap() -> None:
     from api.screen import ocr as ocr_mod
 
@@ -629,6 +758,8 @@ def replay(
         ocr.register(jpeg, ocr_of(frame))
         ws.send_bytes(envelope(header(base + frame["t"], frame["region"]), jpeg))
         wait_handled(i + 1)
+        # Full frames are read with too-dense strips halved; caption crops never (XERK-2610).
+        assert ocr.full[jpeg] is (frame["region"] == "full")
     return start + len(frames)
 
 
@@ -898,16 +1029,12 @@ def test_cadence_to_a_dead_socket_is_ignored() -> None:
 
 def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
     """QA D1: auth is checked at the handshake, so a delete must stop a live socket."""
-    from api.auth import Principal, get_user_store, issue_token
+    from api.auth import get_user_store
     from api.main import app
 
     store, ocr, _, admin = screen
     member = get_user_store().create("capture-op", "capture-op-pass-1", household=admin.household)
-    token = issue_token(
-        Principal(member.user_id, member.household, "member", member.username, scope="screen"),
-        secret=settings.auth_secret,
-        ttl_seconds=3600,
-    )
+    token = device_token(member)
     now = int(time.time() * 1000)
     jpeg = ocr.register(unique_jpeg(1), crop("Ana Lopez", "first line here"))
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
@@ -928,16 +1055,16 @@ def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
 
 def test_screen_socket_closes_when_its_device_token_expires(screen) -> None:
     """XERK-2612: auth runs only at the handshake, so the token's expiry closes the socket."""
-    from api.auth import Principal, issue_token
+    from dataclasses import replace
+
     from api.auth.tokens import decode_token
     from api.main import app
 
     _, _, _, admin = screen
-    principal = Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen")
-    token = issue_token(principal, secret=settings.auth_secret, ttl_seconds=2)
+    token = device_token(admin, ttl_seconds=2)
     decoded = decode_token(token, secret=settings.auth_secret)
     # Expiry rides on the Principal but is not part of its identity.
-    assert decoded.expires_at is not None and decoded == principal
+    assert decoded.expires_at is not None and decoded == replace(decoded, expires_at=None)
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         assert json.loads(ws.receive_text())["type"] == "screen.cadence"
         ws.send_text(json.dumps({"type": "ping", "t": 1}))
@@ -956,12 +1083,10 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
     screen, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """XERK-2612 QA: a client gone before the first send must still be cleaned up."""
-    from api.auth import Principal, issue_token
     from api.main import app
 
     _, _, _, admin = screen
-    principal = Principal(admin.user_id, admin.household, admin.role, admin.username, scope="screen")
-    token = issue_token(principal, secret=settings.auth_secret, ttl_seconds=1)
+    token = device_token(admin, ttl_seconds=1)
 
     def gone() -> Cadence:
         raise RuntimeError("client went away")
@@ -985,12 +1110,12 @@ def test_a_delete_racing_the_handshake_closes_the_screen_socket(
     _, _, token, admin = screen
     with TestClient(app) as client:
         # Auth at the handshake passes; the re-check after registering sees the delete.
-        monkeypatch.setattr(screen_ws, "_account_exists", lambda _uid: False)
+        monkeypatch.setattr(screen_ws, "_still_authorized", lambda _principal: False)
         with client.websocket_connect(f"/ws/screen?token={token}") as ws:
             assert json.loads(ws.receive_text())["type"] == "screen.cadence"
             with pytest.raises(WebSocketDisconnect) as closed:
                 ws.receive_text()
-            assert (closed.value.code, closed.value.reason) == (1008, "account removed")
+            assert (closed.value.code, closed.value.reason) == (1008, "account removed or device token revoked")
     assert screen_ws._revokers.get(admin.user_id) is None
 
 

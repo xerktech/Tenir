@@ -22,7 +22,8 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
      caption crop ships (XERK-2515).
 3. Pair it once: `tenir-capture.exe --pair` asks for your Tenir username and password and
    saves a screen-only device token to `%APPDATA%\Tenir\device-token`. The token works for 365
-   days, and only on `/ws/screen`.
+   days, and only on `/ws/screen`. It is listed under this PC's hostname in the web Devices tab
+   (Android: Settings → Devices), where revoking it disconnects this PC alone.
 4. Start it at logon: `tenir-capture.exe --install-startup` creates the Task Scheduler task
    "Tenir capture". If Windows answers "Access is denied", run it from an elevated prompt.
    `--uninstall-startup` removes the task.

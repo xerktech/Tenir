@@ -104,7 +104,11 @@ def test_pairing_logs_in_and_saves_a_device_token(
         assert cli.main(["--config", str(path), "--pair"]) == 0
     assert token_path(path).read_text() == "dev-tok"
     assert seen[0][:2] == ("/auth/login", {"username": "ops", "password": "pw"})
-    assert seen[1][0] == "/auth/device-token" and seen[1][2] == "Bearer login-tok"
+    assert seen[1] == (
+        "/auth/device-token",
+        {"name": cli.socket.gethostname()[:80]},
+        "Bearer login-tok",
+    )
     if sys.platform != "win32":
         assert token_path(path).stat().st_mode & 0o077 == 0  # only the owner can read it
 

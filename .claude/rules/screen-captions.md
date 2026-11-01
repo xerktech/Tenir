@@ -8,6 +8,8 @@ paths:
   - "api/tests/fixtures/screen/**"
   - "api/src/api/history.py"
   - "api/tests/test_history_meetings.py"
+  - "api/src/api/auth/deps.py"
+  - "api/tests/test_device_tokens.py"
 ---
 
 # Screen meeting captions (XERK-2505)
@@ -21,6 +23,14 @@ paths:
   scoped token (it would otherwise slide forever). The test renews at 60% of the token's life;
   a shorter offset can't fail. Test:
   `test_device_token_is_minted_for_the_caller_and_scoped_to_the_screen_socket`.
+- A device token is live only while its `device_tokens` row (id = the token's `jti`, owned by the
+  token's user) is unrevoked and unexpired (XERK-2594). `principal_from_live_token` checks it for
+  every scoped token; a token without `jti` is refused (unrevocable), never let through.
+  - Revoke closes open sockets via `screen.ws.revoke_token`; the handler re-checks the row after
+    registering its revoker, as it does for account deletion.
+  - A screen socket closes at its token's `exp` (`Principal.expires_at`, scoped tokens only,
+    XERK-2612). Without it a mint purging the expired row left the socket unrevocable.
+  - Tests: `test_device_tokens.py`; SQL `test_pg_users_live.py::test_device_tokens_round_trip_and_revoke`.
 - `/ws/screen` sockets aren't registry sessions: `delete_user` calls `screen.ws.revoke_user`.
   Test: `test_deleting_the_user_closes_their_open_screen_socket`.
 - Merge = an ordered alignment of each snapshot against the recent known lines (`_align`),
@@ -57,6 +67,19 @@ paths:
   `ocr.HttpOcrClient` reads the size from the JPEG header and cuts full frames into
   overlapping strips, dropping lines that touch a cut edge (a fragment like "Priya Ra" would
   otherwise become a participant). Change ocr/README.md in the same PR as the contract.
+- A too-dense full-frame strip is halved and re-read in the api (`ocr.halves`, `MAX_SPLITS`),
+  not by raising tenir-ocr's 16-box cap: that cap is the per-request time bound, and on caption
+  crops `too_dense` still means "a slide, store nothing" (XERK-2610). Tests:
+  `test_a_too_dense_full_frame_strip_is_halved_and_re_read`,
+  `test_a_frame_of_slides_stops_splitting_within_the_budget`,
+  `test_a_7x7_gallery_frame_is_halved_down_to_row_height_on_every_strip`.
+  - `MIN_SPLIT_HEIGHT` (128) keeps 4K strips (125 px) whole: halving them doubled a 4K slide
+    frame to 76 requests / 54 s, past the 30 s full-frame cadence (QA).
+  - Never cap halving by wall clock: a 15 s cap lost a gallery row whenever OCR was slow (QA).
+- `HttpOcrClient.read(full=True)` (ws passes the frame's region) splits full frames under the
+  pixel cap too; a caption crop is never halved, or a slide crop would be stored as captions.
+  Tests: `test_a_small_window_frame_is_split_but_a_caption_crop_never_is`; `replay` asserts
+  the `full=` ws passed per region (`StubOcr.full`).
 - `_active_tile` scores min(green left of the label, green below it), never one window
   around it: on a 3x3 gallery that window caught the tile above's / left's border and nothing
   won. Full-frame lines are ordered by row band then x (`_reading_order`): real OCR boxes on

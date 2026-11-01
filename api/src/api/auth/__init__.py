@@ -29,6 +29,7 @@ from api.auth.tokens import (
     verify_password,
 )
 from api.auth.users import (
+    DeviceToken,
     User,
     get_user_store,
     reset_user_store,
@@ -37,6 +38,7 @@ from api.auth.users import (
 
 __all__ = [
     "AuthError",
+    "DeviceToken",
     "Principal",
     "User",
     "assert_secure_auth_config",
