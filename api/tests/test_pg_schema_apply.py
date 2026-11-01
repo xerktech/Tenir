@@ -116,13 +116,14 @@ def test_apply_schema_creates_the_cues_table() -> None:
     # DROP NOT NULL (a no-op when the column is already nullable, XERK-650), or a
     # WHERE-guarded backfill UPDATE that only rewrites still-unset rows and so
     # converges after its first run (the conversations.owner backfill, XERK-651), or a
-    # DROP CONSTRAINT IF EXISTS (a no-op once dropped; the speaker_aliases key, XERK-2606).
+    # DROP CONSTRAINT IF EXISTS / DROP DEFAULT (no-ops once applied; speaker_aliases, XERK-2606).
     assert all(
         "IF NOT EXISTS" in s
         or "ON CONFLICT" in s
         or s.upper().startswith("INSERT")
         or "DROP NOT NULL" in s.upper()
         or "DROP CONSTRAINT IF EXISTS" in s.upper()
+        or "DROP DEFAULT" in s.upper()
         or (s.upper().startswith("UPDATE") and "WHERE" in s.upper())
         for s in conn.statements
         if s != "COMMIT"

@@ -116,3 +116,42 @@ def test_a_participants_table_without_position_is_migrated(store) -> None:
     store.create(HH, cid, owner="u1", screen=ScreenMeta("tesoro", "Tesoro", "zoom"))
     store.add_participants(HH, cid, [("Priya Raman", 0)])
     assert store.get(HH, cid).participants == ["Priya Raman"]
+
+
+def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
+    """XERK-2606: a database set up with the XERK-2505 (household, org, alias) key. The boot
+    apply moves it to per-owner keys: two members may alias one speaker, the old rows match
+    no member, and a write without an owner is refused."""
+    from api.persistence.postgres import apply_boot_schema
+
+    pool = store._ensure_pool()
+    with pool.connection() as conn:
+        conn.execute("DROP TABLE speaker_aliases")
+        conn.execute(
+            """
+            CREATE TABLE speaker_aliases (
+                household    TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                org_site_key TEXT NOT NULL,
+                alias        TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                PRIMARY KEY (household, org_site_key, alias)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO speaker_aliases VALUES (%s, 'tesoro', 'kunal@tesoroxp.com', 'Old')",
+            (HH,),
+        )
+    apply_boot_schema(pool)
+    apply_boot_schema(pool)
+    store.set_speaker_alias(HH, "u1", "tesoro", "kunal@tesoroxp.com", "K1")
+    store.set_speaker_alias(HH, "u2", "tesoro", "kunal@tesoroxp.com", "K2")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"kunal@tesoroxp.com": "K1"}
+    assert store.speaker_aliases(HH, "u2", "tesoro") == {"kunal@tesoroxp.com": "K2"}
+    assert store.speaker_aliases(HH, "u3", "tesoro") == {}
+    with pytest.raises(psycopg.errors.NotNullViolation), pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO speaker_aliases (household, org_site_key, alias, name)"
+            " VALUES (%s, 'tesoro', 'x@y.test', 'X')",
+            (HH,),
+        )

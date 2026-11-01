@@ -222,6 +222,8 @@ CREATE TABLE IF NOT EXISTS speaker_aliases (
 -- the per-owner unique key. Rows from before have owner '' and so match no member. The new
 -- key is an index, not a PRIMARY KEY, so the DROP below never removes it on a later boot.
 ALTER TABLE speaker_aliases ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '';
+-- The default only backfills the migrated rows; a write must always name its owner.
+ALTER TABLE speaker_aliases ALTER COLUMN owner DROP DEFAULT;
 ALTER TABLE speaker_aliases DROP CONSTRAINT IF EXISTS speaker_aliases_pkey;
 CREATE UNIQUE INDEX IF NOT EXISTS speaker_aliases_owner_key
     ON speaker_aliases (household, owner, org_site_key, alias);
