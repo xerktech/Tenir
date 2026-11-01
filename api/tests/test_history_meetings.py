@@ -110,7 +110,8 @@ def test_speakers_cannot_be_renamed_through_history() -> None:
         res = client.put(
             f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Priya Raman", "name": "P"}
         )
-    assert res.status_code == 405
+    # 405 with the built web UI mounted, 404 without it: either way no route takes it.
+    assert res.status_code in (404, 405)
     assert _store().speaker_aliases(HH, "northwind") == {}
 
 
