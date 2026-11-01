@@ -92,7 +92,7 @@ def run_in_thread(r: Runner) -> tuple[threading.Thread, list[BaseException]]:
     def go() -> None:
         try:
             r.run()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
     t = threading.Thread(target=go, daemon=True)

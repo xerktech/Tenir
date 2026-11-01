@@ -27,3 +27,5 @@ paths:
   `/status` min-version gate, so an unbuilt checkout always starts.
 - Tests: `tests/test_runner.py::test_minimized_or_retitled_windows_pause_and_the_operator_is_told`,
   `tests/test_frames.py::test_caption_crops_go_only_while_a_caption_shows_with_a_full_frame_first`.
+- `ruff` is pinned in `desktop/pyproject.toml`: unpinned, CI pulled a release with new default
+  rules (BLE001, RUF100) and lint flipped between runs. Bump it deliberately.

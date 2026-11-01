@@ -115,7 +115,7 @@ class Runner:
                     try:
                         w.capture = self.platform.capture(title)
                         log.info("%s: capturing", w.spec.org_name)
-                    except Exception as exc:  # retry on the next refresh
+                    except Exception as exc:  # noqa: BLE001 — retry on the next refresh
                         problem = f"capture failed: {exc}"
                         w.title = None
             if problem != w.problem:
@@ -250,7 +250,7 @@ class Runner:
                 raise
             except InvalidStatus as exc:
                 log.warning("connect refused: HTTP %s", exc.response.status_code)
-            except Exception as exc:  # a logon task must outlive any network fault
+            except Exception as exc:  # noqa: BLE001 — a logon task must outlive any fault
                 # OSError, timeouts, and handshakes cut short (InvalidMessage on a reset).
                 log.warning("connect failed: %r", exc)
             else:
@@ -261,7 +261,7 @@ class Runner:
                         self.session(ws)
                 except TokenRejected:
                     raise
-                except Exception as exc:  # reconnect, never die mid-shift
+                except Exception as exc:  # noqa: BLE001 — reconnect, never die mid-shift
                     log.warning("disconnected: %r", exc)
                 if self.clock() - started >= HEALTHY_SECONDS:
                     backoff = 1.0  # it was up for a while: retry promptly
