@@ -20,7 +20,7 @@ import hmac
 import json
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 Role = Literal["member", "admin"]
@@ -63,8 +63,9 @@ class Principal:
     # live for the token to work, so one device can be revoked alone. None on login tokens.
     token_id: str | None = None
     # A device token's expiry (epoch seconds): /ws/screen closes its socket then, since auth
-    # is otherwise checked only at the handshake (XERK-2612). None on login tokens.
-    expires_at: float | None = None
+    # is otherwise checked only at the handshake (XERK-2612). None on login tokens. Not part
+    # of identity: two principals of the same user compare equal whatever their expiries.
+    expires_at: float | None = field(default=None, compare=False)
 
     @property
     def is_admin(self) -> bool:

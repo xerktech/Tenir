@@ -1110,6 +1110,91 @@ def test_deleting_the_user_closes_their_open_screen_socket(screen) -> None:
     assert screen_ws.revoke_user(member.user_id) == 0
 
 
+def test_screen_socket_closes_when_its_device_token_expires(screen) -> None:
+    """XERK-2612: auth runs only at the handshake, so the token's expiry closes the socket."""
+    from dataclasses import replace
+
+    from api.auth.tokens import decode_token
+    from api.main import app
+
+    _, _, _, admin = screen
+    token = device_token(admin, ttl_seconds=2)
+    decoded = decode_token(token, secret=settings.auth_secret)
+    # Expiry rides on the Principal but is not part of its identity.
+    assert decoded.expires_at is not None and decoded == replace(decoded, expires_at=None)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+        ws.send_text(json.dumps({"type": "ping", "t": 1}))
+        assert json.loads(ws.receive_text())["type"] == "pong"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                ws.receive_text()
+        assert closed.value.code == 1008
+        assert closed.value.reason == "device token expired"
+        assert time.time() >= decoded.expires_at
+    assert metrics.snapshot()["counters"].get("screen.token_expired") == 1
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
+def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
+    screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XERK-2612 QA: a client gone before the first send must still be cleaned up."""
+    from api.main import app
+
+    _, _, _, admin = screen
+    token = device_token(admin, ttl_seconds=1)
+
+    def gone() -> Cadence:
+        raise RuntimeError("client went away")
+
+    monkeypatch.setattr(screen_ws, "cadence", gone)
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError), client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+        assert screen_ws._revokers.get(admin.user_id) is None
+        # A leaked timer would fire after exp and count an expiry for a dead socket.
+        time.sleep(2.1)
+    assert "screen.token_expired" not in metrics.snapshot()["counters"]
+
+
+def test_a_delete_racing_the_handshake_closes_the_screen_socket(
+    screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-registration account re-check closes a socket whose user just went."""
+    from api.main import app
+
+    _, _, token, admin = screen
+    with TestClient(app) as client:
+        # Auth at the handshake passes; the re-check after registering sees the delete.
+        monkeypatch.setattr(screen_ws, "_still_authorized", lambda _principal: False)
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            assert json.loads(ws.receive_text())["type"] == "screen.cadence"
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_text()
+            assert (closed.value.code, closed.value.reason) == (1008, "account removed or device token revoked")
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
+def test_a_client_gone_before_the_first_send_ends_the_socket_quietly(screen) -> None:
+    """XERK-2612 QA: a disconnect on the first send is a normal end, not an ASGI error."""
+    _, _, token, admin = screen
+
+    class GoneSocket:
+        headers: dict[str, str] = {}
+        query_params = {"token": token}
+
+        async def accept(self) -> None:
+            pass
+
+        async def send_text(self, _text: str) -> None:
+            raise WebSocketDisconnect(1006)
+
+    # Returns instead of raising (an escaping disconnect is uvicorn's ASGI error log).
+    asyncio.run(screen_ws.screen_ws(GoneSocket()))
+    assert screen_ws._revokers.get(admin.user_id) is None
+
+
 def test_one_socket_feeds_a_bounded_number_of_windows(screen) -> None:
     from api.main import app
 

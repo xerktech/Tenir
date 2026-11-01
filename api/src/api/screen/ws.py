@@ -16,7 +16,7 @@ import struct
 import time
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from api.auth import AuthError, Principal, get_user_store, principal_from_bearer
@@ -208,6 +208,7 @@ async def screen_ws(ws: WebSocket) -> None:
 
     send_lock = asyncio.Lock()
     closing = asyncio.Event()
+    close_reason = "account removed or device token revoked"
 
     async def send(msg: ScreenCadence | ScreenNotice | Pong | ErrorMessage) -> None:
         async with send_lock:
@@ -294,31 +295,42 @@ async def screen_ws(ws: WebSocket) -> None:
             metrics.incr("screen.frame_errors")
 
     lanes: dict[tuple[str, str], _Lane] = {}
+
+    def expire() -> None:
+        # A socket must not outlive its token (XERK-2612): auth runs only at the handshake,
+        # so neither an expired token nor one whose row a later mint purged keeps streaming.
+        nonlocal close_reason
+        if not closing.is_set():
+            close_reason = "device token expired"
+            log.info("screen ws closed: device token expired")
+            metrics.incr("screen.token_expired")
+            closing.set()
+
+    expiry: asyncio.TimerHandle | None = None
+    receive: asyncio.Task | None = None
+    closed_by_us: asyncio.Task | None = None
     _revokers.setdefault(principal.user_id, set()).add(closing.set)
     if principal.token_id is not None:
         _token_revokers.setdefault(principal.token_id, set()).add(closing.set)
-    # A delete or revoke between the handshake's auth and this registration never saw this
-    # socket: re-check now that one would (the mic socket does the same, XERK-1504).
-    if not await asyncio.to_thread(_still_authorized, principal):
-        closing.set()
-    await send(cadence().message(meeting=False))
-    receive: asyncio.Task | None = None
-    closed_by_us = asyncio.create_task(closing.wait())
-    # A socket must not outlive its token (XERK-2612): close it at the token's expiry, so
-    # neither an expired token nor one whose row a later mint purged keeps streaming.
-    expiry = None
-    if principal.expires_at is not None:
-        expiry = asyncio.get_running_loop().call_later(
-            max(0.0, principal.expires_at - time.time()), closing.set
-        )
+    # Everything after registering runs under the try, so a client that is gone before
+    # the first send still unregisters and cancels its expiry timer.
     try:
+        if principal.expires_at is not None:
+            delay = max(0.0, principal.expires_at - time.time())
+            expiry = asyncio.get_running_loop().call_later(delay, expire)
+        # A delete or revoke between the handshake's auth and this registration never saw
+        # this socket: re-check now that one would (the mic socket does the same, XERK-1504).
+        if not await asyncio.to_thread(_still_authorized, principal):
+            closing.set()
+        await send(cadence().message(meeting=False))
+        closed_by_us = asyncio.create_task(closing.wait())
         while True:
             receive = asyncio.create_task(ws.receive())
             done, _ = await asyncio.wait(
                 {receive, closed_by_us}, return_when=asyncio.FIRST_COMPLETED
             )
             if closed_by_us in done:
-                await ws.close(code=1008, reason="account removed, device token revoked or expired")
+                await ws.close(code=1008, reason=close_reason)
                 break
             frame = receive.result()
             if frame["type"] == "websocket.disconnect":
@@ -353,6 +365,10 @@ async def screen_ws(ws: WebSocket) -> None:
                 await send(Pong(type="pong", t=t if isinstance(t, int) else None))
             else:
                 await error("expected a binary frame or ping")
+    except WebSocketDisconnect:
+        # The client went away mid-send (even before the first cadence): a normal end,
+        # not an ASGI error; the finally below still cleans up.
+        pass
     finally:
         if expiry is not None:
             expiry.cancel()

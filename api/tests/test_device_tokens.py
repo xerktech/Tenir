@@ -330,7 +330,7 @@ def test_a_closed_screen_socket_leaves_no_expiry_timer(
 
     def recording_call_later(self, delay, callback, *args, **kwargs):
         handle = real_call_later(self, delay, callback, *args, **kwargs)
-        if getattr(callback, "__name__", "") == "set":  # the socket's closing.set
+        if getattr(callback, "__name__", "") == "expire":  # the socket's expiry close
             timers.append(handle)
         return handle
 
