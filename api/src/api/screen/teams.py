@@ -436,10 +436,24 @@ def _strip_header_boxes(lines: tuple[OcrLine, ...], roster: Roster) -> tuple[Ocr
     for b in lines:
         text = b.text.strip()
         new = _strip_avatar_token(text, roster, any_case=True)
+        if new == text:
+            new = _strip_misread_avatar(text, roster)
         if new != text and _starts_left_of_text_below(b, lines):
             b = OcrLine(new, b.box, b.score)
         out.append(b)
     return tuple(out)
+
+
+def _strip_misread_avatar(text: str, roster: Roster) -> str:
+    """A roster name behind a short token OCR misread off its circle ("3 Lee, Bo", "BI Lee,
+    Bo" for BL): the name alone, else ``text``. Real OCR, 1920x1080 and 1680x1050 (QA on
+    XERK-2609): unstripped, the row matched no one and Lee's caption went to Priya. Only
+    called for a box left of the text below it, so a caption's short first word is safe."""
+    token, sep, rest = text.partition(" ")
+    if not sep or len(token) > 3 or not len(roster):
+        return text
+    name = clean_name(rest)
+    return rest if is_teams_name(name) and roster.match(name) else text
 
 
 def _starts_left_of_text_below(box: OcrLine, lines: tuple[OcrLine, ...]) -> bool:
@@ -504,7 +518,7 @@ def parse_caption_crop(
             continue  # noise, as caption_rows drops it
         # A header opens the crop, follows an entry's finished (punctuated) last line, or
         # carries its avatar: small OCR drops the final "." (QA on XERK-2609).
-        avatar = any(id(b) in avatared for b in group) or _strip_avatar_token(raw, roster) != raw
+        avatar = any(id(b) in avatared for b in group)
         at_header = not rows or _ends_sentence(rows[-1]) or avatar
         headed.append(at_header)
         row = _respaced(_strip_avatar_token(raw, roster), roster, at_header=at_header)

@@ -139,6 +139,10 @@ paths:
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
+  - A short token before a roster name on a box left of the text below it is a misread circle
+    ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
+  - Open, needs pixel evidence (XERK-2614): photo-avatar speakers not on the roster, a new
+    speaker's name-shaped first line, slide text in the band mid-meeting.
   - A 2-letter title-case token ("So", "Al") is a tile circle only when >= 1.4x the median text
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption

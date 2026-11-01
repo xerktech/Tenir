@@ -655,24 +655,26 @@ def test_name_like_words_on_the_caption_column_stay_caption(row: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "row",
+    ("token", "name"),
     [
-        "s Sean O'Neil",  # one letter: a word, not a circle
-        "So Sean Oscar O'Neil",  # not all of his initials
+        ("s", "Sean O'Neil"),  # one letter: a word, not a circle
+        ("so", "Sean Mark O'Neil"),  # not all of his initials (S, M, O)
     ],
 )
-def test_a_mis_cased_token_short_of_the_full_initials_is_not_an_avatar(row: str) -> None:
+def test_a_mis_cased_box_short_of_the_full_initials_is_not_an_avatar(token: str, name: str) -> None:
     blocks = teams.parse_caption_crop(
         result(
             line("Priya Raman", 65, 4, 165, 20),
-            line("Okay.", 65, 26, 300, 46),
-            line(row, 18, 52, 200, 72),
-            line("Can we go?", 65, 78, 300, 98),
+            line("We met", 65, 26, 300, 46),
+            line(token, 65, 52, 80, 72),
+            line(name, 84, 52, 260, 72),
+            line("at the depot.", 65, 78, 300, 98),
         ),
-        roster("Priya Raman", "Sean O'Neil", "Sean Oscar O'Neil"),
+        roster("Priya Raman", name),
     )
-    assert blocks[0].speaker == "Priya Raman"
-    assert all(b.speaker != "Sean O'Neil" for b in blocks)
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Priya Raman", ["We met", f"{token} {name}", "at the depot."])
+    ]
 
 
 def test_a_non_speaker_tile_label_just_above_the_panel_is_a_participant() -> None:
@@ -809,6 +811,40 @@ def test_an_unknown_speaker_with_an_avatar_splits_an_unfinished_entry(last: str,
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
         ("Priya Raman", True, [last]),
         (None, True, ["Sure, I have them right here."]),
+    ]
+
+
+@pytest.mark.parametrize("misread", ["3 Lee, Bo", "BI Lee, Bo"])
+def test_a_misread_avatar_before_a_roster_name_is_stripped(misread: str) -> None:
+    # Real OCR, 1920x1080 / 1680x1050: the "BL" circle read as "3" or "BI".
+    blocks = teams.parse_caption_crop(
+        result(
+            line("PR Priya Raman", 18, 4, 140, 24),
+            line("Okay, let's start.", 65, 28, 300, 48),
+            line(misread, 18, 56, 140, 76),
+            line("Thanks.", 65, 80, 200, 100),
+        ),
+        roster("Priya Raman", "Lee, Bo"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Priya Raman", ["Okay, let's start."]),
+        ("Lee, Bo", ["Thanks."]),
+    ]
+
+
+def test_a_name_like_last_caption_row_with_no_text_below_stays_caption() -> None:
+    # Only a box left of the text below it is an avatar row: at the crop's bottom there is
+    # nothing below, so "Hi Hank Ives" stays Priya's words.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("PR Priya Raman", 18, 4, 140, 24),
+            line("Okay, let's start.", 65, 28, 300, 48),
+            line("Hi Hank Ives", 18, 56, 140, 76),
+        ),
+        roster("Priya Raman", "Hank Ives"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Priya Raman", ["Okay, let's start.", "Hi Hank Ives"])
     ]
 
 
