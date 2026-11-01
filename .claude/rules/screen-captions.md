@@ -53,6 +53,10 @@ paths:
   `ocr.HttpOcrClient` reads the size from the JPEG header and cuts full frames into
   overlapping strips, dropping lines that touch a cut edge (a fragment like "Priya Ra" would
   otherwise become a participant). Change ocr/README.md in the same PR as the contract.
+- `_active_tile` scores min(green left of the label, green below it), never one window
+  around it: on a 3x3 gallery that window caught the tile above's / left's border and nothing
+  won. Full-frame lines are ordered by row band then x (`_reading_order`): real OCR boxes on
+  a row differ by a pixel. Tests: `test_the_active_tile_wins_on_a_tight_gallery`.
 - Conversation ids are dashed uuid4 strings; history 404s any other shape (`is_valid_session_id`).
 - `is_name_like` keys on capitalisation: caption text is lower-case sentences. Loosening it
   turns caption lines into participants on full frames.

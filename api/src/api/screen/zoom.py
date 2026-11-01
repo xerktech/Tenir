@@ -209,6 +209,18 @@ def _caption_region(lines: list[OcrLine], width: int, height: int) -> tuple[floa
     return top - line_h * 1.8, bottom + line_h * 0.5
 
 
+def _reading_order(lines: tuple[OcrLine, ...]) -> list[OcrLine]:
+    """Rows top to bottom, left to right within a row. Sorting by y alone mixed a row's tile
+    names up: real OCR boxes on one row differ by a pixel or two (QA)."""
+    rows: list[list[OcrLine]] = []
+    for ln in sorted(lines, key=lambda ln: ln.cy):
+        if rows and ln.cy - rows[-1][0].cy <= max(4.0, 0.5 * rows[-1][0].height):
+            rows[-1].append(ln)
+        else:
+            rows.append([ln])
+    return [ln for row in rows for ln in sorted(row, key=lambda ln: ln.box[0])]
+
+
 def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
     w, h = ocr.width, ocr.height
     out = FullFrame()
@@ -219,7 +231,7 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
             out.title = best.text.strip()
     caption = _caption_region(list(ocr.lines), w, h)
     tiles: list[tuple[str, OcrLine]] = []
-    for ln in ocr.lines:
+    for ln in _reading_order(ocr.lines):
         if ln.box[1] < h * _TITLE_BAND or ln.cy > h * _TOOLBAR_BAND:
             continue
         if caption and caption[0] <= ln.cy <= caption[1] and abs(ln.cx - w / 2) < w * 0.3:
@@ -240,9 +252,12 @@ def _active_tile(
 ) -> str | None:
     """The tile name sitting inside Zoom's green active-speaker border, if exactly one does.
 
-    Zoom labels a tile at its bottom-left corner, so the border runs just left of and below
-    the label: count border-green pixels in that corner. Best effort: an undecodable frame
-    or no clear winner is None, and the caption header alone then names the speaker.
+    Zoom labels a tile at its bottom-left corner, so the tile's own border runs just left of
+    and just below the label. Green is counted on each side separately and a tile scores the
+    smaller count: one window around the label also caught the border of the tile above or to
+    the left, so on a 3x3 gallery two tiles scored alike and none won (QA with real OCR).
+    Best effort: an undecodable frame or no clear winner is None, and the caption header
+    alone then names the speaker.
     """
     try:
         from PIL import Image
@@ -254,23 +269,26 @@ def _active_tile(
     except Exception:
         return None
     width, height = img.size
+
+    def green(box: tuple[float, float, float, float]) -> int:
+        x0, y0, x1, y1 = (int(v) for v in box)
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
+        if x1 <= x0 or y1 <= y0:
+            return 0
+        px = np.asarray(img.crop((x0, y0, x1, y1)), dtype=np.int16)
+        r, g, b = px[..., 0], px[..., 1], px[..., 2]
+        return int(np.count_nonzero((g >= 150) & (g - r >= 70) & (g - b >= 40)))
+
     scores: list[tuple[int, str]] = []
     for name, ln in tiles:
         x0, y0, x1, y1 = ln.box
         pad = max(12.0, ln.height * 1.5)
-        box = (
-            max(0, int(x0 - pad)),
-            max(0, int(y0 - pad / 2)),
-            min(width, int(x1 + pad / 2)),
-            min(height, int(y1 + pad)),
-        )
-        if box[2] <= box[0] or box[3] <= box[1]:
-            continue
-        px = np.asarray(img.crop(box), dtype=np.int16)
-        r, g, b = px[..., 0], px[..., 1], px[..., 2]
-        count = int(np.count_nonzero((g >= 150) & (g - r >= 70) & (g - b >= 40)))
-        scores.append((count, name))
-    hits = sorted((s for s in scores if s[0] >= _BORDER_MIN_PIXELS), reverse=True)
+        # Left: the column just left of the label, the label's height. Below: the band just
+        # under it, starting at the label (a left neighbour's bottom border ends further left).
+        left = green((x0 - pad, y0, x0, y1))
+        below = green((x0 - pad / 3, y1, x1, y1 + pad))
+        scores.append((min(left, below), name))
+    hits = sorted((s for s in scores if s[0] >= _BORDER_MIN_PIXELS // 2), reverse=True)
     if not hits or (len(hits) > 1 and hits[1][0] * 2 > hits[0][0]):
         return None
     return hits[0][1]

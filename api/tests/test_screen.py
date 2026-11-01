@@ -1339,3 +1339,40 @@ def test_a_line_said_between_snapshots_landing_between_known_lines_is_kept() -> 
         ("Cy", "yes"),
         ("Ana", "okay"),
     ]
+
+
+def _gallery(active: int) -> tuple[OcrResult, bytes]:
+    """A 1080p 3x3 Zoom gallery with 12 px gaps: labels inset at each tile's bottom-left,
+    the active tile ringed in Zoom green, label boxes jittered a pixel or two like real OCR."""
+    names = ["Priya Raman", "Sean ONeil", "Ana Lopez", "Bo Chen", "Kunal Shah", "Maria Diaz"]
+    names += ["Omar Ali", "Lee Park", "Jo Kim"]
+    img = Image.new("RGB", (1920, 1080), (26, 26, 26))
+    draw = ImageDraw.Draw(img)
+    lines = []
+    w, h, gap = 620, 290, 12  # leaves the bottom 10% for the toolbar
+    for i, name in enumerate(names):
+        tx, ty = 20 + (i % 3) * (w + gap), 40 + (i // 3) * (h + gap)
+        if i == active:
+            draw.rectangle([tx, ty, tx + w, ty + h], outline=(35, 217, 89), width=4)
+        jitter = (i * 7) % 3
+        lines.append(OcrLine(name, (tx + 10, ty + h - 32 + jitter, tx + 150, ty + h - 12 + jitter)))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    # Shuffled the way a y-first sort would see jittered boxes.
+    return OcrResult(1920, 1080, tuple(sorted(lines, key=lambda ln: ln.box[1]))), buf.getvalue()
+
+
+@pytest.mark.parametrize("active", range(9))
+def test_the_active_tile_wins_on_a_tight_gallery(active: int) -> None:
+    """QA delta 10: one window around each label also caught the neighbours' border."""
+    result, jpeg = _gallery(active)
+    out = parse_full_frame(result, jpeg)
+    assert out.active_speaker == out.participants[active]
+
+
+def test_participants_keep_tile_order_despite_jittered_boxes() -> None:
+    result, jpeg = _gallery(0)
+    assert parse_full_frame(result, jpeg).participants == [
+        "Priya Raman", "Sean ONeil", "Ana Lopez", "Bo Chen", "Kunal Shah", "Maria Diaz",
+        "Omar Ali", "Lee Park", "Jo Kim",
+    ]  # fmt: skip
