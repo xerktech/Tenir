@@ -183,7 +183,8 @@ body `{"name"}`; the capture client sends its hostname) and carries the row id a
   user's id is a 404. A device token can't call either, nor mint another.
 - Web: the Devices tab. Android: the Devices card in Settings.
 - At most 20 live devices per user (409 past that); each mint drops the user's revoked and
-  expired rows. Revoking an expired device is a 404, as it is no longer listed.
+  expired rows. An expired device is unlisted but can still be revoked by id: that closes a
+  socket opened before expiry (sockets are authorized only at the handshake).
 - A token minted before this change has no `jti` and is refused: re-run `--pair`.
 - Rolling the api back to a release before this change makes revoked tokens work again (that
   release never reads the table): re-revoke after rolling forward, or rotate `API_AUTH_SECRET`.

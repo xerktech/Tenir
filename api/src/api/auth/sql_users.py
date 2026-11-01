@@ -662,7 +662,8 @@ class SqlUserStore:
         with self._ensure_pool().connection() as conn:
             cur = conn.execute(
                 "UPDATE device_tokens SET revoked_at = now()"
-                f" WHERE id = %s AND user_id = %s AND {_LIVE_DEVICE_TOKEN}",
+                # Expired still counts: revoke closes a socket opened before expiry.
+                " WHERE id = %s AND user_id = %s AND revoked_at IS NULL",
                 (token_id, user_id),
             )
             return cur.rowcount > 0

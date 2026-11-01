@@ -781,9 +781,9 @@ def test_device_tokens_round_trip_and_revoke(make_store) -> None:
     assert not store.revoke_device_token(user.user_id, first.token_id)
     assert not store.device_token_is_live(user.user_id, first.token_id)
     assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [second.token_id]
-    # An expired token can't be revoked (it is already gone from the list) and is purged,
-    # with the revoked one, by the next mint; live tokens are capped per user.
-    assert not store.revoke_device_token(user.user_id, expired.token_id)
+    # An expired token can still be revoked (closing a socket opened before expiry); it is
+    # purged, with the revoked one, by the next mint; live tokens are capped per user.
+    assert store.revoke_device_token(user.user_id, expired.token_id)
     from api.auth.users import MAX_DEVICE_TOKENS, TooManyDevices
 
     store.create_device_token(user.user_id, name="purger", ttl_seconds=3600)
@@ -800,3 +800,29 @@ def test_device_tokens_round_trip_and_revoke(make_store) -> None:
     assert not store.device_token_is_live(user.user_id, second.token_id)
     with pytest.raises(KeyError):
         store.create_device_token(user.user_id, name="late", ttl_seconds=60)
+
+
+def test_concurrent_device_token_mints_never_pass_the_cap(make_store) -> None:
+    """XERK-2594: the mint locks the user row, so two api processes minting at once can't
+    both see a free slot. Without the lock this overshot in ~2 of 3 runs, so run it thrice."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from api.auth.users import MAX_DEVICE_TOKENS, TooManyDevices
+
+    make, _ = make_store
+    a, b = make(), make()
+    for attempt in range(3):
+        user = a.create(f"racer-{attempt}", "racer-password-1", household="default")
+        for _ in range(MAX_DEVICE_TOKENS - 5):
+            a.create_device_token(user.user_id, name="n", ttl_seconds=3600)
+
+        def mint(i: int) -> bool:
+            try:
+                (a, b)[i % 2].create_device_token(user.user_id, name="race", ttl_seconds=3600)
+                return True
+            except TooManyDevices:
+                return False
+
+        with ThreadPoolExecutor(8) as pool:
+            assert sum(pool.map(mint, range(30))) == 5
+        assert len(a.list_device_tokens(user.user_id)) == MAX_DEVICE_TOKENS

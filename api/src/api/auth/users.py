@@ -493,8 +493,9 @@ class InMemoryUserStore:
     def revoke_device_token(self, user_id: str, token_id: str) -> bool:
         with self._lock:
             token = self._device_tokens.get(token_id)
-            # An expired token is already gone from the list, so it is "not found" here too.
-            if token is None or token.user_id != user_id or token.expires_at <= time.time():
+            # An expired token still counts: revoke is how its owner closes a socket opened
+            # before expiry (sockets are authorized only at the handshake).
+            if token is None or token.user_id != user_id:
                 return False
             del self._device_tokens[token_id]
             return True

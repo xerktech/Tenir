@@ -7,6 +7,8 @@ every other device (which rotating ``API_AUTH_SECRET`` would).
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -233,16 +235,31 @@ def test_a_revoke_between_handshake_and_registration_still_closes_the_socket(
     assert closed.value.code == 1008
 
 
-def test_revoking_an_expired_device_is_not_found(client: TestClient) -> None:
-    """Expired devices drop off the list, so revoke agrees: 404, not 204."""
-    user = get_user_store().get_by_username("op")
-    expired = get_user_store().create_device_token(user.user_id, name="old", ttl_seconds=-1)
-    r = client.delete(f"/auth/device-tokens/{expired.token_id}", headers=_login(client, "op"))
-    assert r.status_code == 404
+def test_revoking_an_expired_device_closes_its_open_socket(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A socket outlives its token's expiry (auth is handshake-only), so revoke must still
+    reach an expired device: it is the owner's way to cut that socket."""
+    bearer = _login(client, "op")
+    minted = _mint(client, bearer)
+    with client.websocket_connect(f"/ws/screen?token={minted['token']}") as ws:
+        ws.receive_text()
+        row = get_user_store()._device_tokens[minted["id"]]
+        get_user_store()._device_tokens[minted["id"]] = replace(row, expires_at=row.created_at)
+        assert client.get("/auth/device-tokens", headers=bearer).json() == []
+        r = client.delete(f"/auth/device-tokens/{minted['id']}", headers=bearer)
+        assert r.status_code == 204
+        assert metrics.snapshot()["counters"].get("screen.revoked") == 1
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                ws.receive_text()
+        assert closed.value.code == 1008
 
 
 def test_minting_is_capped_and_dead_rows_are_purged(client: TestClient) -> None:
     from api.auth.users import MAX_DEVICE_TOKENS
+
+    assert MAX_DEVICE_TOKENS == 20  # docs/meeting-captions.md promises 20
 
     bearer = _login(client, "op")
     minted = [_mint(client, bearer) for _ in range(MAX_DEVICE_TOKENS)]
@@ -263,3 +280,12 @@ def test_expired_rows_are_purged_on_the_next_mint() -> None:
     dead = store.create_device_token(user.user_id, name="old", ttl_seconds=-1)
     store.create_device_token(user.user_id, name="new", ttl_seconds=60)
     assert dead.token_id not in store._device_tokens
+    # Expired tokens never count toward the cap.
+    from api.auth.users import MAX_DEVICE_TOKENS
+
+    for _ in range(MAX_DEVICE_TOKENS - 1):
+        store.create_device_token(user.user_id, name="n", ttl_seconds=60)
+    store._device_tokens.update(
+        {t.token_id: replace(t, expires_at=t.created_at) for t in store.list_device_tokens(user.user_id)}
+    )
+    store.create_device_token(user.user_id, name="after expiry", ttl_seconds=60)
