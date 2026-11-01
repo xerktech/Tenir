@@ -93,6 +93,7 @@ class MeetingTracker:
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
         self.last_caption_ms = 0
+        self._last_blocks: list[CaptionBlock] = []
         self.last_ts = 0
         # Captions-off warning: when the toolbar was last seen, and when to warn next.
         self._meeting_seen_ms: int | None = None
@@ -172,7 +173,17 @@ class MeetingTracker:
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
-        self.last_caption_ms = ts
+        # Teams passes header-less crops during a meeting (an entry whose header scrolled
+        # off): one re-sent unchanged (a slide, tile text) must not hold the meeting open for
+        # good (XERK-2609). Zoom keeps its old rule: any caption keeps it open.
+        stale = (
+            self.meta.platform == "teams"
+            and not any(b.has_header for b in blocks)
+            and blocks == self._last_blocks
+        )
+        self._last_blocks = blocks
+        if not stale:
+            self.last_caption_ms = ts
         self._caption_seen_ms = ts
         if self.conversation_id is None:
             await self._start(ts)

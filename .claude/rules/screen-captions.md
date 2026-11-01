@@ -121,6 +121,32 @@ paths:
     each fix traded one synthetic case for another. Re-tune on real captures before adding more.
   - A trailing "." is still a name after an initial, a dotted degree or Jr./Sr. ("Martin King
     Jr." was lost to the previous speaker). Test: `test_teams_name_shape`.
+  - Real OCR of rendered Teams windows (XERK-2609) is the regression set: tests under
+    "real OCR of rendered Teams windows" in `test_screen_teams.py` hold Paddle's boxes.
+    The QA kit (render + OCR pod + rescore) lived outside the repo; tenir-ocr's netpol admits
+    only `tenir` pods, so drive it through `kubectl port-forward` (restart it per batch).
+  - Not live, a crop needs a roster-matched header (any header with no roster): tile initials,
+    misread labels and slides started meetings. Live (`parse_caption_crop(live=True)`, from
+    ws.py) header-less crops pass: refusing them dropped long entries and ended the meeting
+    mid-entry (QA). `MeetingTracker.on_caption` doesn't refresh `last_caption_ms` for a Teams
+    header-less snapshot equal to the last one. Tests: `test_a_crop_with_no_speaker_header_yields_nothing`,
+    `test_a_slide_heading_with_a_roster_starts_no_meeting`, `test_a_resent_header_less_crop_lets_a_teams_meeting_end`.
+  - With a roster, a name row before a non-name row is an unverified header only where one can
+    sit (`caption_blocks(unknown_headers=<row predicate>)`, Zoom passes none): first row, after a
+    punctuated row, or carrying avatar evidence (initials in its box or a circle beside it).
+    Punctuation alone lost "Acme Global Partners" mid-caption when absent, and when present
+    merged a new speaker after an unfinished line into the last one (both QA, real OCR).
+  - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
+    right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
+    does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
+  - A short token before a roster name on a box left of the text below it is a misread circle
+    ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
+  - Open, needs pixel evidence (XERK-2614): photo-avatar speakers not on the roster, a new
+    speaker's name-shaped first line, slide text in the band mid-meeting.
+  - A 2-letter title-case token ("So", "Al") is a tile circle only when >= 1.4x the median text
+    height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
+  - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
+    as one tall box whose height let the tile label above link in.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and

@@ -349,9 +349,10 @@ def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
 
 
 def parse_caption_crop(
-    ocr: OcrResult, roster: Roster, *, active: str | None = None
+    ocr: OcrResult, roster: Roster, *, active: str | None = None, live: bool = False
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks."""
+    """Split a caption-box crop into speaker blocks (``live`` is unused: Teams only)."""
+    del live
     return caption_blocks(caption_rows(ocr), roster, active=active)
 
 
@@ -366,8 +367,14 @@ def caption_blocks(
     *,
     active: str | None = None,
     name_like: Callable[[str], bool] = is_name_like,
+    unknown_headers: Callable[[int], bool] | None = None,
 ) -> list[CaptionBlock]:
-    """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape."""
+    """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
+
+    ``unknown_headers`` (Teams): with a roster too, a name-shaped row ``i`` followed by a row
+    that isn't name-shaped is a header with no speaker when ``unknown_headers(i)`` says a
+    header can sit there. Teams captions are Title Case, so the platform decides where
+    ("I spoke with" / "John Smith" / "yesterday" is one caption)."""
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
@@ -383,7 +390,19 @@ def caption_blocks(
         # Before any full frame has named the tiles there is nothing to validate a header
         # against: a short name-shaped row followed by more text is taken as a header with
         # no speaker rather than stored as a caption.
-        if not len(roster) and i + 1 < len(rows) and name_like(row) and len(row.split()) >= 2:
+        if (
+            i + 1 < len(rows)
+            and name_like(row)
+            and len(row.split()) >= 2
+            and (
+                not len(roster)
+                or (
+                    unknown_headers is not None
+                    and not name_like(rows[i + 1])
+                    and unknown_headers(i)
+                )
+            )
+        ):
             blocks.append(CaptionBlock(None, True))
             continue
         if not blocks:
