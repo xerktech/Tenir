@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import unicodedata
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -161,6 +162,19 @@ class ConversationOut(ConversationSummaryOut):
         )
 
 
+class OrgOut(BaseModel):
+    """An org the caller has screen-captured meetings from: the history org filter."""
+
+    siteKey: str
+    name: str
+
+
+def _has_control_chars(text: str) -> bool:
+    """Control (Cc) or format (Cf) characters: no org site key holds one, and a NUL 500s
+    Postgres."""
+    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
+
+
 def _store():
     store = get_conversation_store()
     if store is None:
@@ -227,19 +241,37 @@ def _with_stored_audio(conv: Conversation) -> Conversation:
 @router.get("/conversations", response_model=list[ConversationSummaryOut])
 def list_conversations(
     q: str | None = Query(None, description="Keyword search over conversation transcripts."),
+    org: str | None = Query(
+        None,
+        max_length=200,
+        description="Only screen-captured meetings from this org site key (XERK-2507).",
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     principal: Principal = Depends(current_principal),
 ) -> list[ConversationSummaryOut]:
+    if org is not None and _has_control_chars(org):
+        # A NUL reached psycopg as a 500; no site key holds one.
+        raise HTTPException(status_code=422, detail="org must not contain control characters")
     store = _store()
     hh = principal.household
     owner = _owner_scope(principal)
     convs = (
-        store.search(hh, q, owner=owner, limit=limit, offset=offset)
+        store.search(hh, q, owner=owner, org=org, limit=limit, offset=offset)
         if q
-        else store.list(hh, owner=owner, limit=limit, offset=offset)
+        else store.list(hh, owner=owner, org=org, limit=limit, offset=offset)
     )
     return [ConversationSummaryOut.of(c) for c in convs]
+
+
+# Declared before /conversations/{conversation_id} so "orgs" is not read as an id.
+@router.get("/conversations/orgs", response_model=list[OrgOut])
+def list_conversation_orgs(principal: Principal = Depends(current_principal)) -> list[OrgOut]:
+    # Owner-scoped like the listing: a member's filter offers only orgs they recorded.
+    return [
+        OrgOut(siteKey=key, name=name)
+        for key, name in _store().orgs(principal.household, owner=_owner_scope(principal))
+    ]
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationOut)

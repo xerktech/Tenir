@@ -118,6 +118,27 @@ def test_a_participants_table_without_position_is_migrated(store) -> None:
     assert store.get(HH, cid).participants == ["Priya Raman"]
 
 
+def test_org_filter_and_orgs(store) -> None:
+    """XERK-2507: list/search by org, and the org list."""
+    northwind_old, northwind, acme, mic = (str(uuid.uuid4()) for _ in range(4))
+    store.create(
+        HH, northwind_old, owner="u1", screen=ScreenMeta("northwind", "Northwind Old", "zoom")
+    )
+    store.create(HH, acme, owner="u2", screen=ScreenMeta("acme", "acme corp", "zoom"))
+    store.create(HH, northwind, owner="u1", screen=ScreenMeta("northwind", "Northwind", "zoom"))
+    store.create(HH, mic, owner="u1", mic_source="phone-microphone")
+    for cid in (northwind_old, northwind, acme, mic):
+        store.add_segment(HH, cid, Segment(f"{cid}-1", "ship it friday", 0, 100, "en"))
+        store.finish(HH, cid)
+
+    assert {c.id for c in store.list(HH, org="northwind")} == {northwind, northwind_old}
+    assert [c.id for c in store.list(HH, owner="u2", org="northwind")] == []
+    assert [c.id for c in store.search(HH, "friday", org="acme")] == [acme]
+    assert [c.id for c in store.search(HH, "friday", owner="u1", org="acme")] == []
+    assert store.orgs(HH) == [("acme", "acme corp"), ("northwind", "Northwind")]
+    assert store.orgs(HH, owner="u1") == [("northwind", "Northwind")]
+
+
 def test_meeting_delivery_state_round_trips(store) -> None:
     # XERK-2513: a screen meeting is pending from creation, listed once ready, and its
     # sent/failed state + error persist; a mic row never gets a state.

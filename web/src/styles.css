@@ -189,6 +189,12 @@ button.history-sort:hover { color: var(--text); }
 .history-row:hover { background: var(--surface-raised); }
 .history-row.selected { background: var(--accent-soft); }
 .history-col-date { white-space: nowrap; color: var(--text-muted); }
+/* Screen-captured meetings (XERK-2507): title + org badge + platform under the date. */
+.history-meeting { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-1); }
+.history-meeting-title { color: var(--text); font-weight: 600; }
+.history-org-filter { width: auto; }
+.meeting-tags { display: inline-flex; gap: var(--space-2); align-items: center; }
+.speaker-name { font-weight: 600; }
 .history-col-turns { text-align: right; white-space: nowrap; }
 th.history-col-turns .history-sort { flex-direction: row-reverse; }
 .history-col-status { white-space: nowrap; }

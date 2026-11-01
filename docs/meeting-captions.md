@@ -217,6 +217,12 @@ the last one (a 5 s sweep), and becomes a `ready` conversation with `source='scr
 A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
 Deleting the user closes their open screen sockets.
 
+**History** (XERK-2507, web and Android): a meeting row shows its title, org badge and
+platform; the detail shows each segment's speaker and the meeting's speakers (read-only).
+`GET /conversations?org=<siteKey>` filters the list (and search) to one org;
+`GET /conversations/orgs` lists the caller's orgs for the filter, both owner-scoped like the
+rest of history. Renaming speakers (writing aliases) is not exposed yet: see XERK-2606.
+
 ## Capture client (XERK-2506)
 
 `desktop/` is the Windows client on the central PC (install and config: `desktop/README.md`).

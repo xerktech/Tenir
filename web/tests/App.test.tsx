@@ -72,7 +72,7 @@ vi.mock("@tenir/client-core", async (importOriginal) => {
   completeOidcCallback: vi.fn(),
   oidcLogout: vi.fn(async () => {}),
   getStatus: vi.fn(async () => ({ overall: "ready", generatedAt: "x", reasons: [], components: [] })),
-  history: { list: vi.fn(async () => []), get: vi.fn(), remove: vi.fn(), audioUrl: () => "" },
+  history: { list: vi.fn(async () => []), orgs: vi.fn(async () => []), get: vi.fn(), remove: vi.fn(), audioUrl: () => "" },
   users: { list: vi.fn(async () => []), create: vi.fn(), remove: vi.fn() },
   // Needed by LivePanel / useCapture
   DISCLOSURES: [{ id: "recording", title: "Recording notice", body: "Test body." }],

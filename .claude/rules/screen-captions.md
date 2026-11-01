@@ -5,6 +5,8 @@ paths:
   - "api/tests/test_screen.py"
   - "api/tests/test_pg_screen_live.py"
   - "api/tests/fixtures/screen/**"
+  - "api/src/api/history.py"
+  - "api/tests/test_history_meetings.py"
 ---
 
 # Screen meeting captions (XERK-2505)
@@ -65,6 +67,10 @@ paths:
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
   socket loop, and latest-frame-wins drops frames sent faster than they are handled.
+- Alias editing (XERK-2606) is not a small endpoint: ingest stores the *aliased* name in
+  `segments.speaker`, so aliases must also be keyed by shown names, and those keys collide.
+  A per-request "name taken" check missed raw names in other meetings and lost a race (QA on
+  XERK-2507 merged two people for good three ways); it needs one model + an org-level lock.
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
   never key the POST on anything but the conversation id, or a retry duplicates the meeting.
