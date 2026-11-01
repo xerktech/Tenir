@@ -54,9 +54,10 @@ _MATCH = 3.0
 _GLITCH = -1.0
 # A glitch is normally a misread of a known line in the same place (a garbled or half-cut top
 # line): that pairing is a substitution and costs _GLITCH. A shown line with no known line to
-# pair with, under a verified speaker header, is a line said between two snapshots (Bo's
-# "sure" above Ana's second "okay"); calling it a glitch costs more than calling it new.
-_UNPAIRED = -3.5
+# pair with is a glitch only without a verified speaker header (a scroll fragment): under
+# one it is a line said between two snapshots, wherever it sits — above or between known
+# lines — and everything below it is new (Zoom only adds lines at the bottom).
+_UNPAIRED = float("-inf")
 # A misread must look like the line it misreads: same speaker and close text. Pairing any
 # two lines let a real reply said between snapshots be "explained" as a misread and lost.
 _MISREAD_LIKE = 0.5

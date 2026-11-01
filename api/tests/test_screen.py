@@ -1251,3 +1251,23 @@ def test_lines_first_seen_together_keep_their_on_screen_order() -> None:
     out += m.flush(10_000)
     starts = {s.text: s.start_ms for s in out}
     assert starts["okay"] < starts["sure"] < starts["okay again"]
+
+
+def test_a_line_said_between_snapshots_landing_between_known_lines_is_kept() -> None:
+    """QA delta 7: a 3-line box [Cy, Bo, Ana okay] then [Bo, Cy yes, Ana okay]."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    box1 = [blk("Cy", "lets begin"), blk("Bo", "can you hear me"), blk("Ana", "okay")]
+    box2 = [blk("Bo", "can you hear me"), blk("Cy", "yes"), blk("Ana", "okay")]
+    for t in range(5):
+        out += m.feed(box1, t * 1000)
+    for t in range(5, 10):
+        out += m.feed(box2, t * 1000)
+    out += m.flush(30_000)
+    assert [(s.speaker, s.text) for s in out] == [
+        ("Cy", "lets begin"),
+        ("Bo", "can you hear me"),
+        ("Ana", "okay"),
+        ("Cy", "yes"),
+        ("Ana", "okay"),
+    ]

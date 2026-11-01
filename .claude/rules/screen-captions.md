@@ -35,9 +35,11 @@ paths:
   - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
     lines "explained away" a reply said between snapshots.
   - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
-  - Measured (`_simulate`, 1000 seeds x 25 lines): clean, noise or 30% dropped snapshots
-    each store 0 duplicates and no made-up text; losses 2 / 12 / 153. Noise and drops
-    together still duplicate (~370 runs): re-tune on real XERK-2506 captures, not synthetics.
+  - An unpaired line under a verified header is never a glitch (it may sit between known
+    lines: [Bo, Cy yes, Ana okay] after [Cy, Bo, Ana okay]); only header-less lines are.
+  - Measured (`_simulate`, 1000 seeds x 25 lines): clean and 30%-dropped runs store 0
+    duplicates and no made-up text (losses 2 / 152); OCR noise alone 4 duplicate runs. Noise
+    and drops together duplicate in ~400 runs: re-tune on real XERK-2506 captures.
   - Tests: `test_simulated_rolling_captions_store_what_was_said`,
     `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
     and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
