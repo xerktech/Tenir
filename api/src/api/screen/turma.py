@@ -24,8 +24,9 @@ or giving up during a long hub outage) goes back to ``pending`` when the loop st
 (XERK-2605): fixing the token needs a restart anyway, and the hub's idempotency makes the
 resend safe. Every meeting pending at boot (re-queued or not) gets a full
 ``API_TURMA_GIVE_UP_SECONDS`` from that boot, so a hub still re-registering its hosts after a
-cluster restart is retried, not given up on at the first 404 — also when the pod bounces twice. A still-wrong token just fails them again, once per boot. Refusals no fix can
-change (400, 413, nothing to send) stay failed.
+cluster restart is retried, not given up on at the first 404 — also when the pod bounces
+twice. A still-wrong token just fails them again, once per boot. Refusals no fix can change
+(400, 413, nothing to send) stay failed.
 
 A pass looks at EVERY pending meeting: one org's stuck backlog (its 404s or 429s) must never
 hide another org's meetings. After a retryable refusal the rest of that org waits for the
