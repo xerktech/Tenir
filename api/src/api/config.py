@@ -562,13 +562,16 @@ class Settings(BaseSettings):
     # Base URL of the tenir-ocr service (`POST {url}/v1/ocr`). Empty turns /ws/screen off:
     # connections are accepted and closed 1013 with "ocr not configured".
     ocr_url: str = ""
-    ocr_timeout_seconds: float = 10.0
+    # tenir-ocr's slowest in-contract image takes ~23 s (ocr/README.md): stay well above it.
+    ocr_timeout_seconds: float = 45.0
     # Frame cadence the server asks the capture client for, per window: idle (no meeting)
     # vs during a meeting, plus how often a full window frame (participant tiles, active
     # speaker border, title) is sent alongside the caption-box crops.
     screen_idle_fps: float = 0.2
     screen_meeting_fps: float = 1.0
-    screen_full_frame_seconds: float = 10.0
+    # A 1080p full frame is read as ~5 strips (~5 OCR-seconds), so it is sent sparingly: tile
+    # names and the meeting title change rarely.
+    screen_full_frame_seconds: float = 30.0
     # A caption line is final once unchanged this long (or once another speaker's block
     # follows it); a meeting ends after this long with no caption on screen.
     screen_line_stable_seconds: float = 3.0

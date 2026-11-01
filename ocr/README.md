@@ -3,6 +3,8 @@
 PaddleOCR PP-OCRv5 mobile on CPU, the engine and placement XERK-2504 chose
 ([`docs/meeting-captions.md`](../docs/meeting-captions.md)). The api (XERK-2505) sends it the
 caption-box crop the capture client cut from a meeting window and gets the caption lines back.
+Full window frames (participant tiles, title) are cut by the api into horizontal strips under
+the pixel cap (`api/src/api/screen/ocr.py`); this service never sees a whole frame.
 Deployed by the ArgoCD repo as `ai/tenir/ocr.yaml`.
 
 ## Contract

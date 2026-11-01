@@ -41,9 +41,7 @@ FIXTURE = json.loads((Path(__file__).parent / "fixtures/screen/zoom_meeting.json
 
 
 def ocr_of(frame: dict) -> OcrResult:
-    return parse_result(
-        {"width": frame["width"], "height": frame["height"], "lines": frame["lines"]}
-    )
+    return parse_result({"lines": frame["lines"]}, (frame["width"], frame["height"]))
 
 
 def render_full(frame: dict) -> bytes:
@@ -370,47 +368,117 @@ def test_headerless_continuation_takes_the_last_speaker() -> None:
 
 def test_parse_result_rejects_garbage() -> None:
     with pytest.raises(OcrError):
-        parse_result([])
+        parse_result([], (1, 1))
     with pytest.raises(OcrError):
-        parse_result({"width": 1, "height": 1, "lines": [{"text": "x", "box": [1, 2]}]})
-    got = parse_result({"width": 4, "height": 4, "lines": [{"text": "  ", "box": [0, 0, 1, 1]}]})
+        parse_result({"lines": [{"text": "x", "box": [1, 2]}]}, (1, 1))
+    got = parse_result({"lines": [{"text": "  ", "box": [0, 0, 1, 1]}]}, (4, 4))
     assert got.lines == ()
+    # tenir-ocr's answer for a slide-like image: no lines, never partial.
+    assert parse_result({"lines": [], "too_dense": True, "ms": 400}, (9, 9)).lines == ()
 
 
-def test_http_ocr_client_posts_the_jpeg() -> None:
-    seen: dict[str, object] = {}
+def _jpeg(width: int, height: int) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def _mock_ocr(handler) -> HttpOcrClient:
+    client = HttpOcrClient("http://ocr.test/", timeout=1)
+    client._client = httpx.AsyncClient(
+        base_url="http://ocr.test", transport=httpx.MockTransport(handler)
+    )
+    return client
+
+
+def test_http_ocr_client_posts_a_caption_crop_whole() -> None:
+    """The tenir-ocr contract (ocr/README.md): raw image in, lines with boxes out."""
+    seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["type"] = request.headers["content-type"]
-        seen["body"] = request.content
-        if request.content == b"bad":
-            return httpx.Response(500)
-        if request.content == b"html":
-            return httpx.Response(200, text="<html>")
+        seen.append(request)
         return httpx.Response(
             200,
-            json={
-                "width": 10,
-                "height": 5,
-                "lines": [{"text": "hi", "box": [0, 0, 5, 5], "score": 0.9}],
-            },
+            json={"lines": [{"text": "hi", "box": [0, 0, 5, 5], "score": 0.9}], "too_dense": False},
         )
 
     async def run() -> None:
-        client = HttpOcrClient("http://ocr.test/", timeout=1)
-        client._client = httpx.AsyncClient(
-            base_url="http://ocr.test", transport=httpx.MockTransport(handler)
-        )
-        got = await client.read(b"\xff\xd8x")
+        client = _mock_ocr(handler)
+        got = await client.read(_jpeg(700, 120))
+        assert (got.width, got.height) == (700, 120)
         assert got.lines[0].text == "hi" and got.lines[0].score == 0.9
-        for body in (b"bad", b"html"):
-            with pytest.raises(OcrError):
-                await client.read(body)
         await client.aclose()
 
     asyncio.run(run())
-    assert seen["path"] == "/v1/ocr" and seen["type"] == "image/jpeg"
+    assert len(seen) == 1
+    assert seen[0].url.path == "/v1/ocr" and seen[0].headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.parametrize("status", [413, 503, 500])
+def test_ocr_refusals_and_bad_bodies_drop_the_frame(status: int) -> None:
+    async def run() -> None:
+        client = _mock_ocr(lambda request: httpx.Response(status))
+        with pytest.raises(OcrError):
+            await client.read(_jpeg(100, 40))
+        client = _mock_ocr(lambda request: httpx.Response(200, text="<html>"))
+        with pytest.raises(OcrError):
+            await client.read(_jpeg(100, 40))
+        with pytest.raises(OcrError, match="not a readable image"):
+            await client.read(b"\xff\xd8junk")
+        with pytest.raises(OcrError, match="too large"):
+            await client.read(_jpeg(4000, 2600))
+
+    asyncio.run(run())
+
+
+def test_a_full_frame_is_read_in_strips_under_the_service_cap() -> None:
+    """tenir-ocr refuses images over 0.5 Mpx; a 1280x720 window is cut into overlapping
+    strips and each strip's lines are shifted back into window coordinates."""
+    from api.screen import ocr as ocr_mod
+
+    sizes: list[tuple[int, int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        w, h = Image.open(io.BytesIO(request.content)).size
+        sizes.append((w, h))
+        if len(sizes) == 1:
+            # The title, plus a name cut by the strip's bottom edge that the next one sees whole.
+            lines = [
+                {"text": "Q3 Release Sync", "box": [560, 6, 720, 26], "score": 1},
+                {"text": "Priya Ra", "box": [30, h - 12, 150, h], "score": 1},
+            ]
+        elif len(sizes) == 2:
+            lines = [{"text": "Priya Raman", "box": [30, 28, 190, 48], "score": 1}]
+        else:
+            lines = []
+        return httpx.Response(200, json={"lines": lines, "too_dense": False})
+
+    async def run() -> OcrResult:
+        client = _mock_ocr(handler)
+        return await client.read(_jpeg(1280, 720))
+
+    got = asyncio.run(run())
+    assert all(w * h <= ocr_mod.STRIP_PIXELS for w, h in sizes) and len(sizes) == 3
+    tops = [top for top, _ in ocr_mod.strips(1280, 720)]
+    assert [ln.text for ln in got.lines] == ["Q3 Release Sync", "Priya Raman"]
+    assert got.lines[1].box[1] == tops[1] + 28  # shifted into window coordinates
+    assert (got.width, got.height) == (1280, 720)
+
+
+def test_strips_cover_the_frame_with_overlap() -> None:
+    from api.screen import ocr as ocr_mod
+
+    spans = ocr_mod.strips(1920, 1080)
+    assert spans[0][0] == 0 and spans[-1][1] == 1080
+    assert all(b[0] == a[1] - ocr_mod.STRIP_OVERLAP for a, b in zip(spans, spans[1:]))
+    assert all(1920 * (bottom - top) <= ocr_mod.STRIP_PIXELS for top, bottom in spans)
+    assert ocr_mod._dedupe(
+        [
+            OcrLine("A b", (0, 10, 5, 20)),
+            OcrLine("A b", (2, 12, 7, 22)),
+            OcrLine("C", (0, 40, 1, 50)),
+        ]
+    ) == [OcrLine("A b", (0, 10, 5, 20)), OcrLine("C", (0, 40, 1, 50))]
 
 
 def test_ocr_client_is_built_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1207,8 +1275,8 @@ def test_ocr_results_and_rosters_are_bounded() -> None:
     from api.screen import ocr as ocr_mod
     from api.screen import zoom as zoom_mod
 
-    many = {"width": 9, "height": 9, "lines": [{"text": "x", "box": [0, 0, 1, 1]}] * 1000}
-    assert len(parse_result(many).lines) == ocr_mod.MAX_LINES
+    many = {"lines": [{"text": "x", "box": [0, 0, 1, 1]}] * 1000}
+    assert len(parse_result(many, (9, 9)).lines) == ocr_mod.MAX_LINES
     roster = Roster()
     for i in range(zoom_mod._MAX_ROSTER + 50):
         roster.add(f"Person Number{i}")

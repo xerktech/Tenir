@@ -23,7 +23,7 @@ from difflib import SequenceMatcher
 
 import numpy as np
 
-from api.screen.ocr import OcrLine, OcrResult
+from api.screen.ocr import MAX_FRAME_PIXELS, OcrLine, OcrResult
 
 # Zoom chrome that OCR reads off a full frame and that is never a participant or a title.
 _UI_TEXT = {
@@ -73,7 +73,7 @@ _BORDER_MIN_PIXELS = 24
 # Largest frame decoded for the border check: a 4K window (3840x2160) and a little more. A
 # JPEG is small on the wire but huge decoded (13000x13000 in 2.6 MB is ~500 MB of RGB), so
 # anything bigger, or not the size OCR read, is skipped rather than decoded.
-_MAX_DECODE_PIXELS = 3840 * 2400
+_MAX_DECODE_PIXELS = MAX_FRAME_PIXELS
 
 # Full-frame bands, as fractions of the frame height.
 _TITLE_BAND = 0.07

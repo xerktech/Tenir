@@ -158,7 +158,8 @@ the tile names and the active-speaker border, which are outside the crop. So fra
 - `full`: the whole window, every `fullFrameSeconds` and right before the first caption crop
   after none. Read for participant names, the green border and the meeting title.
 
-OCR cost stays near the spike's sizing: full frames are one in ~10 at the meeting cadence.
+OCR cost stays near the spike's sizing: a full frame (~5 strips) every 30 s per window adds
+about one strip-read in six to the caption crops at the meeting cadence.
 
 **Frames.** Binary: 4-byte big-endian header length, `ScreenFrameHeader` JSON
 (`windowTitle`, `orgSiteKey`, `orgName`, `platform`, `ts`, `region`), then the JPEG. Frames
@@ -167,18 +168,22 @@ newest frame waits for OCR; a newer one replaces it (`screen.frames_dropped`).
 
 **Cadence.** On connect the server sends the idle default (`API_SCREEN_IDLE_FPS`, 0.2); when a
 window's meeting starts it sends that window `API_SCREEN_MEETING_FPS` (1), and the idle rate
-again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (10).
+again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (30).
 
 **Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a
 `screen`-scoped token for the caller (`API_AUTH_DEVICE_TOKEN_TTL_SECONDS`, 365 days). It opens
 only `/ws/screen`, is refused on every other route, never slides, and dies with the user.
 Meetings it records are owned by that user. Login and OIDC tokens can't open `/ws/screen`.
 
-**tenir-ocr API** (what XERK-2512 deploys): `POST {API_OCR_URL}/v1/ocr`, body the JPEG
-(`Content-Type: image/jpeg`), answer
-`{"width", "height", "lines": [{"text", "box": [x0, y0, x1, y1], "score"}]}` in image pixels.
-The service owns the engine details (the crop border PP-OCR's detector needs, oneDNN off).
-Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
+**tenir-ocr** (`ocr/`, contract in `ocr/README.md`): `POST {API_OCR_URL}/v1/ocr` takes one
+image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide) has none.
+- Caption-box crops fit and are sent whole.
+- A full window frame doesn't: the api (`ocr.py`) cuts it into overlapping horizontal strips
+  under the cap, drops lines touching a cut edge (the neighbouring strip reads them whole),
+  and shifts boxes back into window coordinates. A 1080p frame is ~5 strips, ~5 OCR-seconds,
+  hence full frames every 30 s. A strip that is too dense contributes nothing.
+- 413 / 503 / timeout (45 s) drop that frame; the next one retries.
+- Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
 
 **Zoom parser** (`zoom.py`):
 

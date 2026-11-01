@@ -49,6 +49,10 @@ paths:
   once, so a failed write re-derived from frames would dedup away.
 - Full frames are decoded only at the OCR'd size and ≤3840x2400 px: a 2.6 MB JPEG decoded to
   gigabytes. One socket feeds at most `MAX_WINDOWS` windows.
+- tenir-ocr (ocr/README.md) refuses images over 0.5 Mpx and returns no width/height:
+  `ocr.HttpOcrClient` reads the size from the JPEG header and cuts full frames into
+  overlapping strips, dropping lines that touch a cut edge (a fragment like "Priya Ra" would
+  otherwise become a participant). Change ocr/README.md in the same PR as the contract.
 - Conversation ids are dashed uuid4 strings; history 404s any other shape (`is_valid_session_id`).
 - `is_name_like` keys on capitalisation: caption text is lower-case sentences. Loosening it
   turns caption lines into participants on full frames.
