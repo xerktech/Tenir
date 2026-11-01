@@ -71,4 +71,13 @@ describe("DevicesCard (XERK-2594)", () => {
     fireEvent.click(screen.getByText("Retry"));
     await waitFor(() => expect(screen.getByText(/MEETING-PC/)).toBeTruthy());
   });
+
+  it("reloads after a failed revoke so an already-revoked device drops off", async () => {
+    list.mockResolvedValueOnce([PC]).mockResolvedValueOnce([]);
+    revoke.mockRejectedValue(new Error("device not found"));
+    render(<DevicesCard />);
+    await waitFor(() => expect(screen.getByText(/MEETING-PC/)).toBeTruthy());
+    fireEvent.click(screen.getByText("Revoke"));
+    await waitFor(() => expect(screen.getByText("No capture devices.")).toBeTruthy());
+  });
 });

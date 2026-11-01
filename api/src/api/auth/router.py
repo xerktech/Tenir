@@ -20,9 +20,11 @@ from api import registry
 from api.auth.deps import SCREEN_SCOPE, current_principal, require_admin
 from api.auth.tokens import Principal, Role, issue_token
 from api.auth.users import (
+    MAX_DEVICE_TOKENS,
     DeviceToken,
     DuplicateUser,
     InvalidUserValue,
+    TooManyDevices,
     get_user_store,
     is_lookup_safe,
     new_username,
@@ -240,6 +242,11 @@ def device_token(
         raise HTTPException(status_code=401, detail="account no longer exists") from exc
     except InvalidUserValue as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TooManyDevices as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"at most {MAX_DEVICE_TOKENS} capture devices; revoke one first",
+        ) from exc
     scoped = Principal(
         user_id=principal.user_id,
         username=principal.username,

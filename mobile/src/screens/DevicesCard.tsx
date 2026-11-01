@@ -36,7 +36,10 @@ export function DevicesCard(): JSX.Element {
         notify(`Revoked ${name}`);
         reload();
       })
-      .catch((e) => notify(errText(e), "err"));
+      .catch((e) => {
+        notify(errText(e), "err");
+        reload(); // e.g. already revoked elsewhere: don't keep showing it
+      });
   };
 
   return (

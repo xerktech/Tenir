@@ -22,9 +22,11 @@ import uuid
 
 from api.auth.tokens import Role, hash_password, verify_password
 from api.auth.users import (
+    MAX_DEVICE_TOKENS,
     DeviceToken,
     DuplicateUser,
     InvalidUserValue,
+    TooManyDevices,
     User,
     new_username,
     normalize_username,
@@ -602,6 +604,21 @@ class SqlUserStore:
             raise KeyError(user_id)
         try:
             with self._ensure_pool().connection() as conn:
+                # Lock the user row so concurrent mints can't both pass the cap; a missing
+                # row means the user was deleted meanwhile.
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE id = %s FOR UPDATE", (user_id,)
+                ).fetchone() is None:
+                    raise KeyError(user_id)
+                conn.execute(
+                    f"DELETE FROM device_tokens WHERE user_id = %s AND NOT ({_LIVE_DEVICE_TOKEN})",
+                    (user_id,),
+                )
+                live = conn.execute(
+                    "SELECT count(*) FROM device_tokens WHERE user_id = %s", (user_id,)
+                ).fetchone()[0]
+                if live >= MAX_DEVICE_TOKENS:
+                    raise TooManyDevices(user_id)
                 row = conn.cursor(row_factory=dict_row).execute(
                     "INSERT INTO device_tokens (user_id, name, expires_at)"
                     " VALUES (%s, %s, now() + make_interval(secs => %s))"
@@ -645,7 +662,7 @@ class SqlUserStore:
         with self._ensure_pool().connection() as conn:
             cur = conn.execute(
                 "UPDATE device_tokens SET revoked_at = now()"
-                " WHERE id = %s AND user_id = %s AND revoked_at IS NULL",
+                f" WHERE id = %s AND user_id = %s AND {_LIVE_DEVICE_TOKEN}",
                 (token_id, user_id),
             )
             return cur.rowcount > 0

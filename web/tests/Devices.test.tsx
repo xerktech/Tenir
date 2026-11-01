@@ -68,4 +68,13 @@ describe("DevicesPanel (XERK-2594)", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.getByText("MEETING-PC")).toBeInTheDocument());
   });
+
+  it("reloads after a failed revoke so an already-revoked device drops off", async () => {
+    list.mockResolvedValueOnce([PC]).mockResolvedValueOnce([]);
+    revoke.mockRejectedValue(new Error("device not found"));
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    await waitFor(() => expect(screen.getByText("No capture devices.")).toBeInTheDocument());
+  });
 });

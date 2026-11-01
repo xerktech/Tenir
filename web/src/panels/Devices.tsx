@@ -23,7 +23,10 @@ export function DevicesPanel(): JSX.Element {
         notify(`Revoked ${d.name}`);
         reload();
       })
-      .catch((e) => notify(errText(e), "err"));
+      .catch((e) => {
+        notify(errText(e), "err");
+        reload(); // e.g. already revoked elsewhere: don't keep showing it
+      });
   };
 
   return (
@@ -48,7 +51,7 @@ export function DevicesPanel(): JSX.Element {
       )}
       {data?.map((d) => (
         <div key={d.id} className="item row">
-          <span className="grow">
+          <span className="grow" style={{ overflowWrap: "anywhere" }}>
             {d.name}
             <span className="muted">
               {" "}

@@ -781,6 +781,20 @@ def test_device_tokens_round_trip_and_revoke(make_store) -> None:
     assert not store.revoke_device_token(user.user_id, first.token_id)
     assert not store.device_token_is_live(user.user_id, first.token_id)
     assert [t.token_id for t in store.list_device_tokens(user.user_id)] == [second.token_id]
+    # An expired token can't be revoked (it is already gone from the list) and is purged,
+    # with the revoked one, by the next mint; live tokens are capped per user.
+    assert not store.revoke_device_token(user.user_id, expired.token_id)
+    from api.auth.users import MAX_DEVICE_TOKENS, TooManyDevices
+
+    store.create_device_token(user.user_id, name="purger", ttl_seconds=3600)
+    _, admin = make_store
+    assert admin.execute(
+        "SELECT count(*) FROM device_tokens WHERE user_id = %s", (user.user_id,)
+    ).fetchone()[0] == 2
+    for _ in range(MAX_DEVICE_TOKENS - 2):
+        store.create_device_token(user.user_id, name="n", ttl_seconds=3600)
+    with pytest.raises(TooManyDevices):
+        store.create_device_token(user.user_id, name="one too many", ttl_seconds=3600)
     # A user's tokens die with the user (ON DELETE CASCADE); minting for a gone user fails.
     store.delete(user.user_id)
     assert not store.device_token_is_live(user.user_id, second.token_id)

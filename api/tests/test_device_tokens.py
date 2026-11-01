@@ -206,3 +206,60 @@ def test_in_memory_store_drops_expired_and_deleted_users_tokens() -> None:
     store.delete(user.user_id)
     assert not store.device_token_is_live(user.user_id, live.token_id)
     assert not store.revoke_device_token(user.user_id, live.token_id)
+
+
+def test_a_revoke_between_handshake_and_registration_still_closes_the_socket(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The handler re-checks the row after registering its revoker: a revoke that lands
+    after auth but before registration sees no socket to close, so only that check stops it."""
+    bearer = _login(client, "op")
+    minted = _mint(client, bearer)
+    user = get_user_store().get_by_username("op")
+
+    def revoke_mid_handshake():
+        # Runs after auth and before the revoker is registered (screen_ws reads it there).
+        assert get_user_store().revoke_device_token(user.user_id, minted["id"])
+        return _NoOcr()
+
+    monkeypatch.setattr(screen_ws, "get_ocr_client", revoke_mid_handshake)
+    with client.websocket_connect(f"/ws/screen?token={minted['token']}") as ws:
+        ws.receive_text()  # the cadence is sent either way
+        # A ping answers "pong" on a socket that survived, so a regression fails here
+        # instead of hanging on a close that never comes.
+        ws.send_text('{"type": "ping"}')
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 1008
+
+
+def test_revoking_an_expired_device_is_not_found(client: TestClient) -> None:
+    """Expired devices drop off the list, so revoke agrees: 404, not 204."""
+    user = get_user_store().get_by_username("op")
+    expired = get_user_store().create_device_token(user.user_id, name="old", ttl_seconds=-1)
+    r = client.delete(f"/auth/device-tokens/{expired.token_id}", headers=_login(client, "op"))
+    assert r.status_code == 404
+
+
+def test_minting_is_capped_and_dead_rows_are_purged(client: TestClient) -> None:
+    from api.auth.users import MAX_DEVICE_TOKENS
+
+    bearer = _login(client, "op")
+    minted = [_mint(client, bearer) for _ in range(MAX_DEVICE_TOKENS)]
+    r = client.post("/auth/device-token", headers=bearer)
+    assert r.status_code == 409 and "revoke one" in r.json()["detail"]
+    # Revoking one frees a slot.
+    client.delete(f"/auth/device-tokens/{minted[0]['id']}", headers=bearer)
+    assert client.post("/auth/device-token", headers=bearer).status_code == 200
+    # Another user's cap is their own.
+    assert client.post("/auth/device-token", headers=_login(client, "other")).status_code == 200
+
+
+def test_expired_rows_are_purged_on_the_next_mint() -> None:
+    from api.auth.users import InMemoryUserStore
+
+    store = InMemoryUserStore()
+    user = store.create("u", "u-password-123", household="default")
+    dead = store.create_device_token(user.user_id, name="old", ttl_seconds=-1)
+    store.create_device_token(user.user_id, name="new", ttl_seconds=60)
+    assert dead.token_id not in store._device_tokens

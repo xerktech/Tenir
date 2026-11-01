@@ -182,7 +182,12 @@ body `{"name"}`; the capture client sends its hostname) and carries the row id a
   `DELETE /auth/device-tokens/{id}` revokes one and closes its open sockets (1008). Another
   user's id is a 404. A device token can't call either, nor mint another.
 - Web: the Devices tab. Android: the Devices card in Settings.
+- At most 20 live devices per user (409 past that); each mint drops the user's revoked and
+  expired rows. Revoking an expired device is a 404, as it is no longer listed.
 - A token minted before this change has no `jti` and is refused: re-run `--pair`.
+- Rolling the api back to a release before this change makes revoked tokens work again (that
+  release never reads the table): re-revoke after rolling forward, or rotate `API_AUTH_SECRET`.
+- Revoke closes sockets in its own process only; fine at one api worker (today), not beyond.
 
 **tenir-ocr** (`ocr/`, contract in `ocr/README.md`): `POST {API_OCR_URL}/v1/ocr` takes one
 image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide) has none.

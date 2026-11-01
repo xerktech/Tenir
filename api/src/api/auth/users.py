@@ -121,6 +121,15 @@ class UserStore(Protocol):
     def revoke_device_token(self, user_id: str, token_id: str) -> bool: ...
 
 
+# Live device tokens one user may hold (XERK-2594). Each mint also drops the user's dead
+# (revoked or expired) rows, so the table stays bounded per user.
+MAX_DEVICE_TOKENS = 20
+
+
+class TooManyDevices(Exception):
+    """Raised when a user already holds ``MAX_DEVICE_TOKENS`` live device tokens."""
+
+
 class DuplicateUser(Exception):
     """Raised when creating or renaming a user to a username/email already taken."""
 
@@ -458,6 +467,11 @@ class InMemoryUserStore:
         with self._lock:
             if user_id not in self._by_id:
                 raise KeyError(user_id)
+            mine = [t for t in self._device_tokens.values() if t.user_id == user_id]
+            for dead in (t for t in mine if t.expires_at <= now):
+                del self._device_tokens[dead.token_id]
+            if sum(t.expires_at > now for t in mine) >= MAX_DEVICE_TOKENS:
+                raise TooManyDevices(user_id)
             self._device_tokens[token.token_id] = token
         return token
 
@@ -479,7 +493,8 @@ class InMemoryUserStore:
     def revoke_device_token(self, user_id: str, token_id: str) -> bool:
         with self._lock:
             token = self._device_tokens.get(token_id)
-            if token is None or token.user_id != user_id:
+            # An expired token is already gone from the list, so it is "not found" here too.
+            if token is None or token.user_id != user_id or token.expires_at <= time.time():
                 return False
             del self._device_tokens[token_id]
             return True
