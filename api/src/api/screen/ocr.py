@@ -173,7 +173,12 @@ class HttpOcrClient:
             raise OcrError(f"frame too large to read: {width}x{height}")
         from PIL import Image
 
-        img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        try:
+            # The header can parse while the pixels don't (a truncated JPEG): an OcrError
+            # drops just this frame instead of killing the window's lane.
+            img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        except Exception as exc:
+            raise OcrError(f"not a readable image: {exc!r}") from exc
         lines: list[OcrLine] = []
         pending, splits = strips(width, height), 0
         while pending:

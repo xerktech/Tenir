@@ -444,6 +444,38 @@ def test_ocr_refusals_and_bad_bodies_drop_the_frame(status: int) -> None:
     asyncio.run(run())
 
 
+def test_a_truncated_large_frame_is_an_ocr_error() -> None:
+    """A JPEG whose header parses but whose pixels don't drops the frame as an OcrError."""
+    big = _jpeg(1000, 600)  # over STRIP_PIXELS, so it is decoded and cut into strips
+    client = _mock_ocr(lambda _r: httpx.Response(200, json={"lines": []}))
+    with pytest.raises(OcrError, match="not a readable image"):
+        asyncio.run(client.read(big[: len(big) // 2]))
+
+
+def test_a_lane_survives_a_frame_that_raises() -> None:
+    """An unexpected error on one frame must not stop the window's later frames."""
+    handled: list[int] = []
+
+    async def handle(header, _jpeg: bytes) -> None:
+        if header == 1:
+            raise RuntimeError("boom")
+        handled.append(header)
+
+    async def run() -> None:
+        metrics.reset()
+        lane = screen_ws._Lane(handle)
+        lane.put(1, b"")
+        await asyncio.sleep(0.01)
+        lane.put(2, b"")
+        await asyncio.sleep(0.01)
+        assert not lane.task.done()
+        lane.task.cancel()
+
+    asyncio.run(run())
+    assert handled == [2]
+    assert metrics.snapshot()["counters"].get("screen.frame_errors") == 1
+
+
 def test_a_full_frame_is_read_in_strips_under_the_service_cap() -> None:
     """tenir-ocr refuses images over 0.5 Mpx; a 1280x720 window is cut into overlapping
     strips and each strip's lines are shifted back into window coordinates."""
