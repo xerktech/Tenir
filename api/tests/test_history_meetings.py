@@ -93,9 +93,9 @@ def test_orgs_lists_each_org_once_by_name_with_its_latest_name() -> None:
 
 
 def test_detail_shows_each_segments_stored_speaker_and_the_participants() -> None:
-    _meeting(NORTHWIND, "northwind", "Northwind")
+    _meeting(NORTHWIND, "northwind", "Northwind", owner="u1")
     # Aliases apply at ingest only; history shows what was stored (read-only v1, XERK-2606).
-    _store().set_speaker_alias(HH, "northwind", "sam@example.com", "Sam")
+    _store().set_speaker_alias(HH, "u1", "northwind", "sam@example.com", "Sam")
     with TestClient(app) as client:
         detail = client.get(f"/conversations/{NORTHWIND}").json()
         exported = client.get(f"/conversations/{NORTHWIND}/export").json()
@@ -112,7 +112,7 @@ def test_speakers_cannot_be_renamed_through_history() -> None:
         )
     # 405 with the built web UI mounted, 404 without it: either way no route takes it.
     assert res.status_code in (404, 405)
-    assert _store().speaker_aliases(HH, "northwind") == {}
+    assert _store()._aliases == {}
 
 
 def test_an_org_with_control_characters_is_refused() -> None:

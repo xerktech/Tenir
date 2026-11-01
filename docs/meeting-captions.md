@@ -195,7 +195,9 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - Caption blocks: a header is a line (or a `Name:` prefix) matching a roster name, exact or
   fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
   a name-shaped line followed by text is a header with no speaker.
-- Speaker aliases (`speaker_aliases`, per org) rename tile names, e.g. an email to a first name.
+- Speaker aliases (`speaker_aliases`, per member and org) rename tile names, e.g. an email to a
+  first name. Only the meeting owner's aliases apply; one member's renames never show in
+  another member's meetings (XERK-2606).
 
 **Merge** (`merge.py`): each caption snapshot is a window onto the end of the transcript, so it
 is aligned in order against the recent known lines (an edit-distance alignment). Known lines

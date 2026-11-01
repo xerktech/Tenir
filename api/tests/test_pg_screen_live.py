@@ -82,10 +82,19 @@ def test_mic_conversations_default_to_source_mic(store) -> None:
 
 
 def test_speaker_aliases_are_per_org_and_case_insensitive(store) -> None:
-    store.set_speaker_alias(HH, "tesoro", " Kunal@TesoroXP.com", "Kunal")
-    store.set_speaker_alias(HH, "tesoro", "kunal@tesoroxp.com", "Kunal S.")
-    assert store.speaker_aliases(HH, "tesoro") == {"kunal@tesoroxp.com": "Kunal S."}
-    assert store.speaker_aliases(HH, "yprime") == {}
+    store.set_speaker_alias(HH, "u1", "tesoro", " Kunal@TesoroXP.com", "Kunal")
+    store.set_speaker_alias(HH, "u1", "tesoro", "kunal@tesoroxp.com", "Kunal S.")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"kunal@tesoroxp.com": "Kunal S."}
+    assert store.speaker_aliases(HH, "u1", "yprime") == {}
+
+
+def test_speaker_aliases_are_per_owner(store) -> None:
+    """XERK-2606: two members alias the same speaker independently; neither sees the other's."""
+    store.set_speaker_alias(HH, "u1", "tesoro", "sam@example.test", "Sam Q")
+    store.set_speaker_alias(HH, "u2", "tesoro", "sam@example.test", "Samuel")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"sam@example.test": "Sam Q"}
+    assert store.speaker_aliases(HH, "u2", "tesoro") == {"sam@example.test": "Samuel"}
+    assert store.speaker_aliases(HH, "u3", "tesoro") == {}
 
 
 def test_schema_apply_is_idempotent_with_the_new_tables(store) -> None:
@@ -126,3 +135,43 @@ def test_org_filter_and_orgs(store) -> None:
     assert [c.id for c in store.search(HH, "friday", owner="u1", org="acme")] == []
     assert store.orgs(HH) == [("acme", "acme corp"), ("northwind", "Northwind")]
     assert store.orgs(HH, owner="u1") == [("northwind", "Northwind")]
+
+
+def test_a_household_wide_speaker_aliases_table_is_migrated(store) -> None:
+    """XERK-2606: a database set up with the XERK-2505 (household, org, alias) key. The boot
+    apply moves it to per-owner keys: two members may alias one speaker, the old rows match
+    no member, and a write without an owner is refused."""
+    from api.persistence.postgres import apply_boot_schema
+
+    pool = store._ensure_pool()
+    with pool.connection() as conn:
+        conn.execute("DROP TABLE speaker_aliases")
+        conn.execute(
+            """
+            CREATE TABLE speaker_aliases (
+                household    TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                org_site_key TEXT NOT NULL,
+                alias        TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                PRIMARY KEY (household, org_site_key, alias)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO speaker_aliases VALUES (%s, 'tesoro', 'kunal@tesoroxp.com', 'Old')",
+            (HH,),
+        )
+    apply_boot_schema(pool)
+    apply_boot_schema(pool)
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {}  # the old row belongs to no one
+    store.set_speaker_alias(HH, "u1", "tesoro", "kunal@tesoroxp.com", "K1")
+    store.set_speaker_alias(HH, "u2", "tesoro", "kunal@tesoroxp.com", "K2")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"kunal@tesoroxp.com": "K1"}
+    assert store.speaker_aliases(HH, "u2", "tesoro") == {"kunal@tesoroxp.com": "K2"}
+    assert store.speaker_aliases(HH, "u3", "tesoro") == {}
+    with pytest.raises(psycopg.errors.NotNullViolation), pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO speaker_aliases (household, org_site_key, alias, name)"
+            " VALUES (%s, 'tesoro', 'x@y.test', 'X')",
+            (HH,),
+        )
