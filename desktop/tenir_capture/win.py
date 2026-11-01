@@ -65,7 +65,7 @@ class WgcCapture:
         cap = WindowsCapture(cursor_capture=False, draw_border=False, window_hwnd=hwnd)
 
         @cap.event
-        def on_frame_arrived(frame, control) -> None:  # noqa: ANN001
+        def on_frame_arrived(frame, control) -> None:
             now = time.monotonic()
             if now - self._copied < COPY_INTERVAL:
                 return
@@ -113,7 +113,7 @@ class WindowsPlatform:
             from plyer import notification
 
             notification.notify(title=title, message=message[:256], app_name="Tenir", timeout=15)
-        except Exception:  # noqa: BLE001 — a missed toast must not stop capture
+        except Exception:  # a missed toast must not stop capture
             log.exception("desktop notification failed")
 
 

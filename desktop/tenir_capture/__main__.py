@@ -40,7 +40,8 @@ def _http_json(url: str, body: dict | None = None, token: str | None = None) -> 
         req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — URL from own config
+    # The URL comes from the operator's own config.
+    with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
 
 
