@@ -34,7 +34,6 @@ from api.screen.zoom import (
     FullFrame,
     Roster,
     caption_blocks,
-    caption_rows,
     clean_tile_name,
     is_name_like,
     norm_name,
@@ -428,26 +427,36 @@ def _strip_avatar_token(row: str, roster: Roster, *, any_case: bool = False) -> 
 
 
 def _strip_header_boxes(lines: tuple[OcrLine, ...], roster: Roster) -> tuple[OcrLine, ...]:
-    """``lines`` with mis-cased initials ("So Sean O'Neil") stripped off a box that starts
-    left of the caption text column, where the avatar sits; other boxes are returned as is.
-    The column is the median left edge of caption-text boxes (not names, not initials).
-    Mid-caption, "Hi Hank Ives" starts on that column and stays text (QA on XERK-2609)."""
-    lefts = sorted(
-        b.box[0]
-        for b in lines
-        if not is_teams_name(clean_name(b.text)) and _initials(b.text, any_case=True) is None
-    )
-    if not lefts:
-        return lines
-    column = lefts[len(lefts) // 2]
+    """``lines`` with mis-cased initials ("So Sean O'Neil") stripped off a box that starts left
+    of the caption text right under it, where the avatar sits; other boxes come back as is.
+    Mid-caption, "Hi Hank Ives" starts where the text below it does and stays text (QA on
+    XERK-2609). Judged against the text below, not a column: a shared slide or tile labels
+    beside the panel shift any median edge."""
     out = []
     for b in lines:
-        if b.box[0] < column - b.height / 2:
-            text = _strip_avatar_token(b.text.strip(), roster, any_case=True)
-            if text != b.text.strip():
-                b = OcrLine(text, b.box, b.score)
+        text = b.text.strip()
+        new = _strip_avatar_token(text, roster, any_case=True)
+        if new != text and _starts_left_of_text_below(b, lines):
+            b = OcrLine(new, b.box, b.score)
         out.append(b)
     return tuple(out)
+
+
+def _starts_left_of_text_below(box: OcrLine, lines: tuple[OcrLine, ...]) -> bool:
+    below = [
+        o
+        for o in lines
+        if o is not box
+        and box.cy < o.cy
+        and o.box[1] - box.box[3] <= box.height
+        and o.box[2] > box.box[0]
+        and not is_teams_name(clean_name(o.text))
+        and _initials(o.text, any_case=True) is None
+    ]
+    if not below:
+        return False
+    nearest = min(below, key=lambda o: o.box[1])
+    return nearest.box[0] >= box.box[0] + box.height / 2
 
 
 def _ends_sentence(row: str) -> bool:
@@ -481,19 +490,30 @@ def parse_caption_crop(
     During a meeting a header-less crop is an entry whose header scrolled off, and it stays.
     A header-less block above a header stays too: an older entry scrolled up."""
     rows: list[str] = []
+    headed: list[bool] = []
     ocr = _drop_tile_initials(ocr)
-    ocr = OcrResult(ocr.width, ocr.height, _strip_header_boxes(ocr.lines, roster))
+    stripped = _strip_header_boxes(ocr.lines, roster)
+    # Boxes with avatar evidence: initials stripped off them, or a circle beside them.
+    avatared = {id(new) for old, new in zip(ocr.lines, stripped, strict=True) if new is not old}
+    avatared |= {id(n) for b in stripped if (n := _avatar_for(b, stripped)) is not None}
+    ocr = OcrResult(ocr.width, ocr.height, stripped)
     boxes = _drop_tile_labels(_drop_avatar_boxes(ocr))
-    for raw in caption_rows(boxes):
-        # A header opens the crop or follows an entry's finished (punctuated) last line.
-        at_header = not rows or _ends_sentence(rows[-1])
+    for group in row_groups(boxes.lines):
+        raw = " ".join(b.text for b in group).strip()
+        if sum(c.isalnum() for c in raw) < 2:
+            continue  # noise, as caption_rows drops it
+        # A header opens the crop, follows an entry's finished (punctuated) last line, or
+        # carries its avatar: small OCR drops the final "." (QA on XERK-2609).
+        avatar = any(id(b) in avatared for b in group) or _strip_avatar_token(raw, roster) != raw
+        at_header = not rows or _ends_sentence(rows[-1]) or avatar
+        headed.append(at_header)
         row = _respaced(_strip_avatar_token(raw, roster), roster, at_header=at_header)
         cleaned = clean_name(row)
         # A header's "(Guest)" suffix goes; a caption ending in parentheses stays caption.
         header = cleaned != row and is_teams_name(cleaned)
         rows.append(cleaned if header and (not len(roster) or roster.match(cleaned)) else row)
     blocks = caption_blocks(
-        rows, roster, active=active, name_like=is_teams_name, unknown_headers=True
+        rows, roster, active=active, name_like=is_teams_name, unknown_headers=headed.__getitem__
     )
     if not any(b.lines for b in blocks):
         return []

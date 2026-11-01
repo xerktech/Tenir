@@ -787,6 +787,78 @@ def test_a_mis_cased_tile_circle_is_not_a_participant(circle: str) -> None:
     assert frame.participants == ["Bob", "Sean O'Neil"]
 
 
+@pytest.mark.parametrize("last", ["Let's look at the numbers for the north region", "and then,"])
+@pytest.mark.parametrize("avatar", ["token", "box"])
+def test_an_unknown_speaker_with_an_avatar_splits_an_unfinished_entry(last: str, avatar: str) -> None:
+    # QA on XERK-2609, real OCR: Diego, not yet on the roster, spoke after an unpunctuated
+    # line; his header and caption went to Priya, then were stored again under him.
+    diego = (
+        [line("DA Diego Alvarez", 18, 60, 140, 80)]
+        if avatar == "token"
+        else [line("DA", 18, 62, 40, 78), line("Diego Alvarez", 65, 60, 170, 80)]
+    )
+    blocks = teams.parse_caption_crop(
+        result(
+            line("PR Priya Raman", 18, 4, 140, 24),
+            line(last, 65, 28, 500, 48),
+            *diego,
+            line("Sure, I have them right here.", 65, 84, 400, 104),
+        ),
+        roster("Priya Raman", "Lee, Bo"),
+    )
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        ("Priya Raman", True, [last]),
+        (None, True, ["Sure, I have them right here."]),
+    ]
+
+
+def test_a_mis_cased_panel_header_beside_a_shared_slide_is_a_participant() -> None:
+    # 1920x1080 share with captions, real OCR: the slide's rows link into the panel stack.
+    lines = [
+        line("Pallet unit cost audit quarter region total region", 29, 601, 368, 622),
+        line("Order order margin forecast delivery forecast", 30, 625, 352, 645),
+        line("Unit region region delivery stock pallet forecast margin audit", 29, 861, 462, 885),
+        line("PR Priya Raman", 14, 903, 134, 930),
+        line(CAPTIONS[0], 53, 925, 567, 948),
+        line("BL Lee, Bo", 17, 954, 103, 979),
+        line(CAPTIONS[1], 51, 973, 656, 998),
+        line("so Sean O'Neil", 19, 1005, 127, 1027),
+        line(CAPTIONS[2], 52, 1023, 543, 1048),
+    ]
+    frame = teams.parse_full_frame(result(*lines, width=1920, height=1080))
+    assert frame.participants == SPEAKERS
+
+
+def test_a_header_less_crop_mid_meeting_is_stored(screen) -> None:
+    """The socket tells the parser a meeting is live: a crop whose header scrolled off then
+    still feeds the merge (refused, a long entry was lost and the meeting ended)."""
+    from api.main import app
+
+    store, ocr, token, admin = screen
+    base = int(time.time() * 1000)
+    crops = [
+        result(line("Priya Raman", 56, 4, 150, 20), line("Okay, let's start.", 56, 26, 300, 46)),
+        result(
+            line("Okay, let's start.", 56, 4, 300, 20),
+            line("the north region shipped late again", 56, 26, 400, 46),
+        ),
+    ]
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, crop in enumerate(crops):
+            jpeg = ocr.register(unique_jpeg(9000 + i), crop)
+            ws.send_bytes(envelope(teams_header(base + 1000 * i, "caption"), jpeg))
+            wait_handled(i + 1)
+        (summary,) = store.list(admin.household)
+        end = base + 1000 + int(settings.screen_meeting_end_seconds * 1000)
+        assert client.portal.call(meetings.sweep, end) == [summary.id]
+    conv = store.get(admin.household, summary.id)
+    assert [s.text for s in conv.segments] == [
+        "Okay, let's start.",
+        "the north region shipped late again",
+    ]
+
+
 def test_real_ocr_of_a_1080p_meeting_gives_each_caption_its_speaker() -> None:
     frame = teams.parse_full_frame(full_1080p_2x2())
     blocks = teams.parse_caption_crop(

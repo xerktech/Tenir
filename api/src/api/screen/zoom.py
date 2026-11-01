@@ -367,14 +367,14 @@ def caption_blocks(
     *,
     active: str | None = None,
     name_like: Callable[[str], bool] = is_name_like,
-    unknown_headers: bool = False,
+    unknown_headers: Callable[[int], bool] | None = None,
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
-    ``unknown_headers`` (Teams): with a roster too, a name-shaped row that opens the crop or
-    follows a finished sentence, and is followed by a row that isn't name-shaped, is a header
-    with no speaker. Teams captions are Title Case, but mid-caption ("I spoke with" / "John
-    Smith" / "yesterday") the row before isn't punctuated."""
+    ``unknown_headers`` (Teams): with a roster too, a name-shaped row ``i`` followed by a row
+    that isn't name-shaped is a header with no speaker when ``unknown_headers(i)`` says a
+    header can sit there. Teams captions are Title Case, so the platform decides where
+    ("I spoke with" / "John Smith" / "yesterday" is one caption)."""
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
@@ -397,9 +397,9 @@ def caption_blocks(
             and (
                 not len(roster)
                 or (
-                    unknown_headers
+                    unknown_headers is not None
                     and not name_like(rows[i + 1])
-                    and (i == 0 or rows[i - 1].rstrip().endswith((".", "?", "!")))
+                    and unknown_headers(i)
                 )
             )
         ):

@@ -233,12 +233,13 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - Caption crops: entries are avatar, name line, wrapped text. The initials avatar (any script,
   or any box ~2 rows tall beside a name) is dropped before rows are grouped: it spans two rows
   and would glue the name to the text. OCR also reads the circle mis-cased ("So"); that counts
-  only as all of the name's initials, on a box starting left of the caption text column. Big
+  only as all of the name's initials, on a box starting left of the caption text below it. Big
   tile initials and a row of tile labels are dropped. Outside a meeting, a crop with no caption
   text or no roster-matched header yields nothing, so tile text or a slide starts no meeting;
   during one, a header-less crop (a long entry) still feeds the merge, but re-sent unchanged it
-  doesn't keep the meeting open. A short name row that follows a finished (punctuated) line
-  and precedes text is a header even when the roster lacks it (speaker unknown).
+  doesn't keep the meeting open. A short name row before text is a header even when the roster
+  lacks it (speaker unknown) if it opens the crop, follows a finished (punctuated) line or
+  carries an avatar.
 - Known limit: a caption row that reads as a participant's name ("Kunal Shah", or a near miss
   like "Kunal Shaw") is taken as a speaker header, and an unpunctuated one-word interim caption
   ("Okay") alone in the panel on a full frame joins the participants. Text alone can't tell

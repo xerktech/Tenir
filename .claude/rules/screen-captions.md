@@ -131,12 +131,14 @@ paths:
     mid-entry (QA). `MeetingTracker.on_caption` doesn't refresh `last_caption_ms` for a Teams
     header-less snapshot equal to the last one. Tests: `test_a_crop_with_no_speaker_header_yields_nothing`,
     `test_a_slide_heading_with_a_roster_starts_no_meeting`, `test_a_resent_header_less_crop_lets_a_teams_meeting_end`.
-  - With a roster, a name row is an unverified header only after a punctuated row (or first) and
-    before a non-name row (`caption_blocks(unknown_headers=True)`, Zoom off). Without the
-    punctuation check, "Acme Global Partners" mid-caption was lost (QA, real OCR).
-  - Mis-cased avatars ("So Sean O'Neil") strip only off a box left of the caption-text column
-    (`_strip_header_boxes`): punctuation can't place headers (small OCR drops the final "."),
-    and on the column "Hi Hank Ives" is caption. All initials, two letters at least.
+  - With a roster, a name row before a non-name row is an unverified header only where one can
+    sit (`caption_blocks(unknown_headers=<row predicate>)`, Zoom passes none): first row, after a
+    punctuated row, or carrying avatar evidence (initials in its box or a circle beside it).
+    Punctuation alone lost "Acme Global Partners" mid-caption when absent, and when present
+    merged a new speaker after an unfinished line into the last one (both QA, real OCR).
+  - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
+    right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
+    does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
   - A 2-letter title-case token ("So", "Al") is a tile circle only when >= 1.4x the median text
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
