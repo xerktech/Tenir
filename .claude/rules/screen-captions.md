@@ -147,8 +147,6 @@ paths:
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
     as one tall box whose height let the tile label above link in.
-  - Full frames: a 1280x720 or 960x540 gallery strip has over 16 OCR boxes, so tenir-ocr
-    refuses it (`too_dense`) and the roster comes back empty; the parser can't fix that.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
