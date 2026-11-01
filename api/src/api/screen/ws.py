@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import struct
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket
@@ -290,6 +291,13 @@ async def screen_ws(ws: WebSocket) -> None:
     await send(cadence().message(meeting=False))
     receive: asyncio.Task | None = None
     closed_by_us = asyncio.create_task(closing.wait())
+    # A socket must not outlive its token (XERK-2612): close it at the token's expiry, so
+    # neither an expired token nor one whose row a later mint purged keeps streaming.
+    expiry = None
+    if principal.expires_at is not None:
+        expiry = asyncio.get_running_loop().call_later(
+            max(0.0, principal.expires_at - time.time()), closing.set
+        )
     try:
         while True:
             receive = asyncio.create_task(ws.receive())
@@ -297,7 +305,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 {receive, closed_by_us}, return_when=asyncio.FIRST_COMPLETED
             )
             if closed_by_us in done:
-                await ws.close(code=1008, reason="account removed or device token revoked")
+                await ws.close(code=1008, reason="account removed, device token revoked or expired")
                 break
             frame = receive.result()
             if frame["type"] == "websocket.disconnect":
@@ -333,6 +341,8 @@ async def screen_ws(ws: WebSocket) -> None:
             else:
                 await error("expected a binary frame or ping")
     finally:
+        if expiry is not None:
+            expiry.cancel()
         _drop(_revokers, principal.user_id, closing.set)
         if principal.token_id is not None:
             _drop(_token_revokers, principal.token_id, closing.set)

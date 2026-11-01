@@ -62,6 +62,9 @@ class Principal:
     # A device token's id (``jti``, XERK-2594): the device_tokens row that must still be
     # live for the token to work, so one device can be revoked alone. None on login tokens.
     token_id: str | None = None
+    # A device token's expiry (epoch seconds): /ws/screen closes its socket then, since auth
+    # is otherwise checked only at the handshake (XERK-2612). None on login tokens.
+    expires_at: float | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -167,6 +170,7 @@ def _principal_of(claims: dict) -> Principal:
         username=str(claims.get("un", "")),
         scope=str(claims["scp"]) if claims.get("scp") is not None else None,
         token_id=str(claims["jti"]) if claims.get("jti") is not None else None,
+        expires_at=float(claims.get("exp", 0)) if claims.get("scp") is not None else None,
     )
 
 

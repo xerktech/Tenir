@@ -28,6 +28,8 @@ paths:
   every scoped token; a token without `jti` is refused (unrevocable), never let through.
   - Revoke closes open sockets via `screen.ws.revoke_token`; the handler re-checks the row after
     registering its revoker, as it does for account deletion.
+  - A screen socket closes at its token's `exp` (`Principal.expires_at`, scoped tokens only,
+    XERK-2612). Without it a mint purging the expired row left the socket unrevocable.
   - Tests: `test_device_tokens.py`; SQL `test_pg_users_live.py::test_device_tokens_round_trip_and_revoke`.
 - `/ws/screen` sockets aren't registry sessions: `delete_user` calls `screen.ws.revoke_user`.
   Test: `test_deleting_the_user_closes_their_open_screen_socket`.

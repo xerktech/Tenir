@@ -289,3 +289,31 @@ def test_expired_rows_are_purged_on_the_next_mint() -> None:
         {t.token_id: replace(t, expires_at=t.created_at) for t in store.list_device_tokens(user.user_id)}
     )
     store.create_device_token(user.user_id, name="after expiry", ttl_seconds=60)
+
+
+def test_a_screen_socket_closes_when_its_token_expires(client: TestClient) -> None:
+    """XERK-2612: auth is handshake-only, so the socket itself must end at the token's
+    expiry; otherwise a mint that purges the expired row leaves it unrevocable."""
+    import time
+
+    user = get_user_store().get_by_username("op")
+    row = get_user_store().create_device_token(user.user_id, name="short", ttl_seconds=2)
+    token = issue_token(
+        Principal(
+            user.user_id, user.household, user.role, user.username,
+            scope="screen", token_id=row.token_id,
+        ),
+        secret=settings.auth_secret,
+        ttl_seconds=2,
+    )
+    with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        ws.send_text('{"type": "ping"}')
+        assert "pong" in ws.receive_text()  # open while the token is valid
+        time.sleep(2.5)
+        # A ping answers on a socket that outlived its token, so a regression fails here
+        # instead of hanging on a close that never comes.
+        ws.send_text('{"type": "ping"}')
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 1008
