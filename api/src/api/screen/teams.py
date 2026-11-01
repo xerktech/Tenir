@@ -26,9 +26,13 @@ Caveats); re-tune on real XERK-2506 captures.
 
 from __future__ import annotations
 
+import io
 import re
+from dataclasses import dataclass
 
-from api.screen.ocr import OcrLine, OcrResult
+import numpy as np
+
+from api.screen.ocr import MAX_FRAME_PIXELS, OcrLine, OcrResult
 from api.screen.zoom import (
     CaptionBlock,
     FullFrame,
@@ -140,6 +144,22 @@ _MAX_NAME_TEXT = 100
 
 # A comma OCR read with no space after it, between letters ("Lee,Bo").
 _TIGHT_COMMA = re.compile(r"(?<=[^\W\d_]),(?=[^\W\d_])")
+
+# Photo-avatar check on caption crops (XERK-2614), lengths in text-row heights: the avatar is
+# searched for in the columns from 3.5 to 0.2 rows left of the text (ending any nearer clipped
+# small avatars flat, QA); the panel's background is read from the gap (0.55 to 0.2 rows left)
+# on caption-text rows, where no avatar is. A pixel is ink when a channel differs
+# from that background by more than _INK_DELTA; a y line is lit when _INK_SHARE of the column is
+# ink. A lit run is an avatar when it is 0.8 to 4 rows tall and round (_is_round).
+_AVATAR_COLUMN = (3.5, 0.2)
+_GAP_COLUMN = (0.55, 0.2)
+_INK_DELTA = 18
+_INK_SHARE = 0.2
+_AVATAR_ROWS = (0.8, 4.0)
+# A row starting this many text rows left of the text column starts on its avatar.
+_ON_AVATAR = 0.6
+# How far under a name line its avatar is looked for, in text rows.
+_BELOW_ROWS = 0.25
 
 # Top band holding the title, timer and toolbar, as a fraction of the frame height.
 _TOP_BAND = 0.09
@@ -491,8 +511,166 @@ def _respaced(row: str, roster: Roster, *, at_header: bool) -> str:
     return next((n for n in roster.names if norm_name(n).replace(" ", "") == key), row)
 
 
+def _text_column(text: list[OcrLine]) -> tuple[float, float, list[OcrLine]]:
+    """The caption text column's left edge, the median text-row height, and the first box of
+    each caption-text row. The edge is those rows' median start; name rows are left out: real
+    OCR reads a name box from the avatar's initials ("DA Diego Alvarez" at x 13, its text at
+    43), which put the column on the avatars (QA)."""
+    heights = sorted(b.height for b in text)
+    row_h = max(heights[len(heights) // 2], 1.0)
+    rows = [row[0] for row in row_groups(tuple(text))]
+    body = [b for b in rows if not _is_name_row(b.text)] or rows
+    lefts = sorted(b.box[0] for b in body)
+    return lefts[len(lefts) // 2], row_h, body
+
+
+@dataclass(frozen=True)
+class _AvatarInk:
+    """The avatar column of a caption crop, cut into lit y lines (see ``_avatar_ink``)."""
+
+    ink: np.ndarray  # rows x columns of the avatar column: differs from the panel colour
+    lit: np.ndarray  # per y line: enough of the column is ink
+    x1: int  # the column's right edge
+    row_h: float
+    text: list[OcrLine]
+
+
+def _avatar_ink(jpeg: bytes | None, ocr: OcrResult) -> _AvatarInk | None:
+    """The crop's avatar column read from its pixels: None when they can't be read (no
+    image, a size OCR didn't read, no room left of the text)."""
+    text = [b for b in ocr.lines if _initials(b.text, any_case=True) is None]
+    if not jpeg or not text:
+        return None
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg))  # reads the header only
+        if img.size != (ocr.width, ocr.height) or ocr.width * ocr.height > MAX_FRAME_PIXELS:
+            return None
+        px = np.asarray(img.convert("RGB"), dtype=np.int16)
+    except Exception:
+        return None
+    left, row_h, body = _text_column(text)
+    x0 = max(0, int(left - _AVATAR_COLUMN[0] * row_h))
+    x1 = int(left - _AVATAR_COLUMN[1] * row_h)
+    g0, g1 = int(left - _GAP_COLUMN[0] * row_h), int(left - _GAP_COLUMN[1] * row_h)
+    if x1 - x0 < row_h or g1 <= g0:
+        return None  # the crop starts at the text: no avatar column to look at
+    # The panel's own colour, from the gap between the avatars and the text, level with the
+    # caption-text rows (a fixed band also catches tiles above the panel): the whole crop's
+    # median was a tile's grey, and a light panel then read as ink on every row (QA).
+    gap = np.concatenate(
+        [px[max(0, int(b.box[1])) : int(b.box[3]) + 1, g0:g1].reshape(-1, 3) for b in body]
+    )
+    if not len(gap):
+        return None
+    bg = _mode_colour(gap)
+    ink = (np.abs(px[:, x0:x1] - bg) > _INK_DELTA).any(axis=2)
+    return _AvatarInk(ink, ink.mean(axis=1) >= _INK_SHARE, x1, row_h, text)
+
+
+def _mode_colour(pixels: np.ndarray) -> np.ndarray:
+    """The most common colour of ``pixels`` (n x 3), quantised to 8 levels a channel: a gap
+    sample that catches an avatar's edge or a glyph keeps the panel's colour, where a median
+    drifted (a reddish 53,33,38 on a 31 panel lit the whole column, QA)."""
+    q = pixels // 8
+    keys, inverse, counts = np.unique(q, axis=0, return_inverse=True, return_counts=True)
+    return pixels[inverse.reshape(-1) == int(np.argmax(counts))].mean(axis=0)
+
+
+def _pixel_avatars(jpeg: bytes | None, ocr: OcrResult) -> set[int] | None:
+    """Ids of the boxes drawn beside a speaker's avatar, found from the crop's pixels: None
+    when they can't be read.
+
+    Each entry's avatar (a photo or a coloured circle of initials) sits left of the caption
+    text column, its top level with the name line; caption text rows have only the panel's
+    background there. So the avatar column is cut into runs of y lines with ink, and a round
+    run names the topmost box beside it. OCR returns no box for a photo, so without this a
+    photo-avatar speaker the roster lacks was merged into the last one."""
+    col = _avatar_ink(jpeg, ocr)
+    return None if col is None else _round_avatars(col)
+
+
+def _runs(lit: np.ndarray) -> list[tuple[int, int]]:
+    """The [top, bottom) spans of consecutive lit y lines."""
+    out: list[tuple[int, int]] = []
+    y, height = 0, len(lit)
+    while y < height:
+        if not lit[y]:
+            y += 1
+            continue
+        top = y
+        while y < height and lit[y]:
+            y += 1
+        out.append((top, y))
+    return out
+
+
+def _avatar_sized(col: _AvatarInk, top: int, bottom: int) -> bool:
+    return _AVATAR_ROWS[0] * col.row_h <= bottom - top <= _AVATAR_ROWS[1] * col.row_h
+
+
+def _round_avatars(col: _AvatarInk) -> set[int]:
+    found: set[int] = set()
+    for top, y in _runs(col.lit):
+        tall = y - top
+        if not _avatar_sized(col, top, y):
+            continue
+        if not _is_round(col.ink[top:y]):
+            continue  # a slide's picture or a tile: Teams draws avatars as circles
+        # Beside it: any box reaching right of the column, including a name box that starts
+        # on the avatar's initials.
+        beside = [b for b in col.text if b.box[2] > col.x1 and b.box[1] < y and b.box[3] > top]
+        if not beside:
+            continue
+        first = min(beside, key=lambda b: b.box[1])
+        # The name line starts level with the avatar's top; a text row that only meets the
+        # avatar's lower half (its header unread) gets no header from it.
+        if first.box[1] <= top + tall / 2:
+            found.add(id(first))
+    return found
+
+
+def _ink_below(col: _AvatarInk, box: OcrLine) -> bool:
+    """An avatar-sized patch of ink in the avatar column starts level with ``box`` and
+    reaches under it: a circle is ~2 rows tall, so it outlasts its name line, while a slide
+    heading's own letters ("AI Artificial Intelligence" over indented bullets) end with its
+    box (QA). The patch need not be round (the pixel check may have missed the circle), but
+    it must be avatar-sized: a slide page in the column lit every line, which then vouched
+    for any heading (QA)."""
+    mid = (box.box[1] + box.box[3]) / 2
+    need = box.box[3] + _BELOW_ROWS * col.row_h
+    return any(
+        top <= mid and bottom >= need and _avatar_sized(col, top, bottom)
+        for top, bottom in _runs(col.lit)
+    )
+
+
+def _is_round(ink: np.ndarray) -> bool:
+    """A run of lit lines (``ink``: rows x columns) is a filled circle: about as wide as tall
+    at its middle, and narrower near its top and bottom than there. A square picture or a
+    tile's edge is as wide at the ends."""
+    tall = len(ink)
+
+    def width(y: int) -> int:
+        # The ink count, not its span: JPEG speckles beside a circle widened the span (QA).
+        return int(np.count_nonzero(ink[y]))
+
+    mid = width(tall // 2)
+    if not 0.7 * tall <= mid <= 1.4 * tall:
+        return False
+    k = max(1, round(0.15 * tall))
+    ends = max(width(k), width(tall - 1 - k))
+    return ends <= 0.9 * mid
+
+
 def parse_caption_crop(
-    ocr: OcrResult, roster: Roster, *, active: str | None = None, live: bool = False
+    ocr: OcrResult,
+    roster: Roster,
+    *,
+    active: str | None = None,
+    live: bool = False,
+    jpeg: bytes | None = None,
 ) -> list[CaptionBlock]:
     """Split a Teams caption-panel crop into speaker blocks.
 
@@ -502,15 +680,40 @@ def parse_caption_crop(
     roster matches (any name-shaped header before there is a roster): text without one is
     tile initials, a misread label or a shared slide, and it started meetings (XERK-2609).
     During a meeting a header-less crop is an entry whose header scrolled off, and it stays.
-    A header-less block above a header stays too: an older entry scrolled up."""
+    A header-less block above a header stays too: an older entry scrolled up.
+
+    With the crop's ``jpeg``, avatars found in its pixels decide every header the roster
+    doesn't match (``_pixel_avatars``, XERK-2614); without it, the row's position does."""
     rows: list[str] = []
     headed: list[bool] = []
     ocr = _drop_tile_initials(ocr)
+    stripped_from = ocr.lines
     stripped = _strip_header_boxes(ocr.lines, roster)
-    # Boxes with avatar evidence: initials stripped off them, or a circle beside them.
-    avatared = {id(new) for old, new in zip(ocr.lines, stripped, strict=True) if new is not old}
-    avatared |= {id(n) for b in stripped if (n := _avatar_for(b, stripped)) is not None}
     ocr = OcrResult(ocr.width, ocr.height, stripped)
+    col = _avatar_ink(jpeg, ocr)
+    pixels = None if col is None else _round_avatars(col)
+    text = [b for b in ocr.lines if _initials(b.text, any_case=True) is None]
+    column = _text_column(text) if text else None
+
+    def initials_evidence(box: OcrLine) -> bool:
+        # Initials OCR read into a name box: evidence when the avatar column is lit under it
+        # (the pixel check may still miss the circle's shape), or, with no pixels, when the
+        # box starts left of the text column. A slide heading "AI Artificial Intelligence"
+        # reads the same but has no circle under it (QA).
+        if col is not None:
+            return _ink_below(col, box)
+        return column is not None and box.box[0] <= column[0] - _ON_AVATAR * column[1]
+
+    # Boxes with avatar evidence: initials stripped off them, a circle box beside them, or a
+    # round avatar in the pixels.
+    avatared = {
+        id(new)
+        for old, new in zip(stripped_from, stripped, strict=True)
+        if new is not old and initials_evidence(new)
+    }
+    avatared |= {id(n) for b in stripped if (n := _avatar_for(b, stripped)) is not None}
+    avatared |= pixels or set()
+    avatar_rows: set[int] = set()
     boxes = _drop_tile_labels(_drop_avatar_boxes(ocr))
     for group in row_groups(boxes.lines):
         raw = " ".join(b.text for b in group).strip()
@@ -518,18 +721,35 @@ def parse_caption_crop(
             continue  # noise, as caption_rows drops it
         # A header opens the crop, follows an entry's finished (punctuated) last line, or
         # carries its avatar: small OCR drops the final "." (QA on XERK-2609).
-        avatar = any(id(b) in avatared for b in group)
+        # Avatar evidence: a box marked above, or initials read into the row ("DA Diego
+        # Alvarez" at x 13, text at 43) where the pixel check missed that circle (QA).
+        unstripped = _strip_avatar_token(raw, roster)
+        read_in = unstripped != raw and initials_evidence(group[0])
+        avatar = read_in or any(id(b) in avatared for b in group)
+        if avatar:
+            avatar_rows.add(len(rows))
         at_header = not rows or _ends_sentence(rows[-1]) or avatar
         headed.append(at_header)
-        row = _respaced(_strip_avatar_token(raw, roster), roster, at_header=at_header)
+        row = _respaced(unstripped, roster, at_header=at_header)
         cleaned = clean_name(row)
         # A header's "(Guest)" suffix goes; a caption ending in parentheses stays caption.
         header = cleaned != row and is_teams_name(cleaned)
-        rows.append(cleaned if header and (not len(roster) or roster.match(cleaned)) else row)
+        known = not len(roster) or roster.match(cleaned) or avatar
+        rows.append(cleaned if header and known else row)
     blocks = caption_blocks(
-        rows, roster, active=active, name_like=is_teams_name, unknown_headers=headed.__getitem__
+        rows,
+        roster,
+        active=active,
+        name_like=is_teams_name,
+        unknown_headers=headed.__getitem__,
+        avatars=avatar_rows,
+        avatars_decide=bool(pixels),
     )
     if not any(b.lines for b in blocks):
         return []
-    verified = any(b.has_header and (b.speaker or not len(roster)) for b in blocks)
+    # A header verifies the crop when the roster matches it or an avatar is beside it. With
+    # no roster and no pixels to read, any header does (as before XERK-2614); with pixels and
+    # no avatar at all it may be a slide, which then started meetings after a reset.
+    unknown_ok = not len(roster) and pixels is None
+    verified = any(b.has_header and (b.speaker or b.avatar or unknown_ok) for b in blocks)
     return blocks if verified or live else []

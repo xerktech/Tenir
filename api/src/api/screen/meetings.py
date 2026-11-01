@@ -175,6 +175,19 @@ class MeetingTracker:
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
+        loop = asyncio.get_running_loop()
+        if (
+            self.meta.platform == "teams"
+            and self.merger is not None
+            and not any(b.has_header and (b.speaker or b.avatar) for b in blocks)
+            and not await loop.run_in_executor(CPU_POOL, self.merger.knows_any, blocks, ts)
+        ):
+            # No header the roster or an avatar vouches for, and re-reading no recent line:
+            # not the panel but other text in the band, a slide mid-meeting whose headings
+            # read as unknown headers (XERK-2614). Stored, it became speech; it doesn't hold
+            # the meeting open either. A speaker off the roster has an avatar, so stays (QA).
+            metrics.incr("screen.unaligned_crop_dropped")
+            return
         # Teams passes header-less crops during a meeting (an entry whose header scrolled
         # off): one re-sent unchanged (a slide, tile text) must not hold the meeting open for
         # good (XERK-2609). Zoom keeps its old rule: any caption keeps it open.
@@ -200,7 +213,6 @@ class MeetingTracker:
             # else starts no meeting. Otherwise they were re-stored as a second conversation.
             merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
-        loop = asyncio.get_running_loop()
         segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
         if self.conversation_id is None:
             if merger.new_lines == 0:

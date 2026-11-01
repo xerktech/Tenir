@@ -196,6 +196,15 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
     return out
 
 
+def _shown(blocks: list[CaptionBlock]) -> list[_Shown]:
+    return [
+        _Shown(b.speaker if b.has_header else None, text[:_MAX_CHARS], _norm(text[:_MAX_CHARS]), bi)
+        for bi, b in enumerate(blocks)
+        for text in b.lines
+        if _norm(text)
+    ][-_MAX_SHOWN:]
+
+
 class CaptionMerger:
     def __init__(
         self, *, start_ms: int, stable_ms: int, carried: list[_Line] | None = None
@@ -243,17 +252,21 @@ class CaptionMerger:
         )
         return line.segment
 
+    def _tail(self, ts: int) -> list[_Line]:
+        return [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
+
+    def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
+        """Whether a line of this snapshot re-reads a recent known line (it aligns to one).
+
+        A header-less Teams crop mid-meeting is a long entry whose header scrolled off, and it
+        still shows lines the last snapshot did; one sharing none is other text in the band
+        (a slide, XERK-2614)."""
+        return any(a is not None for a in _align(_shown(blocks), self._tail(ts)))
+
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
-        shown = [
-            _Shown(
-                b.speaker if b.has_header else None, text[:_MAX_CHARS], _norm(text[:_MAX_CHARS]), bi
-            )
-            for bi, b in enumerate(blocks)
-            for text in b.lines
-            if _norm(text)
-        ][-_MAX_SHOWN:]
-        tail = [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
+        shown = _shown(blocks)
+        tail = self._tail(ts)
         aligned = _align(shown, tail)
         last_aligned = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
         out: dict[str, Segment] = {}

@@ -325,6 +325,9 @@ class CaptionBlock:
     speaker: str | None
     has_header: bool
     lines: list[str] = field(default_factory=list)
+    # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
+    # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
+    avatar: bool = False
 
 
 def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
@@ -349,10 +352,15 @@ def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
 
 
 def parse_caption_crop(
-    ocr: OcrResult, roster: Roster, *, active: str | None = None, live: bool = False
+    ocr: OcrResult,
+    roster: Roster,
+    *,
+    active: str | None = None,
+    live: bool = False,
+    jpeg: bytes | None = None,
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks (``live`` is unused: Teams only)."""
-    del live
+    """Split a caption-box crop into speaker blocks (``live`` and ``jpeg``: Teams only)."""
+    del live, jpeg
     return caption_blocks(caption_rows(ocr), roster, active=active)
 
 
@@ -368,42 +376,58 @@ def caption_blocks(
     active: str | None = None,
     name_like: Callable[[str], bool] = is_name_like,
     unknown_headers: Callable[[int], bool] | None = None,
+    avatars: set[int] | None = None,
+    avatars_decide: bool = False,
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
     ``unknown_headers`` (Teams): with a roster too, a name-shaped row ``i`` followed by a row
     that isn't name-shaped is a header with no speaker when ``unknown_headers(i)`` says a
     header can sit there. Teams captions are Title Case, so the platform decides where
-    ("I spoke with" / "John Smith" / "yesterday" is one caption)."""
+    ("I spoke with" / "John Smith" / "yesterday" is one caption).
+
+    ``avatars`` (Teams): the rows drawn beside a speaker avatar; their headers are marked
+    ``avatar``. With ``avatars_decide`` (avatars were found in the crop's pixels) it alone
+    decides a header the roster doesn't match, with or without a roster: a name-shaped row in
+    it is a header even before a name-shaped first line ("Hank Ives" / "Acme Global
+    Partners"), and one outside it is caption text (a slide heading)."""
+    marked = avatars or set()
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
         if speaker is not None:
-            blocks.append(CaptionBlock(speaker, True))
+            blocks.append(CaptionBlock(speaker, True, avatar=i in marked))
             continue
         head, sep, rest = row.partition(":")
         if sep and name_like(head.strip()):
             speaker = roster.match(head.strip(), prefer=active)
             if speaker is not None:
-                blocks.append(CaptionBlock(speaker, True, [rest.strip()] if rest.strip() else []))
+                text = [rest.strip()] if rest.strip() else []
+                blocks.append(CaptionBlock(speaker, True, text, avatar=i in marked))
                 continue
         # Before any full frame has named the tiles there is nothing to validate a header
         # against: a short name-shaped row followed by more text is taken as a header with
         # no speaker rather than stored as a caption.
-        if (
-            i + 1 < len(rows)
-            and name_like(row)
-            and len(row.split()) >= 2
-            and (
-                not len(roster)
-                or (
-                    unknown_headers is not None
-                    and not name_like(rows[i + 1])
-                    and unknown_headers(i)
+        if avatars_decide:
+            # With no roster a name row right above an avatar's (a tile label the band
+            # caught) is an empty header, as the position rule makes it, not caption text.
+            unknown = name_like(row) and (i in marked or (not len(roster) and i + 1 in marked))
+        else:
+            unknown = (
+                i + 1 < len(rows)
+                and name_like(row)
+                and len(row.split()) >= 2
+                and (
+                    not len(roster)
+                    or (
+                        unknown_headers is not None
+                        and not name_like(rows[i + 1])
+                        and unknown_headers(i)
+                    )
                 )
             )
-        ):
-            blocks.append(CaptionBlock(None, True))
+        if unknown:
+            blocks.append(CaptionBlock(None, True, avatar=i in marked))
             continue
         if not blocks:
             blocks.append(CaptionBlock(None, False))
