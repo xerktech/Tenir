@@ -254,16 +254,13 @@ export function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform;
 }
 
-/** Everyone a meeting's speaker editor offers (XERK-2507): the participant tiles, then any
- *  caption speaker not among them, each once, in first-seen order. */
+/** Everyone heard or seen in a meeting (XERK-2507): the participant tiles, then any caption
+ *  speaker not among them, each once, in first-seen order. */
 export function meetingSpeakers(conv: Conversation): string[] {
   const names = [...(conv.participants ?? [])];
   for (const seg of conv.segments) if (seg.speaker) names.push(seg.speaker);
   return [...new Set(names)];
 }
-
-/** The longest speaker name the server accepts (api `history._MAX_SPEAKER_NAME`). */
-export const MAX_SPEAKER_NAME = 80;
 
 export type ComponentState = "ready" | "connecting" | "down";
 
@@ -494,10 +491,6 @@ export const history = {
   /** Orgs the caller has meetings from, by name — the options of the org filter. */
   orgs: () => request<OrgView[]>("GET", "/conversations/orgs"),
   get: (id: string) => request<Conversation>("GET", `/conversations/${id}`),
-  /** Show `speaker` as `name` in every meeting from this meeting's org; returns the
-   *  meeting with its speakers relabelled (XERK-2507). */
-  renameSpeaker: (id: string, speaker: string, name: string) =>
-    request<Conversation>("PUT", `/conversations/${id}/speakers`, { speaker, name }),
   remove: (id: string) => request<void>("DELETE", `/conversations/${id}`),
   // Audio is opened by plain navigation (`<a href>` / Linking.openURL), which can't
   // set an Authorization header — so the token rides as `?token=`

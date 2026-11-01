@@ -67,12 +67,6 @@ class ConversationStore(Protocol):
         """``alias_key(alias) -> display name`` for one org's speakers."""
         ...
     def set_speaker_alias(self, household: str, org_site_key: str, alias: str, name: str) -> None: ...
-    def rename_speaker(self, household: str, org_site_key: str, current: str, name: str) -> None:
-        """Show ``current`` (a displayed speaker name) as ``name`` from now on (XERK-2507).
-
-        Every alias already displayed as ``current`` (compared by ``alias_key``, as lookups
-        are) is re-pointed too, so a raw tile name renamed twice still resolves in one hop."""
-        ...
     def orgs(self, household: str, *, owner: str | None = None) -> list[tuple[str, str]]:
         """``(org_site_key, org_name)`` of every org the caller has a screen meeting from,
         by name; the name is the most recent meeting's."""
@@ -252,14 +246,6 @@ class InMemoryConversationStore:
     def set_speaker_alias(self, household: str, org_site_key: str, alias: str, name: str) -> None:
         with self._lock:
             self._aliases.setdefault((household, org_site_key), {})[alias_key(alias)] = name
-
-    def rename_speaker(self, household: str, org_site_key: str, current: str, name: str) -> None:
-        with self._lock:
-            aliases = self._aliases.setdefault((household, org_site_key), {})
-            for key, shown in aliases.items():
-                if alias_key(shown) == alias_key(current):
-                    aliases[key] = name
-            aliases[alias_key(current)] = name
 
     def orgs(self, household: str, *, owner: str | None = None) -> list[tuple[str, str]]:
         with self._lock:

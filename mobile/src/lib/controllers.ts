@@ -89,8 +89,6 @@ export interface HistoryController extends AsyncState<ConversationSummary[]> {
   orgs: OrgView[];
   open(id: string): Promise<Conversation>;
   remove(id: string): Promise<void>;
-  /** Rename a meeting speaker org-wide; resolves to the relabelled meeting. */
-  renameSpeaker(id: string, speaker: string, name: string): Promise<Conversation>;
 }
 
 export function useHistory(): HistoryController {
@@ -118,7 +116,6 @@ export function useHistory(): HistoryController {
     orgs: orgs.data ?? [],
     open: (id) => history.get(id),
     remove,
-    renameSpeaker: (id, speaker, name) => history.renameSpeaker(id, speaker, name),
   };
 }
 

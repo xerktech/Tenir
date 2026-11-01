@@ -14,7 +14,6 @@ const api = vi.hoisted(() => ({
   historyGet: vi.fn(),
   historyRemove: vi.fn(),
   historyOrgs: vi.fn(),
-  historyRename: vi.fn(),
   getSessionKind: vi.fn(),
   oidcLogout: vi.fn(),
   startOidcLogin: vi.fn(),
@@ -39,7 +38,6 @@ vi.mock("@tenir/client-core", () => ({
     get: api.historyGet,
     remove: api.historyRemove,
     orgs: api.historyOrgs,
-    renameSpeaker: api.historyRename,
     audioUrl: vi.fn(),
   },
 }));
@@ -216,15 +214,6 @@ describe("useHistory", () => {
     await waitFor(() => expect(result.current.data?.length).toBe(1));
     expect(result.current.orgs).toEqual([]);
     expect(result.current.error).toBeNull();
-  });
-
-  it("renames a meeting speaker", async () => {
-    api.historyList.mockResolvedValue([summary]);
-    api.historyRename.mockResolvedValue({ ...summary, segments: [] });
-    const { result } = renderHook(() => useHistory());
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    await result.current.renameSpeaker("c1", "sam@example.com", "Sam");
-    expect(api.historyRename).toHaveBeenCalledWith("c1", "sam@example.com", "Sam");
   });
 
   it("surfaces a failed listing rather than reporting an empty history", async () => {

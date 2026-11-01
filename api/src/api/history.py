@@ -25,7 +25,6 @@ from api.persistence import (
     Cue,
     Segment,
     Song,
-    alias_key,
     audio_key,
     coerce_status,
     get_audio_store,
@@ -152,25 +151,14 @@ class ConversationOut(ConversationSummaryOut):
     participants: list[str] = Field(default_factory=list)
 
     @classmethod
-    def of(cls, conv: Conversation, aliases: dict[str, str] | None = None) -> "ConversationOut":
-        """``aliases`` (``alias_key -> name``, the org's speaker aliases) relabels speakers
-        renamed since the meeting was stored (XERK-2507)."""
+    def of(cls, conv: Conversation) -> "ConversationOut":
         base = ConversationSummaryOut.of(conv.summary()).model_dump()
-
-        def shown(name: str) -> str:
-            return aliases.get(alias_key(name), name) if aliases else name
-
-        segments = [SegmentOut.of(s) for s in conv.segments]
-        for seg in segments:
-            if seg.speaker is not None:
-                seg.speaker = shown(seg.speaker)
         return cls(
             **base,
-            segments=segments,
+            segments=[SegmentOut.of(s) for s in conv.segments],
             cues=[CueOut.of(c) for c in conv.cues],
             songs=[SongOut.of(s) for s in conv.songs],
-            # Two tiles renamed to one name show once.
-            participants=list(dict.fromkeys(shown(p) for p in conv.participants)),
+            participants=list(conv.participants),
         )
 
 
@@ -181,22 +169,9 @@ class OrgOut(BaseModel):
     name: str
 
 
-# A display name, not free text: long enough for "Firstname Lastname (Team)".
-_MAX_SPEAKER_NAME = 80
-
-
-class SpeakerRenameIn(BaseModel):
-    """Show ``speaker`` (as the meeting currently displays it) as ``name`` in every meeting
-    from the same org, past and future (XERK-2507)."""
-
-    speaker: str = Field(min_length=1, max_length=200)
-    # Capped again after whitespace is collapsed; this bound only limits the body.
-    name: str = Field(min_length=1, max_length=400)
-
-
 def _has_control_chars(text: str) -> bool:
-    """Control (Cc) or format (Cf) characters: NUL 500s Postgres, and zero-width or
-    bidi-override characters make a name blank or spoof how it reads."""
+    """Control (Cc) or format (Cf) characters: no org site key holds one, and a NUL 500s
+    Postgres."""
     return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
 
 
@@ -263,16 +238,6 @@ def _with_stored_audio(conv: Conversation) -> Conversation:
     return dataclasses.replace(conv, audio_key=key)
 
 
-def _detail(conv: Conversation) -> ConversationOut:
-    """The detail view, with the org's current speaker names on a screen meeting."""
-    aliases = (
-        _store().speaker_aliases(conv.household, conv.org_site_key)
-        if conv.org_site_key is not None
-        else None
-    )
-    return ConversationOut.of(conv, aliases)
-
-
 @router.get("/conversations", response_model=list[ConversationSummaryOut])
 def list_conversations(
     q: str | None = Query(None, description="Keyword search over conversation transcripts."),
@@ -313,7 +278,7 @@ def list_conversation_orgs(principal: Principal = Depends(current_principal)) ->
 def get_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
-    return _detail(
+    return ConversationOut.of(
         _with_stored_audio(
             _require(principal.household, conversation_id, owner=_owner_scope(principal))
         )
@@ -325,58 +290,11 @@ def export_conversation(
     conversation_id: str, principal: Principal = Depends(current_principal)
 ) -> ConversationOut:
     # Per-record export for the privacy controls; same shape as the detail view.
-    return _detail(
+    return ConversationOut.of(
         _with_stored_audio(
             _require(principal.household, conversation_id, owner=_owner_scope(principal))
         )
     )
-
-
-@router.put("/conversations/{conversation_id}/speakers", response_model=ConversationOut)
-def rename_speaker(
-    conversation_id: str,
-    body: SpeakerRenameIn,
-    principal: Principal = Depends(current_principal),
-) -> ConversationOut:
-    """Rename a speaker of a screen meeting (e.g. ``sam@example.com`` -> ``Sam``).
-
-    Aliases are per org, so the new name shows in every meeting from that org, and the
-    capture pipeline applies it to meetings recorded from now on. The caller must be able
-    to read this meeting, and the speaker must appear in it: that keeps a member from
-    writing aliases for an org they never recorded."""
-    owner = _owner_scope(principal)
-    conv = _require(principal.household, conversation_id, owner=owner)
-    if conv.org_site_key is None:
-        raise HTTPException(status_code=409, detail="only meeting speakers can be renamed")
-    shown = _detail(conv)
-    speakers = set(shown.participants) | {s.speaker for s in shown.segments if s.speaker}
-    if body.speaker not in speakers:
-        raise HTTPException(status_code=404, detail="no such speaker in this meeting")
-    name = " ".join(body.name.split())
-    if not name:
-        raise HTTPException(status_code=422, detail="name must not be blank")
-    if len(name) > _MAX_SPEAKER_NAME:
-        raise HTTPException(
-            status_code=422, detail=f"name must be at most {_MAX_SPEAKER_NAME} characters"
-        )
-    if _has_control_chars(name):
-        raise HTTPException(status_code=422, detail="name must not contain control characters")
-    # Lookups fold case, so a name that folds to another person's would merge the two for
-    # good (every later rename moves both). A case-only change of this speaker is fine.
-    mine = alias_key(body.speaker)
-    if alias_key(name) != mine:
-        aliases = _store().speaker_aliases(conv.household, conv.org_site_key)
-        # Names (raw or shown) that already stand for someone in this org...
-        taken = {alias_key(s) for s in speakers} | set(aliases)
-        taken |= {alias_key(shown) for shown in aliases.values()}
-        # ...minus this speaker's own: renaming back to a raw tile name is fine.
-        taken -= {k for k, shown in aliases.items() if alias_key(shown) == mine} | {mine}
-        if alias_key(name) in taken:
-            raise HTTPException(
-                status_code=409, detail="another speaker in this org already has that name"
-            )
-    _store().rename_speaker(conv.household, conv.org_site_key, body.speaker, name)
-    return _detail(_with_stored_audio(_require(principal.household, conversation_id, owner=owner)))
 
 
 def _parse_byte_range(range_header: str, size: int) -> tuple[int, int] | None:

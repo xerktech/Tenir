@@ -8,7 +8,6 @@ const list = vi.fn();
 const get = vi.fn();
 const remove = vi.fn();
 const orgs = vi.fn();
-const renameSpeaker = vi.fn();
 
 vi.mock("@tenir/client-core", async (importOriginal) => ({
   // The pure meeting helpers (platformLabel, meetingSpeakers, MAX_SPEAKER_NAME) are real.
@@ -22,7 +21,6 @@ vi.mock("@tenir/client-core", async (importOriginal) => ({
     list: (q?: string, _limit?: number, _offset?: number, org?: string) =>
       org === undefined ? list(q) : list(q, org),
     orgs: () => orgs(),
-    renameSpeaker: (id: string, speaker: string, name: string) => renameSpeaker(id, speaker, name),
     get: (id: string) => get(id),
     remove: (id: string) => remove(id),
     audioUrl: (id: string) => `/conversations/${id}/audio`,
@@ -48,7 +46,6 @@ beforeEach(() => {
   remove.mockReset();
   orgs.mockReset();
   orgs.mockResolvedValue([]);
-  renameSpeaker.mockReset();
 });
 
 function renderPanel() {
@@ -448,7 +445,7 @@ describe("screen-captured meetings (XERK-2507)", () => {
     await waitFor(() => expect(list).toHaveBeenLastCalledWith(undefined));
   });
 
-  it("shows each segment's speaker and renames a speaker", async () => {
+  it("shows each segment's speaker and the meeting's speakers, read-only", async () => {
     list.mockResolvedValue([meeting()]);
     get.mockResolvedValue(detail());
     renderPanel();
@@ -457,34 +454,8 @@ describe("screen-captured meetings (XERK-2507)", () => {
     expect(screen.getByText("ship it friday").closest(".item")).toHaveTextContent(
       "sam@example.com: ship it friday",
     );
-
-    renameSpeaker.mockResolvedValue(detail("Sam"));
-    fireEvent.click(screen.getByRole("button", { name: "Rename sam@example.com" }));
-    const input = screen.getByRole("textbox", { name: "New name for sam@example.com" });
-    fireEvent.change(input, { target: { value: "Sam" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(renameSpeaker).toHaveBeenCalledWith("m1", "sam@example.com", "Sam"),
-    );
-    await waitFor(() =>
-      expect(screen.getByText("ship it friday").closest(".item")).toHaveTextContent("Sam: ship it friday"),
-    );
-    expect(screen.getByRole("button", { name: "Rename Sam" })).toBeInTheDocument();
-  });
-
-  it("keeps the editor open and says why when a rename fails", async () => {
-    list.mockResolvedValue([meeting()]);
-    get.mockResolvedValue(detail());
-    renameSpeaker.mockRejectedValue(new Error("no such speaker in this meeting"));
-    renderPanel();
-    fireEvent.click(await screen.findByRole("button", { name: /2026/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Rename Priya Raman" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New name for Priya Raman" }), {
-      target: { value: "Priya" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText(/no such speaker/);
-    expect(screen.getByRole("textbox", { name: "New name for Priya Raman" })).toBeInTheDocument();
+    expect(screen.getByText("Speakers: sam@example.com, Priya Raman")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
   });
 
   it("does not offer speakers on a mic conversation", async () => {
@@ -493,6 +464,6 @@ describe("screen-captured meetings (XERK-2507)", () => {
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: /2026/ }));
     await screen.findByRole("heading", { name: "Conversation detail" });
-    expect(screen.queryByText("Speakers")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Speakers:/)).not.toBeInTheDocument();
   });
 });

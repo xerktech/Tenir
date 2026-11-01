@@ -2,7 +2,6 @@
 
 import {
   history,
-  MAX_SPEAKER_NAME,
   meetingSpeakers,
   platformLabel,
   type Conversation,
@@ -125,12 +124,6 @@ export function HistoryScreen(): JSX.Element {
         conv={selected}
         onDelete={() => void remove(selected.id)}
         onBack={() => setSelected(null)}
-        onRename={(speaker, name) =>
-          ctrl.renameSpeaker(selected.id, speaker, name).then((updated) => {
-            setSelected(updated);
-            notify(`Renamed to ${name}`);
-          })
-        }
       />
     );
   }
@@ -194,84 +187,22 @@ function ConversationRow({ label }: { label: string }): JSX.Element {
   return <Text style={{ color: colors.text }}>{label}</Text>;
 }
 
-/** A meeting's speakers, each renameable (XERK-2507); the web `SpeakerList`. A rename
- *  applies to every meeting from the same org, past and future. */
-function SpeakerList({
-  conv,
-  onRename,
-}: {
-  conv: Conversation;
-  onRename: (speaker: string, name: string) => Promise<void>;
-}): JSX.Element | null {
-  const notify = useNotify();
-  const [editing, setEditing] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
+/** Everyone heard or seen in a meeting (XERK-2507) — the web `SpeakerList`. Read-only in
+ *  v1: renaming speakers (aliases) waits on XERK-2606. */
+function SpeakerList({ conv }: { conv: Conversation }): JSX.Element | null {
   const speakers = meetingSpeakers(conv);
   if (speakers.length === 0) return null;
-
-  const save = (speaker: string) => {
-    const next = name.trim();
-    if (!next || next === speaker) {
-      setEditing(null);
-      return;
-    }
-    setBusy(true);
-    onRename(speaker, next)
-      .then(() => setEditing(null))
-      .catch((e) => notify(errText(e), "err"))
-      .finally(() => setBusy(false));
-  };
-
-  return (
-    <View>
-      <Heading>Speakers</Heading>
-      {speakers.map((speaker) =>
-        editing === speaker ? (
-          <Row key={speaker}>
-            <Field
-              placeholder={`New name for ${speaker}`}
-              value={name}
-              onChangeText={setName}
-              maxLength={MAX_SPEAKER_NAME}
-            />
-            <Button title="Save" kind="primary" disabled={busy} onPress={() => save(speaker)} />
-            <Button title="Cancel" onPress={() => setEditing(null)} />
-          </Row>
-        ) : (
-          <Row key={speaker}>
-            <SpeakerName name={speaker} />
-            <View style={{ flexGrow: 1 }} />
-            <Button
-              title="Rename"
-              onPress={() => {
-                setEditing(speaker);
-                setName(speaker);
-              }}
-            />
-          </Row>
-        ),
-      )}
-      <Muted>A new name shows in every meeting from {conv.orgName || "this org"}.</Muted>
-    </View>
-  );
-}
-
-function SpeakerName({ name }: { name: string }): JSX.Element {
-  const { colors } = useTheme();
-  return <Text style={{ color: colors.text, fontWeight: "600" }}>{name}</Text>;
+  return <Muted>Speakers: {speakers.join(", ")}</Muted>;
 }
 
 function Detail({
   conv,
   onDelete,
   onBack,
-  onRename,
 }: {
   conv: Conversation;
   onDelete: () => void;
   onBack: () => void;
-  onRename: (speaker: string, name: string) => Promise<void>;
 }): JSX.Element {
   const { colors } = useTheme();
   // Cues default to shown every time a conversation is opened (not persisted) —
@@ -290,7 +221,7 @@ function Detail({
       </Row>
       <Muted>{conversationLabel(conv)}</Muted>
       <MeetingLine conv={conv} title={false} />
-      {conv.source === "screen" && <SpeakerList conv={conv} onRename={onRename} />}
+      {conv.source === "screen" && <SpeakerList conv={conv} />}
       {/* Toggle cues off to make the whole transcript one selectable block; only
           shown when the conversation actually has cues to toggle. */}
       {hasCues && (

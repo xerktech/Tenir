@@ -1,11 +1,11 @@
 /**
  * History screen, screen-captured meetings (XERK-2507): the meeting line on a row, the org
- * filter, each segment's speaker and speaker renaming — the parity of web/tests/History.test.tsx.
+ * filter, each segment's speaker and the speaker list — the parity of web/tests/History.test.tsx.
  * React Native and the UI kit are swapped for plain DOM stand-ins so the screen renders under
  * jsdom; the controller is a stub, and client-core's pure meeting helpers are real.
  */
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -106,7 +106,6 @@ function setCtrl(data: ConversationSummary[], over: Record<string, unknown> = {}
     orgs: [] as OrgView[],
     open: vi.fn(),
     remove: vi.fn(),
-    renameSpeaker: vi.fn(),
     ...over,
   };
   return ctrl.state as Record<string, ReturnType<typeof vi.fn>>;
@@ -147,44 +146,15 @@ describe("HistoryScreen meetings (XERK-2507)", () => {
     expect(c.setOrg).toHaveBeenLastCalledWith("");
   });
 
-  it("shows each segment's speaker and renames a speaker", async () => {
+  it("shows each segment's speaker and the meeting's speakers, read-only", async () => {
     const c = setCtrl([meeting()]);
     c.open.mockResolvedValue(detail());
-    c.renameSpeaker.mockResolvedValue(detail("Sam"));
     render(<HistoryScreen />);
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await screen.findByRole("heading", { name: "Q3 Release Sync" });
     expect(screen.getByText(/ship it friday/).textContent).toContain("sam@example.com: ship it friday");
-
-    const samRow = screen.getAllByRole("group").find((g) => g.textContent?.startsWith("sam@"))!;
-    fireEvent.click(within(samRow).getByRole("button", { name: "Rename" }));
-    fireEvent.change(screen.getByLabelText("New name for sam@example.com"), {
-      target: { value: " Sam " },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(c.renameSpeaker).toHaveBeenCalledWith("m1", "sam@example.com", "Sam"),
-    );
-    await waitFor(() =>
-      expect(screen.getByText(/ship it friday/).textContent).toContain("Sam: ship it friday"),
-    );
-    expect(notify).toHaveBeenCalledWith("Renamed to Sam");
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-  });
-
-  it("keeps the editor open and reports a failed rename", async () => {
-    const c = setCtrl([meeting()]);
-    c.open.mockResolvedValue(detail());
-    c.renameSpeaker.mockRejectedValue(new Error("no such speaker in this meeting"));
-    render(<HistoryScreen />);
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    await screen.findByRole("heading", { name: "Q3 Release Sync" });
-    const priyaRow = screen.getAllByRole("group").find((g) => g.textContent?.startsWith("Priya"))!;
-    fireEvent.click(within(priyaRow).getByRole("button", { name: "Rename" }));
-    fireEvent.change(screen.getByLabelText("New name for Priya Raman"), { target: { value: "Priya" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.stringMatching(/no such speaker/), "err"));
-    expect(screen.getByLabelText("New name for Priya Raman")).toBeTruthy();
+    expect(screen.getByText("Speakers: sam@example.com, Priya Raman")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
   });
 
   it("does not offer speakers on a mic session", async () => {
@@ -193,6 +163,6 @@ describe("HistoryScreen meetings (XERK-2507)", () => {
     render(<HistoryScreen />);
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await screen.findByRole("heading", { name: "Session detail" });
-    expect(screen.queryByText("Speakers")).toBeNull();
+    expect(screen.queryByText(/Speakers:/)).toBeNull();
   });
 });

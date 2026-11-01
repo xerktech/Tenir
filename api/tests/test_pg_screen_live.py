@@ -109,8 +109,8 @@ def test_a_participants_table_without_position_is_migrated(store) -> None:
     assert store.get(HH, cid).participants == ["Priya Raman"]
 
 
-def test_org_filter_orgs_and_speaker_rename(store) -> None:
-    """XERK-2507: list/search by org, the org list, and a rename chained twice."""
+def test_org_filter_and_orgs(store) -> None:
+    """XERK-2507: list/search by org, and the org list."""
     northwind_old, northwind, acme, mic = (str(uuid.uuid4()) for _ in range(4))
     store.create(HH, northwind_old, owner="u1", screen=ScreenMeta("northwind", "Northwind Old", "zoom"))
     store.create(HH, acme, owner="u2", screen=ScreenMeta("acme", "acme corp", "zoom"))
@@ -126,15 +126,3 @@ def test_org_filter_orgs_and_speaker_rename(store) -> None:
     assert [c.id for c in store.search(HH, "friday", owner="u1", org="acme")] == []
     assert store.orgs(HH) == [("acme", "acme corp"), ("northwind", "Northwind")]
     assert store.orgs(HH, owner="u1") == [("northwind", "Northwind")]
-
-    store.rename_speaker(HH, "northwind", "sam@example.com", "Sam")
-    store.rename_speaker(HH, "northwind", "Sam", "Sam B.")
-    assert store.speaker_aliases(HH, "northwind") == {
-        "sam@example.com": "Sam B.",
-        "sam": "Sam B.",
-    }
-    assert store.speaker_aliases(HH, "acme") == {}
-    # Shown names re-point ignoring case, as lookups do.
-    store.rename_speaker(HH, "northwind", "SAM B.", "Samuel")
-    assert set(store.speaker_aliases(HH, "northwind").values()) == {"Samuel"}
-    assert "sam b." in store.speaker_aliases(HH, "northwind")

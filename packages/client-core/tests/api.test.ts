@@ -279,17 +279,6 @@ describe("history", () => {
     expect(calls[1].url).toBe("http://gw/conversations/orgs");
   });
 
-  it("renames a meeting speaker with a PUT (XERK-2507)", async () => {
-    mockFetch(() => json({ id: "c1", segments: [], cues: [] }));
-    await history.renameSpeaker("c1", "sam@example.com", "Sam");
-    expect(calls[0].url).toBe("http://gw/conversations/c1/speakers");
-    expect(calls[0].init.method).toBe("PUT");
-    expect(JSON.parse(calls[0].init.body as string)).toEqual({
-      speaker: "sam@example.com",
-      name: "Sam",
-    });
-  });
-
   it("lists meeting speakers once, tiles first, and names platforms", () => {
     const conv = {
       participants: ["Priya", "Sam"],

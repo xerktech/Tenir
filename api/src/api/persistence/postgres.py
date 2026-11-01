@@ -976,29 +976,6 @@ class SqlConversationStore:
                 (household, org_site_key, alias_key(alias), name),
             )
 
-    def rename_speaker(  # pragma: no cover - requires a live database
-        self, household: str, org_site_key: str, current: str, name: str
-    ) -> None:
-        # One transaction, the org's rows locked: a reader never sees the re-pointed aliases
-        # without the new one. Shown names are matched with alias_key in Python, as lookups
-        # are: SQL lower() folds differently from str.casefold.
-        with self._ensure_pool().connection() as conn, conn.transaction():
-            rows = conn.execute(
-                "SELECT alias, name FROM speaker_aliases"
-                " WHERE household = %s AND org_site_key = %s FOR UPDATE",
-                (household, org_site_key),
-            ).fetchall()
-            keys = {alias for alias, shown in rows if alias_key(shown) == alias_key(current)}
-            keys.add(alias_key(current))
-            conn.cursor().executemany(
-                """
-                INSERT INTO speaker_aliases (household, org_site_key, alias, name)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (household, org_site_key, alias) DO UPDATE SET name = EXCLUDED.name
-                """,
-                [(household, org_site_key, key, name) for key in sorted(keys)],
-            )
-
     def orgs(  # pragma: no cover - requires a live database
         self, household: str, *, owner: str | None = None
     ) -> list[tuple[str, str]]:

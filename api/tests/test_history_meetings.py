@@ -1,5 +1,5 @@
 """History for screen-captured meetings (XERK-2507): the org filter, the org list behind it,
-and renaming a meeting's speakers."""
+and the speaker on each segment."""
 
 from __future__ import annotations
 
@@ -92,119 +92,12 @@ def test_orgs_lists_each_org_once_by_name_with_its_latest_name() -> None:
         ]
 
 
-def test_renaming_a_speaker_relabels_every_meeting_of_the_org() -> None:
-    _meeting(NORTHWIND, "northwind", "Northwind")
-    _meeting(NORTHWIND_OLD, "northwind", "Northwind")
-    _meeting(ACME, "acme", "Acme")
-    with TestClient(app) as client:
-        res = client.put(
-            f"/conversations/{NORTHWIND}/speakers",
-            json={"speaker": "sam@example.com", "name": "  Sam  "},
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert [s["speaker"] for s in body["segments"]] == ["Sam", "Priya Raman"]
-        assert body["participants"] == ["Sam", "Priya Raman"]
-        # Same org, another meeting: renamed too. Another org: untouched.
-        old = client.get(f"/conversations/{NORTHWIND_OLD}").json()
-        assert old["segments"][0]["speaker"] == "Sam"
-        acme = client.get(f"/conversations/{ACME}").json()
-        assert acme["segments"][0]["speaker"] == "sam@example.com"
-        # Export carries the same names as the detail view.
-        assert client.get(f"/conversations/{NORTHWIND}/export").json()["participants"][0] == "Sam"
-
-        # Renaming the shown name again still resolves the raw tile name in one hop.
-        again = client.put(
-            f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Sam", "name": "Sam B."}
-        ).json()
-        assert again["segments"][0]["speaker"] == "Sam B."
-        # The old shown name is no longer a speaker of this meeting.
-        stale = client.put(
-            f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Sam", "name": "K"}
-        )
-        assert stale.status_code == 404
-
-        # Taking another speaker's name (in any case) is refused: lookups fold case, so the
-        # two people would merge for good.
-        for taken in ("Sam B.", "sam b.", "SAM@EXAMPLE.COM"):
-            res = client.put(
-                f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Priya Raman", "name": taken}
-            )
-            assert res.status_code == 409, taken
-        # A case-only change of the same speaker is fine, and so is renaming back.
-        assert client.put(
-            f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Sam B.", "name": "SAM B."}
-        ).json()["participants"] == ["SAM B.", "Priya Raman"]
-        back = client.put(
-            f"/conversations/{NORTHWIND}/speakers",
-            json={"speaker": "SAM B.", "name": "sam@example.com"},
-        ).json()
-        assert back["participants"] == ["sam@example.com", "Priya Raman"]
-
-
-def test_a_rename_never_merges_two_people_differing_only_in_case() -> None:
-    """QA repro: rename A -> "alex" beside "Alex", rename "Alex", then rename "alex" — the
-    last rename must not carry the other person along."""
-    store = _store()
-    store.create(HH, NORTHWIND, screen=ScreenMeta("northwind", "Northwind", "zoom"))
-    store.add_participants(HH, NORTHWIND, [("sam@example.com", 0), ("Alex", 0)])
-    store.finish(HH, NORTHWIND)
-    url = f"/conversations/{NORTHWIND}/speakers"
-    with TestClient(app) as client:
-        assert client.put(url, json={"speaker": "sam@example.com", "name": "alex"}).status_code == 409
-        assert client.put(url, json={"speaker": "Alex", "name": "Alexander"}).status_code == 200
-        assert client.put(url, json={"speaker": "sam@example.com", "name": "alex"}).status_code == 409
-        assert client.put(url, json={"speaker": "sam@example.com", "name": "Zed"}).status_code == 200
-        shown = client.put(url, json={"speaker": "Zed", "name": "Zed Q"}).json()
-        assert shown["participants"] == ["Zed Q", "Alexander"]
-
-
-def test_the_in_memory_store_repoints_aliases_ignoring_case() -> None:
-    store = _store()
-    store.set_speaker_alias(HH, "northwind", "sam@example.com", "Sam")
-    store.rename_speaker(HH, "northwind", "SAM", "Samuel")
-    assert store.speaker_aliases(HH, "northwind") == {"sam@example.com": "Samuel", "sam": "Samuel"}
-
-
-def test_the_capture_pipeline_reads_a_rename_for_later_meetings() -> None:
+def test_detail_shows_each_segments_speaker_and_the_participants() -> None:
     _meeting(NORTHWIND, "northwind", "Northwind")
     with TestClient(app) as client:
-        client.put(f"/conversations/{NORTHWIND}/speakers", json={"speaker": "sam@example.com", "name": "Sam"})
-    # meetings.py builds each meeting's Roster from these aliases.
-    assert _store().speaker_aliases(HH, "northwind") == {"sam@example.com": "Sam"}
-
-
-@pytest.mark.parametrize(
-    ("payload", "status"),
-    [
-        ({"speaker": "Nobody Here", "name": "X"}, 404),
-        ({"speaker": "Priya Raman", "name": "   "}, 422),
-        ({"speaker": "Priya Raman", "name": ""}, 422),
-        ({"speaker": "Priya Raman", "name": "x" * 81}, 422),
-        ({"speaker": "Priya Raman", "name": "Sam\u0000X"}, 422),
-        ({"speaker": "Priya Raman", "name": "\u200b"}, 422),
-        ({"speaker": "Priya Raman", "name": "\u202eevil"}, 422),
-        ({"speaker": "Priya Raman", "name": "a\x07b"}, 422),
-        ({"speaker": "Priya Raman", "name": "x" * 401}, 422),
-        ({"speaker": "", "name": "X"}, 422),
-    ],
-)
-def test_rename_refuses_unknown_speakers_and_bad_names(payload: dict, status: int) -> None:
-    _meeting(NORTHWIND, "northwind", "Northwind")
-    with TestClient(app) as client:
-        assert client.put(f"/conversations/{NORTHWIND}/speakers", json=payload).status_code == status
-    assert _store().speaker_aliases(HH, "northwind") == {}
-
-
-def test_a_name_is_capped_after_its_whitespace_is_collapsed() -> None:
-    _meeting(NORTHWIND, "northwind", "Northwind")
-    with TestClient(app) as client:
-        res = client.put(
-            f"/conversations/{NORTHWIND}/speakers",
-            json={"speaker": "Priya Raman", "name": "Priya" + " " * 100 + "R."},
-        )
-        assert res.status_code == 200
-        assert res.json()["participants"][1] == "Priya R."
+        detail = client.get(f"/conversations/{NORTHWIND}").json()
+    assert [s["speaker"] for s in detail["segments"]] == ["sam@example.com", "Priya Raman"]
+    assert detail["participants"] == ["sam@example.com", "Priya Raman"]
 
 
 def test_an_org_with_control_characters_is_refused() -> None:
@@ -213,22 +106,13 @@ def test_an_org_with_control_characters_is_refused() -> None:
         assert client.get("/conversations", params={"org": "north\x00wind", "q": "x"}).status_code == 422
 
 
-def test_rename_refuses_mic_conversations_and_bad_ids() -> None:
-    _mic(MIC)
-    with TestClient(app) as client:
-        body = {"speaker": "x", "name": "y"}
-        assert client.put(f"/conversations/{MIC}/speakers", json=body).status_code == 409
-        assert client.put(f"/conversations/{NORTHWIND}/speakers", json=body).status_code == 404
-        assert client.put("/conversations/not-a-uuid/speakers", json=body).status_code == 404
-
-
 def _token(user_id: str, role: str = "member") -> dict[str, str]:
     tok = issue_token(Principal(user_id, HH, role), secret=TEST_AUTH_SECRET, ttl_seconds=60)
     return {"Authorization": f"Bearer {tok}"}
 
 
 @pytest.mark.real_auth
-def test_members_see_and_rename_only_their_own_meetings() -> None:
+def test_members_see_only_their_own_orgs_and_meetings() -> None:
     reset_user_store()
     a = get_user_store().create("member-a", "pw", household=HH, role="member").user_id
     b = get_user_store().create("member-b", "pw", household=HH, role="member").user_id
@@ -240,14 +124,6 @@ def test_members_see_and_rename_only_their_own_meetings() -> None:
             {"siteKey": "northwind", "name": "Northwind"}
         ]
         assert client.get("/conversations", params={"org": "acme"}, headers=_token(a)).json() == []
-        # B's meeting reads as missing to A, so A can't rename its speakers.
-        res = client.put(
-            f"/conversations/{ACME}/speakers",
-            json={"speaker": "Priya Raman", "name": "Mallory"},
-            headers=_token(a),
-        )
-        assert res.status_code == 404
-        assert _store().speaker_aliases(HH, "acme") == {}
         assert client.get("/conversations/orgs", headers=_token(admin, "admin")).json() == [
             {"siteKey": "acme", "name": "Acme"},
             {"siteKey": "northwind", "name": "Northwind"},

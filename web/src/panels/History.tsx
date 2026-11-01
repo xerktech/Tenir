@@ -2,7 +2,6 @@
 
 import {
   history,
-  MAX_SPEAKER_NAME,
   meetingSpeakers,
   platformLabel,
   type Conversation,
@@ -140,7 +139,6 @@ export function HistoryPanel(): JSX.Element {
         conv={selected}
         onDelete={() => void remove(selected.id)}
         onBack={() => setSelected(null)}
-        onChange={setSelected}
       />
     );
   }
@@ -287,101 +285,22 @@ function timeline(conv: Conversation): TranscriptItem[] {
   return items.sort((a, b) => a.at - b.at || (a.kind === "segment" ? 0 : 1) - (b.kind === "segment" ? 0 : 1));
 }
 
-/** A meeting's speakers, each renameable (e.g. sam@example.com -> Sam, XERK-2507).
- *  A rename applies to every meeting from the same org, past and future. */
-function SpeakerList({
-  conv,
-  onChange,
-}: {
-  conv: Conversation;
-  onChange: (conv: Conversation) => void;
-}): JSX.Element | null {
-  const notify = useNotify();
-  const [editing, setEditing] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
+/** Everyone heard or seen in a meeting (XERK-2507). Read-only in v1: renaming speakers
+ *  (aliases) waits on XERK-2606. */
+function SpeakerList({ conv }: { conv: Conversation }): JSX.Element | null {
   const speakers = meetingSpeakers(conv);
   if (speakers.length === 0) return null;
-
-  const save = (speaker: string) => {
-    const next = name.trim();
-    if (!next || next === speaker) {
-      setEditing(null);
-      return;
-    }
-    setBusy(true);
-    history
-      .renameSpeaker(conv.id, speaker, next)
-      .then((updated) => {
-        setEditing(null);
-        onChange(updated);
-        notify(`Renamed to ${next}`);
-      })
-      .catch((e) => notify(errText(e), "err"))
-      .finally(() => setBusy(false));
-  };
-
-  return (
-    <div className="speaker-list">
-      <h4>Speakers</h4>
-      <ul>
-        {speakers.map((speaker) =>
-          editing === speaker ? (
-            <li key={speaker}>
-              <form
-                className="row"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  save(speaker);
-                }}
-              >
-                <Input
-                  aria-label={`New name for ${speaker}`}
-                  autoFocus
-                  maxLength={MAX_SPEAKER_NAME}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-                <Button variant="primary" type="submit" disabled={busy}>
-                  Save
-                </Button>
-                <Button variant="ghost" type="button" onClick={() => setEditing(null)}>
-                  Cancel
-                </Button>
-              </form>
-            </li>
-          ) : (
-            <li key={speaker} className="row">
-              <span className="speaker-name">{speaker}</span>
-              <Button
-                variant="ghost"
-                aria-label={`Rename ${speaker}`}
-                onClick={() => {
-                  setEditing(speaker);
-                  setName(speaker);
-                }}
-              >
-                Rename
-              </Button>
-            </li>
-          ),
-        )}
-      </ul>
-      <p className="muted">A new name shows in every meeting from {conv.orgName || "this org"}.</p>
-    </div>
-  );
+  return <p className="muted speaker-list">Speakers: {speakers.join(", ")}</p>;
 }
 
 function ConversationDetail({
   conv,
   onDelete,
   onBack,
-  onChange,
 }: {
   conv: Conversation;
   onDelete: () => void;
   onBack: () => void;
-  onChange: (conv: Conversation) => void;
 }): JSX.Element {
   // Cues default to shown every time a conversation is opened (not persisted).
   // Hiding them drops the inline cue blocks so the transcript reads as one
@@ -406,7 +325,7 @@ function ConversationDetail({
         {new Date(conv.startedAt).toLocaleString()} · {formatDuration(conv.durationMs)} · {conv.segmentCount} turns
       </p>
       <MeetingTags conv={conv} />
-      {conv.source === "screen" && <SpeakerList conv={conv} onChange={onChange} />}
+      {conv.source === "screen" && <SpeakerList conv={conv} />}
       {/* Only shown when there are cues to toggle. */}
       {hasCues && (
         <label className="cue-toggle">
