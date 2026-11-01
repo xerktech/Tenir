@@ -341,6 +341,9 @@ conversation is, and it applies identically to local, linked, and OIDC users.
   (`_ws_principal`, `main.py`) — the browser WebSocket API can't set headers, so `?token=` stays.
   The validator treats an OIDC JWT and a built-in token identically at the handshake; a bad/expired
   token still closes with **1008** after accept, exactly as today.
+- **A mic `/ws` session is not closed when its handshake token expires** (XERK-2613): the token is
+  checked once, at the handshake. Login tokens slide on REST, so closing at `exp` would only cut a
+  live recording; deleting the user still revokes the socket.
 - **The token store is shape-agnostic.** `TokenStore` holds an opaque string; it does not care
   whether that string is a built-in token or an Authentik access token, so the storage layer
   (localStorage / native keychain) needs no change. The client tracks *which kind* of session is
