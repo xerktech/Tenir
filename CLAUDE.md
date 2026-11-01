@@ -34,6 +34,10 @@ Working conventions for Claude Code in this repository.
   the equivalent on the other in the same effort. Neither is allowed to drift
   ahead. When platform constraints force a difference, make it a deliberate,
   documented exception rather than an accidental gap.
+- **Parity exception: the Windows capture client (`desktop/`).** It is a capture-only fifth
+  client for the operator's meeting PC (XERK-2506): it streams meeting-window frames to
+  `/ws/screen` and has no UI to mirror, so web and Android get no counterpart. The meetings it
+  records show up in the shared history like any other conversation.
 - **Follow Turma's design language**: Model Tenir's design and appearance
   closely on the Turma app. Match its layout, component patterns, typography,
   spacing, iconography, and overall visual style so the two clearly read as

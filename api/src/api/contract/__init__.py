@@ -16,6 +16,8 @@ from api.contract.messages import (  # noqa: F401
     Region,
     ScreenCadence,
     ScreenFrameHeader,
+    ScreenNotice,
+    ScreenNoticeKind,
     ServerMessage,
     SessionEnd,
     SessionReady,

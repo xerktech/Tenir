@@ -23,7 +23,10 @@
 //                     (and the api image's web build stage) install from.
 // Over-building a shared change wastes runner time; under-building ships a
 // manifest that lies. We take the former.
-const COMPONENTS = ["api", "parakeet-stt", "ocr", "mobile"];
+//   - desktop/**   -> the Windows capture client exe (XERK-2506). Python, outside the npm
+//                     workspace; it speaks /ws/screen by hand, so a contract change
+//                     doesn't rebuild it (it never compiles against the generated types).
+const COMPONENTS = ["api", "parakeet-stt", "ocr", "mobile", "desktop"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
@@ -36,6 +39,7 @@ const PREFIX_MAP = [
   { prefix: "parakeet-stt/", components: ["parakeet-stt"] },
   { prefix: "ocr/", components: ["ocr"] },
   { prefix: "mobile/", components: ["mobile"] },
+  { prefix: "desktop/", components: ["desktop"] },
 ];
 
 // Repo-root files (no dir prefix) that still touch components: the npm workspace

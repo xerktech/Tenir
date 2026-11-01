@@ -13,6 +13,8 @@ on:
       # must re-run its tests (a refactor once left it silently reporting 0 turns)
       - 'scripts/stt_eval/**'
       - 'scripts/caption_ocr/**'
+      # the caption-box finder the harness benchmarks ships in the capture client
+      - 'desktop/tenir_capture/caption_box.py'
       - 'api/src/api/stt/streaming.py'
       # the long-form replay test decides language with the shipped langid
       - 'api/src/api/stt/langid.py'

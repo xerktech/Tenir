@@ -75,6 +75,23 @@ _BORDER_MIN_PIXELS = 24
 # anything bigger, or not the size OCR read, is skipped rather than decoded.
 _MAX_DECODE_PIXELS = MAX_FRAME_PIXELS
 
+# Zoom's meeting-toolbar buttons. Seeing several of them in the toolbar band means a meeting
+# is on screen (a desktop's icon labels are name-shaped too, so tiles alone can't tell).
+_MEETING_CONTROLS = {
+    "mute",
+    "unmute",
+    "stop video",
+    "start video",
+    "participants",
+    "chat",
+    "share",
+    "share screen",
+    "reactions",
+    "leave",
+    "end",
+}
+_MIN_CONTROLS = 3
+
 # Full-frame bands, as fractions of the frame height.
 _TITLE_BAND = 0.07
 _TOOLBAR_BAND = 0.90
@@ -188,6 +205,8 @@ class FullFrame:
     participants: list[str] = field(default_factory=list)
     active_speaker: str | None = None
     title: str | None = None
+    # The meeting toolbar was on screen (Zoom hides it while the mouse is idle).
+    in_meeting: bool = False
 
 
 def _caption_region(lines: list[OcrLine], width: int, height: int) -> tuple[float, float] | None:
@@ -229,6 +248,10 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
         best = max(title_lines, key=lambda ln: ln.box[2] - ln.box[0])
         if len(best.text) >= 3:
             out.title = best.text.strip()
+    controls = {
+        norm_name(ln.text) for ln in ocr.lines if ln.cy > h * _TOOLBAR_BAND
+    } & _MEETING_CONTROLS
+    out.in_meeting = len(controls) >= _MIN_CONTROLS
     caption = _caption_region(list(ocr.lines), w, h)
     tiles: list[tuple[str, OcrLine]] = []
     for ln in _reading_order(ocr.lines):
