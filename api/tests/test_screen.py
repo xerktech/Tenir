@@ -354,6 +354,28 @@ def test_a_stored_line_whose_last_word_the_asr_finishes_is_extended() -> None:
     assert m.flush(3000) == []
 
 
+def test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored() -> None:
+    """QA on XERK-2597: a stray character OCR'd onto an older line still on screen must not
+    be written into its stored segment."""
+    m = CaptionMerger(start_ms=0, stable_ms=1000)
+    m.feed([blk("A", "the login timeout is back on staging")], 0)
+    m.feed([blk("A", "the login timeout is back on staging")], 1000)
+    m.feed([blk("A", "the login timeout is back on staging"), blk("B", "yes")], 1500)
+    out = m.feed([blk("A", "the login timeout is back on stagingl"), blk("B", "yes")], 2000)
+    assert [s.text for s in out] == []
+
+
+def test_a_stored_line_extends_only_within_the_extend_window() -> None:
+    def run(grow_at: int) -> list[str]:
+        m = CaptionMerger(start_ms=0, stable_ms=1000)
+        for ts in range(0, grow_at, 5000):  # re-seen, so it stays on screen
+            m.feed([blk("A", "let's ship")], ts)
+        return [s.text for s in m.feed([blk("A", "let's ship it Friday")], grow_at)]
+
+    assert run(30_000) == ["let's ship it Friday"]
+    assert run(30_001) == []
+
+
 def test_a_line_said_again_is_stored_again() -> None:
     """QA D2: "okay", someone else, "okay" - both shown at once, then the same words again
     after the first scrolled away. Every utterance is stored; re-reads of one are not."""
