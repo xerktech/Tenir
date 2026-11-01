@@ -32,9 +32,13 @@ paths:
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
-  - Known limit: a short phrase the same speaker repeats back to back, with OCR dropping a
-    line, can lose one copy (8 lines in 25,000 in the seeded simulation).
-  - Tests: `test_simulated_rolling_captions_store_exactly_what_was_said`,
+  - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
+    lines "explained away" a reply said between snapshots.
+  - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
+  - Measured (`_simulate`, 1000 seeds x 25 lines): clean, noise or 30% dropped snapshots
+    each store 0 duplicates and no made-up text; losses 2 / 12 / 153. Noise and drops
+    together still duplicate (~370 runs): re-tune on real XERK-2506 captures, not synthetics.
+  - Tests: `test_simulated_rolling_captions_store_what_was_said`,
     `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
     and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
 - schema.sql: a column added to a table this repo already created needs its own

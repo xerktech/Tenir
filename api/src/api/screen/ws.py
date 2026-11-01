@@ -24,7 +24,14 @@ from api.config import settings
 from api.contract import ErrorMessage, Pong, ScreenCadence, ScreenFrameHeader
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
-from api.screen.meetings import AccountGone, Cadence, MeetingTracker, meetings, now_ms
+from api.screen.meetings import (
+    CPU_POOL,
+    AccountGone,
+    Cadence,
+    MeetingTracker,
+    meetings,
+    now_ms,
+)
 from api.screen.ocr import HttpOcrClient, OcrClient, OcrError
 from api.screen.zoom import parse_caption_crop, parse_full_frame
 
@@ -192,6 +199,7 @@ async def screen_ws(ws: WebSocket) -> None:
     async def read_frame(header: ScreenFrameHeader, jpeg: bytes) -> None:
         if closing.is_set():
             return
+        loop = asyncio.get_running_loop()
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
         try:
@@ -212,12 +220,12 @@ async def screen_ws(ws: WebSocket) -> None:
             async with tracker.lock:
                 ts = tracker.clock(ts)
                 if header.region.value == "full":
-                    frame = await asyncio.to_thread(parse_full_frame, result, jpeg)
+                    frame = await loop.run_in_executor(CPU_POOL, parse_full_frame, result, jpeg)
                     await tracker.on_full(frame, ts)
                 else:
                     roster = await tracker.ensure_roster()
-                    blocks = await asyncio.to_thread(
-                        parse_caption_crop, result, roster, active=tracker.active
+                    blocks = await loop.run_in_executor(
+                        CPU_POOL, lambda: parse_caption_crop(result, roster, active=tracker.active)
                     )
                     await tracker.on_caption(blocks, ts)
         except AccountGone:

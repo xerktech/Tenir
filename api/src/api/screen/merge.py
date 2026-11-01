@@ -42,7 +42,7 @@ _EXTEND_MS = 30_000
 _GONE_MS = 20_000
 # Known lines kept, and the most recent of them a snapshot is aligned against.
 _KEEP = 300
-_TAIL = 40
+_TAIL = 20
 
 # Alignment scores: a match earns up to _MATCH; a snapshot line left out above the aligned
 # region (a glitch) or a known line skipped inside it (an OCR miss) costs a little; a new
@@ -57,10 +57,13 @@ _GLITCH = -1.0
 # pair with, under a verified speaker header, is a line said between two snapshots (Bo's
 # "sure" above Ana's second "okay"); calling it a glitch costs more than calling it new.
 _UNPAIRED = -3.5
+# A misread must look like the line it misreads: same speaker and close text. Pairing any
+# two lines let a real reply said between snapshots be "explained" as a misread and lost.
+_MISREAD_LIKE = 0.5
 # A Zoom box shows a handful of lines; a snapshot is cut to its bottom lines and each line to
 # a sane length, which bounds the alignment's cost on a crafted frame (it runs per frame).
 _MAX_SHOWN = 12
-_MAX_CHARS = 300
+_MAX_CHARS = 160
 _MISS = -2.5
 _UNSHOWN_NEWEST = -2.5
 _NEW = -0.1
@@ -70,8 +73,13 @@ def _norm(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
-def _ratio(a: str, b: str) -> float:
-    return SequenceMatcher(None, a, b, autojunk=False).ratio()
+def _ratio(a: str, b: str, floor: float = 0.0) -> float:
+    """Similarity of two lines; 0.0 when it is certainly below ``floor`` (difflib's cheap
+    upper bounds rule most pairs out without the quadratic comparison)."""
+    sm = SequenceMatcher(None, a, b, autojunk=False)
+    if floor and (sm.real_quick_ratio() < floor or sm.quick_ratio() < floor):
+        return 0.0
+    return sm.ratio()
 
 
 def _same_speaker(a: str | None, b: str | None) -> bool:
@@ -116,8 +124,21 @@ def _score(shown: _Shown, known: _Line, *, growable: bool) -> float:
         return _MATCH - 0.5  # the line growing
     if b.startswith(a):
         return _MATCH - 1.0  # a re-read cut short: weaker than a line growing into it
-    r = _ratio(a, b)
-    return 2 * r if r >= _SAME_LINE else 0.0
+    r = _ratio(a, b, _SAME_LINE)
+    if r >= _SAME_LINE:
+        return 2 * r
+    if growable and len(a) > len(b) and _ratio(a[: len(b)], b, _MISREAD_LIKE) >= _MISREAD_LIKE:
+        # A live line that grew while snapshots were dropped and is misread on top: its
+        # known start still lines up. A weak match, but better than a duplicate.
+        return _MATCH - 1.5
+    return 0.0
+
+
+def _misread(shown: _Shown, known: _Line) -> bool:
+    if not _same_speaker(shown.speaker, known.speaker):
+        return False
+    a, b = shown.norm, known.norm
+    return b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE
 
 
 def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
@@ -140,7 +161,8 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
             options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
-                options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
+                if _misread(shown[i - 1], tail[j - 1]):
+                    options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
                 s = _score(shown[i - 1], known, growable=not known.final or j == m)
                 if s > 0:
@@ -206,6 +228,7 @@ class CaptionMerger:
         out: dict[str, Segment] = {}
         to_finalize: list[_Line] = []
         speaker = self.last_speaker
+        new_in_snapshot = 0
         for i, (line_shown, at) in enumerate(zip(shown, aligned, strict=True)):
             block = blocks[line_shown.block]
             if block.has_header:
@@ -221,7 +244,11 @@ class CaptionMerger:
             elif i < last_aligned:
                 continue  # an OCR glitch above known lines: never a new line
             else:
-                line = _Line(speaker, line_shown.text, line_shown.norm, ts, ts, ts)
+                # Lines first seen together keep their on-screen order: each a millisecond
+                # after the one above, so stores ordering by start time agree.
+                first = ts + new_in_snapshot
+                new_in_snapshot += 1
+                line = _Line(speaker, line_shown.text, line_shown.norm, first, first, ts)
                 self._lines.append(line)
             if speaker is not None:
                 self.last_speaker = speaker
@@ -252,11 +279,14 @@ class CaptionMerger:
             if bottom or grew:
                 line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             return
-        # A final grows only while it is the newest line: a line after it means the speaker
-        # moved on. A re-read that differs otherwise (jitter, a cut-off top line) is ignored.
+        # The alignment placed this re-read on a stored line that now reads longer: it was
+        # stored while only partly seen (dropped snapshots), so complete it in place. A new
+        # sentence that merely starts the same way doesn't get here: a longer line only
+        # aligns to the newest line, or to an older one it closely resembles. A re-read that
+        # differs otherwise (jitter, a cut-off top line) is ignored.
         seg = line.segment
         assert seg is not None
-        if line is self._lines[-1] and grew and ts - line.changed_ms <= _EXTEND_MS:
+        if grew and ts - line.changed_ms <= _EXTEND_MS:
             line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             seg.text = shown.text
             seg.end_ms = self._rel(ts)

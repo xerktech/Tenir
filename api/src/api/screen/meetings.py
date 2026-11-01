@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -25,6 +26,11 @@ from api.screen.zoom import CaptionBlock, FullFrame, Roster
 log = logging.getLogger("api.screen")
 
 Notify = Callable[[ScreenCadence], Awaitable[None]]
+
+# Caption parsing and merging are CPU work on attacker-shaped input; they get their own two
+# threads so a flood of crafted frames queues here, not ahead of every store write in the
+# default pool that the rest of the api shares.
+CPU_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="screen-cpu")
 
 
 class AccountGone(Exception):
@@ -132,7 +138,8 @@ class MeetingTracker:
                     # to watch (OCR misreads, a wrong roster match), not an error.
                     metrics.incr("screen.speaker_border_mismatch")
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
-        await self._store(await asyncio.to_thread(self.merger.feed, blocks, ts))
+        loop = asyncio.get_running_loop()
+        await self._store(await loop.run_in_executor(CPU_POOL, self.merger.feed, blocks, ts))
 
     async def _start(self, ts: int) -> None:
         if not await self._io(self.account_exists, self.owner):
