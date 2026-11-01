@@ -207,12 +207,21 @@ CREATE TABLE IF NOT EXISTS participants (
 -- Additive for databases created before the column existed.
 ALTER TABLE participants ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;
 
--- Per-org display names for what a tile shows (e.g. an email -> "Kunal"). Applied to tile
--- names and caption headers before they are stored as speakers. Edited from history (XERK-2507).
+-- Per-member, per-org display names for what a tile shows (e.g. an email -> "Kunal"). Applied
+-- to tile names and caption headers of that member's meetings before they are stored as
+-- speakers. Edited from history (XERK-2507). owner is the users.id whose meetings it renames:
+-- one member's rename never shows in another member's meetings (XERK-2606).
 CREATE TABLE IF NOT EXISTS speaker_aliases (
     household    TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    owner        TEXT NOT NULL,
     org_site_key TEXT NOT NULL,
     alias        TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    PRIMARY KEY (household, org_site_key, alias)
+    name         TEXT NOT NULL
 );
+-- Migrate the household-wide table (XERK-2505): add owner and swap the old primary key for
+-- the per-owner unique key. Rows from before have owner '' and so match no member. The new
+-- key is an index, not a PRIMARY KEY, so the DROP below never removes it on a later boot.
+ALTER TABLE speaker_aliases ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '';
+ALTER TABLE speaker_aliases DROP CONSTRAINT IF EXISTS speaker_aliases_pkey;
+CREATE UNIQUE INDEX IF NOT EXISTS speaker_aliases_owner_key
+    ON speaker_aliases (household, owner, org_site_key, alias);

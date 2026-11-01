@@ -82,10 +82,19 @@ def test_mic_conversations_default_to_source_mic(store) -> None:
 
 
 def test_speaker_aliases_are_per_org_and_case_insensitive(store) -> None:
-    store.set_speaker_alias(HH, "tesoro", " Kunal@TesoroXP.com", "Kunal")
-    store.set_speaker_alias(HH, "tesoro", "kunal@tesoroxp.com", "Kunal S.")
-    assert store.speaker_aliases(HH, "tesoro") == {"kunal@tesoroxp.com": "Kunal S."}
-    assert store.speaker_aliases(HH, "yprime") == {}
+    store.set_speaker_alias(HH, "u1", "tesoro", " Kunal@TesoroXP.com", "Kunal")
+    store.set_speaker_alias(HH, "u1", "tesoro", "kunal@tesoroxp.com", "Kunal S.")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"kunal@tesoroxp.com": "Kunal S."}
+    assert store.speaker_aliases(HH, "u1", "yprime") == {}
+
+
+def test_speaker_aliases_are_per_owner(store) -> None:
+    """XERK-2606: two members alias the same speaker independently; neither sees the other's."""
+    store.set_speaker_alias(HH, "u1", "tesoro", "sam@example.test", "Sam Q")
+    store.set_speaker_alias(HH, "u2", "tesoro", "sam@example.test", "Samuel")
+    assert store.speaker_aliases(HH, "u1", "tesoro") == {"sam@example.test": "Sam Q"}
+    assert store.speaker_aliases(HH, "u2", "tesoro") == {"sam@example.test": "Samuel"}
+    assert store.speaker_aliases(HH, "u3", "tesoro") == {}
 
 
 def test_schema_apply_is_idempotent_with_the_new_tables(store) -> None:
