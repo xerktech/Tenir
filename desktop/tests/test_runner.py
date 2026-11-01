@@ -376,3 +376,77 @@ def test_backoff_restarts_from_one_second_after_a_healthy_connection(monkeypatch
     r.stop = Stop()  # type: ignore[assignment]
     r.run()
     assert waits[:4] == [1.0, 2.0, 4.0, 1.0]
+
+
+class ScriptedWs:
+    """A connection whose send fails the way a server's close makes it fail."""
+
+    def __init__(self, code: int, reason: str = "") -> None:
+        self.close_code = code
+        self.close_reason = reason
+
+    def __iter__(self):
+        return iter(())
+
+    def send(self, data: bytes) -> None:
+        from websockets.exceptions import ConnectionClosed
+        from websockets.frames import Close
+
+        raise ConnectionClosed(Close(self.close_code, self.close_reason), None)
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_send_that_races_a_1008_close_raises_token_rejected(zoom_frame) -> None:
+    """QA D3 regression: without the ConnectionClosed swallow in session() the send error
+    escaped as a plain disconnect and the client reconnected before stopping."""
+    platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+    r = runner("http://x", platform)
+    ws = ScriptedWs(1008, "invalid or expired device token")
+    done = threading.Event()
+    r._receive = lambda ws, d: done.wait(1)  # the receiver hasn't seen the close yet
+    try:
+        r.session(ws)  # type: ignore[arg-type]
+    except TokenRejected as exc:
+        assert "device token" in str(exc)
+    else:
+        raise AssertionError("expected TokenRejected")
+
+
+def test_any_session_error_reconnects_instead_of_killing_the_client(monkeypatch) -> None:
+    """QA d8: an unexpected error inside a session must reconnect, not end run()."""
+
+    class Ws:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            pass
+
+    sessions: list[int] = []
+    r = runner("http://x", FakePlatform([], None), connect=lambda *a, **k: Ws())
+
+    def session(ws: object) -> None:
+        sessions.append(1)
+        if len(sessions) >= 2:
+            r.stop.set()
+        raise RuntimeError("something unexpected")
+
+    monkeypatch.setattr(r, "session", session)
+    r.run()
+    assert len(sessions) == 2
+
+
+def test_a_failing_window_logs_one_traceback_not_one_per_tick(zoom_frame, caplog) -> None:
+    import logging
+
+    platform = FakePlatform(["Horizon 3"], Image.new("RGB", (300, 1)))
+    clock = {"t": 0.0}
+    r = runner("http://x", platform, clock=lambda: clock["t"])
+    with caplog.at_level(logging.INFO, logger="tenir_capture"):
+        for t in range(0, 50, 10):
+            clock["t"] = t
+            r.step(Sink())
+    errors = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(errors) == 1

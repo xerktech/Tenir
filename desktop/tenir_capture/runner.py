@@ -68,6 +68,7 @@ class _Watched:
     capture: Capture | None = None
     minimized: bool = False
     problem: str | None = None
+    frame_error: bool = False  # the last frame failed: log the next failure without traceback
     cadence: Cadence | None = None  # per-window override from the server (a meeting is on)
 
 
@@ -183,9 +184,14 @@ class Runner:
                 cadence = w.cadence or self._default
             try:
                 frames = w.plan.frames(now, img, cadence)
-            except Exception:  # noqa: BLE001 — one odd frame (a 1 px window) must not stop capture
-                log.exception("%s: frame skipped", w.spec.org_name)
+            except Exception as exc:  # noqa: BLE001 — an odd frame (a 1 px window) can't stop capture
+                if w.frame_error:
+                    log.debug("%s: frame skipped: %r", w.spec.org_name, exc)
+                else:
+                    log.exception("%s: frame skipped (repeats logged at debug)", w.spec.org_name)
+                w.frame_error = True
                 continue
+            w.frame_error = False
             for region, image in frames:
                 data = encode(w.spec, w.title, region, self.wall_ms(), image)
                 if len(data) > MAX_FRAME_BYTES:

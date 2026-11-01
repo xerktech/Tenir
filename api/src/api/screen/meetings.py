@@ -27,7 +27,10 @@ log = logging.getLogger("api.screen")
 
 Notify = Callable[[ScreenCadence | ScreenNotice], Awaitable[None]]
 
-# A meeting toolbar seen this recently counts as a meeting on screen.
+# A meeting toolbar seen this recently counts as a meeting on screen. A caption read this
+# recently means captions are on and the meeting is just quiet: no warning. So a captioned
+# meeting that goes silent stays unwarned, while captions turned off mid-meeting, or a next
+# meeting in the same window without them, is warned this long + CAPTIONS_OFF_MS later.
 MEETING_SEEN_MS = 600_000
 # Meeting on screen this long with no caption: captions are off, so warn the operator...
 CAPTIONS_OFF_MS = 120_000
@@ -93,9 +96,7 @@ class MeetingTracker:
         # Captions-off warning: when the toolbar was last seen, and when to warn next.
         self._meeting_seen_ms: int | None = None
         self._captions_off_at: int | None = None
-        # A caption was read during the meeting now on screen: captions are on, so no warning
-        # once it goes quiet. Cleared after MEETING_SEEN_MS with neither toolbar nor caption.
-        self._captioned_meeting = False
+        self._caption_seen_ms: int | None = None
         self._stored_people: set[str] = set()
         self._stored_title: str | None = None
         # Final lines not yet written. The merger counts a line final once, so a failed or
@@ -146,11 +147,13 @@ class MeetingTracker:
         Full frames keep coming while no caption shows, so this runs on each one. A meeting
         with captions on starts a conversation at its first caption, which clears it.
         """
-        seen = self._meeting_seen_ms
-        if seen is None or ts - seen > MEETING_SEEN_MS:
-            self._captioned_meeting = False  # that meeting is over
-            self._captions_off_at = None
-        elif self.conversation_id is not None or self._captioned_meeting:
+        seen, caption = self._meeting_seen_ms, self._caption_seen_ms
+        if (
+            seen is None
+            or ts - seen > MEETING_SEEN_MS
+            or self.conversation_id is not None
+            or (caption is not None and ts - caption <= MEETING_SEEN_MS)
+        ):
             self._captions_off_at = None
         elif self._captions_off_at is None:
             self._captions_off_at = ts + CAPTIONS_OFF_MS
@@ -169,9 +172,7 @@ class MeetingTracker:
         if not blocks:
             return
         self.last_caption_ms = ts
-        # A caption is a meeting on screen too, and proves its captions are on.
-        self._meeting_seen_ms = max(self._meeting_seen_ms or 0, ts)
-        self._captioned_meeting = True
+        self._caption_seen_ms = ts
         if self.conversation_id is None:
             await self._start(ts)
         assert self.merger is not None

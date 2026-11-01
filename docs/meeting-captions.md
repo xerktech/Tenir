@@ -233,9 +233,10 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   from it). `screen.notice` `captions_off` comes from the api: a Zoom toolbar (3+ of its
   buttons in the bottom band) seen in the last 10 min, and no caption for 2 min while no
   meeting is open; repeated every 15 min. The toolbar, not tile names, is the evidence,
-  because a desktop's icon labels are name-shaped too. A caption read during the meeting on
-  screen (toolbar or caption within 10 min) silences it: a captioned meeting that goes quiet
-  isn't "captions off".
+  because a desktop's icon labels are name-shaped too. A caption read in the last 10 min silences
+  it: a captioned meeting that goes quiet isn't "captions off". The cost: captions turned off
+  mid-meeting, or a next meeting without them, is warned ~12 min in, not 2 (OCR can't tell
+  silence from captions off).
 - **Version gate**: `GET /status` carries `clients.desktop.minVersion`
   (`API_DESKTOP_MIN_VERSION`); an older client notifies and exits, an unreachable `/status`
   doesn't block start.

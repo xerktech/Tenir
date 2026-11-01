@@ -117,12 +117,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.uninstall_startup:
             return win.uninstall_logon_task()
-        # The frozen exe is the command; from a pip install it is "python -m tenir_capture".
-        exe = (
-            [sys.executable]
-            if getattr(sys, "frozen", False)
-            else [sys.executable, "-m", "tenir_capture"]
-        )
+        # The frozen exe is the command; from a pip install it is "pythonw -m tenir_capture"
+        # (pythonw where there is one, so no console window opens at every logon).
+        if getattr(sys, "frozen", False):
+            exe = [sys.executable]
+        else:
+            pythonw = Path(sys.executable).with_name("pythonw.exe")
+            exe = [str(pythonw) if pythonw.exists() else sys.executable, "-m", "tenir_capture"]
         return win.install_logon_task(exe, str(a.config.resolve()))
 
     try:

@@ -1497,9 +1497,10 @@ def test_a_captions_off_notice_reaches_the_capture_client(screen, monkeypatch) -
             }
 
 
-def test_a_meeting_that_had_captions_never_warns_when_it_goes_quiet() -> None:
-    """QA D4: after a captioned meeting ends on silence, the toolbar must not trigger a
-    'turn on captions' notice; a new uncaptioned meeting after it has gone still does."""
+def test_a_captioned_meeting_gone_quiet_is_not_warned_but_a_next_one_without_captions_is() -> None:
+    """QA D4 and its delta: silence after captions isn't "captions off" (within
+    MEETING_SEEN_MS of the last caption), but a later uncaptioned meeting in the same window
+    with the toolbar still up is warned once that has passed."""
     from api.contract import ScreenNotice
     from api.screen import meetings as mt
 
@@ -1509,21 +1510,26 @@ def test_a_meeting_that_had_captions_never_warns_when_it_goes_quiet() -> None:
         async def notify(msg: object) -> None:
             sent.append(msg)
 
+        def notices() -> int:
+            return sum(isinstance(m, ScreenNotice) for m in sent)
+
         t = _tracker(InMemoryConversationStore())
         t.notify = notify
         meeting = parse_full_frame(_toolbar_frame())
-        idle = parse_full_frame(OcrResult(1280, 720, ()))
+        await t.on_full(meeting, 0)
         await t.ensure_roster()
-        await t.on_caption([blk(None, "hello there", header=False)], 0)  # toolbar never seen
-        await t.end(60_000)  # silence ended the meeting
-        await t.on_full(meeting, 70_000)  # toolbar now shows, meeting still on, quiet
-        await t.on_full(meeting, 70_000 + mt.CAPTIONS_OFF_MS * 3)
-        assert not any(isinstance(m, ScreenNotice) for m in sent)
-        # Window leaves the meeting long enough, then a meeting without captions starts.
-        later = 70_000 + mt.CAPTIONS_OFF_MS * 3 + mt.MEETING_SEEN_MS + 1
-        await t.on_full(idle, later)
-        await t.on_full(meeting, later + 1)
-        await t.on_full(meeting, later + 2 + mt.CAPTIONS_OFF_MS)
-        assert sum(isinstance(m, ScreenNotice) for m in sent) == 1
+        await t.on_caption([blk(None, "hello there", header=False)], 1_000)
+        await t.end(61_000)  # silence ended the meeting; the toolbar stays up
+        ts = 61_000
+        while ts < 1_000 + mt.MEETING_SEEN_MS:  # full frames every 30 s, still quiet
+            await t.on_full(meeting, ts)
+            ts += 30_000
+        assert notices() == 0
+        # Ten minutes without a caption: now it is a meeting with captions off.
+        end = ts + mt.CAPTIONS_OFF_MS + 30_000
+        while ts <= end:
+            await t.on_full(meeting, ts)
+            ts += 30_000
+        assert notices() == 1
 
     asyncio.run(run())
