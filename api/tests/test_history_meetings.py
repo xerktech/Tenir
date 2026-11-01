@@ -92,12 +92,26 @@ def test_orgs_lists_each_org_once_by_name_with_its_latest_name() -> None:
         ]
 
 
-def test_detail_shows_each_segments_speaker_and_the_participants() -> None:
+def test_detail_shows_each_segments_stored_speaker_and_the_participants() -> None:
     _meeting(NORTHWIND, "northwind", "Northwind")
+    # Aliases apply at ingest only; history shows what was stored (read-only v1, XERK-2606).
+    _store().set_speaker_alias(HH, "northwind", "sam@example.com", "Sam")
     with TestClient(app) as client:
         detail = client.get(f"/conversations/{NORTHWIND}").json()
-    assert [s["speaker"] for s in detail["segments"]] == ["sam@example.com", "Priya Raman"]
-    assert detail["participants"] == ["sam@example.com", "Priya Raman"]
+        exported = client.get(f"/conversations/{NORTHWIND}/export").json()
+    for body in (detail, exported):
+        assert [s["speaker"] for s in body["segments"]] == ["sam@example.com", "Priya Raman"]
+        assert body["participants"] == ["sam@example.com", "Priya Raman"]
+
+
+def test_speakers_cannot_be_renamed_through_history() -> None:
+    _meeting(NORTHWIND, "northwind", "Northwind")
+    with TestClient(app) as client:
+        res = client.put(
+            f"/conversations/{NORTHWIND}/speakers", json={"speaker": "Priya Raman", "name": "P"}
+        )
+    assert res.status_code == 405
+    assert _store().speaker_aliases(HH, "northwind") == {}
 
 
 def test_an_org_with_control_characters_is_refused() -> None:
