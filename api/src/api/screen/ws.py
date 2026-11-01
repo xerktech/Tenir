@@ -267,7 +267,12 @@ async def screen_ws(ws: WebSocket) -> None:
                     roster = await tracker.ensure_roster()
                     blocks = await loop.run_in_executor(
                         CPU_POOL,
-                        lambda: parser.parse_caption_crop(result, roster, active=tracker.active),
+                        lambda: parser.parse_caption_crop(
+                            result,
+                            roster,
+                            active=tracker.active,
+                            live=tracker.conversation_id is not None,
+                        ),
                     )
                     await tracker.on_caption(blocks, ts)
         except AccountGone:

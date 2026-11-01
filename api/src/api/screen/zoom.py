@@ -349,9 +349,10 @@ def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
 
 
 def parse_caption_crop(
-    ocr: OcrResult, roster: Roster, *, active: str | None = None
+    ocr: OcrResult, roster: Roster, *, active: str | None = None, live: bool = False
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks."""
+    """Split a caption-box crop into speaker blocks (``live`` is unused: Teams only)."""
+    del live
     return caption_blocks(caption_rows(ocr), roster, active=active)
 
 
@@ -370,9 +371,10 @@ def caption_blocks(
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
-    ``unknown_headers`` (Teams): with a roster too, a name-shaped row followed by a row that
-    isn't one is a header with no speaker. Teams captions are Title Case, but a caption line
-    that short is an entry's last line, and what follows it is the next entry's header."""
+    ``unknown_headers`` (Teams): with a roster too, a name-shaped row that opens the crop or
+    follows a finished sentence, and is followed by a row that isn't name-shaped, is a header
+    with no speaker. Teams captions are Title Case, but mid-caption ("I spoke with" / "John
+    Smith" / "yesterday") the row before isn't punctuated."""
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
@@ -392,7 +394,14 @@ def caption_blocks(
             i + 1 < len(rows)
             and name_like(row)
             and len(row.split()) >= 2
-            and (not len(roster) or (unknown_headers and not name_like(rows[i + 1])))
+            and (
+                not len(roster)
+                or (
+                    unknown_headers
+                    and not name_like(rows[i + 1])
+                    and (i == 0 or rows[i - 1].rstrip().endswith((".", "?", "!")))
+                )
+            )
         ):
             blocks.append(CaptionBlock(None, True))
             continue

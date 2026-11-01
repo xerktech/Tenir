@@ -125,18 +125,22 @@ paths:
     "real OCR of rendered Teams windows" in `test_screen_teams.py` hold Paddle's boxes.
     The QA kit (render + OCR pod + rescore) lived outside the repo; tenir-ocr's netpol admits
     only `tenir` pods, so drive it through `kubectl port-forward` (restart it per batch).
-  - A crop yields nothing without a header: tile initials, misread labels and slides became
-    blocks, and a re-sent one kept the meeting open. A header-less block *above* a header stays
-    (merge continues the speaker). Cost: an entry longer than the panel loses its scrolled-off
-    header and is dropped until the next entry. Test: `test_a_crop_with_no_speaker_header_yields_nothing`.
-  - With a roster, a short name row followed by a non-name row is an unverified header
-    (`caption_blocks(unknown_headers=True)`): a gallery too dense to OCR leaves a partial roster,
-    and unknown speakers' names were stored as caption text. Zoom keeps it off.
-  - Mis-cased avatars ("So Sean O'Neil", a "so" box) count only as all of the name's initials,
-    two letters at least; off a row they also need a roster match when there is a roster.
+  - Not live, a crop needs a roster-matched header (any header with no roster): tile initials,
+    misread labels and slides started meetings. Live (`parse_caption_crop(live=True)`, from
+    ws.py) header-less crops pass: refusing them dropped long entries and ended the meeting
+    mid-entry (QA). `MeetingTracker.on_caption` doesn't refresh `last_caption_ms` for a Teams
+    header-less snapshot equal to the last one. Tests: `test_a_crop_with_no_speaker_header_yields_nothing`,
+    `test_a_slide_heading_with_a_roster_starts_no_meeting`, `test_a_resent_header_less_crop_lets_a_teams_meeting_end`.
+  - With a roster, a name row is an unverified header only after a punctuated row (or first) and
+    before a non-name row (`caption_blocks(unknown_headers=True)`, Zoom off). Without the
+    punctuation check, "Acme Global Partners" mid-caption was lost (QA, real OCR).
+  - Mis-cased avatars ("So Sean O'Neil") strip only off a box left of the caption-text column
+    (`_strip_header_boxes`): punctuation can't place headers (small OCR drops the final "."),
+    and on the column "Hi Hank Ives" is caption. All initials, two letters at least.
+  - A 2-letter title-case token ("So", "Al") is a tile circle only when >= 1.4x the median text
+    height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
     as one tall box whose height let the tile label above link in.
-  - Full frames: tile circles read "So"/"sO" are never participants (two letters max).
   - Full frames: a 1280x720 or 960x540 gallery strip has over 16 OCR boxes, so tenir-ocr
     refuses it (`too_dense`) and the roster comes back empty; the parser can't fix that.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).

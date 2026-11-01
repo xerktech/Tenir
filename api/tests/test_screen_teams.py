@@ -599,20 +599,154 @@ def test_headers_the_roster_lacks_still_split_the_entries() -> None:
     ]
 
 
-def test_a_title_case_caption_line_before_the_next_header_stays_caption() -> None:
+def test_an_unknown_header_after_a_finished_entry_still_splits_it() -> None:
     blocks = teams.parse_caption_crop(
         result(
             line("Raman, Priya", 56, 4, 150, 20),
-            line("Sounds Good", 56, 26, 150, 46),
+            line("Sounds good.", 56, 26, 150, 46),
             line("Kunal Shah", 56, 52, 150, 68),
             line("Next item.", 56, 74, 140, 94),
         ),
         roster("Raman, Priya"),
     )
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
-        ("Raman, Priya", True, ["Sounds Good"]),
+        ("Raman, Priya", True, ["Sounds good."]),
         (None, True, ["Next item."]),
     ]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # QA on XERK-2609, real OCR: the middle line was lost and the rest went to no one.
+        ["We signed the contract with", "Acme Global Partners", "and they start on Monday."],
+        ["I spoke with", "John Smith", "yesterday about the order."],
+    ],
+)
+def test_a_title_case_line_inside_a_caption_stays_caption(rows: list[str]) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("PR Priya Raman", 18, 4, 165, 30),
+            *(line(r, 65, 30 + 26 * i, 600, 52 + 26 * i) for i, r in enumerate(rows)),
+        ),
+        roster("Priya Raman"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [("Priya Raman", rows)]
+
+
+@pytest.mark.parametrize(
+    "row", ["Hi Hank Ives", "To Tom Owens", "Paris,London"]
+)
+def test_name_like_words_on_the_caption_column_stay_caption(row: str) -> None:
+    # Mis-cased initials only strip off a box left of the text column (the avatar's place),
+    # and a lost comma space is only mended where a header can sit.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Priya Raman", 65, 4, 165, 20),
+            line("We flew via", 65, 26, 300, 46),
+            line(row, 65, 52, 300, 72),
+            line("and back again.", 65, 78, 300, 98),
+        ),
+        roster("Priya Raman", "Hank Ives", "Tom Owens"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Priya Raman", ["We flew via", row, "and back again."])
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "s Sean O'Neil",  # one letter: a word, not a circle
+        "So Sean Oscar O'Neil",  # not all of his initials
+    ],
+)
+def test_a_mis_cased_token_short_of_the_full_initials_is_not_an_avatar(row: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Priya Raman", 65, 4, 165, 20),
+            line("Okay.", 65, 26, 300, 46),
+            line(row, 18, 52, 200, 72),
+            line("Can we go?", 65, 78, 300, 98),
+        ),
+        roster("Priya Raman", "Sean O'Neil", "Sean Oscar O'Neil"),
+    )
+    assert blocks[0].speaker == "Priya Raman"
+    assert all(b.speaker != "Sean O'Neil" for b in blocks)
+
+
+def test_a_non_speaker_tile_label_just_above_the_panel_is_a_participant() -> None:
+    # Only the half-height link keeps "Nora Lind" (19 px above the panel, never a speaker):
+    # no panel header names her back.
+    frame = teams.parse_full_frame(
+        result(
+            line("Nora Lind", 22, 867, 94, 885),
+            line("PR Priya Raman", 15, 904, 134, 930),
+            line(CAPTIONS[0], 53, 925, 566, 947),
+            width=1920,
+            height=1080,
+        )
+    )
+    assert frame.participants == ["Nora Lind", "Priya Raman"]
+
+
+@pytest.mark.parametrize("name", ["Al", "Jo (Guest)"])
+def test_a_two_letter_display_name_is_a_participant(name: str) -> None:
+    frame = teams.parse_full_frame(
+        result(
+            line("Priya Raman", 30, 330, 130, 358),
+            line(name, 700, 330, 760, 358),
+            width=1280,
+            height=720,
+        )
+    )
+    assert frame.participants == ["Priya Raman", teams.clean_name(name)]
+
+
+def test_a_slide_heading_with_a_roster_starts_no_meeting() -> None:
+    slide = result(
+        line("Quarterly Business Review", 35, 13, 400, 43),
+        line("Revenue grew in every region this quarter", 36, 50, 600, 73),
+        line("Next Steps", 36, 80, 200, 103),
+        line("hire two more drivers for the depot", 37, 110, 500, 130),
+        width=1561,
+        height=307,
+    )
+    r = roster("Priya Raman")
+    assert teams.parse_caption_crop(slide, r) == []
+    # During a meeting text without a known header is kept: it may be an entry whose
+    # header scrolled off, and the merge decides what is new.
+    assert teams.parse_caption_crop(slide, r, live=True) != []
+
+
+def test_a_resent_header_less_crop_lets_a_teams_meeting_end() -> None:
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+    from api.screen.zoom import CaptionBlock
+
+    async def run(platform: str) -> bool:
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", platform),
+            store=InMemoryConversationStore(),
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        await t.ensure_roster()
+        await t.on_caption([CaptionBlock("Priya Raman", True, ["Okay."])], 0)
+        tail = [CaptionBlock(None, False, ["a long entry whose header scrolled off"])]
+        await t.on_caption(tail, 10_000)  # new text: keeps the meeting open
+        for ts in range(20_000, 80_000, 10_000):
+            await t.on_caption(list(tail), ts)  # the same crop again
+        return t.expired(70_000)
+
+    assert asyncio.run(run("teams")) is True
+    assert asyncio.run(run("zoom")) is False  # Zoom keeps its old rule
 
 
 def test_big_tile_initials_above_the_panel_are_not_caption_text() -> None:
