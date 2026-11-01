@@ -77,6 +77,14 @@ def test_min_version_comes_from_status_and_an_outage_does_not_block_start() -> N
         assert cli.min_version(cfg_for(url)) == "0.7.0"
     with http({"/status": (200, {"overall": "ok"})}) as (url, _):
         assert cli.min_version(cfg_for(url)) is None  # an older server: no gate
+    for odd in (
+        [1],
+        {"clients": "x"},
+        {"clients": {"desktop": []}},
+        {"clients": {"desktop": {"minVersion": 3}}},
+    ):
+        with http({"/status": (200, odd)}) as (url, _):
+            assert cli.min_version(cfg_for(url)) is None, odd
     with http({}) as (url, _):
         assert cli.min_version(cfg_for(url)) is None  # 404
     assert cli.min_version(cfg_for("http://127.0.0.1:9")) is None  # unreachable
@@ -142,7 +150,9 @@ class FakeWin(types.ModuleType):
                 notes.append(message)
 
         self.WindowsPlatform = WindowsPlatform
-        self.install_logon_task = lambda exe, config: self.tasks.append(("install", config)) or 0
+        self.install_logon_task = lambda exe, config: (
+            self.tasks.append(("install", tuple(exe[1:]), config)) or 0
+        )
         self.uninstall_logon_task = lambda: self.tasks.append(("uninstall",)) or 0
 
 
@@ -192,4 +202,8 @@ def test_list_and_logon_task_commands(
     path = tmp_path / "capture.json"
     assert cli.main(["--config", str(path), "--install-startup"]) == 0
     assert cli.main(["--uninstall-startup"]) == 0
-    assert fake_win.tasks == [("install", str(path.resolve())), ("uninstall",)]
+    # Not frozen here, so the task runs the package with this interpreter.
+    assert fake_win.tasks == [
+        ("install", ("-m", "tenir_capture"), str(path.resolve())),
+        ("uninstall",),
+    ]

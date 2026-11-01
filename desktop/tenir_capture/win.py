@@ -117,11 +117,12 @@ class WindowsPlatform:
             log.exception("desktop notification failed")
 
 
-def install_logon_task(exe: str, config: str) -> int:
+def install_logon_task(exe: list[str], config: str) -> int:
     """Start the client at logon via Task Scheduler (current user, normal privileges)."""
+    command = subprocess.list2cmdline([*exe, "--config", config])
     cmd = [
         "schtasks", "/Create", "/F", "/TN", TASK_NAME, "/SC", "ONLOGON",
-        "/RL", "LIMITED", "/TR", f'"{exe}" --config "{config}"',
+        "/RL", "LIMITED", "/TR", command,
     ]  # fmt: skip
     return subprocess.run(cmd, check=False).returncode
 

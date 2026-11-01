@@ -1495,3 +1495,35 @@ def test_a_captions_off_notice_reaches_the_capture_client(screen, monkeypatch) -
                 "orgSiteKey": "tesoro",
                 "kind": "captions_off",
             }
+
+
+def test_a_meeting_that_had_captions_never_warns_when_it_goes_quiet() -> None:
+    """QA D4: after a captioned meeting ends on silence, the toolbar must not trigger a
+    'turn on captions' notice; a new uncaptioned meeting after it has gone still does."""
+    from api.contract import ScreenNotice
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        sent: list[object] = []
+
+        async def notify(msg: object) -> None:
+            sent.append(msg)
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        idle = parse_full_frame(OcrResult(1280, 720, ()))
+        await t.ensure_roster()
+        await t.on_caption([blk(None, "hello there", header=False)], 0)  # toolbar never seen
+        await t.end(60_000)  # silence ended the meeting
+        await t.on_full(meeting, 70_000)  # toolbar now shows, meeting still on, quiet
+        await t.on_full(meeting, 70_000 + mt.CAPTIONS_OFF_MS * 3)
+        assert not any(isinstance(m, ScreenNotice) for m in sent)
+        # Window leaves the meeting long enough, then a meeting without captions starts.
+        later = 70_000 + mt.CAPTIONS_OFF_MS * 3 + mt.MEETING_SEEN_MS + 1
+        await t.on_full(idle, later)
+        await t.on_full(meeting, later + 1)
+        await t.on_full(meeting, later + 2 + mt.CAPTIONS_OFF_MS)
+        assert sum(isinstance(m, ScreenNotice) for m in sent) == 1
+
+    asyncio.run(run())

@@ -51,8 +51,9 @@ def min_version(cfg: Config) -> str | None:
     except (OSError, ValueError) as exc:
         log.warning("could not read %s: %s; starting anyway", cfg.url("/status"), exc)
         return None
-    desktop = (status.get("clients") or {}).get("desktop") or {}
-    value = desktop.get("minVersion")
+    clients = status.get("clients") if isinstance(status, dict) else None
+    desktop = clients.get("desktop") if isinstance(clients, dict) else None
+    value = desktop.get("minVersion") if isinstance(desktop, dict) else None
     return value if isinstance(value, str) else None
 
 
@@ -116,7 +117,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.uninstall_startup:
             return win.uninstall_logon_task()
-        return win.install_logon_task(sys.executable, str(a.config.resolve()))
+        # The frozen exe is the command; from a pip install it is "python -m tenir_capture".
+        exe = (
+            [sys.executable]
+            if getattr(sys, "frozen", False)
+            else [sys.executable, "-m", "tenir_capture"]
+        )
+        return win.install_logon_task(exe, str(a.config.resolve()))
 
     try:
         cfg = load(a.config)

@@ -15,6 +15,11 @@ paths:
   omitted from coverage; the loop takes a `Platform`, so tests run on Linux with fakes and a
   real local WebSocket server. Keep new logic out of `win.py`.
 - WGC's `frame_buffer` is a view of the mapped texture, valid only inside the callback: copy it.
+- `Runner.run()` catches every exception but `TokenRejected`/`InvalidURI`: a logon task that
+  dies needs the operator to log off. A handshake reset raises `InvalidMessage`, not OSError
+  (QA D1). Test: `test_a_reset_during_the_handshake_is_retried_not_fatal`.
+- A send can race the server's 1008 close; `session()` swallows `ConnectionClosed` and lets
+  the close code decide. Test: `test_a_rejected_token_stops_the_client_even_while_it_is_sending`.
 - `websockets` sync `connect()` must be used as a context manager (17.1 deprecates bare use).
 - `plyer` picks its backend at run time: PyInstaller needs
   `--hidden-import plyer.platforms.win.notification` (in `build.sh`) or toasts silently fail.

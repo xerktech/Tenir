@@ -33,6 +33,8 @@ log = logging.getLogger("tenir_capture")
 
 # The api refuses binary frames over 4 MB (API_SCREEN_MAX_FRAME_BYTES).
 MAX_FRAME_BYTES = 4_000_000
+# A connection that stayed up this long was healthy: the next reconnect starts from 1 s.
+HEALTHY_SECONDS = 10.0
 NOTICES = {
     "captions_off": (
         "A meeting is on screen in the {org} window but no captions are showing. "
@@ -179,7 +181,12 @@ class Runner:
                 continue
             with self._lock:
                 cadence = w.cadence or self._default
-            for region, image in w.plan.frames(now, img, cadence):
+            try:
+                frames = w.plan.frames(now, img, cadence)
+            except Exception:  # noqa: BLE001 — one odd frame (a 1 px window) must not stop capture
+                log.exception("%s: frame skipped", w.spec.org_name)
+                continue
+            for region, image in frames:
                 data = encode(w.spec, w.title, region, self.wall_ms(), image)
                 if len(data) > MAX_FRAME_BYTES:
                     log.warning("%s: %s frame too large, skipped", w.spec.org_name, region)
@@ -211,6 +218,8 @@ class Runner:
             while not self.stop.is_set() and not done.is_set():
                 self.step(ws)
                 self.stop.wait(self.tick)
+        except ConnectionClosed:
+            pass  # a send raced the server's close; its close code decides below
         finally:
             ws.close()
             receiver.join(timeout=5)
@@ -235,17 +244,20 @@ class Runner:
                 raise
             except InvalidStatus as exc:
                 log.warning("connect refused: HTTP %s", exc.response.status_code)
-            except (OSError, TimeoutError, ConnectionClosed) as exc:
-                log.warning("connect failed: %s", exc)
+            except Exception as exc:  # noqa: BLE001 — a logon task must outlive any network fault
+                # OSError, timeouts, and handshakes cut short (InvalidMessage on a reset).
+                log.warning("connect failed: %r", exc)
             else:
                 log.info("connected to %s", self.config.ws_url)
                 started = self.clock()
                 try:
                     with ws:
                         self.session(ws)
-                except (ConnectionError, ConnectionClosed, OSError) as exc:
-                    log.warning("disconnected: %s", exc)
-                if self.clock() - started > 60:
+                except TokenRejected:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — reconnect, never die mid-shift
+                    log.warning("disconnected: %r", exc)
+                if self.clock() - started >= HEALTHY_SECONDS:
                     backoff = 1.0  # it was up for a while: retry promptly
             if self.stop.wait(backoff):
                 break

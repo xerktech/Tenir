@@ -227,3 +227,152 @@ def test_an_unreachable_server_is_retried_until_stopped() -> None:
     r.stop.set()
     t.join(5)
     assert not t.is_alive() and not errors
+
+
+def test_a_reset_during_the_handshake_is_retried_not_fatal() -> None:
+    """QA D1: a server that drops the connection mid-handshake raised InvalidMessage out of
+    run(), killing the logon task until the next logon."""
+    import socket
+
+    accepted: list[int] = []
+    lsock = socket.socket()
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen()
+
+    def drop() -> None:
+        while True:
+            try:
+                conn, _ = lsock.accept()
+            except OSError:
+                return
+            accepted.append(1)
+            conn.recv(4096)
+            conn.close()  # no HTTP response at all
+
+    threading.Thread(target=drop, daemon=True).start()
+    r = runner(f"http://127.0.0.1:{lsock.getsockname()[1]}", FakePlatform([], None))
+    t, errors = run_in_thread(r)
+    deadline = time.monotonic() + 8
+    while len(accepted) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    r.stop.set()
+    t.join(5)
+    lsock.close()
+    assert not errors and len(accepted) >= 2
+
+
+def test_a_rejected_token_stops_the_client_even_while_it_is_sending(zoom_frame) -> None:
+    """QA D3: a send racing the server's 1008 close must still end in TokenRejected, at once."""
+    connections: list[int] = []
+
+    def handler(ws: ServerConnection) -> None:
+        connections.append(1)
+        ws.recv()  # the client is already streaming
+        ws.close(1008, "invalid or expired device token")
+
+    platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+    with server(handler) as url:
+        r = Runner(
+            Config(server=url, windows=(ZOOM,)), "tok", platform, tick=0.001, refresh_every=0.05
+        )
+        r.on_message('{"type":"screen.cadence","fps":5,"fullFrameSeconds":5}')
+        t, errors = run_in_thread(r)
+        t.join(5)
+    assert len(errors) == 1 and isinstance(errors[0], TokenRejected)
+    assert connections == [1]
+
+
+def test_a_new_socket_forgets_the_last_ones_cadence() -> None:
+    """Per-window overrides belong to the socket that sent them (QA mutant m7)."""
+
+    class Closed:
+        close_code = 1000
+        close_reason = ""
+
+        def __iter__(self):
+            return iter(())
+
+        def close(self) -> None:
+            pass
+
+    r = runner("http://x", FakePlatform([], None))
+    r.on_message('{"type":"screen.cadence","orgSiteKey":"org-c","fps":1,"fullFrameSeconds":30}')
+    r.on_message('{"type":"screen.cadence","fps":2,"fullFrameSeconds":30}')
+    r.session(Closed())  # type: ignore[arg-type]
+    assert r._watched["org-c"].cadence is None and r._default.fps == 0.2
+
+
+def test_a_faster_cadence_sends_the_next_caption_at_once(zoom_frame) -> None:
+    """Without the reschedule the first 1 fps crop waits out the 5 s idle interval (m4)."""
+    platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+    clock = {"t": 0.0}
+    r = runner("http://x", platform, clock=lambda: clock["t"])
+    sink = Sink()
+    assert r.step(sink) == 2
+    clock["t"] = 1.0
+    assert r.step(sink) == 0  # idle: next crop due at 5 s
+    r.on_message('{"type":"screen.cadence","orgSiteKey":"org-c","fps":1,"fullFrameSeconds":30}')
+    assert r.step(sink) == 1
+
+
+def test_oversized_and_broken_frames_are_skipped_without_stopping_capture(
+    zoom_frame, monkeypatch
+) -> None:
+    from tenir_capture import runner as runner_mod
+
+    platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+    clock = {"t": 0.0}
+    r = runner("http://x", platform, clock=lambda: clock["t"])
+    monkeypatch.setattr(runner_mod, "MAX_FRAME_BYTES", 100_000)  # full ~250 kB, crop ~20 kB
+    sink = Sink()
+    assert r.step(sink) == 1 and split(sink.sent[0])["region"] == "caption"  # m8
+    # A window shrunk to a sliver: the finder raises; the frame is skipped, the loop lives.
+    platform.captures["Horizon 3"].img = Image.new("RGB", (300, 2))
+    clock["t"] = 10
+    assert r.step(sink) == 0
+    platform.captures["Horizon 3"].img = zoom_frame(caption=True)
+    clock["t"] = 20
+    assert r.step(sink) == 1
+
+
+def test_backoff_restarts_from_one_second_after_a_healthy_connection(monkeypatch) -> None:
+    """QA D2: a session shorter than 60 s kept the doubled backoff and lost ~10 s of captions."""
+    from tenir_capture import runner as runner_mod
+
+    waits: list[float] = []
+    clock = {"t": 0.0}
+
+    class Ws:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            pass
+
+    attempts = {"n": 0}
+
+    def connect(*a: object, **k: object) -> Ws:
+        attempts["n"] += 1
+        if attempts["n"] <= 3:
+            raise OSError("refused")
+        return Ws()
+
+    r = runner("http://x", FakePlatform([], None), clock=lambda: clock["t"], connect=connect)
+
+    def session(ws: object) -> None:
+        clock["t"] += runner_mod.HEALTHY_SECONDS  # up long enough to count as healthy
+        raise ConnectionError("closed 1012")
+
+    monkeypatch.setattr(r, "session", session)
+
+    class Stop:
+        def is_set(self) -> bool:
+            return len(waits) >= 5
+
+        def wait(self, seconds: float) -> bool:
+            waits.append(seconds)
+            return len(waits) >= 5
+
+    r.stop = Stop()  # type: ignore[assignment]
+    r.run()
+    assert waits[:4] == [1.0, 2.0, 4.0, 1.0]
