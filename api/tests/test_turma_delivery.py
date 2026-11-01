@@ -243,6 +243,36 @@ def test_a_meeting_past_the_hubs_byte_limit_sends_what_fits_and_says_so(clock) -
     )
 
 
+def _hub_counted_bytes(body: dict) -> int:
+    """The hub's per-org transcript measure: JSON of its sanitized segments, where every
+    line carries a speaker (empty when none) (Turma server.js meetingSegmentBytes)."""
+    segs = [{"speaker": s.get("speaker", ""), **s} for s in body["segments"]]
+    return len(json.dumps(segs, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+@pytest.mark.parametrize("line", ["a" * 130, "日本語" * 166])
+def test_a_big_meeting_fits_the_hubs_per_org_transcript_budget(clock, line) -> None:
+    # Delta QA: fitted to the 1 MiB body alone, 9000 speaker-less lines measured 1.12 MB by
+    # the hub's count, so it answered 429 for a day.
+    store = InMemoryConversationStore()
+    store.create("default", "big", screen=ScreenMeta(SITE, "Acme", "zoom"))
+    for i in range(9000):
+        store.add_segment("default", "big", Segment(f"s{i}", line, i, i + 1))
+    store.finish("default", "big")
+    body, total = turma.meeting_body(store.get("default", "big"))
+    assert total == 9000 and len(body["segments"]) < 9000
+    assert _hub_counted_bytes(body) <= 1024 * 1024 - 1024
+    assert len(turma._encode(body)) <= 1024 * 1024
+
+
+def test_multibyte_text_goes_out_unescaped(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store, lines=("café 日本",))
+    hub = Hub(_ok())
+    asyncio.run(_delivery(store, hub, clock).run_once())
+    assert "café 日本".encode() in hub.requests[0].content
+
+
 def test_a_meeting_whose_tail_is_cut_by_the_line_cap_says_so(clock) -> None:
     store = InMemoryConversationStore()
     _meeting(store, lines=["x"] * 10_001)
@@ -277,7 +307,11 @@ def test_one_orgs_stuck_backlog_never_starves_another_org(clock) -> None:
 
     hub.paths = []
     d = _delivery(store, hub, clock)
+    reads = []
+    real_get = store.get
+    store.get = lambda *a, **k: reads.append(a[1]) or real_get(*a, **k)  # type: ignore[method-assign]
     assert asyncio.run(d.run_once()) == 1
+    assert len(reads) == 2  # a deferred org's backlog is skipped before it is loaded
     assert store.get("default", "other").delivery_state == "sent"
     # The refused org was asked once this pass, not 25 times.
     assert hub.paths.count(f"/api/orgs/{SITE}/meetings") == 1
@@ -379,10 +413,12 @@ def test_start_needs_both_url_and_token(monkeypatch, caplog) -> None:
     with caplog.at_level("WARNING", logger="api.screen.turma"):
         assert turma.start(store) is None
     assert "API_TURMA_URL is not set" in caplog.text
-    monkeypatch.setattr(settings, "turma_url", "turma.example:8300")
-    with caplog.at_level("ERROR", logger="api.screen.turma"):
-        assert turma.start(store) is None
-    assert "must be an http(s) URL" in caplog.text
+    for bad in ("turma.example:8300", "http://", "ftp://hub"):
+        monkeypatch.setattr(settings, "turma_url", bad)
+        caplog.clear()
+        with caplog.at_level("ERROR", logger="api.screen.turma"):
+            assert turma.start(store) is None
+        assert "must be an http(s) URL" in caplog.text
     assert "tok" not in caplog.text
     monkeypatch.setattr(settings, "turma_url", "http://hub")
     assert turma.start(None) is None
@@ -444,3 +480,11 @@ def test_status_reports_an_unreadable_delivery_summary(delivery_on, monkeypatch)
 def test_status_has_no_turma_light_when_delivery_is_off(monkeypatch) -> None:
     monkeypatch.setattr(settings, "turma_url", "")
     assert all(c.id != "turma" for c in asyncio.run(st.refresh()))
+
+
+def test_status_shows_half_configured_delivery(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "turma_url", "http://hub")
+    monkeypatch.setattr(settings, "turma_meetings_token", "")
+    monkeypatch.setattr(settings, "status_grace_seconds", 0.0)
+    (c,) = [c for c in asyncio.run(st.refresh()) if c.id == "turma"]
+    assert (c.state, c.detail) == (st.STATE_DOWN, "API_TURMA_MEETINGS_TOKEN is not set")

@@ -103,8 +103,8 @@ class ConversationStore(Protocol):
     def households(self) -> list[str]: ...
     def ready(self) -> None: ...
     def finish_stale(self) -> list[tuple[str, str]]: ...
-    def pending_deliveries(self) -> list[tuple[str, str]]:
-        """``(household, id)`` of every finished screen meeting still waiting for the Turma
+    def pending_deliveries(self) -> list[tuple[str, str, str | None]]:
+        """``(household, id, org_site_key)`` of every finished screen meeting still waiting for the Turma
         hub, oldest end first (XERK-2513). Unbounded on purpose: the caller skips the ones
         backing off, and a page of stuck ones must not hide the rest. A screen row with no
         state (created before delivery existed) counts as pending."""
@@ -386,16 +386,16 @@ class InMemoryConversationStore:
                 conv.ended_at = conv.ended_at or utcnow()
             return [(household, conv.id) for household, conv in stale]
 
-    def pending_deliveries(self) -> list[tuple[str, str]]:
+    def pending_deliveries(self) -> list[tuple[str, str, str | None]]:
         with self._lock:
             rows = [
-                (conv.ended_at or conv.started_at, household, conv.id)
+                (conv.ended_at or conv.started_at, household, conv.id, conv.org_site_key)
                 for household, convs in self._by_household.items()
                 for conv in convs.values()
                 if conv.status == "ready" and _delivery_state(conv) == "pending"
             ]
-        rows.sort()
-        return [(h, cid) for _, h, cid in rows]
+        rows.sort(key=lambda r: (r[0], r[2]))
+        return [(h, cid, org) for _, h, cid, org in rows]
 
     def set_delivery(
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None

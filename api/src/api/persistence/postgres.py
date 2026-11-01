@@ -1324,17 +1324,17 @@ class SqlConversationStore:
 
     def pending_deliveries(  # pragma: no cover - requires a live database
         self,
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str, str | None]]:
         with self._ensure_pool().connection() as conn:
             rows = conn.execute(
                 """
-                SELECT household, id FROM conversations
+                SELECT household, id, org_site_key FROM conversations
                  WHERE source = 'screen' AND status = 'ready'
                    AND COALESCE(delivery_state, 'pending') = 'pending'
                  ORDER BY ended_at, id
                 """
             ).fetchall()
-        return [(r[0], r[1]) for r in rows]
+        return [(r[0], r[1], r[2]) for r in rows]
 
     def set_delivery(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None

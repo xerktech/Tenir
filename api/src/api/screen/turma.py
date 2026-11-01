@@ -53,9 +53,14 @@ SEGMENTS_MAX = 10_000
 SEGMENT_TEXT_MAX = 2000
 PARTICIPANTS_MAX = 100
 ERROR_MAX = 300
-# The hub refuses a body over 1 MiB (413). An hour of captions is ~60 KB; past the budget the
-# newest lines are left out and the conversation records how many were sent.
-BODY_BUDGET = 1024 * 1024 - 4096
+# Two hub limits, both 1 MiB (an hour of captions is ~60 KB): the request body (413) and the
+# org's pending transcripts (429, MEETINGS_PENDING_BYTES_ORG_MAX), which the hub measures as
+# JSON of its SANITIZED segments, where every line carries `"speaker":""`. A meeting over the
+# second on its own would 429 forever, so lines are counted the way the hub counts them; the
+# headroom covers its other fields. Past the budget the newest lines are left out and the
+# conversation records how many were sent.
+BYTES_MAX = 1024 * 1024
+BYTES_HEADROOM = 16 * 1024
 
 
 def _ms(dt) -> int:
@@ -101,11 +106,12 @@ def meeting_body(conv: Conversation) -> tuple[dict[str, object], int] | None:
         body["title"] = conv.meeting_title[:TITLE_MAX]
     if conv.platform:
         body["platform"] = conv.platform[:PLATFORM_MAX]
-    # Keep the earliest lines that fit the hub's byte budget (+1 per comma between them).
-    room = BODY_BUDGET - len(_encode(body))
+    # Keep the earliest lines that fit both budgets (+1 per comma between them). A line's
+    # hub-counted size is never below its wire size, so one count bounds both.
+    room = min(BYTES_MAX - BYTES_HEADROOM - len(_encode(body)), BYTES_MAX - BYTES_HEADROOM)
     kept = []
     for item in segments[:SEGMENTS_MAX]:
-        size = len(_encode(item)) + (1 if kept else 0)
+        size = len(_encode({"speaker": "", **item})) + (1 if kept else 0)
         if size > room:
             break
         room -= size
@@ -159,15 +165,15 @@ class TurmaDelivery:
         """Try every pending meeting that is due; returns how many were sent."""
         pending = await asyncio.to_thread(self.store.pending_deliveries)
         sent = 0
-        live = {cid for _, cid in pending}
+        live = {cid for _, cid, _ in pending}
         for cid in list(self._backoff):
             if cid not in live:
                 self._backoff.pop(cid, None)
         deferred: set[str] = set()  # orgs the hub just refused for now: next pass
-        for household, cid in pending:
+        for household, cid, org in pending:
             _, due = self._backoff.get(cid, (0, 0.0))
-            if due > self.clock():
-                continue
+            if due > self.clock() or org in deferred:
+                continue  # checked before loading: a deferred org's backlog costs no reads
             outcome = await self._deliver(household, cid, deferred)
             if outcome == "sent":
                 sent += 1
@@ -191,7 +197,7 @@ class TurmaDelivery:
         if conv is None or conv.source != "screen" or not conv.org_site_key:
             self._backoff.pop(cid, None)
             return "skipped"
-        if conv.delivery_state not in (None, "pending") or conv.org_site_key in deferred:
+        if conv.delivery_state not in (None, "pending"):
             return "skipped"
         built = meeting_body(conv)
         if built is None:
@@ -280,6 +286,14 @@ def _ok(resp: httpx.Response) -> bool:
 _delivery: TurmaDelivery | None = None
 
 
+def half_configured() -> str | None:
+    """The setting missing when only one of URL and token is set, else None."""
+    url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
+    if bool(url) == bool(token):
+        return None
+    return "API_TURMA_MEETINGS_TOKEN" if url else "API_TURMA_URL"
+
+
 def configured() -> bool:
     return bool(settings.turma_url.strip() and settings.turma_meetings_token.strip())
 
@@ -293,14 +307,14 @@ def start(store: ConversationStore | None) -> TurmaDelivery | None:
     global _delivery
     _delivery = None
     url, token = settings.turma_url.strip(), settings.turma_meetings_token.strip()
-    if bool(url) != bool(token):
+    if missing := half_configured():
         # Half set is a mistake, not a choice: say so, or meetings pile up pending silently.
-        missing = "API_TURMA_MEETINGS_TOKEN" if url else "API_TURMA_URL"
         log.warning("meeting delivery to turma is off: %s is not set", missing)
         return None
     if store is None or not configured():
         return None
-    if urlsplit(url).scheme not in ("http", "https"):
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
         log.error("meeting delivery to turma is off: API_TURMA_URL must be an http(s) URL")
         return None
     _delivery = TurmaDelivery(

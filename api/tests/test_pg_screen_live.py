@@ -124,7 +124,10 @@ def test_meeting_delivery_state_round_trips(store) -> None:
     store.finish(HH, a)
     store.finish(HH, b)
     store.finish(HH, mic)
-    assert store.pending_deliveries() == [(HH, a), (HH, b)]  # oldest end first, no live row
+    assert store.pending_deliveries() == [
+        (HH, a, "tesoro"),
+        (HH, b, "tesoro"),
+    ]  # oldest end first, no live row
     since = utcnow() - timedelta(days=7)
     assert store.delivery_summary(since) == {"pending": 2, "failed": 0, "error": None}
 
@@ -134,7 +137,11 @@ def test_meeting_delivery_state_round_trips(store) -> None:
     store.finish(HH, legacy)
     with store._ensure_pool().connection() as conn:
         conn.execute("UPDATE conversations SET delivery_state = NULL WHERE id = %s", (legacy,))
-    assert store.pending_deliveries() == [(HH, a), (HH, b), (HH, legacy)]
+    assert store.pending_deliveries() == [
+        (HH, a, "tesoro"),
+        (HH, b, "tesoro"),
+        (HH, legacy, "tesoro"),
+    ]
     store.set_delivery(HH, legacy, "sent", None)
     assert store.get(HH, legacy).delivery_state == "sent"
 

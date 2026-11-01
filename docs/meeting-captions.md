@@ -228,9 +228,12 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   the hub's words (while pending: the last retry's reason).
 - Each pass looks at every pending meeting: after a retryable refusal the rest of that org waits
   for the next pass, and an unreachable hub ends the pass. One org's backlog never blocks another.
-- The body fits the hub's limits: lines cut to 2000 characters, at most 10000 lines and 1 MiB.
-  Past that the earliest lines are sent and `delivery_error` on the `sent` row says how many.
-- A half-set config (URL or token alone) or a URL that isn't http(s) logs why delivery is off.
+- The body fits the hub's limits: lines cut to 2000 characters, at most 10000 lines, and 1 MiB
+  both on the wire and by the hub's per-org transcript measure (sanitized segments, each with a
+  `speaker`). Past that the earliest lines are sent and the `sent` row's `delivery_error` says
+  how many.
+- A half-set config (URL or token alone) logs why delivery is off and shows red on `/status`; a
+  URL that isn't http(s) with a host logs an error and keeps delivery off.
 - A meeting is tried as soon as it turns ready (the tracker wakes the loop), else on a 10 s poll,
   which also picks up meetings the boot stale sweep closed.
 - Exactly once at the hub: Tenir retries until a 200 `{ok: true}`, and the hub is idempotent on

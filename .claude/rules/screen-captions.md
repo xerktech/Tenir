@@ -75,5 +75,8 @@ paths:
     Test: `test_one_orgs_stuck_backlog_never_starves_another_org`.
   - The body is fitted to the hub's 1 MiB / 10000-line caps (`meeting_body`): over them the hub
     413s, which is permanent, so a long meeting would never be sent.
+  - Count lines as the hub's `meetingSegmentBytes` does (sanitized, `"speaker":""` on each), not
+    by wire size: its per-org 1 MiB budget 429s a meeting over it forever (delta QA).
+    Test: `test_a_big_meeting_fits_the_hubs_per_org_transcript_budget`.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.

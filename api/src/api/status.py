@@ -99,7 +99,10 @@ def _public_detail(target: str, exc: BaseException) -> str:
     if name not in seen:
         seen.add(name)
         log.warning(
-            "status probe of %s failed: %s: %s", target, type(exc).__name__, " ".join(str(exc).split())
+            "status probe of %s failed: %s: %s",
+            target,
+            type(exc).__name__,
+            " ".join(str(exc).split()),
         )
     return f"unreachable: {name}"
 
@@ -201,7 +204,12 @@ async def _gather() -> list[_RawResult]:
 
     # --- Turma hub delivery of finished meetings (XERK-2513) ---
     conv_store = get_conversation_store()
-    if turma.configured() and conv_store is not None:
+    if missing := turma.half_configured():
+        # Meetings pile up pending while half-configured: show it, not just a boot log line.
+        results.append(
+            ("turma", "Meetings to Turma", "infra", UNREACHABLE, f"{missing} is not set")
+        )
+    elif turma.configured() and conv_store is not None:
         raw, detail = await _delivery_probe(conv_store)
         results.append(("turma", "Meetings to Turma", "infra", raw, detail))
 
