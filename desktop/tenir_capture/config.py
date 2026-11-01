@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-# Platforms whose caption box the client can find (see frames.FINDERS). A window on any other
-# platform is skipped with a warning until its finder ships (Teams: after XERK-2515).
+# Platforms the client captures; each has a caption finder in frames.FINDERS.
 PLATFORMS = ("zoom", "teams")
 
 

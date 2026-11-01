@@ -15,11 +15,37 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from tenir_capture.caption_box import crop_box
+from tenir_capture.caption_box import TARGET_HEIGHT, crop_band, crop_box
 from tenir_capture.config import WindowSpec
 
-# Caption-box finders per platform. A platform without one is not captured yet.
-FINDERS: dict[str, Callable[[Image.Image], Image.Image | None]] = {"zoom": crop_box}
+# Teams draws captions in a left-aligned panel along the bottom of the stage (avatar, name
+# line, wrapped text) with no toolbar below it, so a fixed bottom band holds the panel.
+# Tuned on the synthetic layout only (docs/meeting-captions.md Caveats); retune on captures.
+TEAMS_BAND_TOP = 0.65
+# Kept under tenir-ocr's 0.5 Mpx cap (api STRIP_PIXELS) so the api never splits the band.
+TEAMS_MAX_PIXELS = 480_000
+
+
+def teams_band(img: Image.Image) -> Image.Image:
+    """The bottom band of a Teams window, at caption-font scale but under the OCR cap.
+
+    Always a crop: telling a caption from tile labels or an empty stage needs OCR, which stays
+    on the api (its Teams parser drops tile-label rows and answers a crop without caption
+    text with nothing, so an idle band starts no meeting).
+    """
+    band = crop_band(img, TEAMS_BAND_TOP, 1.0)
+    scale = min(TARGET_HEIGHT / img.height, (TEAMS_MAX_PIXELS / (band.width * band.height)) ** 0.5)
+    if 1.0 <= scale < 1.05:  # already at caption size and under the cap: skip a blurring resize
+        return band
+    size = (max(1, int(band.width * scale)), max(1, int(band.height * scale)))
+    return band.resize(size, Image.Resampling.LANCZOS)
+
+
+# Caption finders per platform: the crop to send, or None when no caption is on screen.
+FINDERS: dict[str, Callable[[Image.Image], Image.Image | None]] = {
+    "zoom": crop_box,
+    "teams": teams_band,
+}
 
 # The api decodes full frames up to this many pixels (api/src/api/screen/ocr.py
 # MAX_FRAME_PIXELS) and refuses frames over 4 MB; a bigger window is scaled down to fit.

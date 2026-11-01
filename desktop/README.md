@@ -18,8 +18,8 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
      another tab is in front, so an exact RDM title pauses capture until the session tab is
      back in front.
    - `orgSiteKey` / `orgName`: the Turma org the meeting belongs to. Use one site key per window.
-   - `platform`: `zoom` or `teams`. Teams windows are skipped (logged) until the Teams
-     caption crop ships (XERK-2515).
+   - `platform`: `zoom` or `teams`. Turn on live captions in the meeting (Zoom: Show
+     Captions; Teams: Language and speech > Turn on live captions); Tenir reads them off screen.
 3. Pair it once: `tenir-capture.exe --pair` asks for your Tenir username and password and
    saves a screen-only device token to `%APPDATA%\Tenir\device-token`. The token works for 365
    days, and only on `/ws/screen`.

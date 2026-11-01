@@ -25,6 +25,11 @@ paths:
   `--hidden-import plyer.platforms.win.notification` (in `build.sh`) or toasts silently fail.
 - The version is stamped into `_version.py` by `build.sh`; "dev" never fails the
   `/status` min-version gate, so an unbuilt checkout always starts.
+- Teams sends a fixed bottom band every tick, never None: deciding "no caption" needs OCR,
+  which stays on the api (its Teams parser yields nothing for a band without caption text).
+  Test: `tests/test_frames.py::test_the_teams_finder_sends_the_bottom_band_under_the_ocr_cap`.
+- Every `config.PLATFORMS` entry needs a `frames.FINDERS` entry; the runner indexes it directly.
+  Test: `tests/test_frames.py::test_every_configurable_platform_has_a_finder`.
 - Tests: `tests/test_runner.py::test_minimized_or_retitled_windows_pause_and_the_operator_is_told`,
   `tests/test_frames.py::test_caption_crops_go_only_while_a_caption_shows_with_a_full_frame_first`.
 - `ruff` is pinned in `desktop/pyproject.toml`: unpinned, CI pulled a release with new default

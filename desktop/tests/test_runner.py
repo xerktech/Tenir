@@ -114,17 +114,21 @@ def test_frames_stream_with_the_token_and_honour_the_servers_cadence(zoom_frame)
     with server(handler) as url:
         r = runner(url, platform)
         t, errors = run_in_thread(r)
-        first = [got.get(timeout=5) for _ in range(4)]
+        first = [got.get(timeout=5) for _ in range(8)]
         r.stop.set()
         t.join(5)
     assert not errors
     assert auth == ["Bearer tok"]
-    assert [h["region"] for h in first[:2]] == ["full", "caption"]
-    assert {h["orgSiteKey"] for h in first} == {"org-c"}  # the Teams window isn't captured yet
-    assert first[0]["windowTitle"] == "Horizon 3 - VMware"
-    assert "Horizon 1" not in platform.captures
+    by_org = {k: [h for h in first if h["orgSiteKey"] == k] for k in ("org-a", "org-c")}
+    zoom, teams = by_org["org-c"], by_org["org-a"]
+    assert len(zoom) + len(teams) == len(first)
+    # Both windows stream: a full frame first, then caption crops.
+    assert [h["region"] for h in zoom[:2]] == ["full", "caption"]
+    assert [h["region"] for h in teams[:2]] == ["full", "caption"]
+    assert zoom[0]["windowTitle"] == "Horizon 3 - VMware" and zoom[0]["platform"] == "zoom"
+    assert teams[0]["windowTitle"] == "Horizon 1" and teams[0]["platform"] == "teams"
     # 5 fps from the server: the caption crops come fast, not at the 0.2 fps default.
-    assert [h["region"] for h in first[2:]] == ["caption", "caption"]
+    assert len(zoom) >= 3 and all(h["region"] == "caption" for h in zoom[2:])
     assert platform.captures["Horizon 3 - VMware"].stopped is False
     r.close()
     assert platform.captures["Horizon 3 - VMware"].stopped

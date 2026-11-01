@@ -8,15 +8,18 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from tenir_capture.config import WindowSpec
+from tenir_capture.config import PLATFORMS, WindowSpec
 from tenir_capture.frames import (
+    FINDERS,
     MAX_FULL_PIXELS,
+    TEAMS_MAX_PIXELS,
     Cadence,
     WindowPlan,
     encode,
     fit_full,
     parse_server,
     resolve,
+    teams_band,
     too_old,
 )
 
@@ -99,6 +102,38 @@ def test_the_real_finder_sends_the_zoom_caption_box_and_nothing_without_one(zoom
     # Only the caption box crosses the wire, under tenir-ocr's 0.5 Mpx cap.
     assert crop.width * crop.height < 500_000 and crop.height < 200
     assert plan.frames(1, zoom_frame(caption=False, dark=True), CAD) == []
+
+
+def test_every_configurable_platform_has_a_finder() -> None:
+    assert set(FINDERS) == set(PLATFORMS)
+
+
+@pytest.mark.parametrize(
+    "size", [(1920, 1080), (1270, 1080), (1260, 1080), (960, 540), (2560, 1440), (3840, 2160)]
+)
+def test_the_teams_finder_sends_the_bottom_band_under_the_ocr_cap(size) -> None:
+    w, h = size
+    img = Image.new("RGB", size, "black")
+    # A caption-panel stand-in at the bottom-left and a title bar at the top.
+    img.paste("white", (w // 40, int(h * 0.9), w // 3, int(h * 0.95)))
+    img.paste("red", (0, 0, w, h // 20))
+    plan = WindowPlan(FINDERS["teams"])
+    out = dict(plan.frames(0, img, CAD))
+    assert set(out) == {"full", "caption"}  # a full frame first: the api needs the names
+    crop = Image.open(io.BytesIO(out["caption"]))
+    assert crop.width * crop.height <= TEAMS_MAX_PIXELS
+    assert abs(crop.width / crop.height - w / (h * 0.35)) < 0.05  # whole width, bottom 35%
+    px = crop.convert("RGB")
+    assert px.getpixel((crop.width // 6, int(crop.height * 0.8))) == (255, 255, 255)
+    assert all(px.getpixel((x, 2)) != (255, 0, 0) for x in range(0, crop.width, 50))
+    # The api tells captions from an idle band, so every tick sends the crop.
+    assert [r for r, _ in plan.frames(1, img, CAD)] == ["caption"]
+
+
+def test_a_small_remote_teams_window_is_upscaled_to_caption_font_size() -> None:
+    band = teams_band(Image.new("RGB", (640, 360)))
+    assert band.height > 360 * 0.35 * 1.5
+    assert band.width * band.height <= TEAMS_MAX_PIXELS
 
 
 def test_huge_windows_are_scaled_to_what_the_server_decodes() -> None:

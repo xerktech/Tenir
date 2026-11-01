@@ -89,16 +89,8 @@ class Runner:
         self._default = DEFAULT_CADENCE
         self._watched: dict[str, _Watched] = {}
         for spec in self.config.windows:
-            finder = FINDERS.get(spec.platform)
-            if finder is None:
-                log.warning(
-                    "%s (%s): %s captions aren't supported yet; not capturing this window",
-                    spec.org_name,
-                    spec.org_site_key,
-                    spec.platform,
-                )
-                continue
-            self._watched[spec.org_site_key] = _Watched(spec, WindowPlan(finder))
+            # config.parse only admits platforms with a finder.
+            self._watched[spec.org_site_key] = _Watched(spec, WindowPlan(FINDERS[spec.platform]))
         self._next_refresh = 0.0
 
     # -- windows --------------------------------------------------------------------------

@@ -253,8 +253,10 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   substring matching one window) → `orgSiteKey`, `orgName`, `platform`. A title matching
   nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
-  bench imports it from there. Only `zoom` has a finder; Teams windows are skipped until
-  XERK-2515 adds one.
+  bench imports it from there. Teams (`frames.teams_band`, XERK-2608) has no box to find: every
+  tick sends a fixed bottom band (the lower 35%, full width, scaled to caption-font size but
+  under 480,000 px). The api's Teams parser drops tile-label rows and answers a band without
+  caption text with nothing, so an idle Teams window costs one OCR pass per tick, no meeting.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
   frame per 5 s, and treats a faster cadence as due at once.
 - **Notices**: a minimized window is paused with a desktop notification (WGC gets no frames
@@ -280,8 +282,8 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   `python scripts/caption_ocr/caption_bench.py --images <dir with truth.json> --out <dir>`.
 - **The box finder is Zoom-specific and tuned on synthetic frames.** It assumes a centred box of
   white text at Zoom's default caption size (`BOX_MAX_LINE`); retune on real captures, and again
-  if the operator enlarges captions. Teams draws captions differently and has no client-side
-  finder yet: the client may send a fixed bottom-band crop, which the Teams parser tolerates.
+  if the operator enlarges captions. Teams gets a fixed bottom band instead (`TEAMS_BAND_TOP`,
+  synthetic layout only): a panel taller than the band loses its oldest entries.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.
