@@ -462,6 +462,24 @@ def test_a_requeued_gave_up_meeting_gets_a_fresh_retry_window(clock) -> None:
     assert store.get("default", "c1").delivery_state == "sent"
 
 
+def test_the_fresh_window_survives_a_second_restart(clock) -> None:
+    # Delta QA of XERK-2605: re-queued, tried once (404), then the pod bounces again. The new
+    # process must not give the still-pending meeting up at its first 404.
+    store = InMemoryConversationStore()
+    _meeting(store)
+    clock["now"] += 3 * 86_400
+    store.set_delivery("default", "c1", "failed", "gave up retrying: hub answered 503")
+    no_host = httpx.Response(404, json={"error": "no host is in that org"})
+    first = _delivery(store, Hub(no_host), clock)
+    asyncio.run(first.requeue_failed())
+    asyncio.run(first.run_once())
+    clock["now"] += 60
+    second = _delivery(store, Hub(no_host), clock)
+    assert asyncio.run(second.requeue_failed()) == 0  # pending, not failed: nothing to re-queue
+    asyncio.run(second.run_once())
+    assert store.get("default", "c1").delivery_state == "pending"
+
+
 def test_a_requeued_meeting_still_gives_up_a_window_after_the_boot(clock) -> None:
     store = InMemoryConversationStore()
     _meeting(store)
