@@ -832,6 +832,28 @@ def test_a_misread_avatar_before_a_roster_name_is_stripped(misread: str) -> None
     ]
 
 
+@pytest.mark.parametrize(
+    "row",
+    [
+        "3 Kunal Shah",  # a name the roster lacks: not known to be a header
+        "Okay Lee, Bo",  # a word longer than a circle's misread
+    ],
+)
+def test_only_a_short_token_before_a_roster_name_reads_as_a_misread_avatar(row: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("PR Priya Raman", 18, 4, 140, 24),
+            line("We met", 65, 28, 300, 48),
+            line(row, 18, 56, 140, 76),
+            line("at the depot.", 65, 80, 200, 100),
+        ),
+        roster("Priya Raman", "Lee, Bo"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [
+        ("Priya Raman", ["We met", row, "at the depot."])
+    ]
+
+
 def test_a_name_like_last_caption_row_with_no_text_below_stays_caption() -> None:
     # Only a box left of the text below it is an avatar row: at the crop's bottom there is
     # nothing below, so "Hi Hank Ives" stays Priya's words.
