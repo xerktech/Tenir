@@ -31,13 +31,14 @@ import { CaptureProvider, useCaptureContext } from "./lib/capture";
 import { useAsync } from "./lib/hooks";
 import { useHashTab } from "./lib/route";
 import { useNotify } from "./lib/toast";
+import { DevicesPanel } from "./panels/Devices";
 import { HistoryPanel } from "./panels/History";
 import { LivePanel } from "./panels/Live";
 import { StatusPanel } from "./panels/Status";
 import { UsersPanel } from "./panels/Users";
 import { Button, Card, Field, Input, NavIcon, ThemeToggle } from "./ui";
 
-const BASE_TABS = ["Live", "History", "Status"] as const;
+const BASE_TABS = ["Live", "History", "Status", "Devices"] as const;
 // User management is an admin-only surface (the server 403s members), so the
 // tab is only offered to admins.
 const ADMIN_TABS = ["Users"] as const;
@@ -383,6 +384,7 @@ function DashboardShell({ principal }: { principal: Principal }): JSX.Element {
         {tab === "Live" && <LivePanel />}
         {tab === "History" && <HistoryPanel />}
         {tab === "Status" && <StatusPanel />}
+        {tab === "Devices" && <DevicesPanel />}
         {tab === "Users" && isAdmin && <UsersPanel me={principal} />}
       </div>
     </div>

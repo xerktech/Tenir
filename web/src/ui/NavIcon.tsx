@@ -1,6 +1,6 @@
 /**
  * Line icons for the dashboard page navigation — one glyph per section (Live,
- * History, Status, Users). They render as `currentColor` strokes so they inherit
+ * History, Status, Devices, Users). They render as `currentColor` strokes so they inherit
  * the nav item's muted/active colour, and are marked `aria-hidden` so the button's
  * accessible name stays the text label (the icon is decorative reinforcement).
  */
@@ -8,7 +8,7 @@
 import type { JSX } from "react";
 
 /** The dashboard sections that carry a nav icon. */
-export type NavPage = "Live" | "History" | "Status" | "Users";
+export type NavPage = "Live" | "History" | "Status" | "Devices" | "Users";
 
 type IconProps = { size?: number };
 
@@ -58,6 +58,17 @@ function StatusIcon({ size = 18 }: IconProps): JSX.Element {
   );
 }
 
+/** Monitor — paired screen-capture devices (matches the mobile Settings card). */
+function DevicesIcon({ size = 18 }: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </svg>
+  );
+}
+
 /** Two people — household user management. */
 function UsersIcon({ size = 18 }: IconProps): JSX.Element {
   return (
@@ -74,6 +85,7 @@ const ICONS: Record<NavPage, (p: IconProps) => JSX.Element> = {
   Live: LiveIcon,
   History: HistoryIcon,
   Status: StatusIcon,
+  Devices: DevicesIcon,
   Users: UsersIcon,
 };
 

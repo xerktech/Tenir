@@ -5,6 +5,7 @@ import {
   checkSession,
   describeBootFailure,
   describeLoginError,
+  devices,
   getStatus,
   history,
   meetingSpeakers,
@@ -401,5 +402,20 @@ describe("a login must not leak or destroy the existing token", () => {
 
     await expect(history.get("gone")).rejects.toBeInstanceOf(ApiError);
     expect(getToken()).toBe("tok-fresh");
+  });
+});
+
+describe("devices (XERK-2594)", () => {
+  it("lists and revokes the caller's capture devices", async () => {
+    setToken("tok-1");
+    const listed = [
+      { id: "d1", name: "MEETING-PC", createdAt: "2026-11-01T00:00:00+00:00", expiresAt: "x" },
+    ];
+    mockFetch(({ init }) => (init.method === "DELETE" ? new Response(null, { status: 204 }) : json(listed)));
+    await expect(devices.list()).resolves.toEqual(listed);
+    expect(calls[0].url).toBe("http://gw/auth/device-tokens");
+    await expect(devices.revoke("d/1")).resolves.toBeUndefined();
+    expect(calls[1].url).toBe("http://gw/auth/device-tokens/d%2F1");
+    expect(calls[1].init.method).toBe("DELETE");
   });
 });

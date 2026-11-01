@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, replace
@@ -50,6 +51,22 @@ class User:
     password_hash: str | None = None
     oidc_sub: str | None = None
     email: str | None = None
+
+
+@dataclass(frozen=True)
+class DeviceToken:
+    """A minted screen-capture device token (XERK-2594), by its ``jti``.
+
+    The token itself is stateless HMAC; this row is what makes it revocable one device
+    at a time. Times are epoch seconds. A row counts as live while it is neither
+    revoked nor past ``expires_at``; only live rows are listed.
+    """
+
+    token_id: str
+    user_id: str
+    name: str
+    created_at: float
+    expires_at: float
 
 
 class UserStore(Protocol):
@@ -97,6 +114,20 @@ class UserStore(Protocol):
         username: str | None = None,
         role: Role | None = None,
     ) -> User: ...
+    # Screen-capture device tokens (XERK-2594). A user's tokens die with the user.
+    def create_device_token(self, user_id: str, *, name: str, ttl_seconds: int) -> DeviceToken: ...
+    def list_device_tokens(self, user_id: str) -> list[DeviceToken]: ...
+    def device_token_is_live(self, user_id: str, token_id: str) -> bool: ...
+    def revoke_device_token(self, user_id: str, token_id: str) -> bool: ...
+
+
+# Live device tokens one user may hold (XERK-2594). Each mint also drops the user's dead
+# (revoked or expired) rows, so the table stays bounded per user.
+MAX_DEVICE_TOKENS = 20
+
+
+class TooManyDevices(Exception):
+    """Raised when a user already holds ``MAX_DEVICE_TOKENS`` live device tokens."""
 
 
 class DuplicateUser(Exception):
@@ -205,6 +236,8 @@ class InMemoryUserStore:
         self._by_oidc_sub: dict[str, User] = {}
         self._by_email: dict[str, User] = {}
         self._env_admin_id: str | None = None
+        # Device tokens by id; a revoked one is dropped (nothing reads it again).
+        self._device_tokens: dict[str, DeviceToken] = {}
         self._lock = threading.Lock()
 
     # --- index maintenance (called under the lock) ---------------------------
@@ -333,6 +366,9 @@ class InMemoryUserStore:
             self._deindex(user)
             if self._env_admin_id == user_id:
                 self._env_admin_id = None
+            # As the SQL foreign key cascades: a re-created id must not inherit tokens.
+            for token_id in [t.token_id for t in self._device_tokens.values() if t.user_id == user_id]:
+                del self._device_tokens[token_id]
 
     def authenticate(self, username: str, password: str) -> User | None:
         user = self.get_by_username(username)
@@ -416,6 +452,53 @@ class InMemoryUserStore:
             self._deindex(user)
             self._index(updated)
             return updated
+
+    # --- screen-capture device tokens (XERK-2594) ------------------------------
+
+    def create_device_token(self, user_id: str, *, name: str, ttl_seconds: int) -> DeviceToken:
+        now = time.time()
+        token = DeviceToken(
+            token_id=str(uuid.uuid4()),
+            user_id=user_id,
+            name=name,
+            created_at=now,
+            expires_at=now + ttl_seconds,
+        )
+        with self._lock:
+            if user_id not in self._by_id:
+                raise KeyError(user_id)
+            mine = [t for t in self._device_tokens.values() if t.user_id == user_id]
+            for dead in (t for t in mine if t.expires_at <= now):
+                del self._device_tokens[dead.token_id]
+            if sum(t.expires_at > now for t in mine) >= MAX_DEVICE_TOKENS:
+                raise TooManyDevices(user_id)
+            self._device_tokens[token.token_id] = token
+        return token
+
+    def list_device_tokens(self, user_id: str) -> list[DeviceToken]:
+        now = time.time()
+        with self._lock:
+            live = [
+                t
+                for t in self._device_tokens.values()
+                if t.user_id == user_id and t.expires_at > now
+            ]
+        return sorted(live, key=lambda t: (t.created_at, t.token_id))
+
+    def device_token_is_live(self, user_id: str, token_id: str) -> bool:
+        with self._lock:
+            token = self._device_tokens.get(token_id)
+        return token is not None and token.user_id == user_id and token.expires_at > time.time()
+
+    def revoke_device_token(self, user_id: str, token_id: str) -> bool:
+        with self._lock:
+            token = self._device_tokens.get(token_id)
+            # An expired token still counts: revoke is how its owner closes a socket opened
+            # before expiry (sockets are authorized only at the handshake).
+            if token is None or token.user_id != user_id:
+                return False
+            del self._device_tokens[token_id]
+            return True
 
 
 _store: UserStore | None = None

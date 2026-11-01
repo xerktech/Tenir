@@ -191,8 +191,17 @@ def principal_from_live_token(token: str, *, scope: str | None = None) -> Princi
     # a device token: a leaked capture-PC token must not read history (XERK-2505).
     if principal.scope != scope:
         raise AuthError("token not valid for this endpoint")
-    if get_user_store().get_by_id(principal.user_id) is None:
+    store = get_user_store()
+    if store.get_by_id(principal.user_id) is None:
         raise AuthError("account no longer exists")
+    # A device token works only while its device_tokens row is live, so one capture device
+    # can be revoked alone (XERK-2594). A token without a ``jti`` predates the table and
+    # can't be revoked, so it is refused: re-pair the device.
+    if scope is not None and (
+        principal.token_id is None
+        or not store.device_token_is_live(principal.user_id, principal.token_id)
+    ):
+        raise AuthError("device token revoked")
     return principal
 
 

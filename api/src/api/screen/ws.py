@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import struct
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket
@@ -56,18 +57,37 @@ _ocr: OcrClient | None = None
 # Windows (orgSiteKeys) one socket may feed: the capture PC watches four. Bounds the lanes,
 # and the decoded frames they hold, that one device token can open.
 MAX_WINDOWS = 8
-# Open screen sockets per user: each entry stops its socket (closes 1008). Deleting a user
-# calls revoke_user(), since auth is only checked at the handshake (XERK-236 parity).
+# Open screen sockets per user and per device token: each entry stops its socket (closes
+# 1008). Deleting a user calls revoke_user(), revoking a device token revoke_token()
+# (XERK-2594), since auth is only checked at the handshake (XERK-236 parity).
 _revokers: dict[str, set[Callable[[], None]]] = {}
+_token_revokers: dict[str, set[Callable[[], None]]] = {}
 
 
-def revoke_user(user_id: str) -> int:
-    """Close every open screen socket of a deleted user; returns how many."""
-    stops = list(_revokers.get(user_id, ()))
+def _stop_all(registry: dict[str, set[Callable[[], None]]], key: str) -> int:
+    stops = list(registry.get(key, ()))
     for stop in stops:
         stop()
     metrics.incr("screen.revoked", len(stops))
     return len(stops)
+
+
+def revoke_user(user_id: str) -> int:
+    """Close every open screen socket of a deleted user; returns how many."""
+    return _stop_all(_revokers, user_id)
+
+
+def revoke_token(token_id: str) -> int:
+    """Close every open screen socket opened with a revoked device token; returns how many."""
+    return _stop_all(_token_revokers, token_id)
+
+
+def _drop(registry: dict[str, set[Callable[[], None]]], key: str, stop: Callable[[], None]) -> None:
+    stops = registry.get(key)
+    if stops is not None:
+        stops.discard(stop)
+        if not stops:
+            registry.pop(key, None)
 
 
 def get_ocr_client() -> OcrClient | None:
@@ -104,6 +124,15 @@ def _screen_principal(ws: WebSocket) -> tuple[Principal | None, str]:
 
 def _account_exists(user_id: str) -> bool:
     return get_user_store().get_by_id(user_id) is not None
+
+
+def _still_authorized(principal: Principal) -> bool:
+    """The account still exists and the device token is still live (not revoked)."""
+    if not _account_exists(principal.user_id):
+        return False
+    return principal.token_id is not None and get_user_store().device_token_is_live(
+        principal.user_id, principal.token_id
+    )
 
 
 class FrameError(ValueError):
@@ -253,13 +282,22 @@ async def screen_ws(ws: WebSocket) -> None:
 
     lanes: dict[tuple[str, str], _Lane] = {}
     _revokers.setdefault(principal.user_id, set()).add(closing.set)
-    # A delete between the handshake's auth and this registration never saw this socket:
-    # re-check now that a delete would (the mic socket does the same, XERK-1504).
-    if not await asyncio.to_thread(_account_exists, principal.user_id):
+    if principal.token_id is not None:
+        _token_revokers.setdefault(principal.token_id, set()).add(closing.set)
+    # A delete or revoke between the handshake's auth and this registration never saw this
+    # socket: re-check now that one would (the mic socket does the same, XERK-1504).
+    if not await asyncio.to_thread(_still_authorized, principal):
         closing.set()
     await send(cadence().message(meeting=False))
     receive: asyncio.Task | None = None
     closed_by_us = asyncio.create_task(closing.wait())
+    # A socket must not outlive its token (XERK-2612): close it at the token's expiry, so
+    # neither an expired token nor one whose row a later mint purged keeps streaming.
+    expiry = None
+    if principal.expires_at is not None:
+        expiry = asyncio.get_running_loop().call_later(
+            max(0.0, principal.expires_at - time.time()), closing.set
+        )
     try:
         while True:
             receive = asyncio.create_task(ws.receive())
@@ -267,7 +305,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 {receive, closed_by_us}, return_when=asyncio.FIRST_COMPLETED
             )
             if closed_by_us in done:
-                await ws.close(code=1008, reason="account removed")
+                await ws.close(code=1008, reason="account removed, device token revoked or expired")
                 break
             frame = receive.result()
             if frame["type"] == "websocket.disconnect":
@@ -303,11 +341,11 @@ async def screen_ws(ws: WebSocket) -> None:
             else:
                 await error("expected a binary frame or ping")
     finally:
-        stops = _revokers.get(principal.user_id)
-        if stops is not None:
-            stops.discard(closing.set)
-            if not stops:
-                _revokers.pop(principal.user_id, None)
+        if expiry is not None:
+            expiry.cancel()
+        _drop(_revokers, principal.user_id, closing.set)
+        if principal.token_id is not None:
+            _drop(_token_revokers, principal.token_id, closing.set)
         for task in (receive, closed_by_us, *(lane.task for lane in lanes.values())):
             if task is not None and not task.done():
                 task.cancel()

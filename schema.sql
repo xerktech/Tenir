@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS users_household_idx ON users (household);
 -- At most one env-managed admin.
 CREATE UNIQUE INDEX IF NOT EXISTS users_one_env_admin_idx ON users (is_env_admin) WHERE is_env_admin;
+-- Screen-capture device tokens (XERK-2594): a token's jti is a row id here, and
+-- /ws/screen opens only while the row is unrevoked and unexpired. Also created by the
+-- user store's own DDL (auth/sql_users.py), which may run first.
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    revoked_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS device_tokens_user_idx ON device_tokens (user_id);
 -- Additive migration for data dirs created before XERK-650 (this file is applied
 -- idempotently on every pool open; CREATE TABLE IF NOT EXISTS alone would skip the
 -- new columns on an existing table). password_hash was NOT NULL before OIDC-only rows.

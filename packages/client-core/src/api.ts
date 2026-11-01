@@ -180,6 +180,19 @@ export interface User {
   isEnvAdmin: boolean;
 }
 
+/**
+ * A paired screen-capture device (XERK-2594): one live device token, listed without the
+ * token itself. Revoking it cuts that device off without logging anything else out.
+ */
+export interface Device {
+  id: string;
+  /** The capture PC's hostname, or "Screen capture" when it sent none. */
+  name: string;
+  /** ISO 8601 timestamps. */
+  createdAt: string;
+  expiresAt: string;
+}
+
 export interface ConversationSummary {
   id: string;
   status: string;
@@ -464,6 +477,18 @@ export const users = {
   create: (username: string, password: string, role: "member" | "admin" = "member") =>
     request<Principal>("POST", "/auth/users", { username, password, role }),
   remove: (id: string) => request<void>("DELETE", `/auth/users/${id}`),
+};
+
+// ---- screen-capture devices ---------------------------------------------------
+
+/**
+ * The signed-in user's own paired screen-capture devices (XERK-2594). Pairing happens on
+ * the capture PC (`tenir-capture --pair`); the web and Android Devices views list and
+ * revoke. A device token itself can't call these.
+ */
+export const devices = {
+  list: () => request<Device[]>("GET", "/auth/device-tokens"),
+  revoke: (id: string) => request<void>("DELETE", `/auth/device-tokens/${encodeURIComponent(id)}`),
 };
 
 // ---- component status -------------------------------------------------------

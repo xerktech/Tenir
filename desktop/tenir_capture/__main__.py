@@ -8,6 +8,7 @@ import json
 import logging
 import logging.handlers
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -64,7 +65,10 @@ def pair(cfg: Config, config_path: Path) -> int:
     password = getpass.getpass("Tenir password: ")
     try:
         login = _http_json(cfg.url("/auth/login"), {"username": username, "password": password})
-        minted = _http_json(cfg.url("/auth/device-token"), {}, token=login["token"])
+        # Named after this PC so the web/Android Devices list can tell it apart (XERK-2594).
+        minted = _http_json(
+            cfg.url("/auth/device-token"), {"name": socket.gethostname()[:80]}, token=login["token"]
+        )
     except urllib.error.HTTPError as exc:
         print(f"pairing failed: HTTP {exc.code}", file=sys.stderr)
         return EXIT_TOKEN
