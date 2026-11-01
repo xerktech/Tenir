@@ -638,7 +638,7 @@ def test_replayed_zoom_meeting_becomes_a_ready_conversation(screen) -> None:
     from api.main import app
 
     store, ocr, token, admin = screen
-    store.set_speaker_alias(admin.household, "tesoro", "kunal@tesoroxp.com", "Kunal")
+    store.set_speaker_alias(admin.household, admin.user_id, "tesoro", "kunal@tesoroxp.com", "Kunal")
     base = int(time.time() * 1000)
     frames = FIXTURE["frames"]
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
@@ -741,6 +741,33 @@ def test_ocr_failures_are_counted_and_the_socket_stays_up(screen) -> None:
         assert json.loads(ws.receive_text())["type"] == "pong"
     assert metrics.snapshot()["counters"]["screen.ocr_errors"] == 1
     assert store.list(admin.household) == []
+
+
+def test_only_the_meeting_owners_aliases_rename_its_speakers(screen) -> None:
+    """XERK-2606: aliases are per member. Another member's rename of the same org's speaker
+    never shows in this member's meeting; the owner's own rename does."""
+    from api.main import app
+
+    store, ocr, token, admin = screen
+    store.set_speaker_alias(admin.household, "other-member", "tesoro", "kunal@tesoroxp.com", "Q")
+    base = int(time.time() * 1000)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+            replay(client, ws, ocr, FIXTURE["frames"][:6], base)
+            client.portal.call(meetings.close_all)
+        (item,) = client.get("/conversations").json()
+        detail = client.get(f"/conversations/{item['id']}").json()
+        assert "kunal@tesoroxp.com" in detail["participants"] and "Q" not in detail["participants"]
+
+        store.set_speaker_alias(admin.household, admin.user_id, "tesoro", "kunal@tesoroxp.com", "K")
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+            replay(client, ws, ocr, FIXTURE["frames"][:6], base + 3_600_000)
+            client.portal.call(meetings.close_all)
+        newest = client.get("/conversations").json()[0]
+        detail = client.get(f"/conversations/{newest['id']}").json()
+        assert "K" in detail["participants"] and "kunal@tesoroxp.com" not in detail["participants"]
 
 
 def test_store_failure_on_a_frame_keeps_the_socket(screen, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -122,7 +122,7 @@ class MeetingTracker:
     async def ensure_roster(self) -> Roster:
         if self.roster is None:
             aliases = await self._io(
-                self.store.speaker_aliases, self.household, self.meta.org_site_key
+                self.store.speaker_aliases, self.household, self.owner, self.meta.org_site_key
             )
             self.roster = Roster(aliases)  # type: ignore[arg-type]
         return self.roster
