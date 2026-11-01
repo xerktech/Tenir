@@ -342,6 +342,18 @@ def test_line_that_grows_after_it_was_final_extends_the_same_segment() -> None:
     assert m.flush(3000) == []
 
 
+def test_a_stored_line_whose_last_word_the_asr_finishes_is_extended() -> None:
+    """XERK-2597: the speaker paused past stable_ms, then went on while the ASR finished the
+    stored last word. Only whole-word growth extended a final, so the rest was lost."""
+    m = CaptionMerger(start_ms=0, stable_ms=1000)
+    m.feed([blk("A", "i think the deploy")], 0)
+    (seg,) = m.feed([blk("A", "i think the deploy")], 1000)
+    (ext,) = m.feed([blk("A", "i think the deployment failed last night")], 1200)
+    assert ext.segment_id == seg.segment_id
+    assert ext.text == "i think the deployment failed last night"
+    assert m.flush(3000) == []
+
+
 def test_a_line_said_again_is_stored_again() -> None:
     """QA D2: "okay", someone else, "okay" - both shown at once, then the same words again
     after the first scrolled away. Every utterance is stored; re-reads of one are not."""

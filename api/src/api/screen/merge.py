@@ -329,6 +329,10 @@ class CaptionMerger:
         # sentence that merely starts the same way doesn't get here: a longer line only
         # aligns to the newest line, or to an older one it closely resembles. A re-read that
         # differs otherwise (jitter, a cut-off top line) is ignored.
+        # Growth here is by characters, as ``_score`` aligns it: the ASR finishing a stored
+        # last word as the speaker goes on ("deploy" -> "deployment failed") is still the line
+        # growing. Requiring a word boundary dropped everything said after it (XERK-2597).
+        grew = len(shown.norm) > len(line.norm) and shown.norm.startswith(line.norm)
         seg = line.segment
         assert seg is not None
         if grew and ts - line.changed_ms <= _EXTEND_MS:

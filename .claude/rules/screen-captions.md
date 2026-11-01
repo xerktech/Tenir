@@ -43,6 +43,9 @@ paths:
     under a verified header above a match costs more than "new": it is a line said between
     two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
   - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
+  - A final extends when its text grows by characters, not only whole words: the ASR finishing
+    the stored last word as the speaker goes on lost the rest of the line (XERK-2597). Test:
+    `test_a_stored_line_whose_last_word_the_asr_finishes_is_extended`.
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
