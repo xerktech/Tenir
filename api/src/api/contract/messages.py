@@ -364,10 +364,11 @@ class ServerMessage(
 
 class Platform(StrEnum):
     """
-    Meeting app in the window. Only Zoom is parsed so far.
+    Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser.
     """
 
     zoom = 'zoom'
+    teams = 'teams'
 
 
 class Region(StrEnum):
@@ -397,7 +398,8 @@ class ScreenFrameHeader(BaseModel):
     )
     orgName: constr(min_length=1, max_length=200)
     platform: Platform = Field(
-        ..., description='Meeting app in the window. Only Zoom is parsed so far.'
+        ...,
+        description='Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser.',
     )
     ts: int = Field(..., description='Capture time (ms epoch).')
     region: Region = Field(

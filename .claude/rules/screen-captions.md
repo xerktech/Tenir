@@ -2,6 +2,7 @@
 paths:
   - "api/src/api/screen/**"
   - "api/tests/test_screen.py"
+  - "api/tests/test_screen_teams.py"
   - "api/tests/test_pg_screen_live.py"
   - "api/tests/fixtures/screen/**"
   - "api/src/api/history.py"
@@ -70,3 +71,30 @@ paths:
   `segments.speaker`, so aliases must also be keyed by shown names, and those keys collide.
   A per-request "name taken" check missed raw names in other meetings and lost a race (QA on
   XERK-2507 merged two people for good three ways); it needs one model + an org-level lock.
+- Teams (`teams.py`) reuses Zoom's roster, block grouping and merge; only layout differs.
+  - Teams captions are capitalised sentences ("Sounds Good"), so `is_name_like` can't tell
+    them from names: full frames exclude the caption panel by geometry (full width, it is
+    left-aligned). Test: `test_a_capitalised_caption_line_in_the_panel_is_not_a_participant`.
+  - Initials avatars are removed as OCR boxes before `row_groups`: a 2-row-tall circle joins
+    the name row and the first text row into one. Test:
+    `test_an_initials_avatar_spanning_two_rows_is_dropped`.
+  - A Teams crop with no caption text returns no blocks: a header-only block would otherwise
+    start a meeting from tile labels. Test: `test_a_crop_of_only_names_yields_nothing`.
+  - `is_teams_name` rejects a trailing "." (bar an initial): short punctuated replies on a full
+    frame otherwise joined the roster and then swallowed later caption rows as headers (QA).
+    Test: `test_short_punctuated_replies_in_the_panel_are_not_participants`.
+  - Full frames tell the caption panel from names by row spacing (`_caption_lines`): lower-half
+    rows within one line height of each other (similar left edge) form a stack; a stack holding
+    a caption-like line (>= 4 words, ending . ? !, or starting lower-case) is all caption text.
+    Boxes around sentence lines failed five QA rounds (pane wiped, status lines, lower-case
+    guests, edges leaking). Tests: `test_people_pane_names_level_with_the_captions_survive`,
+    `test_a_panel_without_long_sentences_still_hides_its_captions`,
+    `test_a_lower_case_guest_in_the_people_pane_keeps_the_other_names`.
+  - Real Paddle boxes of stacked rows overlap by 1-4 px: rows link at gaps down to -line_h/2.
+    Synthetic fixtures with clean positive gaps can't show it. Test:
+    `test_overlapping_ocr_boxes_of_stacked_caption_rows_still_link`.
+  - These full-frame geometry rules were tuned over five QA rounds on synthetic layouts only;
+    each fix traded one synthetic case for another. Re-tune on real captures before adding more.
+  - A trailing "." is still a name after an initial, a dotted degree or Jr./Sr. ("Martin King
+    Jr." was lost to the previous speaker). Test: `test_teams_name_shape`.
+  - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
