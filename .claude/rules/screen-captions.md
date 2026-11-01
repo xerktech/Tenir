@@ -59,6 +59,12 @@ paths:
     and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
+- A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
+  a panel left on screen past the end timer re-read them as a second conversation. No meeting
+  starts until a crop holds a line the carry doesn't explain. Carried copies are never extended
+  (their segments belong to the ended conversation). Accepted: a new meeting whose first line
+  repeats the last one's is stored from its second line. Test:
+  `test_a_panel_re_sent_after_its_meeting_ended_starts_no_new_meeting`.
 - Final lines wait in `MeetingTracker._unsaved` until written: the merger counts a line final
   once, so a failed write re-derived from frames would dedup away.
 - Full frames are decoded only at the OCR'd size and ≤3840x2400 px: a 2.6 MB JPEG decoded to

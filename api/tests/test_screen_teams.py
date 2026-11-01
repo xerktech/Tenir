@@ -979,3 +979,78 @@ def test_replayed_teams_meeting_has_the_right_speakers_and_no_duplicate_lines(sc
     assert [{"speaker": s.speaker, "text": s.text} for s in conv.segments] == expected["lines"]
     starts = [s.start_ms for s in conv.segments]
     assert starts == sorted(starts)
+
+
+def _ended_window_tracker(platform: str = "teams"):  # type: ignore[no-untyped-def]
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+
+    store = InMemoryConversationStore()
+    t = MeetingTracker(
+        "default",
+        "user-1",
+        ScreenMeta("tesoro", "Tesoro", platform),
+        store=store,
+        account_exists=lambda _: True,
+        cadence=Cadence(0.2, 1.0, 10.0),
+        stable_ms=3000,
+        end_ms=180_000,
+    )
+    return t, store
+
+
+@pytest.mark.parametrize("platform", ["teams", "zoom"])
+def test_a_panel_re_sent_after_its_meeting_ended_starts_no_new_meeting(platform: str) -> None:
+    # XERK-2615: a break longer than the end timer, the panel still on screen. Its next crop
+    # re-reads only lines the ended meeting stored: no second conversation holding them again.
+    import asyncio
+
+    from api.screen.zoom import CaptionBlock
+
+    panel = [
+        CaptionBlock("Priya Raman", True, ["Okay, let's start."]),
+        CaptionBlock("Lee, Bo", True, ["Sounds good to me."]),
+    ]
+
+    async def run() -> None:
+        t, store = _ended_window_tracker(platform)
+        await t.on_caption(panel, 0)
+        await t.on_caption(list(panel), 5_000)
+        first = await t.end(200_000)
+        assert first is not None
+        for ts in range(400_000, 700_000, 10_000):  # long after the end timer
+            await t.on_caption(list(panel), ts)
+        assert t.conversation_id is None
+        assert list(store._conversations("default")) == [first]
+        # Then someone speaks again: a new meeting holding only the new line.
+        more = [*panel, CaptionBlock("Priya Raman", True, ["Welcome back, everyone."])]
+        await t.on_caption(more, 710_000)
+        second = await t.end(1_000_000)
+        assert second is not None and second != first
+        assert [(s.speaker, s.text) for s in store.get("default", second).segments] == [
+            ("Priya Raman", "Welcome back, everyone.")
+        ]
+        assert [s.text for s in store.get("default", first).segments] == [
+            "Okay, let's start.",
+            "Sounds good to me.",
+        ]
+
+    asyncio.run(run())
+
+
+def test_a_new_meeting_after_the_last_one_ended_still_starts() -> None:
+    # The carried lines only hide re-reads: a fresh panel with new text starts a meeting.
+    import asyncio
+
+    from api.screen.zoom import CaptionBlock
+
+    async def run() -> None:
+        t, store = _ended_window_tracker()
+        await t.on_caption([CaptionBlock("Priya Raman", True, ["Okay, let's start."])], 0)
+        first = await t.end(200_000)
+        await t.on_caption([CaptionBlock("Sean O'Neil", True, ["Morning, all."])], 900_000)
+        second = await t.end(1_200_000)
+        assert second is not None and second != first
+        assert [s.text for s in store.get("default", second).segments] == ["Morning, all."]
+
+    asyncio.run(run())

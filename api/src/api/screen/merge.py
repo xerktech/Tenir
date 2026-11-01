@@ -193,11 +193,36 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
 
 
 class CaptionMerger:
-    def __init__(self, *, start_ms: int, stable_ms: int) -> None:
+    def __init__(
+        self, *, start_ms: int, stable_ms: int, carried: list[_Line] | None = None
+    ) -> None:
         self.start_ms = start_ms
         self.stable_ms = stable_ms
-        self._lines: list[_Line] = []  # known lines, oldest first
+        # Known lines, oldest first. ``carried`` are the stored lines of the meeting that
+        # last ended on this window (XERK-2615): a panel still on screen after the end timer
+        # re-reads them, and they must align as known, not be stored again. Copies, seen
+        # now (so _GONE_MS ages them from here) and too old to extend: their segments
+        # belong to the ended conversation, never this one.
+        self._lines: list[_Line] = [
+            _Line(
+                ln.speaker,
+                ln.text,
+                ln.norm,
+                ln.first_ms,
+                min(ln.changed_ms, start_ms - _EXTEND_MS - 1),
+                start_ms,
+                ln.segment,
+            )
+            for ln in carried or []
+            if ln.final
+        ]
         self.last_speaker: str | None = None
+        # Lines this merger has seen for the first time (carried ones excluded).
+        self.new_lines = 0
+
+    def recent(self) -> list[_Line]:
+        """The newest known lines, for the window's next merger (``carried``)."""
+        return self._lines[-_TAIL:]
 
     def _rel(self, ms: int) -> int:
         return max(0, ms - self.start_ms)
@@ -251,6 +276,7 @@ class CaptionMerger:
                 new_in_snapshot += 1
                 line = _Line(speaker, line_shown.text, line_shown.norm, first, first, ts)
                 self._lines.append(line)
+                self.new_lines += 1
             if speaker is not None:
                 self.last_speaker = speaker
             nxt = line_shown.block + 1

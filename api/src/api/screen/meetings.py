@@ -21,7 +21,7 @@ from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen import turma
-from api.screen.merge import CaptionMerger
+from api.screen.merge import CaptionMerger, _Line
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
 log = logging.getLogger("api.screen")
@@ -92,6 +92,8 @@ class MeetingTracker:
         self.title: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
+        # The stored lines of the meeting that last ended here (XERK-2615), see on_caption.
+        self._ended_lines: list[_Line] = []
         self.last_caption_ms = 0
         self._last_blocks: list[CaptionBlock] = []
         self.last_ts = 0
@@ -185,20 +187,28 @@ class MeetingTracker:
         if not stale:
             self.last_caption_ms = ts
         self._caption_seen_ms = ts
-        if self.conversation_id is None:
-            await self._start(ts)
-        assert self.merger is not None
         if self.active:
             for b in blocks:
                 if b.has_header and b.speaker and b.speaker != self.active:
                     # Captions lag the border by a few seconds, so a mismatch is a signal
                     # to watch (OCR misreads, a wrong roster match), not an error.
                     metrics.incr("screen.speaker_border_mismatch")
+        merger = self.merger
+        if merger is None:
+            # A panel left on screen past the end timer (a break) still shows the ended
+            # meeting's lines (XERK-2615): they align as known, and a crop holding nothing
+            # else starts no meeting. Otherwise they were re-stored as a second conversation.
+            merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
         loop = asyncio.get_running_loop()
-        await self._store(await loop.run_in_executor(CPU_POOL, self.merger.feed, blocks, ts))
+        segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
+        if self.conversation_id is None:
+            if merger.new_lines == 0:
+                return
+            await self._start(ts, merger)
+        await self._store(segments)
 
-    async def _start(self, ts: int) -> None:
+    async def _start(self, ts: int, merger: CaptionMerger) -> None:
         if not await self._io(self.account_exists, self.owner):
             raise AccountGone(self.owner)
         if stale.is_pending(self.store):
@@ -213,7 +223,7 @@ class MeetingTracker:
             )
         )
         self.conversation_id = conversation_id
-        self.merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms)
+        self.merger = merger
         self._unsaved = []
         self._stored_people = set()
         self._stored_title = None
@@ -274,6 +284,7 @@ class MeetingTracker:
         # Post it to the Turma hub now rather than on the delivery loop's next poll.
         turma.wake()
         self.conversation_id = None
+        self._ended_lines = self.merger.recent()
         self.merger = None
         # The next meeting on this window starts with whoever its tiles show then.
         self.roster = None
