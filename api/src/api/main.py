@@ -574,6 +574,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
         # 1008 = policy violation; the client must present a valid token first.
         await ws.close(code=1008, reason="invalid or expired token")
         return
+    # The bearer is checked here, once: an open mic socket deliberately outlives its
+    # handshake token's ``exp`` (XERK-2613). Login tokens slide on every REST call
+    # (``renew_token_if_due``), so an active client connects with at least half a TTL
+    # left, and closing at ``exp`` would only cut a live recording mid-conversation.
+    # A deleted account still drops the socket (the revoke paths below). Device
+    # tokens on /ws/screen are the exception: they never slide, so XERK-2612 closes
+    # that socket at its token's expiry.
     await ws.accept()
     session: Session | None = None
 
