@@ -567,3 +567,35 @@ def test_delete_leaves_a_socket_whose_peer_is_gone_alone(
             assert session.is_closed
             assert "ws closed: account no longer exists" not in caplog.text
             assert "ws gone before its" not in caplog.text
+
+
+@pytest.mark.real_auth
+def test_open_socket_outlives_its_handshake_tokens_expiry() -> None:
+    """XERK-2613: a mic session is not cut when its login token's ``exp`` passes.
+
+    Auth is checked at the handshake only; login tokens slide on REST, so closing
+    a live recording at ``exp`` is a deliberate non-goal. Deleting the user is
+    what ends an open socket (covered above).
+    """
+    user = get_user_store().create("member", "pw", household="hh", role="member")
+    # Valid for ~1 s from now: issued 59 s ago with a 60 s lifetime.
+    token = issue_token(
+        Principal(user.user_id, "hh", "member"),
+        secret=TEST_AUTH_SECRET,
+        ttl_seconds=60,
+        now=time.time() - 59,
+    )
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            ws.send_text(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            time.sleep(1.5)  # the handshake token is now expired
+            ws.send_text(json.dumps({"type": "ping", "t": 1}))
+            while (msg := ws.receive_json())["type"] != "pong":
+                pass
+            assert msg["type"] == "pong"
+        # ...and a fresh connect with the same token is refused.
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
