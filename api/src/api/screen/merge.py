@@ -256,20 +256,24 @@ class CaptionMerger:
         return [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
 
     def _unread_top_header(self, blocks: list[CaptionBlock], ts: int) -> list[CaptionBlock]:
-        """``blocks`` with a top header put back as text when its row is a caption line
-        stored under another speaker: "Kunal Shah" wrapped in Priya's entry scrolled to the
-        crop's top with her header gone, read as Kunal's header, and the rest of her entry
-        was stored a second time under him (XERK-2604)."""
+        """``blocks`` with a top header put back as text when its row and the row under it
+        are both lines stored under another speaker: "Kunal Shah" wrapped in Priya's entry
+        scrolled to the crop's top with her header gone, read as Kunal's header, and the
+        rest of her entry was stored a second time under him (XERK-2604). The row under it
+        tells that from Kunal really speaking after Priya's "Over to Kunal Shaw": his text
+        is new, and checking the name row alone stored it under her (QA)."""
         top = blocks[0] if blocks else None
-        if top is None or top.top_row is None or top.avatar:
+        if top is None or top.top_row is None or top.avatar or not top.lines:
             return blocks
-        # As close as the merge's own re-read: OCR reads the row a little differently each
-        # frame ("Kunal Shan"), and an exact check let the entry be stored twice again (QA).
-        norm = _norm(top.top_row)
-        if not any(
-            ln.speaker != top.speaker and _ratio(norm, ln.norm, _SAME_LINE) >= _SAME_LINE
-            for ln in self._tail(ts)
-        ):
+        others = [ln for ln in self._tail(ts) if ln.speaker != top.speaker]
+
+        def stored(text: str) -> bool:
+            # As close as the merge's own re-read: OCR reads the row a little differently
+            # each frame ("Kunal Shan"); exact text stored the entry twice again (QA).
+            norm = _norm(text)
+            return any(_ratio(norm, ln.norm, _SAME_LINE) >= _SAME_LINE for ln in others)
+
+        if not (stored(top.top_row) and stored(top.lines[0])):
             return blocks
         return [CaptionBlock(None, False, [top.top_row, *top.lines]), *blocks[1:]]
 

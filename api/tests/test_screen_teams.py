@@ -177,6 +177,20 @@ def test_real_ocr_of_a_one_word_interim_is_not_a_participant(size, boxes) -> Non
     assert frame.participants == ["Kunal Shah"]
 
 
+def test_a_pane_name_1_4_rows_under_a_read_in_avatar_name_stays_a_participant() -> None:
+    # Real OCR's tightest pane measured 1.7 rows apart; 1.5 rows of reach lost a name 3 px
+    # closer (QA), so only rows within 1.3 header heights are caption.
+    frame = teams.parse_full_frame(
+        result(
+            line("KS Kunal Shah", 1000, 400, 1110, 420),
+            line("Okafor, Chidi", 1030, 428, 1140, 446),
+            width=1280,
+            height=720,
+        )
+    )
+    assert sorted(frame.participants) == ["Kunal Shah", "Okafor, Chidi"]
+
+
 def test_a_tile_label_level_with_an_avatared_header_but_far_right_stays_a_participant() -> None:
     frame = teams.parse_full_frame(
         result(
@@ -1871,6 +1885,13 @@ def test_a_top_header_is_un_read_only_when_its_row_is_a_stored_line() -> None:
     for jitter in ("Kunal Shan", "Kunai Shah", "KunalShah", "Kunal Sha"):
         jittered = CaptionBlock("Kunal Shah", True, ["will demo"], top_row=jitter)
         assert m._unread_top_header([jittered], 1000)[0].speaker is None
+    # Kunal really speaking after Priya's line that reads like his name: his text is new, so
+    # his header stays, however close her row is (QA on XERK-2604).
+    for said in ("Kunal Shah", "Kunal Shaw", "Kunal Sha"):
+        m2 = CaptionMerger(start_ms=0, stable_ms=3000)
+        m2.feed([CaptionBlock("Raman, Priya", True, ["Over to", said])], 0)
+        real = CaptionBlock("Kunal Shah", True, ["Thanks Priya, so the numbers"], top_row="Kunal Shah")
+        assert m2._unread_top_header([real], 1000) == [real]
     # A real header the panel opens with ("Sean O'Neil" was never said) stays, and so does
     # one with its avatar beside it.
     sean = CaptionBlock("Sean O'Neil", True, ["Great."], top_row="Sean O'Neil")
