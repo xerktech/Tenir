@@ -24,9 +24,9 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
      for you to map to an org.
    - `orgName`: the org's display name in Tenir.
    - Older configs with `orgSiteKey` (a Turma site key) still work; `org` wins when both are
-     set. Switching a window from its site key to a label starts a new org key in Tenir: speaker
-     names learned so far and the history org filter stay with the old key, under which the
-     earlier meetings remain.
+     set (a bad `org` is an error, never a fall-back to `orgSiteKey`). Switching a window from
+     its site key to a label starts a new org key in Tenir: speaker names learned so far and the
+     history org filter stay with the old key, under which the earlier meetings remain.
    - `platform`: `zoom` or `teams`. Teams windows are skipped (logged) until the Teams
      caption crop ships (XERK-2515).
 3. Pair it once: `tenir-capture.exe --pair` asks for your Tenir username and password and

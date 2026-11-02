@@ -75,7 +75,7 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
 
 def _org(w: dict, where: str) -> str:
     """The window's org: its Turma label ("org"), else a legacy Turma site key ("orgSiteKey")."""
-    if "org" not in w:
+    if "org" not in w and "orgSiteKey" in w:
         return _text(w, "orgSiteKey", where, 128)
     label = _text(w, "org", where, 128)
     if not ORG_LABEL.fullmatch(label):

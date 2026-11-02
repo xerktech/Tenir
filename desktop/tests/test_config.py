@@ -33,6 +33,11 @@ def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
     assert parse({**GOOD, "windows": [legacy]}).windows[0].org_site_key == "Site.Key 1"
     both = {**legacy, "org": "yprime"}
     assert parse({**GOOD, "windows": [both]}).windows[0].org_site_key == "yprime"
+    padded = {**legacy, "org": "  yprime\t"}
+    assert parse({**GOOD, "windows": [padded]}).windows[0].org_site_key == "yprime"
+    # An unusable label never falls back to the site key beside it.
+    with pytest.raises(ConfigError, match="org must be"):
+        parse({**GOOD, "windows": [{**legacy, "org": None}]})
     # A label and a site key spelling the same key still collide.
     mixed = [GOOD["windows"][0], {**legacy, "orgSiteKey": "org-c"}]
     with pytest.raises(ConfigError, match="own org"):
@@ -51,7 +56,8 @@ def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
         ({"windows": [{**GOOD["windows"][0], "org": "Org C"}]}, "Turma org label"),
         ({"windows": [{**GOOD["windows"][0], "org": "-c"}]}, "Turma org label"),
         ({"windows": [{**GOOD["windows"][0], "org": "c" * 41}]}, "Turma org label"),
-        ({"windows": [{"title": "t", "orgName": "n", "platform": "zoom"}]}, "orgSiteKey"),
+        ({"windows": [{**GOOD["windows"][0], "org": "OrgC"}]}, "Turma org label"),
+        ({"windows": [{"title": "t", "orgName": "n", "platform": "zoom"}]}, "org must be"),
         (
             {"windows": [{"title": "t", "orgSiteKey": " ", "orgName": "n", "platform": "zoom"}]},
             "orgSiteKey",
