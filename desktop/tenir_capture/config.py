@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 # Platforms whose caption box the client can find (see frames.FINDERS). A window on any other
 # platform is skipped with a warning until its finder ships (Teams: after XERK-2515).
 PLATFORMS = ("zoom", "teams")
+# The short org label Turma resolves in POST /api/orgs/<org>/meetings (XERK-2638).
+ORG_LABEL = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 
 
 class ConfigError(ValueError):
@@ -70,6 +73,19 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
     return value
 
 
+def _org(w: dict, where: str) -> str:
+    """The window's org: its Turma label ("org"), else a legacy Turma site key ("orgSiteKey")."""
+    if "org" not in w:
+        return _text(w, "orgSiteKey", where, 128)
+    label = _text(w, "org", where, 128)
+    if not ORG_LABEL.fullmatch(label):
+        raise ConfigError(
+            f"{where}: org must be a Turma org label: lowercase letters, digits, - or _, "
+            "at most 40 characters"
+        )
+    return label
+
+
 def parse(data: object) -> Config:
     """Validate a decoded config; limits follow the ScreenFrameHeader contract."""
     if not isinstance(data, dict):
@@ -92,15 +108,15 @@ def parse(data: object) -> Config:
         windows.append(
             WindowSpec(
                 title=_text(w, "title", where, 512),
-                org_site_key=_text(w, "orgSiteKey", where, 128),
+                org_site_key=_org(w, where),
                 org_name=_text(w, "orgName", where, 200),
                 platform=platform,
             )
         )
     keys = [w.org_site_key for w in windows]
     if len(set(keys)) != len(keys):
-        # The server keeps one meeting per site key: two windows on one key would interleave.
-        raise ConfigError("config: each window needs its own orgSiteKey")
+        # The server keeps one meeting per org key: two windows on one key would interleave.
+        raise ConfigError("config: each window needs its own org")
     return Config(server=server.rstrip("/"), windows=tuple(windows))
 
 

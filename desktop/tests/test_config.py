@@ -10,8 +10,8 @@ from tenir_capture.config import ConfigError, load, load_token, parse, token_pat
 GOOD = {
     "server": "https://tenir.example.com/",
     "windows": [
-        {"title": "Horizon 3", "orgSiteKey": "c", "orgName": "Org C", "platform": "Zoom"},
-        {"title": "RDM [laptop]", "orgSiteKey": "d", "orgName": "Org D", "platform": "teams"},
+        {"title": "Horizon 3", "org": "org-c", "orgName": "Org C", "platform": "Zoom"},
+        {"title": "RDM [laptop]", "org": "org-d", "orgName": "Org D", "platform": "teams"},
     ],
 }
 
@@ -27,6 +27,18 @@ def test_a_good_config_parses_and_derives_the_socket_url() -> None:
     )
 
 
+def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
+    assert [w.org_site_key for w in parse(GOOD).windows] == ["org-c", "org-d"]
+    legacy = {"title": "t", "orgSiteKey": "Site.Key 1", "orgName": "n", "platform": "zoom"}
+    assert parse({**GOOD, "windows": [legacy]}).windows[0].org_site_key == "Site.Key 1"
+    both = {**legacy, "org": "yprime"}
+    assert parse({**GOOD, "windows": [both]}).windows[0].org_site_key == "yprime"
+    # A label and a site key spelling the same key still collide.
+    mixed = [GOOD["windows"][0], {**legacy, "orgSiteKey": "org-c"}]
+    with pytest.raises(ConfigError, match="own org"):
+        parse({**GOOD, "windows": mixed})
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -35,9 +47,21 @@ def test_a_good_config_parses_and_derives_the_socket_url() -> None:
         ({"windows": []}, "non-empty list"),
         ({"windows": ["x"]}, "must be an object"),
         ({"windows": [{**GOOD["windows"][0], "platform": "webex"}]}, "platform"),
-        ({"windows": [{**GOOD["windows"][0], "orgSiteKey": " "}]}, "orgSiteKey"),
+        ({"windows": [{**GOOD["windows"][0], "org": " "}]}, "org must be"),
+        ({"windows": [{**GOOD["windows"][0], "org": "Org C"}]}, "Turma org label"),
+        ({"windows": [{**GOOD["windows"][0], "org": "-c"}]}, "Turma org label"),
+        ({"windows": [{**GOOD["windows"][0], "org": "c" * 41}]}, "Turma org label"),
+        ({"windows": [{"title": "t", "orgName": "n", "platform": "zoom"}]}, "orgSiteKey"),
+        (
+            {"windows": [{"title": "t", "orgSiteKey": " ", "orgName": "n", "platform": "zoom"}]},
+            "orgSiteKey",
+        ),
         ({"windows": [{**GOOD["windows"][0], "orgName": "x" * 201}]}, "longer than 200"),
-        ({"windows": [GOOD["windows"][0], GOOD["windows"][0]]}, "own orgSiteKey"),
+        ({"windows": [GOOD["windows"][0], GOOD["windows"][0]]}, "own org"),
+        (
+            {"windows": [GOOD["windows"][0], {**GOOD["windows"][1], "org": "org-c"}]},
+            "own org",
+        ),
     ],
 )
 def test_bad_configs_are_refused_with_a_reason(change: dict, message: str) -> None:

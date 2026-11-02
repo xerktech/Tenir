@@ -17,7 +17,16 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
      matches nothing pauses that window. Example: Devolutions RDM renames its window when
      another tab is in front, so an exact RDM title pauses capture until the session tab is
      back in front.
-   - `orgSiteKey` / `orgName`: the Turma org the meeting belongs to. Use one site key per window.
+   - `org`: the label the meeting's org has in Turma (Brief → Meetings → Tenir labels). By
+     default it is the org's name in lowercase with dashes (e.g. `yprime`); lowercase letters,
+     digits, `-` and `_`, at most 40 characters. Use one org per window. A label Turma doesn't
+     know isn't lost: Tenir keeps retrying the meeting, and the label shows up under Tenir labels
+     for you to map to an org.
+   - `orgName`: the org's display name in Tenir.
+   - Older configs with `orgSiteKey` (a Turma site key) still work; `org` wins when both are
+     set. Switching a window from its site key to a label starts a new org key in Tenir: speaker
+     names learned so far and the history org filter stay with the old key, under which the
+     earlier meetings remain.
    - `platform`: `zoom` or `teams`. Teams windows are skipped (logged) until the Teams
      caption crop ships (XERK-2515).
 3. Pair it once: `tenir-capture.exe --pair` asks for your Tenir username and password and
