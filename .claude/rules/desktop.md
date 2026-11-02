@@ -31,9 +31,10 @@ paths:
 - Teams finder levels come from a real capture: panel 0, camera-off tile ~10, stage ~31; it
   starts at the window's left edge and reaches the bottom. Synthetic windows mirror it in
   `tests/teams_synth.py` with fictional names and text only. Tests: `tests/test_teams_panel.py`.
-- The panel's close X is its signature: without it a black slide letterboxed to the window
-  bottom passed every other check and started a meeting from slide text (QA delta D1).
-  Test: `test_no_caption_text_sends_nothing[black-slide]`.
+- The panel's close X is its signature, checked as a lone cross (ink on both diagonals), and
+  the panel is at most half the window tall. "Any small blob there" let a black slide with a
+  slide number or logo in its corner start a never-ending meeting (QA delta 2).
+  Tests: `test_no_caption_text_sends_nothing[12-0]`, `test_a_corner_mark_that_isnt_an_x_*`.
 - Don't require the panel to span the window: an open Chat/People pane narrows it.
   Test: `test_captions_are_found_beside_an_open_side_pane`.
 - Teams lines split on glyph cores (>120), not on any ink (>40): JPEG ringing from a remote

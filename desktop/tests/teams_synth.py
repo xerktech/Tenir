@@ -41,12 +41,14 @@ def make_teams_window(
     panel: bool = True,
     stage: str = "tiles",
     pane: float = 0.0,
+    mark: str = "",
 ) -> Image.Image:
     """A Teams meeting window; ``captions`` None shows ENTRIES, [] an empty open panel.
 
     ``panel=False`` is captions turned off. ``stage`` is "tiles" (camera-off grid with name
     labels), "share" (a white document filling the stage) or "black" (a black slide with white
-    text filling the stage down to the window bottom). ``pane`` is the width share of a Chat /
+    text filling the stage down to the window bottom). ``mark`` puts a slide number ("12"),
+    a "dot" or a square "logo" in the stage's top-right corner, where the panel's X would be. ``pane`` is the width share of a Chat /
     People pane on the right; the stage and the caption panel narrow to the rest.
     """
     w, h = size
@@ -75,6 +77,14 @@ def make_teams_window(
                 (40, y), "Quarterly roadmap: milestones and owners", fill=ink, font=_font(12 * ui)
             )
             y += round(24 * ui)
+        mx, my = sw - 40 * ui, top + 30 * ui
+        if mark == "dot":
+            d.ellipse((mx, my, mx + 8 * ui, my + 8 * ui), fill=ink)
+        elif mark == "logo":
+            d.rectangle((mx, my, mx + 12 * ui, my + 12 * ui), outline=ink, width=2)
+            d.line((mx, my + 6 * ui, mx + 12 * ui, my + 6 * ui), fill=ink, width=2)
+        elif mark:
+            d.text((mx, my), mark, fill=ink, font=_font(10 * ui))
     else:
         cols, rows = 5, 3
         tw, th = (sw - 8) / cols, (stage_bottom - top - 8) / rows

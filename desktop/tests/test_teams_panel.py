@@ -77,6 +77,12 @@ def test_a_small_remote_window_is_upscaled_to_caption_font_size() -> None:
             id="black-slide-1440",
         ),
         pytest.param({"panel": False, "pane": 0.22}, id="side-pane-captions-off"),
+        # A mark where the panel's X would be: a slide number, a dot, a logo (QA delta 2 D1).
+        *[
+            pytest.param({"panel": False, "stage": "black", "mark": m, **kw}, id=f"{m}-{i}")
+            for m in ("12", "dot", "logo")
+            for i, kw in enumerate([{}, {"size": (1920, 1200), "ui": 1.0}])
+        ],
     ],
 )
 def test_no_caption_text_sends_nothing(window) -> None:
@@ -134,25 +140,36 @@ def test_the_crop_opens_on_a_name_even_when_the_line_cap_falls_mid_entry() -> No
     assert len(text_lines(crop)) == 6
 
 
-def test_the_crop_stays_under_the_ocr_pixel_cap() -> None:
-    entries = [("Kunal Shah", ["a very long caption line " * 6])] * 3
-    crop = crop_entries(make_teams_window((3000, 420), 1.5, captions=entries))
-    assert crop is not None
-    assert MAX_PIXELS * 0.95 <= crop.width * crop.height <= MAX_PIXELS
+@pytest.mark.parametrize("pane", [0.3, 0.45])
+def test_captions_survive_a_wide_side_pane(pane) -> None:
+    crop = crop_entries(make_teams_window((1920, 1200), 1.0, pane=pane))
+    assert crop is not None and 2 <= len(text_lines(crop)) <= MAX_LINES
 
 
 def window(h: int = 600, w: int = 1000) -> np.ndarray:
     return np.full((h, w), 31, dtype=np.uint8)
 
 
-def panel(top: int = 420, bottom: int = 597, x: bool = True) -> np.ndarray:
-    """A black panel across a 1000x600 window, with its close X (13-23 px down, ~20 px in)."""
-    g = window()
-    g[top:bottom, 4:996] = 0
+def panel(
+    top: int = 420, bottom: int = 597, x: bool = True, h: int = 600, w: int = 1000, x_at: int = 13
+) -> np.ndarray:
+    """A black panel across a window, with its close X (``x_at`` px down, ~20 px in)."""
+    g = window(h, w)
+    g[top:bottom, 4 : w - 4] = 0
     if x:
         for i in range(10):
-            g[top + 13 + i, 970 + i] = g[top + 22 - i, 970 + i] = 255
+            g[top + x_at + i, w - 30 + i] = g[top + x_at + 9 - i, w - 30 + i] = 255
     return g
+
+
+def lines_at(g: np.ndarray, ys, x0: int = 360, x1: int = 600) -> None:
+    for y in ys:
+        g[y : y + 6, x0:x1:2] = 255  # glyph-like: strokes, not a solid bar
+
+
+def avatars_at(g: np.ndarray, ys, x0: int = 300, size: int = 20) -> None:
+    for y in ys:
+        g[y : y + size, x0 : x0 + size] = 200
 
 
 def test_black_that_isnt_the_panel_is_rejected() -> None:
@@ -162,6 +179,7 @@ def test_black_that_isnt_the_panel_is_rejected() -> None:
     g = window()
     g[590:597] = 0  # a black strip at the bottom, too short to hold an entry
     assert find_panel(g) is None
+    assert find_panel(panel(top=100)) is None  # too tall: a black slide filling the stage
     g = panel()
     g[420:597, 450:] = 31  # black reaching the bottom but not across the stage (a video tile)
     assert find_panel(g) is None
@@ -178,6 +196,35 @@ def test_black_that_isnt_the_panel_is_rejected() -> None:
     assert find_panel(panel()) == (4, 420, 996, 597)
 
 
+@pytest.mark.parametrize(
+    "mark",
+    [
+        pytest.param((slice(433, 443), slice(972, 980)), id="filled-square"),
+        pytest.param((slice(433, 443), slice(975, 977)), id="bar"),
+    ],
+)
+def test_a_corner_mark_that_isnt_an_x_is_not_the_close_button(mark) -> None:
+    g = panel(x=False)
+    g[mark] = 255
+    assert find_panel(g) is None
+
+
+def test_the_close_button_must_be_alone_high_in_the_corner() -> None:
+    g = panel()
+    g[433:443, 955:958] = 255  # a second mark beside the X
+    assert find_panel(g) is None
+    g = panel()
+    g[433:443, 986:989] = 255  # ... or right of it
+    assert find_panel(g) is None
+    g = panel()
+    g[450:454, 972:980] = 255  # a mark under the X, in the same columns
+    assert find_panel(g) is None
+    assert find_panel(panel(x_at=120)) is None  # an X low in the panel isn't its close button
+    g = panel()
+    g[:, 996:] = 255  # a lit window border is outside the panel
+    assert find_panel(g) == (4, 420, 996, 597)
+
+
 def test_dim_marks_without_glyphs_are_not_captions() -> None:
     g = panel()
     g[450:456, 360:600:2] = 80  # grey, not white text (a dim icon row)
@@ -186,9 +233,7 @@ def test_dim_marks_without_glyphs_are_not_captions() -> None:
 
 def test_a_panel_without_avatars_still_crops_its_newest_lines() -> None:
     g = panel()
-    for i in range(10):  # ten text lines, no avatar column
-        y = 425 + i * 17
-        g[y : y + 6, 360:600:2] = 255  # glyph-like: strokes, not a solid bar
+    lines_at(g, range(425, 595, 17))  # ten text lines, no avatar column
     box = find_caption_entries(g)
     assert box is not None
     left, top, right, bottom = box
@@ -200,18 +245,53 @@ def test_a_panel_without_avatars_still_crops_its_newest_lines() -> None:
 def test_a_line_cut_by_the_panel_top_is_left_out() -> None:
     g = panel()
     g[420:424, 360:600:2] = 255  # the bottom of a line scrolled half off
-    g[440:446, 360:600:2] = 255
-    g[460:466, 360:600:2] = 255
+    lines_at(g, (440, 460))
     box = find_caption_entries(g)
     assert box is not None and box[1] == 440 - 6
 
 
 def test_an_avatar_below_the_last_line_cant_invert_the_crop() -> None:
     g = panel()
-    for y in (440, 470):
-        g[y : y + 20, 300:320] = 200  # avatars
-        g[y : y + 6, 360:600:2] = 255
-    g[560:580, 300:320] = 200  # an avatar whose text hasn't arrived yet
+    avatars_at(g, (425,))
+    lines_at(g, range(425, 570, 15))  # one entry of ten lines: over MAX_LINES
+    avatars_at(g, (575,))  # a new entry whose text hasn't arrived yet
     box = find_caption_entries(g)
     assert box is not None and box[1] < box[3]
+    assert box[1] == 425 + 2 * 15 - 6  # the newest 8 lines; the header scrolled out of reach
     assert crop_entries(Image.fromarray(g).convert("RGB")) is not None
+
+
+def test_at_most_four_entries_go_even_when_their_lines_merge() -> None:
+    g = panel()
+    ys = range(430, 570, 26)  # six entries whose name and text merged into one line each
+    avatars_at(g, ys)
+    lines_at(g, ys)
+    box = find_caption_entries(g)
+    assert box is not None and box[1] == ys[2] - 6
+
+
+def test_an_avatar_close_to_its_text_is_still_split_off() -> None:
+    g = panel()
+    avatars_at(g, (430, 470))
+    lines_at(g, (430, 440, 470, 480), x0=322)  # 2 px from the avatars
+    box = find_caption_entries(g)
+    assert box is not None and box[0] == 322 - 6
+
+
+def test_a_column_that_isnt_round_is_text_not_avatars() -> None:
+    g = panel()
+    g[430:500, 300:320] = 200  # a tall bar left of the text: not a column of circles
+    lines_at(g, (430, 450, 470, 490))
+    box = find_caption_entries(g)
+    assert box is not None and box[0] == 300 - 6
+
+
+@pytest.mark.parametrize("x1", range(1100, 1300, 23))
+def test_the_crop_stays_under_the_ocr_pixel_cap(x1) -> None:
+    g = panel(top=280, bottom=497, h=500, w=1400)
+    lines_at(g, range(290, 490, 24), x1=x1)
+    crop = crop_entries(Image.fromarray(g).convert("RGB"))
+    assert crop is not None
+    # Upscaling to caption size (x2.16) would give ~0.9 Mpx: the cap binds. Sizes are floored;
+    # rounding both sides overshoots the cap for about half of all shapes.
+    assert MAX_PIXELS * 0.99 <= crop.width * crop.height <= MAX_PIXELS

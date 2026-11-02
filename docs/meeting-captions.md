@@ -255,9 +255,10 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
   bench imports it from there. Teams (`tenir_capture/teams_panel.py`, XERK-2608): captions sit in
   a pure-black panel (0) at the window bottom, from the left edge across the stage (narrower
-  when a Chat/People pane is open), below the tiles (~10) and stage (~31). Its close X near the
-  top-right corner is required: a black slide down to the bottom has none. The finder crops the
-  newest whole entries (at most 8 lines and 4 entries: tenir-ocr refuses over 16 boxes as too
+  when a Chat/People pane is open), at most half the window tall, below the tiles (~10) and
+  stage (~31). Its close X near the top-right corner is required, and must be a cross (ink on
+  both diagonals): a black slide has no X there, and a slide number or logo isn't one. The
+  finder crops the newest whole entries (at most 8 lines and 4 entries: tenir-ocr refuses over 16 boxes as too
   dense), starting at an avatar so the crop opens on a name, text column only. No panel, or a
   panel with no text, sends nothing but the periodic full frame.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full

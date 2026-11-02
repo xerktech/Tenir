@@ -22,10 +22,12 @@ from tenir_capture.caption_box import TARGET_HEIGHT
 PANEL_BLACK = 6  # panel fill is 0; a camera-off tile is ~10 and the stage ~31
 INK = 40  # anything brighter than this inside the panel is avatar or glyph
 GLYPH = 120  # glyph cores: lines split on these, so JPEG ringing between lines doesn't join them
-PANEL_ROW_SHARE = 0.5  # a panel row is mostly black (a side pane may take part of the width)
+PANEL_ROW_SHARE = 0.4  # a panel row is mostly black (a side pane may take part of the width)
 PANEL_MIN_HEIGHT = 0.06  # of the window height: shorter black strips are not the panel
+# The real panel is 28% of the window; a black slide or screen share filling the stage is ~90%.
+PANEL_MAX_HEIGHT = 0.5
 PANEL_BOTTOM_SLACK = 0.04  # the panel reaches the window bottom, bar a border
-PANEL_MIN_WIDTH = 0.5  # of the window width: the panel spans the stage (a side pane may be open)
+PANEL_MIN_WIDTH = 0.4  # of the window width: the panel spans the stage (a side pane may be open)
 PANEL_LEFT = 0.03  # of the window width: the panel starts at the window's left edge
 PANEL_FILL = 0.85  # share of the panel's columns that are mostly black (avatars break a few)
 # The panel's close button: a small X near its top-right corner. It is the panel's signature:
@@ -34,6 +36,14 @@ PANEL_FILL = 0.85  # share of the panel's columns that are mostly black (avatars
 CLOSE_TOP = 0.3  # the X sits within this share of the panel height from its top
 CLOSE_RIGHT = 0.06  # ... and within this share of the window width from the panel's right
 CLOSE_MAX_WIDTH = 0.03  # ... and is narrower than this share of the window width
+# ... and is a cross: its ink lies on the two diagonals of its box, both drawn. A slide number,
+# a dot or a logo in a black slide's corner is not. Below CLOSE_SHAPE_MIN px the X is a blur
+# and only its squareness is checked.
+CLOSE_ASPECT = (0.7, 1.4)
+CLOSE_DIAG = 0.22  # an ink pixel within this share of the box from a diagonal is on it
+CLOSE_ON_DIAG = 0.85  # share of the blob's ink on a diagonal
+CLOSE_EACH_DIAG = 0.3  # share of the ink on each diagonal (an X, not a slash)
+CLOSE_SHAPE_MIN = 8
 EDGE = 0.01  # ink starting this close to the panel's left edge is the window border
 AVATAR_ROUND = (0.6, 1.6)  # avatar circles: each ink run is about as tall as the column is wide
 COL_GAP = 1  # ink columns this close are one column
@@ -58,14 +68,37 @@ def _runs(flags: np.ndarray, gap: int) -> list[tuple[int, int]]:
     return list(zip(starts.tolist(), ends.tolist(), strict=False))
 
 
+def _is_cross(blob: np.ndarray) -> bool:
+    """True when a blob's ink (bool array, cropped to its box) is an X."""
+    h, w = blob.shape
+    lo, hi = CLOSE_ASPECT
+    if not lo <= h / w <= hi:
+        return False
+    if min(h, w) < CLOSE_SHAPE_MIN:
+        return True
+    ys, xs = np.nonzero(blob)
+    u, v = (xs + 0.5) / w, (ys + 0.5) / h
+    main, anti = np.abs(u - v) <= CLOSE_DIAG, np.abs(u + v - 1) <= CLOSE_DIAG
+    return bool(
+        (main | anti).mean() >= CLOSE_ON_DIAG
+        and main.mean() >= CLOSE_EACH_DIAG
+        and anti.mean() >= CLOSE_EACH_DIAG
+    )
+
+
 def _has_close_button(ink: np.ndarray, right: int, w: int) -> bool:
-    """A small ink blob near the panel's top-right corner, and nothing wide there."""
+    """One X-shaped blob near the panel's top-right corner, and nothing else there."""
     rows = max(1, int(ink.shape[0] * CLOSE_TOP))
     x0 = max(0, right - int(w * CLOSE_RIGHT))
-    blobs = _runs(ink[:rows, x0:right].any(axis=0), 2)
-    # The window border can light the panel's last column or two: ignore ink touching it.
-    blobs = [(a, b) for a, b in blobs if x0 + b < right - 1]
-    return len(blobs) == 1 and blobs[0][1] - blobs[0][0] <= w * CLOSE_MAX_WIDTH
+    corner = ink[:rows, x0:right]
+    blobs = _runs(corner.any(axis=0), 2)
+    if len(blobs) != 1 or blobs[0][1] - blobs[0][0] > w * CLOSE_MAX_WIDTH:
+        return False
+    a, b = blobs[0]
+    ys = _runs(corner[:, a:b].any(axis=1), 2)
+    if len(ys) != 1:
+        return False
+    return _is_cross(corner[ys[0][0] : ys[0][1], a:b])
 
 
 def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -77,7 +110,9 @@ def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
     if not runs:
         return None
     top, bottom = runs[-1]  # the panel is the lowest black strip and reaches the bottom
-    if bottom < h * (1 - PANEL_BOTTOM_SLACK) or bottom - top < h * PANEL_MIN_HEIGHT:
+    if bottom < h * (1 - PANEL_BOTTOM_SLACK):
+        return None
+    if not h * PANEL_MIN_HEIGHT <= bottom - top <= h * PANEL_MAX_HEIGHT:
         return None
     cols = np.flatnonzero(black[top:bottom].mean(axis=0) >= 0.5)
     left, right = int(cols[0]), int(cols[-1]) + 1
@@ -129,7 +164,7 @@ def find_caption_entries(g: np.ndarray) -> tuple[int, int, int, int] | None:
     entries = [a for a, _ in avatars if a < bottom][-MAX_ENTRIES:]
     fits = [s for s in entries if s >= top - PAD]
     if fits:
-        top = min(fits)  # else the newest entry alone is over MAX_LINES: its last lines go
+        top = min(fits)  # else the newest entry alone is over MAX_LINES: its first lines drop
     return (
         max(0, left - PAD),
         max(0, p_top + top - PAD),
