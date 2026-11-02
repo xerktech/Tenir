@@ -36,7 +36,9 @@ paths:
   slide number or logo in its corner start a never-ending meeting (QA delta 2).
   Tests: `test_no_caption_text_sends_nothing[12-0]`, `test_a_corner_mark_that_isnt_an_x_*`.
 - The X must be >= 4 px (absolute, since its size follows UI scaling, not the window) and its
-  shape is checked from 6 px: a 1 px glyph tip passed as the X (QA delta 3).
+  shape is checked from 6 px: a 1 px glyph tip passed as the X (QA delta 3). A 4-5 px X counts
+  only with an avatar column, and a blob touching the corner zone's edge never does (cut arcs
+  of a large glyph such as (c) lie on both diagonals; QA delta 4).
 - Don't require the panel to span the window: an open Chat/People pane narrows it.
   Test: `test_captions_are_found_beside_an_open_side_pane`.
 - Teams lines split on glyph cores (>120), not on any ink (>40): JPEG ringing from a remote

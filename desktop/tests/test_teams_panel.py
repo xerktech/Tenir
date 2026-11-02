@@ -11,6 +11,7 @@ from teams_synth import make_teams_window
 
 from tenir_capture.frames import FINDERS, Cadence, WindowPlan
 from tenir_capture.teams_panel import (
+    CLOSE_RIGHT,
     LINE_GAP,
     LINE_MIN_ROWS,
     MAX_LINES,
@@ -209,6 +210,8 @@ def test_black_that_isnt_the_panel_is_rejected() -> None:
         pytest.param((slice(433, 443), slice(975, 977)), id="bar"),
         pytest.param((slice(433, 434), slice(975, 976)), id="speck"),  # a glyph's tip
         pytest.param((slice(433, 436), slice(975, 978)), id="3px-blob"),
+        pytest.param((slice(433, 437), slice(975, 978)), id="3x4-blob"),  # its short side counts
+        pytest.param((slice(433, 443), slice(975, 980)), id="10x5-bar"),  # not square
     ],
 )
 def test_a_corner_mark_that_isnt_an_x_is_not_the_close_button(mark) -> None:
@@ -229,6 +232,59 @@ def test_small_and_large_marks_must_be_crosses_too() -> None:
     g = panel(x=False, w=1000)
     for i in range(40):  # a big X: wider than the close button ever is
         g[425 + i, 955 + i] = g[464 - i, 955 + i] = 255
+    assert find_panel(g) is None
+
+
+def test_a_mark_on_the_corner_zones_edge_is_cut_from_something_bigger() -> None:
+    g = panel(x=False)
+    x0 = 996 - int(1000 * CLOSE_RIGHT)  # the zone's left edge
+    for i in range(10):  # an X shape, but starting on the edge: part of a larger glyph
+        g[433 + i, x0 + i] = g[442 - i, x0 + i] = 255
+    assert find_panel(g) is None
+    g[433:443, x0 : x0 + 10] = 0
+    for i in range(10):  # the same X one column further in is the close button
+        g[433 + i, x0 + 1 + i] = g[442 - i, x0 + 1 + i] = 255
+    assert find_panel(g) == (4, 420, 996, 597)
+    # The same at the zone's bottom (the top 30% of the panel: rows 0-52 here).
+    assert find_panel(panel(x_at=43)) is None  # reaches row 52: may continue below
+    assert find_panel(panel(x_at=42)) == (4, 420, 996, 597)
+
+
+def test_a_6px_mark_is_shape_checked() -> None:
+    g = panel(x=False)
+    g[433:439, 975:981] = 255
+    g[435:437, 977:979] = 0  # a 6 px ring
+    assert find_panel(g) is None
+
+
+def test_a_4px_close_button_is_the_smallest_that_counts() -> None:
+    g = panel(x=False)
+    g[433:437, 975:979] = 255  # a 0.25x remote view's X: 4 px
+    assert find_panel(g) == (4, 420, 996, 597)
+
+
+def test_a_small_close_button_needs_the_avatar_column() -> None:
+    g = panel(x=False)
+    g[433:438, 975:980] = 255  # too small to check as a cross
+    lines_at(g, (450, 470))
+    assert find_caption_entries(g) is None  # text but no avatars: a footer band's glyph tip
+    avatars_at(g, (450,))
+    assert find_caption_entries(g) is not None
+
+
+def test_staggered_black_bars_are_not_a_panel() -> None:
+    g = window()
+    for y in range(420, 597):  # every row 40% black, no column black in half the rows
+        x = (y % 5) * 200
+        g[y, x : x + 400] = 0
+    assert find_panel(g) is None
+
+
+def test_a_black_band_narrower_than_the_stage_is_not_the_panel() -> None:
+    g = panel(w=1000)
+    g[420:597, 350:] = 31  # black over 35% of the width only, its X moved to its right edge
+    for i in range(10):
+        g[433 + i, 320 + i] = g[442 - i, 320 + i] = 255
     assert find_panel(g) is None
 
 

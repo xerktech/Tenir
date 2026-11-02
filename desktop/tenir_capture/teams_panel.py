@@ -71,41 +71,47 @@ def _runs(flags: np.ndarray, gap: int) -> list[tuple[int, int]]:
     return list(zip(starts.tolist(), ends.tolist(), strict=False))
 
 
-def _is_cross(blob: np.ndarray) -> bool:
-    """True when a blob's ink (bool array, cropped to its box) is an X."""
+def _cross_kind(blob: np.ndarray) -> str | None:
+    """ "cross" when a blob's ink (bool array, cropped to its box) is an X, "small" when it is
+    square but too small to judge its shape, else None."""
     h, w = blob.shape
     lo, hi = CLOSE_ASPECT
     if min(h, w) < CLOSE_MIN_PX or not lo <= h / w <= hi:
-        return False
+        return None
     if min(h, w) < CLOSE_SHAPE_MIN:
-        return True
+        return "small"
     ys, xs = np.nonzero(blob)
     u, v = (xs + 0.5) / w, (ys + 0.5) / h
     main, anti = np.abs(u - v) <= CLOSE_DIAG, np.abs(u + v - 1) <= CLOSE_DIAG
-    return bool(
+    cross = (
         (main | anti).mean() >= CLOSE_ON_DIAG
         and main.mean() >= CLOSE_EACH_DIAG
         and anti.mean() >= CLOSE_EACH_DIAG
     )
+    return "cross" if cross else None
 
 
-def _has_close_button(ink: np.ndarray, right: int, w: int) -> bool:
-    """One X-shaped blob near the panel's top-right corner, and nothing else there."""
+def _close_button(ink: np.ndarray, right: int, w: int) -> str | None:
+    """The kind of the lone X-shaped blob near the panel's top-right corner, or None."""
     rows = max(1, int(ink.shape[0] * CLOSE_TOP))
     x0 = max(0, right - int(w * CLOSE_RIGHT))
     corner = ink[:rows, x0:right]
     blobs = _runs(corner.any(axis=0), 2)
     if len(blobs) != 1 or blobs[0][1] - blobs[0][0] > w * CLOSE_MAX_WIDTH:
-        return False
+        return None
     a, b = blobs[0]
     ys = _runs(corner[:, a:b].any(axis=1), 2)
     if len(ys) != 1:
-        return False
-    return _is_cross(corner[ys[0][0] : ys[0][1], a:b])
+        return None
+    # A blob cut by the corner zone's edge is part of something bigger (a large glyph whose
+    # arcs, cut, lie on both diagonals); the real X sits well inside the zone.
+    if a == 0 or ys[0][1] >= rows:
+        return None
+    return _cross_kind(corner[ys[0][0] : ys[0][1], a:b])
 
 
-def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
-    """(left, top, right, bottom) of the caption panel in a grayscale window, or None."""
+def _panel(g: np.ndarray) -> tuple[tuple[int, int, int, int], str] | None:
+    """The caption panel's (left, top, right, bottom) and its close button's kind, or None."""
     h, w = g.shape
     black = g <= PANEL_BLACK
     rows = black.mean(axis=1) >= PANEL_ROW_SHARE
@@ -118,23 +124,32 @@ def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
     if not h * PANEL_MIN_HEIGHT <= bottom - top <= h * PANEL_MAX_HEIGHT:
         return None
     cols = np.flatnonzero(black[top:bottom].mean(axis=0) >= 0.5)
+    if cols.size == 0:
+        return None  # rows black in staggered bars: no column of black
     left, right = int(cols[0]), int(cols[-1]) + 1
     if left > w * PANEL_LEFT:
         return None
     if cols.size < (right - left) * PANEL_FILL:
         return None
-    if not _has_close_button(g[top:bottom] > INK, right, w):
+    kind = _close_button(g[top:bottom] > INK, right, w)
+    if kind is None:
         return None  # a black slide or a dark video, not the caption panel
-    return left, top, right, bottom
+    return (left, top, right, bottom), kind
+
+
+def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
+    """(left, top, right, bottom) of the caption panel in a grayscale window, or None."""
+    found = _panel(g)
+    return found[0] if found else None
 
 
 def find_caption_entries(g: np.ndarray) -> tuple[int, int, int, int] | None:
     """(left, top, right, bottom) of the newest caption lines, or None without any."""
     h, w = g.shape
-    panel = find_panel(g)
-    if panel is None:
+    found = _panel(g)
+    if found is None:
         return None
-    p_left, p_top, p_right, p_bottom = panel
+    (p_left, p_top, p_right, p_bottom), close = found
     ink = g[p_top:p_bottom] > INK
     glyph = g[p_top:p_bottom] > GLYPH
     text_right = p_right - int(w * CLOSE_RIGHT)  # the close button's zone holds no captions
@@ -153,6 +168,10 @@ def find_caption_entries(g: np.ndarray) -> tuple[int, int, int, int] | None:
     if len(cols) > 1 and first and all(lo <= (b - a) / (a1 - a0) <= hi for a, b in first):
         avatars = first  # a column of circles: one per entry, its top level with the name
         cols = cols[1:]
+    if close == "small" and not avatars:
+        # An X too small to judge its shape (a blurred remote view) needs the panel's other
+        # signature, its column of avatars: a glyph's tip in a black footer band has none.
+        return None
     left, right = cols[0][0], cols[-1][1]
     lines = [
         (a, b)
