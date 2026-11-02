@@ -38,6 +38,8 @@ def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
     # An unusable label never falls back to the site key beside it.
     with pytest.raises(ConfigError, match="org must be"):
         parse({**GOOD, "windows": [{**legacy, "org": None}]})
+    with pytest.raises(ConfigError, match="Turma org label"):
+        parse({**GOOD, "windows": [{**legacy, "org": "Bad Label"}]})
     # A label and a site key spelling the same key still collide.
     mixed = [GOOD["windows"][0], {**legacy, "orgSiteKey": "org-c"}]
     with pytest.raises(ConfigError, match="own org"):
