@@ -122,9 +122,10 @@ def test_frames_stream_with_the_token_and_honour_the_servers_cadence(zoom_frame)
     by_org = {k: [h for h in first if h["orgSiteKey"] == k] for k in ("org-a", "org-c")}
     zoom, teams = by_org["org-c"], by_org["org-a"]
     assert len(zoom) + len(teams) == len(first)
-    # Both windows stream: a full frame first, then caption crops.
+    # Both windows stream a full frame first. The frame shows Zoom's caption box, so the Zoom
+    # window follows with caption crops and the Teams window (no caption panel) with nothing.
     assert [h["region"] for h in zoom[:2]] == ["full", "caption"]
-    assert [h["region"] for h in teams[:2]] == ["full", "caption"]
+    assert [h["region"] for h in teams] == ["full"]
     assert zoom[0]["windowTitle"] == "Horizon 3 - VMware" and zoom[0]["platform"] == "zoom"
     assert teams[0]["windowTitle"] == "Horizon 1" and teams[0]["platform"] == "teams"
     # 5 fps from the server: the caption crops come fast, not at the 0.2 fps default.

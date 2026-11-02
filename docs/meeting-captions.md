@@ -253,10 +253,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   substring matching one window) → `orgSiteKey`, `orgName`, `platform`. A title matching
   nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
-  bench imports it from there. Teams (`frames.teams_band`, XERK-2608) has no box to find: every
-  tick sends a fixed bottom band (the lower 35%, full width, scaled to caption-font size but
-  under 480,000 px). The api's Teams parser drops tile-label rows and answers a band without
-  caption text with nothing, so an idle Teams window costs one OCR pass per tick, no meeting.
+  bench imports it from there. Teams (`tenir_capture/teams_panel.py`, XERK-2608): captions sit in
+  a pure-black panel (0) across the stage bottom, below the tiles (~10) and stage (~31); the
+  finder crops the newest whole entries (at most 8 lines: tenir-ocr refuses over 16 boxes as
+  too dense) starting at an avatar so the crop opens on a name, text column only (no avatars,
+  no close button). No panel, or a panel with no text, sends nothing but the periodic full frame.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
   frame per 5 s, and treats a faster cadence as due at once.
 - **Notices**: a minimized window is paused with a desktop notification (WGC gets no frames
@@ -282,8 +283,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   `python scripts/caption_ocr/caption_bench.py --images <dir with truth.json> --out <dir>`.
 - **The box finder is Zoom-specific and tuned on synthetic frames.** It assumes a centred box of
   white text at Zoom's default caption size (`BOX_MAX_LINE`); retune on real captures, and again
-  if the operator enlarges captions. Teams gets a fixed bottom band instead (`TEAMS_BAND_TOP`,
-  synthetic layout only): a panel taller than the band loses its oldest entries.
+  if the operator enlarges captions. The Teams finder is measured on one real capture (new
+  Teams, dark theme, 150% scaling); the light theme is untested, and a window under ~1000 px
+  tall over a heavily compressed remote session can merge lines and exceed 8 lines.
+- **A black area with white text across the bottom of a Teams window reads as the panel**
+  (a dark slide at the stage bottom with captions off).
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.

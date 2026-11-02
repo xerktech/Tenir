@@ -25,9 +25,14 @@ paths:
   `--hidden-import plyer.platforms.win.notification` (in `build.sh`) or toasts silently fail.
 - The version is stamped into `_version.py` by `build.sh`; "dev" never fails the
   `/status` min-version gate, so an unbuilt checkout always starts.
-- Teams sends a fixed bottom band every tick, never None: deciding "no caption" needs OCR,
-  which stays on the api (its Teams parser yields nothing for a band without caption text).
-  Test: `tests/test_frames.py::test_the_teams_finder_sends_the_bottom_band_under_the_ocr_cap`.
+- Teams must crop the caption panel, never a fixed band. A bottom band failed real-OCR QA: idle
+  windows sent tile initials and shared-document text that started meetings that never ended
+  (the same band re-sent every tick), and busy stages hit tenir-ocr's 16-box too_dense limit.
+- Teams finder levels come from a real capture: panel 0, camera-off tile ~10, stage ~31; it
+  is full width at the window bottom. Synthetic windows mirror it in `tests/teams_synth.py`
+  with fictional names and text only. Tests: `tests/test_teams_panel.py`.
+- Teams lines split on glyph cores (>120), not on any ink (>40): JPEG ringing from a remote
+  session joins lines and the 8-line cap slips. Avatars/columns use >40 (dark photos).
 - Every `config.PLATFORMS` entry needs a `frames.FINDERS` entry; the runner indexes it directly.
   Test: `tests/test_frames.py::test_every_configurable_platform_has_a_finder`.
 - Tests: `tests/test_runner.py::test_minimized_or_retitled_windows_pause_and_the_operator_is_told`,
