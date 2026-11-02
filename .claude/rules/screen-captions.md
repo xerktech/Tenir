@@ -215,7 +215,7 @@ paths:
     (`CaptionBlock.top_row`) whose text is a tail line stored under another speaker
     (`CaptionMerger._unread_top_header`). Test: `test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once`.
   - Full frames: only rows just under an initials-avatar'd header (`_under_avatar_headers`,
-    within 1.5 header heights) are caption, never the whole stack: a compact People pane
+    within 1.3 header heights) are caption, never the whole stack: a compact People pane
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
     onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).

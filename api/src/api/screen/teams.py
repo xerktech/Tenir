@@ -310,8 +310,9 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
 
 
 # How far under a speaker header's top its first caption row starts, in header heights. Real
-# OCR: 0.6-0.9 (1920, 2475 at 1.5x), synthetic 1.25; a People-pane row is an avatar further.
-_UNDER_HEADER = 1.5
+# OCR: 0.6-0.9 (1920, 2475 at 1.5x), synthetic 1.25; the next People-pane row 1.7 at the
+# tightest real OCR measured, so 1.5 left 4 px of margin before a pane name was lost (QA).
+_UNDER_HEADER = 1.3
 
 
 def _under_avatar_headers(low: list[OcrLine], lines: list[OcrLine]) -> set[int]:

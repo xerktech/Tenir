@@ -177,6 +177,20 @@ def test_real_ocr_of_a_one_word_interim_is_not_a_participant(size, boxes) -> Non
     assert frame.participants == ["Kunal Shah"]
 
 
+def test_a_tile_label_level_with_an_avatared_header_but_far_right_stays_a_participant() -> None:
+    frame = teams.parse_full_frame(
+        result(
+            line("RP", 20, 580, 52, 612),
+            line("Raman, Priya", 60, 580, 150, 596),
+            line("Okay", 60, 600, 100, 616),
+            line("Lee, Bo", 400, 598, 460, 614),
+            width=1280,
+            height=720,
+        )
+    )
+    assert sorted(frame.participants) == ["Lee, Bo", "Raman, Priya"]
+
+
 def test_a_compact_pane_keeps_a_photo_avatar_name_under_an_initials_one() -> None:
     # QA: marking a whole stack lost Okafor (photo avatar, no box) linked under Lee's row.
     frame = teams.parse_full_frame(
@@ -1853,6 +1867,10 @@ def test_a_top_header_is_un_read_only_when_its_row_is_a_stored_line() -> None:
     assert m._unread_top_header([top], 1000)[0] == CaptionBlock(
         None, False, ["Kunal Shah", "will demo", "today."]
     )
+    # OCR reads the row a little differently in the next frame (QA: "Kunal Shan").
+    for jitter in ("Kunal Shan", "Kunai Shah", "KunalShah", "Kunal Sha"):
+        jittered = CaptionBlock("Kunal Shah", True, ["will demo"], top_row=jitter)
+        assert m._unread_top_header([jittered], 1000)[0].speaker is None
     # A real header the panel opens with ("Sean O'Neil" was never said) stays, and so does
     # one with its avatar beside it.
     sean = CaptionBlock("Sean O'Neil", True, ["Great."], top_row="Sean O'Neil")

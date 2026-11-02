@@ -263,8 +263,13 @@ class CaptionMerger:
         top = blocks[0] if blocks else None
         if top is None or top.top_row is None or top.avatar:
             return blocks
+        # As close as the merge's own re-read: OCR reads the row a little differently each
+        # frame ("Kunal Shan"), and an exact check let the entry be stored twice again (QA).
         norm = _norm(top.top_row)
-        if not any(ln.norm == norm and ln.speaker != top.speaker for ln in self._tail(ts)):
+        if not any(
+            ln.speaker != top.speaker and _ratio(norm, ln.norm, _SAME_LINE) >= _SAME_LINE
+            for ln in self._tail(ts)
+        ):
             return blocks
         return [CaptionBlock(None, False, [top.top_row, *top.lines]), *blocks[1:]]
 
@@ -274,7 +279,6 @@ class CaptionMerger:
         A header-less Teams crop mid-meeting is a long entry whose header scrolled off, and it
         still shows lines the last snapshot did; one sharing none is other text in the band
         (a slide, XERK-2614)."""
-        blocks = self._unread_top_header(blocks, ts)
         return any(a is not None for a in _align(_shown(blocks), self._tail(ts)))
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
