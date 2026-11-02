@@ -243,10 +243,15 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   read); only when none is found does a name row opening the crop or following a finished line
   count, and then, with no roster yet, the crop starts no meeting. Mid-meeting, a crop with no
   roster-matched header that re-reads no recent line (a slide in the band) is dropped.
-- Known limit: a caption row that reads as a participant's name ("Kunal Shah", or a near miss
-  like "Kunal Shaw") is taken as a speaker header, and an unpunctuated one-word interim caption
-  ("Okay") alone in the panel on a full frame joins the participants. Text alone can't tell
-  them apart; real captures should show whether name rows differ in font or position.
+- A caption row that reads as a participant's name ("Kunal Shah", or a near miss like "Kunal
+  Shaw") is caption text when the crop's avatars were found, none is beside it, and it sits
+  where no header can (right under a header, or after an unfinished line). On a full frame, a
+  stack holding a speaker header with an initials avatar and a text row under it is the panel,
+  so a lone one-word interim ("Okay") doesn't join the participants (XERK-2604).
+- Known limit: with no avatar readable in the crop, or after a finished line, a roster-name
+  caption row is still taken as a header (a missed avatar there would otherwise merge two
+  speakers); a photo-avatar header over "Okay" on a full frame still adds "Okay". Tuned on
+  synthetic renders; re-check on real XERK-2506 captures.
 - No active-speaker detection (Teams' speaking ring isn't a reliable colour): headers alone
   name the speaker. Rolling refinement of the newest entry is folded by the shared merge.
 

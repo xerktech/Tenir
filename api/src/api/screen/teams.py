@@ -303,9 +303,21 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
     for stack in stacks.values():
         if any(
             _is_sentence(ln.text) and not is_teams_name(clean_name(ln.text)) for ln in stack
-        ):
+        ) or _headed_stack(stack, lines):
             out.update(id(ln) for ln in stack)
     return out
+
+
+def _headed_stack(stack: list[OcrLine], lines: list[OcrLine]) -> bool:
+    """A stack whose name row has an initials avatar, with a text row pressed under it: a
+    speaker header over a short interim ("Raman, Priya" / "Okay", XERK-2604) that no
+    sentence rule catches. Its header still joins the roster (``_panel_speakers``). In the
+    People pane only a status line sits that close under an avatar'd name, and it is no name.
+    """
+    ids = {id(ln) for ln in stack}
+    heads = _panel_speakers(tuple(lines), ids)
+    text = [ln for ln in stack if _initials(ln.text, any_case=True) is None]
+    return bool(heads) and len(text) > len(heads)
 
 
 def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:

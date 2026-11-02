@@ -207,6 +207,14 @@ paths:
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
     as one tall box whose height let the tile label above link in.
+  - With pixel avatars found, a roster-matched row with no avatar where `unknown_headers` says
+    no header sits is caption text (XERK-2604: "Raman, Priya" / "Kunal Shah" / "will demo").
+    Not after a finished line and not without pixels: a missed avatar or a tile label above the
+    panel would then merge two speakers. Tests under "caption rows that read as a participant's
+    name" in `test_screen_teams.py`.
+  - Full frames: a stack with an initials-avatar'd name and more text rows than avatar'd names is
+    the panel (`_headed_stack`); headers come back via `_panel_speakers`. Test:
+    `test_a_one_word_interim_alone_in_the_panel_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and

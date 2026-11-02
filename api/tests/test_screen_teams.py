@@ -132,6 +132,44 @@ def test_short_punctuated_replies_in_the_panel_are_not_participants() -> None:
     assert "Kunal Shah" in frame.participants
 
 
+@pytest.mark.parametrize(
+    "header",
+    [
+        # A circle box beside the header, and the circle read into the header's box.
+        (line("RP", 20, 580, 52, 612), line("Raman, Priya", 60, 580, 150, 596)),
+        (line("RP Raman, Priya", 20, 580, 150, 596),),
+    ],
+    ids=["circle-box", "read-in"],
+)
+def test_a_one_word_interim_alone_in_the_panel_is_not_a_participant(header) -> None:
+    # XERK-2604: "Okay" is name-shaped and no sentence, so the panel went unseen and it joined
+    # the roster, later swallowing caption rows as a header. The avatar'd header above marks it.
+    frame = teams.parse_full_frame(
+        result(
+            line("Kunal Shah", 30, 300, 110, 320),
+            *header,
+            line("Okay", 60, 600, 100, 616),
+            width=1280,
+            height=720,
+        )
+    )
+    assert frame.participants == ["Kunal Shah", "Raman, Priya"]
+
+
+def test_a_status_line_under_an_avatared_pane_name_is_not_a_participant() -> None:
+    frame = teams.parse_full_frame(
+        result(
+            line("LB", 1000, 400, 1032, 432),
+            line("Lee, Bo", 1040, 400, 1100, 416),
+            line("Available", 1040, 418, 1110, 432),
+            line("Okafor, Chidi", 1040, 460, 1150, 476),
+            width=1280,
+            height=720,
+        )
+    )
+    assert sorted(frame.participants) == ["Lee, Bo", "Okafor, Chidi"]
+
+
 def test_chrome_is_not_a_participant() -> None:
     frame = teams.parse_full_frame(
         result(
@@ -1629,3 +1667,53 @@ def test_a_crop_sharing_no_recent_line_and_no_roster_header_is_dropped_mid_meeti
     ]
     assert asyncio.run(run("teams")) == said
     assert asyncio.run(run("zoom"))[-1] == "hire two"  # Zoom keeps storing what it is sent
+
+
+# --- caption rows that read as a participant's name (XERK-2604) ----------------------------
+
+_NAMED = ("Raman, Priya", "Kunal Shah", "Sean O'Neil")
+
+
+@pytest.mark.parametrize("row", ["Kunal Shah", "Kunal Shaw", "Sean O'Neill"])
+@pytest.mark.parametrize("rest", [["will demo"], []], ids=["then-text", "alone"])
+def test_a_caption_row_reading_as_a_roster_name_stays_under_its_speaker(
+    row: str, rest: list[str]
+) -> None:
+    # Priya says "Kunal Shah will demo", wrapped after the name. The row (or a near miss the
+    # roster fuzzy-matches) sits right under her header with no avatar beside it, so it is her
+    # caption: credited to Kunal, or (alone) lost with the whole crop, before XERK-2604.
+    ocr, jpeg = panel([("Raman, Priya", "circle"), (row, None), *((t, None) for t in rest)])
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
+        ("Raman, Priya", True, [row, *rest]),
+    ]
+
+
+def test_a_roster_name_after_an_unfinished_line_without_an_avatar_is_caption() -> None:
+    ocr, jpeg = panel(
+        [("Raman, Priya", "circle"), ("I spoke with", None), ("Kunal Shah", None), ("today.", None)]
+    )
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
+        ("Raman, Priya", True, ["I spoke with", "Kunal Shah", "today."]),
+    ]
+
+
+def test_a_roster_header_whose_avatar_was_missed_after_a_finished_line_stays_a_header() -> None:
+    # Accepted limit: a missed avatar after a finished line keeps the header, so one faint
+    # photo doesn't merge two speakers; a name-only caption row there is still a header.
+    ocr, jpeg = panel(
+        [("Raman, Priya", "circle"), ("Sure.", None), ("Kunal Shah", None), ("I can demo.", None)]
+    )
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
+        ("Raman, Priya", True, ["Sure."]),
+        ("Kunal Shah", True, ["I can demo."]),
+    ]
+
+
+def test_without_pixels_a_roster_name_row_stays_a_header() -> None:
+    # No avatar to read: position alone can't tell a tile label caught above the panel from a
+    # caption, so the roster match stands (the documented limit).
+    ocr, _ = panel([("Raman, Priya", "circle"), ("Kunal Shah", None), ("will demo", None)])
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED))) == [
+        ("Raman, Priya", True, []),
+        ("Kunal Shah", True, ["will demo"]),
+    ]
