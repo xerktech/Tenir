@@ -156,6 +156,42 @@ def test_a_one_word_interim_alone_in_the_panel_is_not_a_participant(header) -> N
     assert frame.participants == ["Kunal Shah", "Raman, Priya"]
 
 
+@pytest.mark.parametrize(
+    ("size", "boxes"),
+    [
+        # tenir-ocr on rendered windows (QA on XERK-2604): at 100% the avatar's initials glue
+        # onto the caption row; at 150% they are read into the header.
+        ((1920, 1080), [("Kunal Shah", (701, 1034, 765, 1051)), ("KS Okay", (675, 1046, 741, 1075))]),
+        (
+            (2475, 1551),
+            [("KS Kunal Shah", (874, 1488, 993, 1515)), ("Okay", (909, 1508, 968, 1545))],
+        ),
+    ],
+    ids=["1920-glued", "2475-read-in"],
+)
+def test_real_ocr_of_a_one_word_interim_is_not_a_participant(size, boxes) -> None:
+    w, h = size
+    frame = teams.parse_full_frame(
+        result(*(line(t, *b) for t, b in boxes), width=w, height=h)
+    )
+    assert frame.participants == ["Kunal Shah"]
+
+
+def test_a_compact_pane_keeps_a_photo_avatar_name_under_an_initials_one() -> None:
+    # QA: marking a whole stack lost Okafor (photo avatar, no box) linked under Lee's row.
+    frame = teams.parse_full_frame(
+        result(
+            line("LB", 1000, 400, 1032, 432),
+            line("Lee, Bo", 1040, 400, 1100, 416),
+            line("Available", 1040, 418, 1110, 432),
+            line("Okafor, Chidi", 1040, 434, 1150, 450),
+            width=1280,
+            height=720,
+        )
+    )
+    assert sorted(frame.participants) == ["Lee, Bo", "Okafor, Chidi"]
+
+
 def test_a_status_line_under_an_avatared_pane_name_is_not_a_participant() -> None:
     frame = teams.parse_full_frame(
         result(
@@ -1697,15 +1733,103 @@ def test_a_roster_name_after_an_unfinished_line_without_an_avatar_is_caption() -
     ]
 
 
-def test_a_roster_header_whose_avatar_was_missed_after_a_finished_line_stays_a_header() -> None:
-    # Accepted limit: a missed avatar after a finished line keeps the header, so one faint
-    # photo doesn't merge two speakers; a name-only caption row there is still a header.
+def test_with_avatars_found_a_roster_name_row_without_one_is_caption_anywhere() -> None:
+    # After a finished line, and as the crop's first row once the header scrolled off: the
+    # row's own avatar decides, so the reading doesn't flip as the panel scrolls (QA). A
+    # "Name: text" row is no header there either.
+    ocr, jpeg = panel(
+        [("Raman, Priya", "circle"), ("Sure.", None), ("Kunal Shah", None), ("will demo.", None)]
+    )
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
+        ("Raman, Priya", True, ["Sure.", "Kunal Shah", "will demo."]),
+    ]
+    ocr, jpeg = panel(
+        [("Kunal Shah", None), ("will demo.", None), ("Sean O'Neil", "circle"), ("Great.", None)]
+    )
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg, live=True)) == [
+        (None, False, ["Kunal Shah", "will demo."]),
+        ("Sean O'Neil", True, ["Great."]),
+    ]
+    ocr, jpeg = panel([("Raman, Priya", "circle"), ("Kunal Shah: will demo", None)])
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
+        ("Raman, Priya", True, ["Kunal Shah: will demo"]),
+    ]
+
+
+def test_a_speaker_whose_avatar_is_missed_merges_into_the_one_before() -> None:
+    # Accepted (XERK-2604): with other avatars found, a header without one is caption text.
     ocr, jpeg = panel(
         [("Raman, Priya", "circle"), ("Sure.", None), ("Kunal Shah", None), ("I can demo.", None)]
     )
-    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg)) == [
-        ("Raman, Priya", True, ["Sure."]),
-        ("Kunal Shah", True, ["I can demo."]),
+    assert blocks_of(teams.parse_caption_crop(ocr, roster(*_NAMED), jpeg=jpeg))[0][0] == (
+        "Raman, Priya"
+    )
+
+
+def _scrolled_meeting(rows: list[tuple[str, str | None]], window: int, *, jpeg: bool = True):  # type: ignore[no-untyped-def]
+    """Stored (speaker, text) after ``rows`` arrive one by one in a panel showing at most
+    ``window`` rows (the oldest scroll off the top)."""
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+
+    async def run() -> list[tuple[str | None, str]]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "teams"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ros = await t.ensure_roster()
+        for n in _NAMED:
+            ros.add(n)
+        ts = 0
+        blocks: list = []
+        for k in range(2, len(rows) + 1):
+            ocr, image = panel(rows[max(0, k - window) : k])
+            live = t.conversation_id is not None
+            crop = image if jpeg else None
+            blocks = teams.parse_caption_crop(ocr, ros, jpeg=crop, live=live)
+            await t.on_caption(blocks, ts)
+            ts += 4000
+        for _ in range(3):
+            await t.on_caption(blocks, ts)
+            ts += 4000
+        await t.end(ts + 70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [(s.speaker, s.text) for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    return asyncio.run(run())
+
+
+_WRAPPED_NAME = [
+    ("Raman, Priya", "circle"),
+    ("Kunal Shah", None),
+    ("will demo the new dashboard", None),
+    ("for the north team.", None),
+    ("Sean O'Neil", "circle"),
+    ("Great, thanks.", None),
+]
+
+
+@pytest.mark.parametrize("window", [99, 4, 3])
+def test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once(window: int) -> None:
+    # QA on XERK-2604: once Priya's header scrolled off, "Kunal Shah" topped the crop and was
+    # read as his header (with 3 rows no avatar is in view at all), and the rest of her entry
+    # was stored again under him. The merge now un-reads a top header that is a stored line.
+    assert _scrolled_meeting(_WRAPPED_NAME, window) == [
+        ("Raman, Priya", "Kunal Shah"),
+        ("Raman, Priya", "will demo the new dashboard"),
+        ("Raman, Priya", "for the north team."),
+        ("Sean O'Neil", "Great, thanks."),
     ]
 
 
@@ -1717,3 +1841,21 @@ def test_without_pixels_a_roster_name_row_stays_a_header() -> None:
         ("Raman, Priya", True, []),
         ("Kunal Shah", True, ["will demo"]),
     ]
+
+
+def test_a_top_header_is_un_read_only_when_its_row_is_a_stored_line() -> None:
+    from api.screen.merge import CaptionMerger
+    from api.screen.zoom import CaptionBlock
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([CaptionBlock("Raman, Priya", True, ["Kunal Shah", "will demo"])], 0)
+    top = CaptionBlock("Kunal Shah", True, ["will demo", "today."], top_row="Kunal Shah")
+    assert m._unread_top_header([top], 1000)[0] == CaptionBlock(
+        None, False, ["Kunal Shah", "will demo", "today."]
+    )
+    # A real header the panel opens with ("Sean O'Neil" was never said) stays, and so does
+    # one with its avatar beside it.
+    sean = CaptionBlock("Sean O'Neil", True, ["Great."], top_row="Sean O'Neil")
+    assert m._unread_top_header([sean], 1000) == [sean]
+    seen = CaptionBlock("Kunal Shah", True, ["Hi."], avatar=True, top_row="Kunal Shah")
+    assert m._unread_top_header([seen], 1000) == [seen]

@@ -207,14 +207,17 @@ paths:
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
     as one tall box whose height let the tile label above link in.
-  - With pixel avatars found, a roster-matched row with no avatar where `unknown_headers` says
-    no header sits is caption text (XERK-2604: "Raman, Priya" / "Kunal Shah" / "will demo").
-    Not after a finished line and not without pixels: a missed avatar or a tile label above the
-    panel would then merge two speakers. Tests under "caption rows that read as a participant's
-    name" in `test_screen_teams.py`.
-  - Full frames: a stack with an initials-avatar'd name and more text rows than avatar'd names is
-    the panel (`_headed_stack`); headers come back via `_panel_speakers`. Test:
-    `test_a_one_word_interim_alone_in_the_panel_is_not_a_participant`.
+  - With pixel avatars found, a roster-matched row with no avatar is caption text at ANY
+    position (XERK-2604). A rule also gated on position flipped back to a header once the
+    header above scrolled off, and the entry was stored twice (QA). A missed avatar merges
+    that speaker into the previous one: accepted by the operator.
+  - Crops showing no avatar fall back to position, so the merge un-reads a top-row header
+    (`CaptionBlock.top_row`) whose text is a tail line stored under another speaker
+    (`CaptionMerger._unread_top_header`). Test: `test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once`.
+  - Full frames: only rows just under an initials-avatar'd header (`_under_avatar_headers`,
+    within 1.5 header heights) are caption, never the whole stack: a compact People pane
+    links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
+    onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and

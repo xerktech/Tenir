@@ -255,16 +255,31 @@ class CaptionMerger:
     def _tail(self, ts: int) -> list[_Line]:
         return [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
 
+    def _unread_top_header(self, blocks: list[CaptionBlock], ts: int) -> list[CaptionBlock]:
+        """``blocks`` with a top header put back as text when its row is a caption line
+        stored under another speaker: "Kunal Shah" wrapped in Priya's entry scrolled to the
+        crop's top with her header gone, read as Kunal's header, and the rest of her entry
+        was stored a second time under him (XERK-2604)."""
+        top = blocks[0] if blocks else None
+        if top is None or top.top_row is None or top.avatar:
+            return blocks
+        norm = _norm(top.top_row)
+        if not any(ln.norm == norm and ln.speaker != top.speaker for ln in self._tail(ts)):
+            return blocks
+        return [CaptionBlock(None, False, [top.top_row, *top.lines]), *blocks[1:]]
+
     def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
         """Whether a line of this snapshot re-reads a recent known line (it aligns to one).
 
         A header-less Teams crop mid-meeting is a long entry whose header scrolled off, and it
         still shows lines the last snapshot did; one sharing none is other text in the band
         (a slide, XERK-2614)."""
+        blocks = self._unread_top_header(blocks, ts)
         return any(a is not None for a in _align(_shown(blocks), self._tail(ts)))
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
+        blocks = self._unread_top_header(blocks, ts)
         shown = _shown(blocks)
         tail = self._tail(ts)
         aligned = _align(shown, tail)

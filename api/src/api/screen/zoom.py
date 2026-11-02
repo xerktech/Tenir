@@ -328,6 +328,9 @@ class CaptionBlock:
     # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
     # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
     avatar: bool = False
+    # The row read as this header when it was the crop's first row (a roster match). The
+    # merge un-reads it when that row is a caption line it stored, scrolled to the top.
+    top_row: str | None = None
 
 
 def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
@@ -390,23 +393,20 @@ def caption_blocks(
     ``avatar``. With ``avatars_decide`` (avatars were found in the crop's pixels) it alone
     decides a header the roster doesn't match, with or without a roster: a name-shaped row in
     it is a header even before a name-shaped first line ("Hank Ives" / "Acme Global
-    Partners"), and one outside it is caption text (a slide heading). A row the roster does
-    match but with no avatar is caption text too where ``unknown_headers`` says no header can
-    sit ("Raman, Priya" / "Kunal Shah" / "will demo", XERK-2604); elsewhere it stays a
-    header, so one missed avatar after a finished line doesn't merge two speakers."""
+    Partners"), and one outside it is caption text (a slide heading). So is a row the roster
+    does match ("Raman, Priya" / "Kunal Shah" / "will demo", XERK-2604), wherever it sits:
+    a rule that also asked where the row sits flipped it back to a header once the header
+    above scrolled off, and the merge stored the entry twice (QA). A missed avatar merges
+    that speaker into the one before (accepted)."""
     marked = avatars or set()
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
-        # Neither an avatar nor the row's position says a header sits here.
-        no_header = (
-            avatars_decide
-            and i not in marked
-            and unknown_headers is not None
-            and not unknown_headers(i)
-        )
+        # Avatars were found and none is beside this row: whatever it reads, it is caption.
+        no_header = avatars_decide and i not in marked
         speaker = roster.match(row, prefer=active) if name_like(row) and not no_header else None
         if speaker is not None:
-            blocks.append(CaptionBlock(speaker, True, avatar=i in marked))
+            top = row if i == 0 else None
+            blocks.append(CaptionBlock(speaker, True, avatar=i in marked, top_row=top))
             continue
         head, sep, rest = row.partition(":")
         if sep and not no_header and name_like(head.strip()):
