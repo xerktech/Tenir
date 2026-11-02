@@ -281,8 +281,9 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 
 - **Capture**: Windows Graphics Capture by window handle (`windows-capture`), newest frame
   copied at most every 0.2 s. Windows come from a local `capture.json`: title (exact, or a
-  substring matching one window) → `orgSiteKey`, `orgName`, `platform`. A title matching
-  nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
+  substring matching one window) → `org` (or legacy `orgSiteKey`), `orgName`, `platform`. A
+  title matching nothing pauses that window (RDM with another tab in front); an ambiguous one is
+  refused.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
   bench imports it from there. A real capture showed Zoom's caption panel (avatar, dim name
   line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
@@ -310,7 +311,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 
 A ready screen meeting is posted to the Turma hub, which proposes work items from it. Code in
 `api/src/api/screen/turma.py`; the wire contract is Turma's `.claude/rules/contract-meetings.md`
-(`POST /api/orgs/<orgSiteKey>/meetings`, bearer = the hub's `TURMA_MEETINGS_TOKEN`).
+(`POST /api/orgs/<org>/meetings`, bearer = the hub's `TURMA_MEETINGS_TOKEN`).
+
+- The URL segment is the window's `org` from `capture.json`: the org's Turma label (or, from an
+  older config, a Turma site key), sent as the frame header's `orgSiteKey`. Turma resolves it; an
+  unknown label is a retryable 404 that Turma lists on Brief → Meetings → Tenir labels to map.
 
 - On when `API_TURMA_URL` and `API_TURMA_MEETINGS_TOKEN` are both set. Off, meetings wait
   `pending` and are sent once it is turned on.
