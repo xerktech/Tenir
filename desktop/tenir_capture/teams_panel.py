@@ -22,12 +22,13 @@ from tenir_capture.caption_box import TARGET_HEIGHT
 PANEL_BLACK = 6  # panel fill is 0; a camera-off tile is ~10 and the stage ~31
 INK = 40  # anything brighter than this inside the panel is avatar or glyph
 GLYPH = 120  # glyph cores: lines split on these, so JPEG ringing between lines doesn't join them
-PANEL_ROW_SHARE = 0.4  # a panel row is mostly black (a side pane may take part of the width)
+# A panel row is black over this share of the width: the panel spans the stage, which an open
+# Chat/People pane narrows (to ~55% of the window at most).
+PANEL_ROW_SHARE = 0.4
 PANEL_MIN_HEIGHT = 0.06  # of the window height: shorter black strips are not the panel
 # The real panel is 28% of the window; a black slide or screen share filling the stage is ~90%.
 PANEL_MAX_HEIGHT = 0.5
 PANEL_BOTTOM_SLACK = 0.04  # the panel reaches the window bottom, bar a border
-PANEL_MIN_WIDTH = 0.4  # of the window width: the panel spans the stage (a side pane may be open)
 PANEL_LEFT = 0.03  # of the window width: the panel starts at the window's left edge
 PANEL_FILL = 0.85  # share of the panel's columns that are mostly black (avatars break a few)
 # The panel's close button: a small X near its top-right corner. It is the panel's signature:
@@ -38,12 +39,14 @@ CLOSE_RIGHT = 0.06  # ... and within this share of the window width from the pan
 CLOSE_MAX_WIDTH = 0.03  # ... and is narrower than this share of the window width
 # ... and is a cross: its ink lies on the two diagonals of its box, both drawn. A slide number,
 # a dot or a logo in a black slide's corner is not. Below CLOSE_SHAPE_MIN px the X is a blur
-# and only its squareness is checked.
+# and only its size and squareness are checked. The real X is ~10 px at 100% scaling (15 px
+# at 150%, 5 px in a 0.25x remote view); a speck under CLOSE_MIN_PX (a glyph's tip) is not it.
+CLOSE_MIN_PX = 4
+CLOSE_SHAPE_MIN = 6
 CLOSE_ASPECT = (0.7, 1.4)
 CLOSE_DIAG = 0.22  # an ink pixel within this share of the box from a diagonal is on it
 CLOSE_ON_DIAG = 0.85  # share of the blob's ink on a diagonal
 CLOSE_EACH_DIAG = 0.3  # share of the ink on each diagonal (an X, not a slash)
-CLOSE_SHAPE_MIN = 8
 EDGE = 0.01  # ink starting this close to the panel's left edge is the window border
 AVATAR_ROUND = (0.6, 1.6)  # avatar circles: each ink run is about as tall as the column is wide
 COL_GAP = 1  # ink columns this close are one column
@@ -72,7 +75,7 @@ def _is_cross(blob: np.ndarray) -> bool:
     """True when a blob's ink (bool array, cropped to its box) is an X."""
     h, w = blob.shape
     lo, hi = CLOSE_ASPECT
-    if not lo <= h / w <= hi:
+    if min(h, w) < CLOSE_MIN_PX or not lo <= h / w <= hi:
         return False
     if min(h, w) < CLOSE_SHAPE_MIN:
         return True
@@ -116,7 +119,7 @@ def find_panel(g: np.ndarray) -> tuple[int, int, int, int] | None:
         return None
     cols = np.flatnonzero(black[top:bottom].mean(axis=0) >= 0.5)
     left, right = int(cols[0]), int(cols[-1]) + 1
-    if left > w * PANEL_LEFT or right - left < w * PANEL_MIN_WIDTH:
+    if left > w * PANEL_LEFT:
         return None
     if cols.size < (right - left) * PANEL_FILL:
         return None

@@ -180,6 +180,12 @@ def test_black_that_isnt_the_panel_is_rejected() -> None:
     g[590:597] = 0  # a black strip at the bottom, too short to hold an entry
     assert find_panel(g) is None
     assert find_panel(panel(top=100)) is None  # too tall: a black slide filling the stage
+    g = panel(top=400, bottom=540)  # an X-marked black block that stops short of the bottom
+    assert find_panel(g) is None
+    g = panel(top=575, x=False)  # too short to hold an entry, even with an X
+    for i in range(5):
+        g[576 + i, 975 + i] = g[580 - i, 975 + i] = 255
+    assert find_panel(g) is None
     g = panel()
     g[420:597, 450:] = 31  # black reaching the bottom but not across the stage (a video tile)
     assert find_panel(g) is None
@@ -201,11 +207,42 @@ def test_black_that_isnt_the_panel_is_rejected() -> None:
     [
         pytest.param((slice(433, 443), slice(972, 980)), id="filled-square"),
         pytest.param((slice(433, 443), slice(975, 977)), id="bar"),
+        pytest.param((slice(433, 434), slice(975, 976)), id="speck"),  # a glyph's tip
+        pytest.param((slice(433, 436), slice(975, 978)), id="3px-blob"),
     ],
 )
 def test_a_corner_mark_that_isnt_an_x_is_not_the_close_button(mark) -> None:
     g = panel(x=False)
     g[mark] = 255
+    assert find_panel(g) is None
+
+
+def test_small_and_large_marks_must_be_crosses_too() -> None:
+    g = panel(x=False)
+    g[433:440, 972:980] = 255
+    g[435:438, 974:978] = 0  # a 7x8 ring ("0", "41"): checked for shape from 6 px
+    assert find_panel(g) is None
+    g = panel(x=False)
+    for i in range(10):
+        g[433 + i, 970 + i] = 255  # a slash: one diagonal only
+    assert find_panel(g) is None
+    g = panel(x=False, w=1000)
+    for i in range(40):  # a big X: wider than the close button ever is
+        g[425 + i, 955 + i] = g[464 - i, 955 + i] = 255
+    assert find_panel(g) is None
+
+
+def test_a_tiny_close_button_in_a_small_remote_view_still_counts() -> None:
+    g = panel(x=False)
+    g[433:438, 975:980] = 60  # a 5 px X blurred by a remote view's downscale into a blob:
+    for i in range(5):  # too small to judge its shape, but square and big enough
+        g[433 + i, 975 + i] = g[437 - i, 975 + i] = 255
+    assert find_panel(g) == (4, 420, 996, 597)
+
+
+def test_a_near_black_video_is_not_the_panel() -> None:
+    g = panel()
+    g[420:597, 4:996][g[420:597, 4:996] == 0] = 15  # darker than a tile, but not the panel's 0
     assert find_panel(g) is None
 
 

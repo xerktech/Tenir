@@ -290,6 +290,10 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   Teams, dark theme, 150% scaling, no side pane); the light theme and a real open pane are
   untested. Under about half scale (a 1080p meeting at 100% in a 960x540 remote window, plus
   heavy compression) avatars blur into the text and the 4-entry cap no longer applies.
+- **The Teams close X gates every crop.** Unverified on real Teams: a hover highlight behind
+  the X or a scrollbar thumb in that corner may hide captions while the pointer is there; a
+  short window may lose captions if the panel keeps a fixed height over half the window; a
+  lone Y or A at 8+ px in the corner of a black footer band passes as the X.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.
