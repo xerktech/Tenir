@@ -17,6 +17,11 @@ paths:
 - Tesseract needs white-on-dark captions inverted and `--psm 6` on a crop; thresholding loses.
 - `find_caption_box` lives in `desktop/tenir_capture/caption_box.py` (the capture client ships
   it); `caption_bench.py` imports it from there, so the bench measures the code that runs.
+- Real Zoom (2026 capture) draws captions in a panel: avatar, a dim grey name line, then the
+  text. `with_speaker_line` adds that name line to the crop (the avatar fuses it into the text
+  block, so the finder alone dropped every speaker). It takes one dim line only: a white line
+  above is the previous entry. 0 of 240 synthetic overlay boxes change. Test:
+  `desktop/tests/test_caption_panel.py`.
 - `find_caption_box` keys on centred white glyphs, not the box's dark fill: dark fill fails on
   camera-off meetings. Any change must keep the camera-off and no-caption tests green.
 - Its thresholds trade recall against slide false positives (`FILL_DARK` 85 → 65 missed

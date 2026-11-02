@@ -284,7 +284,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   substring matching one window) → `orgSiteKey`, `orgName`, `platform`. A title matching
   nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
-  bench imports it from there. Only `zoom` has a finder; Teams windows are skipped until
+  bench imports it from there. A real capture showed Zoom's caption panel (avatar, dim name
+  line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
+  in the crop, or the server would get captions with no speaker. The api reads a name-shaped
+  first row followed by text as a header even when the roster lacks it (header, no speaker):
+  in a screen share only a strip of tiles is visible, and the name was stored as speech. Only `zoom` has a finder; Teams windows are skipped until
   XERK-2515 adds one.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
   frame per 5 s, and treats a faster cadence as due at once.
