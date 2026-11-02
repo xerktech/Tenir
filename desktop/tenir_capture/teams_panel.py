@@ -187,6 +187,10 @@ def find_caption_entries(g: np.ndarray) -> tuple[int, int, int, int] | None:
     fits = [s for s in entries if s >= top - PAD]
     if fits:
         top = min(fits)  # else the newest entry alone is over MAX_LINES: its first lines drop
+    if avatars:
+        # Lines are found on the text column alone, but the crop keeps the avatars: the api's
+        # Teams parser reads them to split entries and tell speakers apart (XERK-2614).
+        left = a0
     return (
         max(0, left - PAD),
         max(0, p_top + top - PAD),

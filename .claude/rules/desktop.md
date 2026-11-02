@@ -44,6 +44,9 @@ paths:
 - Teams lines split on glyph cores (>120), not on any ink (>40): JPEG ringing from a remote
   session joins lines and the 8-line cap slips. Avatars are columns of round >40 blobs; in a
   small remote window lines merge, so `MAX_ENTRIES` (counted by avatars) also caps the crop.
+- Teams crops keep the avatar column (lines are found on the text column alone): the api's
+  parser reads avatars to split entries (XERK-2614); text-only crops left it blind on 64/68.
+  Test: `test_the_crop_keeps_the_avatar_column`.
 - Lint with the pinned ruff (0.17.3): older local ruffs miss rules CI enforces (RUF059).
 - Every `config.PLATFORMS` entry needs a `frames.FINDERS` entry; the runner indexes it directly.
   Test: `tests/test_frames.py::test_every_configurable_platform_has_a_finder`.

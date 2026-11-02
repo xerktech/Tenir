@@ -25,8 +25,17 @@ from tenir_capture.teams_panel import (
 CAD = Cadence(fps=1.0, full_frame_seconds=30.0)
 
 
-def text_lines(crop: Image.Image) -> list[tuple[int, int]]:
+def text_ink(crop: Image.Image) -> np.ndarray:
+    """Glyph ink of a synthetic crop, its leading avatar column (solid circles) blanked."""
     ink = np.asarray(ImageOps.grayscale(crop)) > 120
+    (a, b), *_ = _runs(ink.any(axis=0), 4)
+    ink = ink.copy()
+    ink[:, :b] = False
+    return ink
+
+
+def text_lines(crop: Image.Image) -> list[tuple[int, int]]:
+    ink = text_ink(crop)
     return [(a, b) for a, b in _runs(ink.any(axis=1), LINE_GAP) if b - a >= LINE_MIN_ROWS]
 
 
@@ -44,14 +53,15 @@ def test_the_newest_entries_are_cropped_from_a_name_line(size, ui) -> None:
     assert 2 <= len(lines) <= MAX_LINES
     assert len(lines) % 2 == 0  # name + one-line text per newest entry
     # It opens on a speaker's name (each synthetic name is narrower than its caption).
-    ink = np.asarray(ImageOps.grayscale(crop)) > 120
+    ink = text_ink(crop)
 
     def width(line: tuple[int, int]) -> int:
         cols = np.flatnonzero(ink[line[0] : line[1]].any(axis=0))
         return int(cols[-1] - cols[0])
 
     assert width(lines[0]) < width(lines[1])
-    # Neither the avatar circles nor the close button come along: the crop is text only.
+    # The avatars come along (the api's parser reads them), the close button doesn't.
+    assert np.asarray(ImageOps.grayscale(crop))[:, :12].max() > 120
     assert crop.width < size[0] * 0.4
 
 
@@ -368,7 +378,16 @@ def test_an_avatar_close_to_its_text_is_still_split_off() -> None:
     avatars_at(g, (430, 470))
     lines_at(g, (430, 440, 470, 480), x0=322)  # 2 px from the avatars
     box = find_caption_entries(g)
-    assert box is not None and box[0] == 322 - 6
+    assert box is not None and box[1] == 430 - 6  # split off: the crop opens on an avatar
+
+
+def test_the_crop_keeps_the_avatar_column() -> None:
+    # The api's parser reads the avatars (XERK-2614); a crop at the text column cut them off.
+    g = panel()
+    avatars_at(g, (430, 470))
+    lines_at(g, (430, 440, 470, 480))
+    box = find_caption_entries(g)
+    assert box is not None and box[0] == 300 - 6 and box[2] == 605
 
 
 def test_a_column_that_isnt_round_is_text_not_avatars() -> None:
