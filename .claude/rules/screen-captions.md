@@ -212,8 +212,15 @@ paths:
     header above scrolled off, and the entry was stored twice (QA). A missed avatar merges
     that speaker into the previous one: accepted by the operator.
   - Crops showing no avatar fall back to position, so the merge un-reads a top-row header
-    (`CaptionBlock.top_row`) whose text is a tail line stored under another speaker
-    (`CaptionMerger._unread_top_header`). Test: `test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once`.
+    (`CaptionBlock.top_row`) when, read as text, the name row AND the row under it align
+    (`_align`) to tail lines of another speaker (`CaptionMerger._unread_top_header`). Text
+    likeness failed three QA rounds: exact missed jitter, fuzzy name-only took a real
+    speaker after a name-like row, fuzzy row-under missed a grown row and took a repeated
+    "Okay.". Alignment allows growth and keeps order. Tests:
+    `test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once`,
+    `test_a_real_speaker_opening_with_a_reply_said_before_the_name_keeps_his_header`.
+  - Accepted: when the row under the scrolled name was never seen (2+ rows scrolled between
+    processed frames), the rest of the entry goes to the name, as on main.
   - Full frames: only rows just under an initials-avatar'd header (`_under_avatar_headers`,
     within 1.3 header heights) are caption, never the whole stack: a compact People pane
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials

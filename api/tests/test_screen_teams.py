@@ -1898,3 +1898,33 @@ def test_a_top_header_is_un_read_only_when_its_row_is_a_stored_line() -> None:
     assert m._unread_top_header([sean], 1000) == [sean]
     seen = CaptionBlock("Kunal Shah", True, ["Hi."], avatar=True, top_row="Kunal Shah")
     assert m._unread_top_header([seen], 1000) == [seen]
+    bare = CaptionBlock("Kunal Shah", True, [], top_row="Kunal Shah")
+    assert m._unread_top_header([bare], 1000) == [bare]
+
+
+def test_a_top_header_is_un_read_when_the_row_under_it_grew_since_stored() -> None:
+    # QA: the frame before the scroll caught Priya's row under the name half-written ("will");
+    # a likeness check refused the grown row and stored it again under Kunal.
+    from api.screen.merge import CaptionMerger
+    from api.screen.zoom import CaptionBlock
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([CaptionBlock("Raman, Priya", True, ["Kunal Shah", "will"])], 0)
+    top = CaptionBlock(
+        "Kunal Shah", True, ["will demo the new dashboard", "for the"], top_row="Kunal Shah"
+    )
+    assert m._unread_top_header([top], 1000)[0].speaker is None
+
+
+@pytest.mark.parametrize(("hers", "his"), [("Okay.", "Okay."), ("Thanks.", "Thanks!")])
+def test_a_real_speaker_opening_with_a_reply_said_before_the_name_keeps_his_header(
+    hers: str, his: str
+) -> None:
+    # QA: Priya's earlier "Okay." vouched for Kunal's; it sits above the name, out of order.
+    from api.screen.merge import CaptionMerger
+    from api.screen.zoom import CaptionBlock
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([CaptionBlock("Raman, Priya", True, [hers, "Over to", "Kunal Shah"])], 0)
+    real = CaptionBlock("Kunal Shah", True, [his], top_row="Kunal Shah")
+    assert m._unread_top_header([real], 1000) == [real]

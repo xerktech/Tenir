@@ -246,13 +246,13 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - A caption row that reads as a participant's name ("Kunal Shah", or a near miss like "Kunal
   Shaw") is caption text when the crop's avatars were found and none is beside it, wherever it
   sits, so the reading doesn't change as the panel scrolls (XERK-2604). When the crop shows no
-  avatar (a long entry whose header scrolled off), the merge un-reads a top-row header whose
-  text is a line it stored under another speaker. On a full frame, the rows right under a panel
+  avatar (a long entry whose header scrolled off), the merge un-reads a top-row header when
+  it and the row under it re-read, in order, lines it stored under another speaker. On a full frame, the rows right under a panel
   header with an initials avatar (read into its box, beside it, or glued onto the row under it)
   are captions, so a lone one-word interim ("Okay") doesn't join the participants.
 - Known limits: a speaker whose avatar the crop misses while others are found is merged into
   the previous speaker; with no avatar readable and nothing stored to match, a roster-name row
-  is still a header; a photo-avatar header over "Okay" on a full frame (OCR reads no initials)
+  is still a header (also when the row under a scrolled name was never seen); a photo-avatar header over "Okay" on a full frame (OCR reads no initials)
   still adds "Okay". Tuned on synthetic renders and real OCR of them; re-check on XERK-2506
   captures.
 - No active-speaker detection (Teams' speaking ring isn't a reliable colour): headers alone
