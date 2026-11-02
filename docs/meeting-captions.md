@@ -254,10 +254,12 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   nothing pauses that window (RDM with another tab in front); an ambiguous one is refused.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
   bench imports it from there. Teams (`tenir_capture/teams_panel.py`, XERK-2608): captions sit in
-  a pure-black panel (0) across the stage bottom, below the tiles (~10) and stage (~31); the
-  finder crops the newest whole entries (at most 8 lines: tenir-ocr refuses over 16 boxes as
-  too dense) starting at an avatar so the crop opens on a name, text column only (no avatars,
-  no close button). No panel, or a panel with no text, sends nothing but the periodic full frame.
+  a pure-black panel (0) at the window bottom, from the left edge across the stage (narrower
+  when a Chat/People pane is open), below the tiles (~10) and stage (~31). Its close X near the
+  top-right corner is required: a black slide down to the bottom has none. The finder crops the
+  newest whole entries (at most 8 lines and 4 entries: tenir-ocr refuses over 16 boxes as too
+  dense), starting at an avatar so the crop opens on a name, text column only. No panel, or a
+  panel with no text, sends nothing but the periodic full frame.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
   frame per 5 s, and treats a faster cadence as due at once.
 - **Notices**: a minimized window is paused with a desktop notification (WGC gets no frames
@@ -284,10 +286,9 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 - **The box finder is Zoom-specific and tuned on synthetic frames.** It assumes a centred box of
   white text at Zoom's default caption size (`BOX_MAX_LINE`); retune on real captures, and again
   if the operator enlarges captions. The Teams finder is measured on one real capture (new
-  Teams, dark theme, 150% scaling); the light theme is untested, and a window under ~1000 px
-  tall over a heavily compressed remote session can merge lines and exceed 8 lines.
-- **A black area with white text across the bottom of a Teams window reads as the panel**
-  (a dark slide at the stage bottom with captions off).
+  Teams, dark theme, 150% scaling, no side pane); the light theme and a real open pane are
+  untested. Under about half scale (a 1080p meeting at 100% in a 960x540 remote window, plus
+  heavy compression) avatars blur into the text and the 4-entry cap no longer applies.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.

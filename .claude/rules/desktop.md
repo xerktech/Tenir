@@ -29,10 +29,17 @@ paths:
   windows sent tile initials and shared-document text that started meetings that never ended
   (the same band re-sent every tick), and busy stages hit tenir-ocr's 16-box too_dense limit.
 - Teams finder levels come from a real capture: panel 0, camera-off tile ~10, stage ~31; it
-  is full width at the window bottom. Synthetic windows mirror it in `tests/teams_synth.py`
-  with fictional names and text only. Tests: `tests/test_teams_panel.py`.
+  starts at the window's left edge and reaches the bottom. Synthetic windows mirror it in
+  `tests/teams_synth.py` with fictional names and text only. Tests: `tests/test_teams_panel.py`.
+- The panel's close X is its signature: without it a black slide letterboxed to the window
+  bottom passed every other check and started a meeting from slide text (QA delta D1).
+  Test: `test_no_caption_text_sends_nothing[black-slide]`.
+- Don't require the panel to span the window: an open Chat/People pane narrows it.
+  Test: `test_captions_are_found_beside_an_open_side_pane`.
 - Teams lines split on glyph cores (>120), not on any ink (>40): JPEG ringing from a remote
-  session joins lines and the 8-line cap slips. Avatars/columns use >40 (dark photos).
+  session joins lines and the 8-line cap slips. Avatars are columns of round >40 blobs; in a
+  small remote window lines merge, so `MAX_ENTRIES` (counted by avatars) also caps the crop.
+- Lint with the pinned ruff (0.17.3): older local ruffs miss rules CI enforces (RUF059).
 - Every `config.PLATFORMS` entry needs a `frames.FINDERS` entry; the runner indexes it directly.
   Test: `tests/test_frames.py::test_every_configurable_platform_has_a_finder`.
 - Tests: `tests/test_runner.py::test_minimized_or_retitled_windows_pause_and_the_operator_is_told`,

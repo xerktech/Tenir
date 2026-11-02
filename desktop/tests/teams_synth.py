@@ -40,33 +40,44 @@ def make_teams_window(
     captions: list[tuple[str, list[str]]] | None = None,
     panel: bool = True,
     stage: str = "tiles",
+    pane: float = 0.0,
 ) -> Image.Image:
     """A Teams meeting window; ``captions`` None shows ENTRIES, [] an empty open panel.
 
     ``panel=False`` is captions turned off. ``stage`` is "tiles" (camera-off grid with name
-    labels) or "share" (a white document with dark text filling the stage).
+    labels), "share" (a white document filling the stage) or "black" (a black slide with white
+    text filling the stage down to the window bottom). ``pane`` is the width share of a Chat /
+    People pane on the right; the stage and the caption panel narrow to the rest.
     """
     w, h = size
     img = Image.new("RGB", size, STAGE)
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, w, round(48 * ui)), fill=TOOLBAR)
     d.text((round(30 * ui), round(10 * ui)), "Sprint Planning", fill=WHITE, font=_font(9 * ui))
+    sw = round(w * (1 - pane))  # stage width
+    if pane:
+        d.rectangle((sw, round(48 * ui), w, h), fill=(45, 45, 45))
+        for i in range(12):
+            d.text(
+                (sw + 16 * ui, 70 * ui + i * 30 * ui),
+                f"Member {i}",
+                fill=WHITE,
+                font=_font(10 * ui),
+            )
     stage_bottom = round(h * 0.70) if panel else h - 4
     top = round(64 * ui)
-    if stage == "share":
-        d.rectangle((4, top, w - 5, stage_bottom - 8), fill=WHITE)
+    if stage in ("share", "black"):
+        page, ink = ((255, 255, 255), (20, 20, 20)) if stage == "share" else (PANEL, WHITE)
+        d.rectangle((4, top, sw - 5, stage_bottom - (8 if panel else 0)), fill=page)
         y = top + 20
-        while y < stage_bottom - 40:
+        while y < stage_bottom - 40 * ui:
             d.text(
-                (40, y),
-                "Quarterly roadmap: milestones and owners",
-                fill=(20, 20, 20),
-                font=_font(12 * ui),
+                (40, y), "Quarterly roadmap: milestones and owners", fill=ink, font=_font(12 * ui)
             )
             y += round(24 * ui)
     else:
         cols, rows = 5, 3
-        tw, th = (w - 8) / cols, (stage_bottom - top - 8) / rows
+        tw, th = (sw - 8) / cols, (stage_bottom - top - 8) / rows
         for r in range(rows):
             for c in range(cols):
                 x0, y0 = 4 + c * tw, top + r * th
@@ -81,14 +92,16 @@ def make_teams_window(
         return img
     p_top, p_bottom = round(h * 0.72), h - 5
     # The panel is drawn on its own canvas so the oldest entry is cut by its top edge.
-    pw, ph = w - 9, p_bottom - p_top
+    pw, ph = sw - 9, p_bottom - p_top
     pan = Image.new("RGB", (pw, ph), PANEL)
     d = ImageDraw.Draw(pan)
-    d.line((pw - 40 * ui, 12 * ui, pw - 30 * ui, 22 * ui), fill=WHITE, width=2)
-    d.line((pw - 40 * ui, 22 * ui, pw - 30 * ui, 12 * ui), fill=WHITE, width=2)
+    # The close X, where the real one sits: 13-23 px down, 18-28 px in from the right at 100%.
+    x0, y0, x1, y1 = pw - 28 * ui, 13 * ui, pw - 18 * ui, 23 * ui
+    d.line((x0, y0, x1, y1), fill=WHITE, width=max(1, round(1.5 * ui)))
+    d.line((x0, y1, x1, y0), fill=WHITE, width=max(1, round(1.5 * ui)))
     entries = ENTRIES if captions is None else captions
     # Laid out bottom-up, newest last; the oldest scroll off the top.
-    x_av, x_text = round(w * 0.35), round(w * 0.35 + 37 * ui)
+    x_av, x_text = round(sw * 0.35), round(sw * 0.35 + 37 * ui)
     name_f, text_f = _font(9 * ui), _font(13 * ui)
     y = ph - round(8 * ui)
     for name, lines in reversed(entries):
