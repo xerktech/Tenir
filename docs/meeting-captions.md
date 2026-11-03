@@ -243,10 +243,18 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   read); only when none is found does a name row opening the crop or following a finished line
   count, and then, with no roster yet, the crop starts no meeting. Mid-meeting, a crop with no
   roster-matched header that re-reads no recent line (a slide in the band) is dropped.
-- Known limit: a caption row that reads as a participant's name ("Kunal Shah", or a near miss
-  like "Kunal Shaw") is taken as a speaker header, and an unpunctuated one-word interim caption
-  ("Okay") alone in the panel on a full frame joins the participants. Text alone can't tell
-  them apart; real captures should show whether name rows differ in font or position.
+- A caption row that reads as a participant's name ("Kunal Shah", or a near miss like "Kunal
+  Shaw") is caption text when the crop's avatars were found and none is beside it, wherever it
+  sits, so the reading doesn't change as the panel scrolls (XERK-2604). On a full frame, the rows right under a panel
+  header with an initials avatar (read into its box, beside it, or glued onto the row under it)
+  are captions, so a lone one-word interim ("Okay") doesn't join the participants.
+- Known limits: a speaker whose avatar the crop misses while others are found is merged into
+  the previous speaker, and once a later frame finds that avatar his lines are stored again
+  under him (one copy each); in a crop showing no avatar (one entry filling the panel; Teams draws
+  one beside every entry) a roster-name row is still a header, and a wrapped name row scrolled
+  to the top can store the rest of that entry a second time; a photo-avatar header over "Okay" on a full frame (OCR reads no initials)
+  still adds "Okay". Tuned on synthetic renders and real OCR of them; re-check on XERK-2506
+  captures.
 - No active-speaker detection (Teams' speaking ring isn't a reliable colour): headers alone
   name the speaker. Rolling refinement of the newest entry is folded by the shared merge.
 

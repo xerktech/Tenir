@@ -207,6 +207,22 @@ paths:
     height: circles measured 1.43x+, and "Al"/"Jo" are real display names (QA).
   - `_caption_lines`: a name row links at most half its OWN height: OCR can read avatar + caption
     as one tall box whose height let the tile label above link in.
+  - With pixel avatars found, a roster-matched row with no avatar is caption text at ANY
+    position (XERK-2604). A rule also gated on position flipped back to a header once the
+    header above scrolled off, and the entry was stored twice (QA). A missed avatar merges
+    that speaker into the previous one, and when a later frame finds it his lines are stored
+    again under him (flaky detection: one copy each): accepted by the operator.
+  - A crop showing no avatar keeps the position rule, so a wrapped name row atop it is read as a
+    header and the entry can be stored twice. Accepted: real Teams (one 150% capture, real OCR)
+    draws an avatar beside every entry, even one speaker's consecutive ones, so this needs one
+    entry filling the panel. Four QA rounds of merge-side "un-read the top header" rules each
+    traded a duplicate for a misattributed real speaker; don't retry without real scroll captures.
+  - Real-capture check (XERK-2604): Teams name rows are a smaller bold font, but Paddle boxes
+    overlap (names 18-25 px, text 22-31 px at 150%): box height can't tell them apart.
+  - Full frames: only rows just under an initials-avatar'd header (`_under_avatar_headers`,
+    within 1.3 header heights) are caption, never the whole stack: a compact People pane
+    links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
+    onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
