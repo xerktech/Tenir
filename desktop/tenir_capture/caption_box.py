@@ -38,6 +38,7 @@ EDGE_SHARE = 0.5  # a column/row lit along more than this share of the band is a
 BOX_MAX_LINE = 26
 LINE_SPLIT_GAP = 2  # rows of no ink that separate two text lines
 LINE_MIN_ROWS = 5  # shorter glyph runs aren't text lines (a blurred 0.5x line is ~13 rows)
+NAME_DIM = 0.8  # a speaker-name line peaks below this share of the caption text's brightness
 
 
 def crop_band(img: Image.Image, top: float = BAND_TOP, bottom: float = BAND_BOTTOM) -> Image.Image:
@@ -196,9 +197,48 @@ def find_caption_box(img: Image.Image) -> tuple[int, int, int, int] | None:
     return None
 
 
+def with_speaker_line(
+    img: Image.Image, box: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """Grow a caption box up to the speaker-name line sitting just above it, if there is one.
+
+    Zoom's caption panel (real captures, 2026) puts the speaker's name on its own dimmer line
+    above the text, with an avatar circle to the left of both. The avatar's rows fuse the name
+    line into the text block in ``find_caption_box``, which then stops below the name, so the
+    crop reached the server without a speaker. Ink is looked for only right of where the text
+    starts (the avatar sits left of it), and only one caption-sized line on dark fill is taken.
+    """
+    left, top, right, bottom = box
+    g = np.asarray(ImageOps.grayscale(img), dtype=np.uint8)
+    ink = g > BOX_WHITE
+    lines = _runs(ink[top:bottom, left:right].any(axis=1), LINE_SPLIT_GAP)
+    if not lines:
+        return box
+    a, b = lines[-1]  # the box's last text line starts where the text column starts
+    cols = np.flatnonzero(ink[top + a : top + b, left:right].any(axis=0))
+    text_left = left + int(cols[0])
+    lo = max(0, top - BOX_LINE_GAP - BOX_MAX_LINE)
+    above = _runs(ink[lo:top, text_left:right].any(axis=1), LINE_SPLIT_GAP)
+    if not above:
+        return box
+    a, b = above[-1]  # the nearest line above
+    if a == 0 and lo > 0:
+        return box  # cut by the search window: part of an older line, not a name
+    fill = (g[lo + a : lo + b, left:right] < FILL_DARK).mean()
+    if not LINE_MIN_ROWS <= b - a <= BOX_MAX_LINE or fill < BOX_FILL_SHARE:
+        return box
+    # The name is drawn dimmer than caption text (~154 vs 255 grey); a white line above is the
+    # previous entry's text, not a speaker.
+    name_peak = np.percentile(g[lo + a : lo + b, text_left:right], 99.5)
+    text_peak = np.percentile(g[top:bottom, text_left:right], 99.5)
+    if name_peak > NAME_DIM * text_peak:
+        return box
+    return left, max(0, lo + a - BOX_PAD), right, bottom
+
+
 def crop_box(img: Image.Image) -> Image.Image | None:
     """Tight crop to the caption box at caption-font scale; None when no caption is on screen."""
     # Find the box at caption-font scale so the pixel thresholds hold for small remote windows.
     band = upscale_to(crop_band(img), img.height)
     box = find_caption_box(band)
-    return band.crop(box) if box else None
+    return band.crop(with_speaker_line(band, box)) if box else None

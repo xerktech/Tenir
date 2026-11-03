@@ -1862,3 +1862,52 @@ def test_a_captioned_meeting_gone_quiet_is_not_warned_but_a_next_one_without_cap
         assert notices() == 1
 
     asyncio.run(run())
+
+
+def test_an_off_roster_speaker_name_atop_a_panel_crop_is_a_header_not_speech() -> None:
+    """XERK-2506 QA D1: on a real capture the crop starts with the speaker's name line. With
+    a roster that doesn't hold that speaker (screen share: only a strip of tiles) the name was
+    stored as a line of speech, and the text credited to the previous speaker."""
+    roster = Roster()
+    roster.add("Ana Lopez")
+    (block,) = parse_caption_crop(
+        crop("Bo Chen", "we shipped the release on friday", "then the rollout went fine"),
+        roster,
+        active="Ana Lopez",
+    )
+    assert (block.speaker, block.has_header) == (None, True)
+    assert block.lines == ["we shipped the release on friday", "then the rollout went fine"]
+    # On the roster, the name still names the speaker.
+    roster.add("Bo Chen")
+    (block,) = parse_caption_crop(crop("Bo Chen", "then the rollout went fine"), roster)
+    assert block.speaker == "Bo Chen"
+    # A name-shaped row lower down, mid-sentence, is still text.
+    blocks = parse_caption_crop(crop("Ana Lopez", "we met", "Acme Global", "said yes"), roster)
+    assert [b.speaker for b in blocks] == ["Ana Lopez"]
+
+
+def test_an_off_roster_speaker_change_mid_crop_is_a_header_not_speech() -> None:
+    """QA delta: the speaker change shape — the previous entry's last line, then the next
+    speaker's name, then their text — stored the name as the previous speaker's speech."""
+    roster = Roster()
+    roster.add("Ana Lopez")
+    merger = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored = []
+    for ts in range(0, 10_000, 1000):
+        blocks = parse_caption_crop(crop("Ana Lopez", "the build is green."), roster)
+        stored += merger.feed(blocks, ts)
+    for ts in range(10_000, 30_000, 1000):
+        rows = ("the build is green.", "Bo Chen", "we shipped the release")
+        blocks = parse_caption_crop(crop(*rows), roster, active="Ana Lopez")
+        assert [b.speaker for b in blocks if b.has_header] == [None]
+        stored += merger.feed(blocks, ts)
+    stored += merger.flush(40_000)
+    assert not any("Chen" in s.text for s in stored)
+    assert [s.speaker for s in stored if "shipped" in s.text] == [None]
+    # A question or an exclamation ends an entry too.
+    for tail in ("was that the season?", "what a season!"):
+        blocks = parse_caption_crop(crop("Ana Lopez", tail, "Bo Chen", "that festival"), roster)
+        assert [(b.speaker, b.lines) for b in blocks] == [
+            ("Ana Lopez", [tail]),
+            (None, ["that festival"]),
+        ]

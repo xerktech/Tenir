@@ -362,9 +362,20 @@ def parse_caption_crop(
     live: bool = False,
     jpeg: bytes | None = None,
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks (``live`` and ``jpeg``: Teams only)."""
+    """Split a caption-box crop into speaker blocks (``live`` and ``jpeg``: Teams only).
+
+    Zoom's caption panel puts the speaker's name on its own line at the top of the crop (the
+    client adds it, XERK-2506). A speaker not on the roster (a screen share shows only a strip
+    of tiles) must not have that name stored as speech: a name-shaped first row followed by
+    caption text is a header with no speaker, roster or not. So is one below a row that ends a
+    sentence: the next entry's name under the previous entry's last line (a speaker change)."""
     del live, jpeg
-    return caption_blocks(caption_rows(ocr), roster, active=active)
+    rows = caption_rows(ocr)
+
+    def header_can_sit(i: int) -> bool:
+        return i == 0 or rows[i - 1].rstrip().endswith((".", "?", "!"))
+
+    return caption_blocks(rows, roster, active=active, unknown_headers=header_can_sit)
 
 
 def caption_rows(ocr: OcrResult) -> list[str]:
