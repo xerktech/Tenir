@@ -328,9 +328,6 @@ class CaptionBlock:
     # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
     # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
     avatar: bool = False
-    # The row read as this header when it was the crop's first row (a roster match). The
-    # merge un-reads it when that row is a caption line it stored, scrolled to the top.
-    top_row: str | None = None
 
 
 def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
@@ -416,8 +413,7 @@ def caption_blocks(
         no_header = avatars_decide and i not in marked
         speaker = roster.match(row, prefer=active) if name_like(row) and not no_header else None
         if speaker is not None:
-            top = row if i == 0 else None
-            blocks.append(CaptionBlock(speaker, True, avatar=i in marked, top_row=top))
+            blocks.append(CaptionBlock(speaker, True, avatar=i in marked))
             continue
         head, sep, rest = row.partition(":")
         if sep and not no_header and name_like(head.strip()):

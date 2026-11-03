@@ -255,30 +255,6 @@ class CaptionMerger:
     def _tail(self, ts: int) -> list[_Line]:
         return [ln for ln in self._lines[-_TAIL:] if ts - ln.seen_ms <= _GONE_MS]
 
-    def _unread_top_header(self, blocks: list[CaptionBlock], ts: int) -> list[CaptionBlock]:
-        """``blocks`` with a top header put back as text when, read as text, its row and the
-        row under it re-read stored lines in order: "Kunal Shah" wrapped in Priya's entry
-        scrolled to the crop's top with her header gone, read as Kunal's header, and the
-        rest of her entry was stored a second time under him (XERK-2604).
-
-        The merge's own alignment decides, not text likeness: it lets the row under the name
-        have grown since it was stored ("will" -> "will demo the new dashboard") and keeps
-        order, so Kunal really speaking after Priya's "Okay." / "Over to" / "Kunal Shah",
-        opening with his own "Okay.", isn't her earlier line (QA, three rounds)."""
-        top = blocks[0] if blocks else None
-        if top is None or top.top_row is None or top.avatar or not top.lines:
-            return blocks
-        unread = [CaptionBlock(None, False, [top.top_row, *top.lines]), *blocks[1:]]
-        shown = _shown(unread)
-        if len(shown) < 2 or shown[0].block or shown[1].block:
-            return blocks  # the top block was cut off (a very long snapshot) or blank
-        tail = self._tail(ts)
-        at = _align(shown, tail)
-        name, under = at[0], at[1]
-        if name is None or under is None or tail[name].speaker == top.speaker:
-            return blocks
-        return unread
-
     def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
         """Whether a line of this snapshot re-reads a recent known line (it aligns to one).
 
@@ -289,7 +265,6 @@ class CaptionMerger:
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
-        blocks = self._unread_top_header(blocks, ts)
         shown = _shown(blocks)
         tail = self._tail(ts)
         aligned = _align(shown, tail)

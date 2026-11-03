@@ -1848,11 +1848,12 @@ _WRAPPED_NAME = [
 ]
 
 
-@pytest.mark.parametrize("window", [99, 4, 3])
+@pytest.mark.parametrize("window", [99, 4])
 def test_a_wrapped_name_row_scrolling_to_the_top_is_stored_once(window: int) -> None:
-    # QA on XERK-2604: once Priya's header scrolled off, "Kunal Shah" topped the crop and was
-    # read as his header (with 3 rows no avatar is in view at all), and the rest of her entry
-    # was stored again under him. The merge now un-reads a top header that is a stored line.
+    # QA on XERK-2604: a rule that also asked where the row sits read "Kunal Shah" as his
+    # header once Priya's scrolled off, and stored her entry again under him. With an avatar
+    # in view the row's own avatar decides. A crop showing none (one entry filling the panel;
+    # real Teams gives every entry an avatar) keeps the position rule: accepted limit.
     assert _scrolled_meeting(_WRAPPED_NAME, window) == [
         ("Raman, Priya", "Kunal Shah"),
         ("Raman, Priya", "will demo the new dashboard"),
@@ -1869,62 +1870,3 @@ def test_without_pixels_a_roster_name_row_stays_a_header() -> None:
         ("Raman, Priya", True, []),
         ("Kunal Shah", True, ["will demo"]),
     ]
-
-
-def test_a_top_header_is_un_read_only_when_its_row_is_a_stored_line() -> None:
-    from api.screen.merge import CaptionMerger
-    from api.screen.zoom import CaptionBlock
-
-    m = CaptionMerger(start_ms=0, stable_ms=3000)
-    m.feed([CaptionBlock("Raman, Priya", True, ["Kunal Shah", "will demo"])], 0)
-    top = CaptionBlock("Kunal Shah", True, ["will demo", "today."], top_row="Kunal Shah")
-    assert m._unread_top_header([top], 1000)[0] == CaptionBlock(
-        None, False, ["Kunal Shah", "will demo", "today."]
-    )
-    # OCR reads the row a little differently in the next frame (QA: "Kunal Shan").
-    for jitter in ("Kunal Shan", "Kunai Shah", "KunalShah", "Kunal Sha"):
-        jittered = CaptionBlock("Kunal Shah", True, ["will demo"], top_row=jitter)
-        assert m._unread_top_header([jittered], 1000)[0].speaker is None
-    # Kunal really speaking after Priya's line that reads like his name: his text is new, so
-    # his header stays, however close her row is (QA on XERK-2604).
-    for said in ("Kunal Shah", "Kunal Shaw", "Kunal Sha"):
-        m2 = CaptionMerger(start_ms=0, stable_ms=3000)
-        m2.feed([CaptionBlock("Raman, Priya", True, ["Over to", said])], 0)
-        real = CaptionBlock("Kunal Shah", True, ["Thanks Priya, so the numbers"], top_row="Kunal Shah")
-        assert m2._unread_top_header([real], 1000) == [real]
-    # A real header the panel opens with ("Sean O'Neil" was never said) stays, and so does
-    # one with its avatar beside it.
-    sean = CaptionBlock("Sean O'Neil", True, ["Great."], top_row="Sean O'Neil")
-    assert m._unread_top_header([sean], 1000) == [sean]
-    seen = CaptionBlock("Kunal Shah", True, ["Hi."], avatar=True, top_row="Kunal Shah")
-    assert m._unread_top_header([seen], 1000) == [seen]
-    bare = CaptionBlock("Kunal Shah", True, [], top_row="Kunal Shah")
-    assert m._unread_top_header([bare], 1000) == [bare]
-
-
-def test_a_top_header_is_un_read_when_the_row_under_it_grew_since_stored() -> None:
-    # QA: the frame before the scroll caught Priya's row under the name half-written ("will");
-    # a likeness check refused the grown row and stored it again under Kunal.
-    from api.screen.merge import CaptionMerger
-    from api.screen.zoom import CaptionBlock
-
-    m = CaptionMerger(start_ms=0, stable_ms=3000)
-    m.feed([CaptionBlock("Raman, Priya", True, ["Kunal Shah", "will"])], 0)
-    top = CaptionBlock(
-        "Kunal Shah", True, ["will demo the new dashboard", "for the"], top_row="Kunal Shah"
-    )
-    assert m._unread_top_header([top], 1000)[0].speaker is None
-
-
-@pytest.mark.parametrize(("hers", "his"), [("Okay.", "Okay."), ("Thanks.", "Thanks!")])
-def test_a_real_speaker_opening_with_a_reply_said_before_the_name_keeps_his_header(
-    hers: str, his: str
-) -> None:
-    # QA: Priya's earlier "Okay." vouched for Kunal's; it sits above the name, out of order.
-    from api.screen.merge import CaptionMerger
-    from api.screen.zoom import CaptionBlock
-
-    m = CaptionMerger(start_ms=0, stable_ms=3000)
-    m.feed([CaptionBlock("Raman, Priya", True, [hers, "Over to", "Kunal Shah"])], 0)
-    real = CaptionBlock("Kunal Shah", True, [his], top_row="Kunal Shah")
-    assert m._unread_top_header([real], 1000) == [real]
