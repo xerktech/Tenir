@@ -84,8 +84,9 @@ def render(
     elif divider == "dim":  # a 0.6x window's 1 px line at 44 (QA, real capture)
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(44, 44, 44))
     elif divider == "evict":  # a wider grey line 4 rows under the divider, black above it
+        d.rectangle((x0 - 60, DIVIDER_Y - 4, x1 + 60, DIVIDER_Y + 3), fill=(0, 0, 0))
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(82, 82, 82))
-        d.line((x0 - 10, DIVIDER_Y + 4, x1 + 10, DIVIDER_Y + 4), fill=(82, 82, 82))
+        d.line((x0 - 60, DIVIDER_Y + 4, x1 + 60, DIVIDER_Y + 4), fill=(82, 82, 82))
     elif divider == "white":  # a white rule: not Teams' grey divider
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(255, 255, 255))
     elif divider == "double":  # 2 px after JPEG

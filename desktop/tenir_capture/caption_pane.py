@@ -30,9 +30,11 @@ INK = 40  # anything on a row at all (glyph edges, avatars)
 MIN_PX = 8  # a box smaller than this is no pane
 PAD = 6  # px kept under the lowest text
 BORDER = 0.9  # a column lit on this share of the box's rows is a border (avatars: ~0.75)
-# The pane's margins hold no text (the api finds its bottom by them): avatars start ~11 px
-# in, text wraps ~30 px before the right edge, where the scrollbar's thumb shows.
-MARGIN_LEFT = 0.01
+# The pane's margins hold no text (the api finds its bottom by them): text starts 11-16% in
+# (after the avatars), and wraps ~30 px before the right edge, where the scrollbar's thumb
+# shows. The left margin also skips a window's rounded corner just outside a box placed a
+# few px wide (real capture at 0.6x, QA).
+MARGIN_LEFT = 0.08
 MARGIN_RIGHT = 0.04
 MARGIN_RIGHT_MIN = 6
 MAX_PIXELS = 480_000  # under tenir-ocr's 0.5 Mpx cap (api STRIP_PIXELS)
@@ -76,7 +78,7 @@ def crop_pane(img: Image.Image, region: Region | None) -> Image.Image | None:
         return None  # an empty pane
     last = int(rows[-1]) + 1
     start = max(0, last - int(share * h))
-    ink = (g > INK)[:, (g > INK).mean(axis=0) < BORDER].any(axis=1)  # any ink but borders
+    ink = (g > INK).any(axis=1)  # every column: skipping some moved real crops off their header
     open_at = start
     while open_at < last and ink[open_at]:
         open_at += 1  # move down to a blank row: a line cut by the crop's top is noise
