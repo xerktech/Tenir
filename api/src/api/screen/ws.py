@@ -294,7 +294,11 @@ async def screen_ws(ws: WebSocket) -> None:
         pane_task = asyncio.create_task(read_pane()) if teams_full else None
         try:
             result = await ocr.read(jpeg, full=header.region.value == "full")
-        except OcrError as exc:
+        except BaseException as exc:
+            if not isinstance(exc, OcrError):
+                if pane_task is not None:
+                    pane_task.cancel()  # the lane was cancelled (socket closed): stop it too
+                raise
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")
             if pane_task is not None:

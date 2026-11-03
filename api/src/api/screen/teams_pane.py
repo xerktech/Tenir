@@ -35,17 +35,18 @@ from api.screen.zoom import CaptionPane, norm_name
 
 HEADING = "live captions"
 PANE_BLACK = 12  # the pane is 0; JPEG noise around glyphs stays under this
-# The divider: brighter than the stage (~31), darker than glyphs (luma 70-82 measured, JPEG
-# dips it to 45): the stage beside the pane at the divider's row must not extend it.
-DIVIDER = (45, 140)
+# The divider: brighter than the stage (~31), darker than glyphs (luma 70-82 measured; an
+# avatar right under it lifts it to 143 at 0.79x, QA; JPEG
+# dips it to 44 at 0.6x): the stage (~31) beside the pane at its row must not extend it.
+DIVIDER = (40, 170)
 DIVIDER_ABOVE = 3  # rows above the divider that are black (the heading's bottom margin)
 ABOVE_BLACK = 24  # ... up to JPEG ringing off the divider (14-27 measured on real frames)
 DIVIDER_GAP = 6  # px of ringing a divider run bridges
 DIVIDER_FILL = 0.9  # share of a bridged run that is divider
 # A window scaled down spreads the 1 px divider over two rows (25 + 54, 37 + 41 measured at
-# 0.79x), and content right under it bleeds into the second: the top row is at least this
-# bright, and with the row under it reaches the divider's level.
-SPLIT_ROW = 18
+# 0.79x, 17 + 41 at 0.6x), and content right under it bleeds into the second: the top row
+# is at least this bright, and with the row under it reaches the divider's level.
+SPLIT_ROW = 15
 MIN_WIDTH = 150  # px: a pane is ~300 px wide even in a small remote window
 MAX_CANDIDATES = 4  # dividers OCR'd per frame: each costs one small OCR request
 # Strip above the divider read for the heading, as a share of the pane's width (the heading
@@ -55,6 +56,7 @@ BAND = 0.15
 BAND_PX = (48, 120)
 GLYPH = 150  # heading glyphs: candidates with some in the strip's left half are read first
 HEADER_BLACK = 0.45  # ...and a strip at least this black (real pane headers: 0.57-0.94)
+HEADING_INK = 20  # glyph pixels: a heading has hundreds, a few specks aren't one
 # A pane row: its left or right margin strip is at least this black. Real panes at JPEG
 # quality 60 measured >= 0.68 on one side on every row; the content below a pane <= 0.14.
 MARGIN_DARK = 0.6
@@ -154,6 +156,18 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
         for left, right in _runs(line[r], MIN_WIDTH, DIVIDER_GAP):
             if line[r, left:right].mean() < DIVIDER_FILL:
                 continue
+            # The same divider a row on (JPEG ringing above it reads as one too), or a piece of
+            # it an avatar under it broke: keep the wider run.
+            same = [
+                c
+                for c in found
+                if abs(y + 2 - c.top) <= 4
+                and min(right, c.right) - max(left, c.left)
+                > 0.8 * min(right - left, c.right - c.left)
+            ]
+            if any(c.right - c.left >= right - left for c in same):
+                continue
+            found = [c for c in found if c not in same]
             top = y + 2
             bottom = _bottom(g, top, left, right)
             if bottom - top < MIN_HEIGHT:
@@ -167,14 +181,17 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
     # Read first the strips that look like the pane's header: mostly black, with glyphs where
     # the heading sits (its left half). Wider dark windows under grey lines otherwise pushed
     # the pane out of the candidates (QA).
-    def inked(c: Candidate) -> bool:
+    def rank(c: Candidate) -> tuple[bool, float, int]:
         x0, y0, x1, y1 = c.band
         strip = g[y0:y1, x0:x1]
-        return bool((strip[:, : strip.shape[1] // 2] > GLYPH).any()) and bool(
-            (strip <= PANE_BLACK).mean() >= HEADER_BLACK
-        )
+        black = float((strip <= PANE_BLACK).mean())
+        glyphs = int((strip[:, : strip.shape[1] // 2] > GLYPH).sum())
+        inked = glyphs >= HEADING_INK and black >= HEADER_BLACK
+        # Then the blackest strip: a pane's header is black but for its heading (0.98
+        # measured), a dark window's top edge carries more of whatever sits above it.
+        return (not inked, -round(black, 2), c.left - c.right)
 
-    return sorted(found, key=lambda c: (not inked(c), c.left - c.right, c.top))[:MAX_CANDIDATES]
+    return sorted(found, key=rank)[:MAX_CANDIDATES]
 
 
 def pane_of(c: Candidate, band_ocr: OcrResult, size: tuple[int, int]) -> CaptionPane | None:

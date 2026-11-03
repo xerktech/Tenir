@@ -394,7 +394,9 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   while the old box is still mostly black.
 - **The Teams pane finder is measured on six real captures** (dark theme, docked right and
   popped out, 100% and 125%, in a remote desktop, JPEG quality 60-80, scaled to 0.6x). A
-  Teams-alone window at 0.6x (a ~240 px pane) is missed. Light theme, other scalings and other
+  pane is ranked first in every capture at 1.0-0.6x. Four or more pure-black windows wider
+  than the pane, each under a grey 1 px line with text-like glyphs above it, can still push
+  the pane out of the four strips OCR'd per frame. Light theme, other scalings and other
   languages' heading text are unmeasured; a non-English Teams needs its heading added.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506

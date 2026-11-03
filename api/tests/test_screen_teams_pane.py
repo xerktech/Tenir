@@ -42,6 +42,7 @@ def render(
     avatar_x: int = 1511,
     separator: bool = False,
     decoys: int = 0,
+    text_decoys: int = 0,
 ) -> bytes:
     img = Image.new("RGB", (W, H), (37, 37, 38))
     d = ImageDraw.Draw(img)
@@ -49,8 +50,14 @@ def render(
         for x in range(0, W, 9):
             d.line((x, y, x + 5, y), fill=(210, 210, 210))
     for i in range(decoys):  # dark windows wider than the pane, a grey line atop each
-        y0 = 40 + 300 * i  # beside the Teams window, each wider than its pane
-        d.rectangle((1920, y0 - 30, 2550, y0 + 150), fill=(0, 0, 0))
+        y0 = 70 + 152 * i  # beside the Teams window
+        d.rectangle((1920, y0 - 60, 2550, y0 + 92), fill=(0, 0, 0))
+        d.line((1920, y0, 2549, y0), fill=(82, 82, 82))
+        for x in range(1930, 2100, 12):  # bright specks where a heading would be
+            d.point((x, y0 - 40), fill=(255, 255, 255))
+    for i in range(text_decoys):  # dark windows under desktop text, a grey line atop each
+        y0 = 120 + 300 * i
+        d.rectangle((1920, y0 - 50, 2550, y0 + 150), fill=(0, 0, 0))
         d.line((1920, y0, 2549, y0), fill=(82, 82, 82))
     d.rectangle(WINDOW, fill=(31, 31, 31))
     d.rectangle((PANE_X[0], 280, PANE_X[1], pane_bottom), fill=(0, 0, 0))
@@ -60,9 +67,24 @@ def render(
     x0, x1 = PANE_X[0], PANE_X[1] - 1
     if divider == "line":
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(82, 82, 82))
-    elif divider == "split":  # a scaled-down window: the line spread over two dim rows
-        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(30, 30, 30))
-        d.line((x0, DIVIDER_Y + 1, x1, DIVIDER_Y + 1), fill=(36, 36, 36))
+    elif divider.startswith("split"):  # a scaled-down window: the line over two dim rows
+        top, under = {"split": (30, 36), "split17": (17, 41), "split25": (25, 54)}[divider]
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(top, top, top))
+        d.line((x0, DIVIDER_Y + 1, x1, DIVIDER_Y + 1), fill=(under, under, under))
+    elif divider == "bleed":  # 0.79x: an avatar under the split line lifts its second row
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(37, 37, 37))
+        d.line((x0, DIVIDER_Y + 1, x1, DIVIDER_Y + 1), fill=(41, 41, 41))
+        d.line((1544, DIVIDER_Y + 1, 1600, DIVIDER_Y + 1), fill=(200, 200, 200))
+    elif divider == "lifted":  # an avatar under a 1 px line lifts it to 143
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(59, 59, 59))
+        d.line((1530, DIVIDER_Y, 1600, DIVIDER_Y), fill=(143, 143, 143))
+    elif divider == "ringing":  # a dim row above part of the line, which reads as a line too
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(82, 82, 82))
+        d.line((1640, DIVIDER_Y - 1, x1, DIVIDER_Y - 1), fill=(20, 20, 20))
+    elif divider == "dim":  # a 0.6x window's 1 px line at 44 (QA, real capture)
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(44, 44, 44))
+    elif divider == "white":  # a white rule: not Teams' grey divider
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(255, 255, 255))
     elif divider == "double":  # 2 px after JPEG
         d.rectangle((x0, DIVIDER_Y, x1, DIVIDER_Y + 1), fill=(82, 82, 82))
     elif divider == "dashed":  # not a divider: half of it is gaps
@@ -92,10 +114,11 @@ def heading(text: str = "Live Captions") -> OcrResult:
 
 def located(jpeg: bytes, band: OcrResult | None = None):
     """The pane as ws finds it: candidates, then each strip "OCR'd". By default a strip reads
-    the heading only where the render drew it, so a decoy's strip reads nothing."""
+    the heading only where the render drew it, so a decoy's strip reads nothing, and one
+    reaching the toolbar's row (y < 270) comes back too dense, as real OCR did (QA, 0.6x)."""
     for c in candidates(jpeg, (W, H)):
         x0, y0, x1, y1 = c.band
-        drawn = x0 <= 1524 and 1650 <= x1 and y0 <= 308 and 330 <= y1
+        drawn = x0 <= 1524 and 1650 <= x1 and 270 <= y0 <= 308 and 330 <= y1
         read = band if band is not None else heading() if drawn else OcrResult(400, 80, ())
         if (pane := pane_of(c, read, (W, H))) is not None:
             return pane
@@ -122,24 +145,40 @@ def test_the_pane_is_found_by_its_divider_and_confirmed_by_its_heading() -> None
     [
         {"under_divider": True},  # real capture: a scrolled pane's top entry under the line
         {"divider": "split"},  # a scaled-down window
+        {"divider": "split17"},  # real image at 0.6x q80 (QA)
+        {"divider": "split25"},  # real capture at 0.79x
+        {"divider": "bleed"},  # an avatar under a split line (QA, real 0.79x)
+        {"divider": "lifted"},  # an avatar under a 1 px line (QA, real pop-out at 0.79x)
+        {"divider": "ringing"},  # a ringing row above part of the line: the full run wins
+        {"divider": "dim"},  # a 0.6x window's dim line
         {"long_lines": True, "entries": 4},  # wrapped lines across the pane (QA: box shrank)
         {"avatar_x": PANE_X[0] + 2, "entries": 6},  # the left margin lit: the right one holds
         {"separator": True},  # a rule across the pane: a short gap in both margins
-        {"decoys": 5},  # wider dark windows under grey lines don't push the pane out (QA)
+        {"decoys": 10},  # wider dark windows under grey lines don't push the pane out (QA)
+        {"text_decoys": 5},  # ...nor ones with text above them: the pane's header is blacker
     ],
     ids=[
         "entry-under-divider",
         "split-divider",
+        "split-17-41",
+        "split-25-54",
+        "split-avatar-bleed",
+        "lifted-by-avatar",
+        "ringing-above",
+        "dim-line",
         "long-lines",
         "left-margin-lit",
         "separator",
         "wide-decoys",
+        "text-decoys",
     ],
 )
 def test_the_pane_and_its_full_height_are_found(kw) -> None:
     pane = located(render(**kw))
     assert pane is not None
-    assert abs(px(pane)[3] - PANE_BOTTOM) <= 4
+    left, _, right, bottom = px(pane)
+    assert abs(left - PANE_X[0]) <= 2 and abs(right - PANE_X[1]) <= 2
+    assert abs(bottom - PANE_BOTTOM) <= 4
 
 
 @pytest.mark.parametrize(
@@ -149,6 +188,7 @@ def test_the_pane_and_its_full_height_are_found(kw) -> None:
         (render(), OcrResult(400, 80, ())),  # nothing read above it
         (render(divider="none"), None),  # the heading on a slide: no divider
         (render(divider="dashed"), None),  # a dashed rule, not the divider
+        (render(divider="white"), None),  # a white rule, not the divider
         (render(heading_on_grey=True), None),  # a grey toolbar's edge, not black above
         (render(pane_bottom=400), None),  # a strip, not a pane
         (b"\xff\xd8not a jpeg", None),
@@ -158,6 +198,7 @@ def test_the_pane_and_its_full_height_are_found(kw) -> None:
         "no-text",
         "no-divider",
         "dashed",
+        "white-rule",
         "not-black-above",
         "short",
         "bad-jpeg",
@@ -167,8 +208,10 @@ def test_no_pane_without_heading_divider_and_black_below(jpeg, band) -> None:
     assert located(jpeg, band) is None
 
 
-def test_a_2px_divider_is_one_candidate() -> None:
-    assert len(candidates(render(divider="double"), (W, H))) == 1
+@pytest.mark.parametrize("divider", ["double", "ringing"])
+def test_one_divider_is_one_candidate(divider) -> None:
+    # Each candidate costs an OCR request of the four per frame.
+    assert len(candidates(render(divider=divider), (W, H))) == 1
 
 
 def test_a_frame_of_another_size_than_ocr_read_finds_no_pane() -> None:
