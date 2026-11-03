@@ -1707,6 +1707,56 @@ def test_participants_keep_tile_order_despite_jittered_boxes() -> None:
     ]  # fmt: skip
 
 
+def _share_layout(share: tuple[int, int, int]) -> tuple[OcrResult, bytes]:
+    """Zoom's share layout, as on the operator's real capture (XERK-2643): a shared screen of
+    ``share`` colour whose sidebar and ticket text is name-shaped, beside a strip of video
+    tiles. The share shows a participant's name (a Jira assignee) before their tile in
+    reading order."""
+    img = Image.new("RGB", (1280, 720), (8, 8, 8))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([60, 60, 1220, 500], fill=share)
+    lines = [line(t, 80, 100 + 20 * i, 150, 114 + 20 * i) for i, t in enumerate(_SHARE_TEXT)]
+    lines.append(line("TESDEV-518", 300, 100, 360, 112))
+    lines.append(line("Sean ONeil", 300, 118, 380, 130))
+    lines.append(line("[Mock API] Audit logging", 300, 136, 460, 148))
+    for i, name in enumerate(["Priya Raman", "Sean ONeil", "Ana Lopez"]):
+        tx = 200 + i * 300
+        # Bright video right under the label, the gap 6 px below its box: real labels have no
+        # dark pill under them (luma ~200 down to the tile edge on the real capture).
+        draw.rectangle([tx, 520, tx + 280, 629], fill=(220, 210, 200))
+        lines.append(line(name, tx + 8, 607, tx + 118, 623))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return OcrResult(1280, 720, tuple(lines)), buf.getvalue()
+
+
+_SHARE_TEXT = ("Filters", "Dashboards", "Goals", "Teams", "Assets")
+
+
+@pytest.mark.parametrize("share", [(255, 255, 255), (190, 190, 190)])
+def test_a_screen_shares_text_is_not_taken_for_participants(share: tuple[int, int, int]) -> None:
+    """XERK-2643: every name-shaped line outside the title, toolbar and captions was a tile,
+    so the shared Jira board's sidebar and ticket keys joined the roster. A name the share
+    shows first must not take the real tile's place. A light-grey share is content too."""
+    result, jpeg = _share_layout(share)
+    assert parse_full_frame(result, jpeg).participants == ["Priya Raman", "Sean ONeil", "Ana Lopez"]
+    # Without the frame's pixels there is no tile geometry to check: every line is kept.
+    assert "Dashboards" in parse_full_frame(result).participants
+
+
+def test_a_label_with_no_pixels_under_it_is_kept() -> None:
+    """A box past the frame's right edge has no rows to check: kept, as without a frame."""
+    result, jpeg = _share_layout((255, 255, 255))
+    off = OcrResult(1280, 720, (*result.lines, line("Lee Park", 1290, 300, 1400, 316)))
+    assert "Lee Park" in parse_full_frame(off, jpeg).participants
+
+
+def test_a_dark_screen_share_still_passes_as_tiles() -> None:
+    """Accepted (XERK-2643): a dark-themed share has dark rows under its text like a tile gap."""
+    result, jpeg = _share_layout((20, 20, 20))
+    assert "Dashboards" in parse_full_frame(result, jpeg).participants
+
+
 # --- captions-off notice (XERK-2506) -------------------------------------------------------
 
 
