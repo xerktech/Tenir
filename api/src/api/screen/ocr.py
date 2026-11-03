@@ -16,6 +16,7 @@ dense at the smallest height (a shared slide) contributes nothing.
 from __future__ import annotations
 
 import io
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -88,6 +89,9 @@ def parse_lines(payload: object) -> list[OcrLine]:
         lines = []
         for raw in (payload.get("lines") or [])[:MAX_LINES]:
             x0, y0, x1, y1 = (float(v) for v in raw["box"])
+            if not all(map(math.isfinite, (x0, y0, x1, y1))):
+                # inf/NaN would raise later where the parsers int() a coordinate.
+                raise ValueError(f"non-finite box {raw['box']!r}")
             text = str(raw["text"]).strip()
             if text:
                 score = float(raw.get("score", 1.0))
