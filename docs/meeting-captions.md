@@ -393,7 +393,7 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   closes or moves is noticed on the next full frame; meanwhile the client sends crops only
   while the old box is still mostly black.
 - **The Teams pane finder is measured on six real captures** (dark theme, docked right and
-  popped out, 100% and 125%, in a remote desktop, JPEG quality 60-80, scaled to 0.6x). A
+  popped out, 100% and 125%, in a remote desktop, JPEG quality 60-80, scaled to 0.6x). The
   pane is ranked first in every capture at 1.0-0.6x. Four or more pure-black windows wider
   than the pane, each under a grey 1 px line with text-like glyphs above it, can still push
   the pane out of the four strips OCR'd per frame. Light theme, other scalings and other
