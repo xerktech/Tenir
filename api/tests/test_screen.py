@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from starlette.websockets import WebSocketDisconnect
 
 from api import history
@@ -22,6 +22,7 @@ from api.metrics import metrics
 from api.persistence import InMemoryConversationStore, ScreenMeta
 from api.persistence.models import alias_key
 from api.screen import ws as screen_ws
+from api.screen import zoom
 from api.screen.meetings import Cadence, MeetingTracker, meetings
 from api.screen.merge import CaptionMerger
 from api.screen.ocr import HttpOcrClient, OcrError, OcrLine, OcrResult, parse_result
@@ -1961,3 +1962,131 @@ def test_an_off_roster_speaker_change_mid_crop_is_a_header_not_speech() -> None:
             ("Ana Lopez", [tail]),
             (None, ["that festival"]),
         ]
+
+
+_PANEL, _NAME_GREY, _TEXT_WHITE = (21, 21, 21), (154, 154, 154), (255, 255, 255)
+
+
+def panel_crop(*rows: tuple[str, bool], light: bool = False) -> tuple[OcrResult, bytes]:
+    """A Zoom caption-panel crop drawn like the real one (2026): ``(text, is_name)`` rows, each
+    name dim grey beside a bright avatar circle, caption text white, on the dark panel. Returns
+    the OCR boxes read off it and its JPEG. ``light``: dark text on a light panel."""
+    font = ImageFont.load_default(size=20)
+    bg, name, text = _PANEL, _NAME_GREY, _TEXT_WHITE
+    if light:
+        bg, name, text = (250, 250, 250), (130, 130, 130), (20, 20, 20)
+    img = Image.new("RGB", (700, 34 * len(rows) + 10), bg)
+    draw = ImageDraw.Draw(img)
+    lines = []
+    for i, (row, is_name) in enumerate(rows):
+        y = 6 + 34 * i
+        if is_name:
+            draw.ellipse((8, y, 36, y + 28), fill=(230, 200, 180))
+        draw.text((50, y), row, font=font, fill=name if is_name else text)
+        lines.append(OcrLine(row, tuple(float(v) for v in draw.textbbox((50, y), row, font=font))))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return OcrResult(img.width, img.height, tuple(lines)), buf.getvalue()
+
+
+def test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech() -> None:
+    """XERK-2644: the previous entry ends without punctuation (an interrupted speaker, a
+    trailing comma), then the next speaker's dim name line. Only a sentence end let a header
+    sit there, so "Shad Tischer" was stored as Tim's speech and Shad's text credited to Tim."""
+    roster = Roster()
+    roster.add("Tim Mahler")
+    for tail in ("just a movie bench my buddies uh was", "and then,", 'he said "go', "so..."):
+        ocr, jpeg = panel_crop(
+            ("Tim Mahler", True), (tail, False), ("Shad Tischer", True), ("that festival", False)
+        )
+        blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
+        assert [(b.speaker, b.lines) for b in blocks] == [
+            ("Tim Mahler", [tail]),
+            (None, ["that festival"]),
+        ], tail
+        # Without the pixels only a sentence end makes room for a header (the old rule).
+        if not tail.endswith("."):
+            (block,) = parse_caption_crop(ocr, roster)
+            assert "Shad Tischer" in block.lines
+    # QA D4/D5: a name-shaped first line under the name ("Sounds Good"), and a one-word
+    # display name, are still the next entry's header.
+    for name, text in (("Shad Tischer", "Sounds Good"), ("Shad", "that festival")):
+        ocr, jpeg = panel_crop(
+            ("Tim Mahler", True), ("and then", False), (name, True), (text, False)
+        )
+        blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
+        assert [(b.speaker, b.lines) for b in blocks] == [
+            ("Tim Mahler", ["and then"]),
+            (None, [text]),
+        ], name
+    # Dark text on a light panel: the name is still the dimmer ink.
+    ocr, jpeg = panel_crop(
+        ("Tim Mahler", True),
+        ("and then", False),
+        ("Shad Tischer", True),
+        ("ok", False),
+        light=True,
+    )
+    assert [b.speaker for b in parse_caption_crop(ocr, roster, jpeg=jpeg)] == ["Tim Mahler", None]
+
+
+def test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech() -> None:
+    """XERK-2644 QA D1: the next speaker's name shows before any of their text, as the crop's
+    last row. Only a row with text below it could be a header, so the name was stored as the
+    previous speaker's speech and stayed there once the text arrived."""
+    roster = Roster()
+    roster.add("Tim Mahler")
+    merger = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored = []
+    head = (("Tim Mahler", True), ("and what it was", False), ("Shad Tischer", True))
+    for ts in range(0, 10_000, 1000):
+        ocr, jpeg = panel_crop(*head)
+        blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
+        assert [(b.speaker, b.has_header, b.lines) for b in blocks][-1] == (None, True, [])
+        stored += merger.feed(blocks, ts)
+    for ts in range(10_000, 20_000, 1000):
+        ocr, jpeg = panel_crop(*head, ("we shipped it", False))
+        stored += merger.feed(parse_caption_crop(ocr, roster, jpeg=jpeg), ts)
+    stored += merger.flush(30_000)
+    assert [(s.speaker, s.text) for s in stored] == [
+        ("Tim Mahler", "and what it was"),
+        (None, "we shipped it"),
+    ]
+
+
+def test_dim_rows_reads_no_pixels_it_cannot_trust() -> None:
+    """The brightness read gives up (None: the sentence rule decides) on a JPEG of another
+    size than OCR read, a crop with no caption-text row to compare against, and a box with a
+    non-finite coordinate (it raised and dropped the frame, QA D2)."""
+    ocr, jpeg = panel_crop(("Tim Mahler", True), ("and then", False), ("Shad Tischer", True))
+    groups = zoom.row_groups(ocr.lines)
+    assert zoom._dim_rows(jpeg, ocr, groups) == {0, 2}
+    big = io.BytesIO()
+    Image.open(io.BytesIO(jpeg)).resize((ocr.width * 2, ocr.height * 2)).save(big, "JPEG")
+    assert zoom._dim_rows(big.getvalue(), ocr, groups) is None
+    names, names_jpeg = panel_crop(("Tim Mahler", True), ("Shad Tischer", True))
+    assert zoom._dim_rows(names_jpeg, names, zoom.row_groups(names.lines)) is None
+    bad = OcrResult(ocr.width, ocr.height, (*ocr.lines, OcrLine("x y", (float("nan"), 0, 5, 5))))
+    assert zoom._dim_rows(jpeg, bad, zoom.row_groups(bad.lines)) is None
+
+
+def test_a_bright_name_shaped_caption_row_stays_speech_even_after_a_sentence_end() -> None:
+    """With the pixels, brightness decides a row below the top: a name-shaped row drawn as
+    white caption text ("Acme Global", a slide-ish phrase) is speech, punctuated above or not."""
+    roster = Roster()
+    roster.add("Ana Lopez")
+    ocr, jpeg = panel_crop(
+        ("Ana Lopez", True),
+        ("we met yesterday.", False),
+        ("Acme Global", False),
+        ("said yes", False),
+    )
+    (block,) = parse_caption_crop(ocr, roster, jpeg=jpeg)
+    assert (block.speaker, block.lines) == (
+        "Ana Lopez",
+        ["we met yesterday.", "Acme Global", "said yes"],
+    )
+    # A JPEG OCR didn't read (another size) or can't decode falls back to the sentence rule.
+    for bad in (tiny_jpeg(), b"not a jpeg"):
+        blocks = parse_caption_crop(ocr, roster, jpeg=bad)
+        assert [b.speaker for b in blocks] == ["Ana Lopez", None]

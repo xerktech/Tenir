@@ -17,6 +17,7 @@ One real capture since (XERK-2643, a screen share under a strip of tiles) set th
 from __future__ import annotations
 
 import io
+import math
 import re
 import unicodedata
 from collections.abc import Callable
@@ -362,11 +363,6 @@ class CaptionBlock:
     avatar: bool = False
 
 
-def _rows(lines: tuple[OcrLine, ...]) -> list[str]:
-    """OCR boxes grouped into visual rows, top to bottom, each row's pieces left to right."""
-    return [" ".join(x.text for x in row).strip() for row in row_groups(lines)]
-
-
 def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
     """The OCR boxes of each visual row, rows top to bottom, boxes left to right."""
     rows: list[list[OcrLine]] = []
@@ -391,25 +387,77 @@ def parse_caption_crop(
     live: bool = False,
     jpeg: bytes | None = None,
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks (``live`` and ``jpeg``: Teams only).
+    """Split a caption-box crop into speaker blocks (``live``: Teams only).
 
     Zoom's caption panel puts the speaker's name on its own line at the top of the crop (the
     client adds it, XERK-2506). A speaker not on the roster (a screen share shows only a strip
     of tiles) must not have that name stored as speech: a name-shaped first row followed by
-    caption text is a header with no speaker, roster or not. So is one below a row that ends a
-    sentence: the next entry's name under the previous entry's last line (a speaker change)."""
-    del live, jpeg
-    rows = caption_rows(ocr)
+    caption text is a header with no speaker, roster or not. Lower down, the panel draws each
+    name dimmer than caption text, so with the crop's pixels a dim name-shaped row is the next
+    entry's header and a bright one is text (XERK-2644: under an entry left unpunctuated the
+    name was stored as the previous speaker's speech). Without readable pixels, a header can
+    sit only below a row that ends a sentence."""
+    del live
+    groups = [
+        g for g in row_groups(ocr.lines) if sum(c.isalnum() for c in _row_text(g)) >= 2
+    ]  # minus noise rows with fewer than two letters or digits
+    rows = [_row_text(g) for g in groups]
+    dim = _dim_rows(jpeg, ocr, groups)
 
     def header_can_sit(i: int) -> bool:
-        return i == 0 or rows[i - 1].rstrip().endswith((".", "?", "!"))
+        # With pixels, a header below the top is a dim row, which ``name_rows`` settles.
+        return i == 0 or (dim is None and rows[i - 1].rstrip().endswith((".", "?", "!")))
 
-    return caption_blocks(rows, roster, active=active, unknown_headers=header_can_sit)
+    return caption_blocks(
+        rows, roster, active=active, unknown_headers=header_can_sit, name_rows=dim
+    )
 
 
-def caption_rows(ocr: OcrResult) -> list[str]:
-    """The crop's visual rows, minus noise rows with fewer than two letters or digits."""
-    return [r for r in _rows(ocr.lines) if sum(c.isalnum() for c in r) >= 2]
+def _row_text(group: list[OcrLine]) -> str:
+    return " ".join(x.text for x in group).strip()
+
+
+# A speaker-name row's ink contrast is below this share of the caption text's: Zoom draws the
+# name ~154 grey and the text white on a ~21 panel (~0.57 of the text's contrast). Same share
+# as the capture client's NAME_DIM (desktop/tenir_capture/caption_box.py).
+_NAME_DIM = 0.8
+
+
+def _dim_rows(jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]) -> set[int] | None:
+    """Indices of the rows drawn dimmer than the crop's caption text (Zoom's name lines),
+    read from the crop's pixels: None when they can't be read (no image, a size OCR didn't
+    read, no text row to compare against).
+
+    A row's ink is the 99.5th percentile of its pixels' distance from the panel colour (the
+    crop's median grey), inside its OCR boxes only: the avatar left of a name is bright."""
+    if not jpeg or len(groups) < 2:
+        return None
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg))  # reads the header only
+        if img.size != (ocr.width, ocr.height) or ocr.width * ocr.height > _MAX_DECODE_PIXELS:
+            return None
+        g = np.asarray(img.convert("L"), dtype=np.int16)
+    except Exception:
+        return None
+    bg = float(np.median(g))
+    inks: list[float] = []
+    for group in groups:
+        parts = []
+        for ln in group:
+            if not all(math.isfinite(v) for v in ln.box):
+                return None
+            x0, y0, x1, y1 = (max(0, int(round(v))) for v in ln.box)
+            box = g[y0:y1, x0:x1]
+            if box.size:
+                parts.append(np.abs(box - bg).reshape(-1))
+        inks.append(float(np.percentile(np.concatenate(parts), 99.5)) if parts else 0.0)
+    # The text's ink: the brightest row that isn't name-shaped (a crop always has text).
+    text = [ink for ink, gr in zip(inks, groups, strict=True) if not is_name_like(_row_text(gr))]
+    if not text or max(text) <= 0:
+        return None
+    return {i for i, ink in enumerate(inks) if ink < _NAME_DIM * max(text)}
 
 
 def caption_blocks(
@@ -421,6 +469,7 @@ def caption_blocks(
     unknown_headers: Callable[[int], bool] | None = None,
     avatars: set[int] | None = None,
     avatars_decide: bool = False,
+    name_rows: set[int] | None = None,
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
@@ -433,8 +482,13 @@ def caption_blocks(
     ``avatar``. With ``avatars_decide`` (avatars were found in the crop's pixels) it alone
     decides a header the roster doesn't match, with or without a roster: a name-shaped row in
     it is a header even before a name-shaped first line ("Hank Ives" / "Acme Global
-    Partners"), and one outside it is caption text (a slide heading)."""
+    Partners"), and one outside it is caption text (a slide heading).
+
+    ``name_rows`` (Zoom, from pixels): rows drawn as speaker names. A name-shaped one is a
+    header whatever follows it: the last row (no text shown yet), another name-shaped row
+    ("Sounds Good"), a one-word display name ("Shad")."""
     marked = avatars or set()
+    named = name_rows or set()
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
         speaker = roster.match(row, prefer=active) if name_like(row) else None
@@ -456,14 +510,16 @@ def caption_blocks(
             # caught) is an empty header, as the position rule makes it, not caption text.
             unknown = name_like(row) and (i in marked or (not len(roster) and i + 1 in marked))
         else:
+            has_next = i + 1 < len(rows)
             unknown = (
-                i + 1 < len(rows)
-                and name_like(row)
-                and len(row.split()) >= 2
+                name_like(row)
+                and (i in named or len(row.split()) >= 2)
                 and (
-                    not len(roster)
+                    i in named
+                    or (has_next and not len(roster))
                     or (
                         unknown_headers is not None
+                        and has_next
                         and not name_like(rows[i + 1])
                         and unknown_headers(i)
                     )

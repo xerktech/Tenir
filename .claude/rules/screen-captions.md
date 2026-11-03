@@ -106,6 +106,11 @@ paths:
 - Conversation ids are dashed uuid4 strings; history 404s any other shape (`is_valid_session_id`).
 - `is_name_like` keys on capitalisation: caption text is lower-case sentences. Loosening it
   turns caption lines into participants on full frames.
+- Zoom crop: an off-roster header below the top row is decided by pixels (`zoom._dim_rows`):
+  the panel draws names dimmer than text. Only without readable pixels does the old "header
+  only under a row ending . ? !" rule apply; it stored names after unpunctuated entries as
+  speech (XERK-2644). Row 0 stays position-only: the client starts the crop at the name line.
+  Tests: `test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech`.
 - The fixture is synthetic OCR output (no real capture may be committed: public repo). Re-tune
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
