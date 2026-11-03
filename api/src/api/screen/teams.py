@@ -34,9 +34,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from api.screen.ocr import MAX_FRAME_PIXELS, OcrLine, OcrResult
-from api.screen.teams_pane import find_pane
 from api.screen.zoom import (
     CaptionBlock,
+    CaptionPane,
     FullFrame,
     Roster,
     caption_blocks,
@@ -127,6 +127,9 @@ _UI_TEXT = {
     "more actions",
     "invite someone or dial a number",
 }
+# Teams' own header for a voice it hasn't matched to a participant ("Speaker 1"): a caption
+# header (XERK-2608, real captures label every remote attendee so), never caption text.
+_SPEAKER_LABEL = re.compile(r"^Speaker \d{1,3}$")
 # "In this meeting (4)", "Attendees (12)": People-pane section headings with a count.
 _COUNTED = re.compile(r"^(.*?)\s*\(\d+\)$")
 # An avatar's initials as OCR reads them: one to three capital letters, any script ("ŁŻ"),
@@ -366,11 +369,14 @@ def _just_under(row: OcrLine, head: OcrLine) -> bool:
     )
 
 
-def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
-    """Participants, title and the live-captions pane from a full Teams window (``jpeg``
-    gives the pane's edges; no active-speaker border check)."""
+def parse_full_frame(
+    ocr: OcrResult, jpeg: bytes | None = None, *, pane: CaptionPane | None = None
+) -> FullFrame:
+    """Participants and title from a full Teams window (``jpeg`` is unused: no border
+    check). ``pane`` is the live-captions pane ``teams_pane`` located, if any."""
+    del jpeg
     h = ocr.height
-    out = FullFrame(caption_pane=find_pane(ocr, jpeg))
+    out = FullFrame(caption_pane=pane)
     top = [ln for ln in ocr.lines if ln.box[3] <= h * _TOP_BAND and not _is_ui(ln.text)]
     if top:
         # The title is the leftmost text up there; the toolbar sits to its right.
@@ -780,6 +786,15 @@ def parse_caption_crop(
     avatared |= {id(n) for b in stripped if (n := _avatar_for(b, stripped)) is not None}
     avatared |= pixels or set()
     avatar_rows: set[int] = set()
+    # "Speaker N" headers are Teams' own speaker labels: they match as speakers of their own
+    # (on a copy, so they never join the meeting's roster of participants).
+    labels = {
+        raw for g in row_groups(ocr.lines) if _SPEAKER_LABEL.match(raw := " ".join(b.text for b in g))
+    }
+    if labels:
+        roster = roster.copy()
+        for label in sorted(labels):
+            roster.add(label)
     boxes = _drop_tile_labels(_drop_avatar_boxes(ocr))
     for group in row_groups(boxes.lines):
         raw = " ".join(b.text for b in group).strip()
@@ -792,6 +807,8 @@ def parse_caption_crop(
         unstripped = _strip_avatar_token(raw, roster)
         read_in = unstripped != raw and initials_evidence(group[0])
         avatar = read_in or any(id(b) in avatared for b in group)
+        if _SPEAKER_LABEL.match(raw):
+            avatar = True  # Teams draws its avatar beside every such header
         if avatar:
             avatar_rows.add(len(rows))
         at_header = not rows or _ends_sentence(rows[-1]) or avatar
@@ -806,7 +823,7 @@ def parse_caption_crop(
         rows,
         roster,
         active=active,
-        name_like=is_teams_name,
+        name_like=lambda row: is_teams_name(row) or bool(_SPEAKER_LABEL.match(row)),
         unknown_headers=headed.__getitem__,
         avatars=avatar_rows,
         avatars_decide=bool(pixels),

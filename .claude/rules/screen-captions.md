@@ -233,14 +233,23 @@ paths:
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
     onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
-- Teams' caption pane is located on full frames by the api (`teams_pane.find_pane`, XERK-2608):
-  the OCR'd heading "Live Captions", the 1 px divider under it (luma 70-82, black above; not
-  below, a scrolled entry sits on it) for the pane's width, black rows for its bottom.
-  `ws.tell_pane` sends `screen.region` on change only, per socket. Measured on six real captures.
-  - The divider band starts at 55: at 30 it took the stage (~31) beside the pane as divider.
+- Teams' caption pane is located on full frames by the api (`ws.locate_pane`, XERK-2608): pixels
+  first (`teams_pane.candidates`: a divider of luma 45-140 with black above, black margins
+  below), then OCR of only the strip above each divider for "Live Captions" (`pane_of`).
+  - Never find the heading in the full frame's OCR: over a text-dense desktop every strip is
+    too_dense and the heading is never read (QA, real capture: 25 of 25 strips).
+  - Pane rows: the left OR right margin strip >= 0.6 black. Whole-row darkness (0.5) had no
+    headroom on real panes (0.36 at JPEG q60) and shrank the box onto stale entries (QA).
+  - A downscaled window splits the divider over two rows (25 + 54): their sum is the line.
+  - `cropHeight` is 6 heading heights (~7 caption lines); pane lines from full-frame OCR may
+    be missing, and a heading-height pitch overshot to 13 of 16 boxes (QA).
+  - `tell_pane` sends `screen.region` on change only, per socket, records it after the send,
+    and an OCR error keeps the client's region. Lines inside the pane are never participants.
   - The bottom caption panel has no heading or divider: unsupported, captions dock right.
-  - Lines inside the pane are never participants (`parse_full_frame` adds them to `caption`).
   - Tests: `test_screen_teams_pane.py`.
+- Teams' "Speaker N" rows are headers of their own speaker (`teams._SPEAKER_LABEL`), counted as
+  avatar evidence, matched on a roster copy so they never become participants. Without it a
+  real meeting recorded nothing (QA). Test: `test_teams_speaker_labels_are_headers`.
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
   never key the POST on anything but the conversation id, or a retry duplicates the meeting.

@@ -161,11 +161,15 @@ the tile names and the active-speaker border, which are outside the crop. So fra
 **Teams: the api locates the caption pane** (`screen.region`, XERK-2608). The captured window
 is a whole remote desktop and Teams floats anywhere in it, so the client can't find the
 captions by window geometry. On each Teams full frame the api looks for the pane
-(`teams_pane.py`): the OCR'd heading "Live Captions", then the 1 px divider under it (luma
-~82 on black) for the pane's exact width, then black rows down to its bottom. It sends the
-box (shares of the frame) and `cropHeight` when the pane is first found, moves or goes, and
-again on a new socket. The client crops caption frames from that box: from its lowest text
-up `cropHeight` (about 7 caption lines, under tenir-ocr's 16 boxes), opening on a blank row.
+(`teams_pane.py`): in the pixels, a 1 px divider (luma ~82, black above it) wide enough for
+a pane, with black margins below it down to the pane's bottom; then only the strip above each
+such divider (at most 4) is OCR'd, and the pane is the one that reads "Live Captions". The
+full frame's own OCR can't be used: over a text-dense desktop every strip is too dense and
+the heading is never read. It sends the box (shares of the frame) and `cropHeight` (six
+heading heights) when the pane is first found, moves or goes, and again on a new socket; an
+OCR error on the strip keeps the client's region. The client crops caption frames from that
+box: from its lowest text up `cropHeight` (about 7 caption lines, under tenir-ocr's 16
+boxes), opening on a blank row.
 Docked right and popped out both have the heading; the bottom caption panel has neither
 heading nor divider and is not read, so the operator docks Teams captions on the right.
 
@@ -232,6 +236,9 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 **Teams parser** (`teams.py`, XERK-2515), picked by the frame's `platform`:
 
 - Full frames: every line inside the located pane is caption text, never a participant.
+- "Speaker N" (Teams' label for a voice it hasn't matched to a participant; real captures
+  label every remote attendee so) is a header of its own speaker, verified like an avatar's,
+  and never joins the roster.
 - Layout: title, call timer and toolbar share the top band (title = leftmost non-chrome text);
   tile labels sit bottom-left of each tile; the People pane's list counts as participants too.
 - Names: Zoom's shape plus directory `Last, First`; `(Guest)`, `(External)` or org suffixes
@@ -385,7 +392,8 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   closes or moves is noticed on the next full frame; meanwhile the client sends crops only
   while the old box is still mostly black.
 - **The Teams pane finder is measured on six real captures** (dark theme, docked right and
-  popped out, 100% and 125%, in a remote desktop). Light theme, other scalings and other
+  popped out, 100% and 125%, in a remote desktop, JPEG quality 60-80, scaled to 0.6x). A
+  Teams-alone window at 0.6x (a ~240 px pane) is missed. Light theme, other scalings and other
   languages' heading text are unmeasured; a non-English Teams needs its heading added.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506

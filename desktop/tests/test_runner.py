@@ -226,24 +226,36 @@ def test_a_reconnect_forgets_the_pane_until_the_api_says_it_again() -> None:
     assert region is not None
     box, crop = region
     msg = {"type": "screen.region", "orgSiteKey": "org-a", "box": list(box), "cropHeight": crop}
-    got: queue.Queue = queue.Queue()
+    sockets: list[list[str]] = []
 
     def handler(ws: ServerConnection) -> None:
+        mine: list[str] = []
+        sockets.append(mine)
+        # Fast on both sockets: a region kept over the reconnect would crop within 0.2 s.
+        ws.send(json.dumps({"type": "screen.cadence", "fps": 5, "fullFrameSeconds": 5}))
         for m in ws:
-            got.put(split(m)["region"])
+            mine.append(split(m)["region"])
+            if len(sockets) == 1 and mine == ["full"]:
+                ws.send(json.dumps(msg))  # the first socket's api located the pane
+            if len(sockets) == 1 and "caption" in mine:
+                ws.close(1011)  # then the socket drops; the window stays open
+                return
 
     platform = FakePlatform(["Horizon 1"], img)
-    r = runner("http://x", platform)
-    r.on_message(json.dumps(msg))  # told on an earlier socket
     with server(handler) as url:
-        r.config = Config(server=url, windows=r.config.windows)
+        r = runner(url, platform)
         t, errors = run_in_thread(r)
-        first = got.get(timeout=5)
-        time.sleep(0.5)
+        deadline = time.monotonic() + 10
+        while len(sockets) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(1.5)  # many 5 fps ticks on the new socket
         r.stop.set()
         t.join(5)
-    assert not errors and first == "full"
-    assert got.empty()  # no caption crop: this socket's api hasn't located the pane
+    assert not errors
+    assert "caption" in sockets[0]
+    assert platform.captures["Horizon 1"].stopped is False  # the same window throughout
+    # The new socket's api hasn't located the pane: no caption crop.
+    assert len(sockets) == 2 and "caption" not in sockets[1]
 
 
 def test_a_window_without_a_frame_yet_sends_nothing() -> None:

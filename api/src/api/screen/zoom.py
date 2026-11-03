@@ -172,6 +172,11 @@ class Roster:
 
         return self.aliases.get(alias_key(name), name)
 
+    def copy(self) -> Roster:
+        out = Roster(self.aliases)
+        out._names = dict(self._names)
+        return out
+
     def add(self, name: str) -> str | None:
         """Add a tile name; returns its display form when it is new, else None."""
         display = self.display(name)

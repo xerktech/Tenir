@@ -33,7 +33,7 @@ from api.contract import (
 )
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
-from api.screen import teams, zoom
+from api.screen import teams, teams_pane, zoom
 from api.screen.meetings import (
     CPU_POOL,
     AccountGone,
@@ -147,6 +147,20 @@ def _same_pane(a: CaptionPane, b: CaptionPane) -> bool:
         max(abs(p - q) for p, q in zip(a.box, b.box, strict=True)) < _PANE_MOVE
         and abs(a.crop - b.crop) < _PANE_MOVE
     )
+
+
+async def locate_pane(
+    ocr: OcrClient, jpeg: bytes, size: tuple[int, int]
+) -> CaptionPane | None:
+    """The Teams live-captions pane of a full frame: divider-shaped lines found in the pixels,
+    then the strip above each OCR'd for the heading. Raises OcrError."""
+    loop = asyncio.get_running_loop()
+    found = await loop.run_in_executor(CPU_POOL, teams_pane.candidates, jpeg, size)
+    for cand in found:
+        pane = teams_pane.pane_of(cand, await ocr.read(cand.band_jpeg), size)
+        if pane is not None:
+            return pane
+    return None
 
 
 class FrameError(ValueError):
@@ -270,6 +284,16 @@ async def screen_ws(ws: WebSocket) -> None:
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")
             return
+        pane: CaptionPane | None = None
+        pane_read = False
+        if header.platform is Platform.teams and header.region.value == "full":
+            try:
+                pane = await locate_pane(ocr, jpeg, (result.width, result.height))
+                pane_read = True
+            except OcrError as exc:
+                # Keep the client's last region: a blip must not stop a meeting's crops.
+                log.warning("screen OCR of the caption pane heading failed: %s", exc)
+                metrics.incr("screen.ocr_errors")
         if closing.is_set():
             return  # the account was deleted while OCR ran
         reattached = (tracker := tracker_for(header)).notify is not send
@@ -283,12 +307,17 @@ async def screen_ws(ws: WebSocket) -> None:
                 ts = tracker.clock(ts)
                 parser = _PARSERS[header.platform]
                 if header.region.value == "full":
-                    frame = await loop.run_in_executor(
-                        CPU_POOL, parser.parse_full_frame, result, jpeg
-                    )
-                    await tracker.on_full(frame, ts)
                     if header.platform is Platform.teams:
-                        await tell_pane(header.orgSiteKey, frame.caption_pane)
+                        frame = await loop.run_in_executor(
+                            CPU_POOL, lambda: teams.parse_full_frame(result, jpeg, pane=pane)
+                        )
+                    else:
+                        frame = await loop.run_in_executor(
+                            CPU_POOL, parser.parse_full_frame, result, jpeg
+                        )
+                    await tracker.on_full(frame, ts)
+                    if pane_read:
+                        await tell_pane(header.orgSiteKey, pane)
                 else:
                     roster = await tracker.ensure_roster()
                     blocks = await loop.run_in_executor(
@@ -323,8 +352,7 @@ async def screen_ws(ws: WebSocket) -> None:
             return
         if pane is not None and last is not None and _same_pane(pane, last):
             return
-        panes[org_site_key] = pane
-        await send(
+        msg = (
             ScreenRegion(type="screen.region", orgSiteKey=org_site_key)
             if pane is None
             else ScreenRegion(
@@ -334,6 +362,8 @@ async def screen_ws(ws: WebSocket) -> None:
                 cropHeight=pane.crop,
             )
         )
+        await send(msg)
+        panes[org_site_key] = pane  # only once sent: a failed send is retried next frame
 
     def expire() -> None:
         # A socket must not outlive its token (XERK-2612): auth runs only at the handshake,

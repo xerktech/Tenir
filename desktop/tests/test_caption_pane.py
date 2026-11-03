@@ -6,7 +6,7 @@ import itertools
 
 import numpy as np
 import pytest
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 from teams_synth import ENTRIES, make_desktop
 
 from tenir_capture.caption_pane import MAX_PIXELS, PaneCrop, crop_pane
@@ -58,8 +58,17 @@ def test_nothing_is_sent_without_a_pane_showing_text(case) -> None:
     if case == "no region":
         region = None
     elif case == "pane closed":
-        # The api's box from before; the window now shows its stage and the desktop there.
+        # The api's box from before; the window now shows a slide with text there (grey, not
+        # the pane's black): its text must not go out as captions.
         img, _ = make_desktop(pane=False)
+        (left, top, right, bottom), _share = region
+        d = ImageDraw.Draw(img)
+        x0, x1 = int(left * img.width), int(right * img.width)
+        for y in range(int(top * img.height), int(bottom * img.height), 30):
+            d.text((x0 + 10, y), "Quarterly roadmap and owners", fill=(255, 255, 255))
+        assert crop_pane(img, (region[0], 1.0)) is None
+        g = np.asarray(ImageOps.grayscale(img.crop((x0, 0, x1, img.height))))
+        assert (g > 120).any()  # there is glyph ink: only the black check refuses it
     elif case == "tiny box":
         (left, top, _, _), share = region
         region = ((left, top, left + 1 / img.width, top + 1 / img.height), share)
