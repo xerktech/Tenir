@@ -29,6 +29,7 @@ from api.contract import (
     ScreenCadence,
     ScreenFrameHeader,
     ScreenNotice,
+    ScreenRegion,
 )
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
@@ -42,6 +43,7 @@ from api.screen.meetings import (
     now_ms,
 )
 from api.screen.ocr import HttpOcrClient, OcrClient, OcrError
+from api.screen.zoom import CaptionPane
 
 router = APIRouter()
 log = logging.getLogger("api.screen")
@@ -135,6 +137,18 @@ def _still_authorized(principal: Principal) -> bool:
     )
 
 
+# A pane that moved less than this share of the frame is the same pane: OCR boxes and the
+# pane's lowest row jitter by a pixel or two between full frames.
+_PANE_MOVE = 0.01
+
+
+def _same_pane(a: CaptionPane, b: CaptionPane) -> bool:
+    return (
+        max(abs(p - q) for p, q in zip(a.box, b.box, strict=True)) < _PANE_MOVE
+        and abs(a.crop - b.crop) < _PANE_MOVE
+    )
+
+
 class FrameError(ValueError):
     pass
 
@@ -210,7 +224,9 @@ async def screen_ws(ws: WebSocket) -> None:
     closing = asyncio.Event()
     close_reason = "account removed or device token revoked"
 
-    async def send(msg: ScreenCadence | ScreenNotice | Pong | ErrorMessage) -> None:
+    async def send(
+        msg: ScreenCadence | ScreenNotice | ScreenRegion | Pong | ErrorMessage,
+    ) -> None:
         async with send_lock:
             await ws.send_text(msg.model_dump_json(exclude_none=True))
 
@@ -271,6 +287,8 @@ async def screen_ws(ws: WebSocket) -> None:
                         CPU_POOL, parser.parse_full_frame, result, jpeg
                     )
                     await tracker.on_full(frame, ts)
+                    if header.platform is Platform.teams:
+                        await tell_pane(header.orgSiteKey, frame.caption_pane)
                 else:
                     roster = await tracker.ensure_roster()
                     blocks = await loop.run_in_executor(
@@ -295,6 +313,27 @@ async def screen_ws(ws: WebSocket) -> None:
             metrics.incr("screen.frame_errors")
 
     lanes: dict[tuple[str, str], _Lane] = {}
+    # The caption pane this socket last told the client per window (Teams): a new socket
+    # starts with none, so a reconnecting client is told again.
+    panes: dict[str, CaptionPane | None] = {}
+
+    async def tell_pane(org_site_key: str, pane: CaptionPane | None) -> None:
+        last = panes.get(org_site_key)
+        if pane is None and last is None:
+            return
+        if pane is not None and last is not None and _same_pane(pane, last):
+            return
+        panes[org_site_key] = pane
+        await send(
+            ScreenRegion(type="screen.region", orgSiteKey=org_site_key)
+            if pane is None
+            else ScreenRegion(
+                type="screen.region",
+                orgSiteKey=org_site_key,
+                box=list(pane.box),
+                cropHeight=pane.crop,
+            )
+        )
 
     def expire() -> None:
         # A socket must not outlive its token (XERK-2612): auth runs only at the handshake,

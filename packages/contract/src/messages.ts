@@ -8,7 +8,8 @@
 /**
  * Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.
  */
-export type TenirWsMessages = ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice;
+export type TenirWsMessages =
+  ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice | ScreenRegion;
 export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
@@ -299,4 +300,22 @@ export interface ScreenNotice {
   type: "screen.notice";
   orgSiteKey: string;
   kind: ScreenNoticeKind;
+}
+/**
+ * Server -> client on /ws/screen (XERK-2608). Where a window's caption pane is, found by the api on a full frame: Teams floats anywhere inside the captured remote-desktop window, so only the OCR'd frame can locate its Live Captions pane. The client crops caption frames from this box until the next screen.region for the window; without box the pane is gone and the window sends no caption crops. Sent when the pane is first found, moves, or disappears, and again after a reconnect. Coordinates are shares (0-1) of the full frame, so they hold whatever size the client scaled it to.
+ */
+export interface ScreenRegion {
+  type: "screen.region";
+  orgSiteKey: string;
+  /**
+   * left, top, right, bottom of the pane below its heading, as shares of the frame's width and height.
+   *
+   * @minItems 4
+   * @maxItems 4
+   */
+  box?: [number, number, number, number];
+  /**
+   * Share of the frame's height to send, ending at the pane's lowest text: the newest few entries, under tenir-ocr's 16-box cap.
+   */
+  cropHeight?: number;
 }

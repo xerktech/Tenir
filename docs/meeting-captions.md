@@ -148,7 +148,7 @@ match nothing, which the probe reports as "no visible window matches".
 
 The capture client (XERK-2506) streams to `/ws/screen`; the api OCRs, parses and stores. Code in
 `api/src/api/screen/`, contract in `contract/ws-messages.schema.json` (`ScreenFrameHeader`,
-`ScreenCadence`).
+`ScreenCadence`, `ScreenNotice`, `ScreenRegion`).
 
 **Wire format: hybrid.** The spike sends only caption-box crops, but speaker validation needs
 the tile names and the active-speaker border, which are outside the crop. So frames carry
@@ -157,6 +157,17 @@ the tile names and the active-speaker border, which are outside the crop. So fra
 - `caption`: the caption-box crop, at the cadence's `fps`, only while a caption is on screen.
 - `full`: the whole window, every `fullFrameSeconds` and right before the first caption crop
   after none. Read for participant names, the green border and the meeting title.
+
+**Teams: the api locates the caption pane** (`screen.region`, XERK-2608). The captured window
+is a whole remote desktop and Teams floats anywhere in it, so the client can't find the
+captions by window geometry. On each Teams full frame the api looks for the pane
+(`teams_pane.py`): the OCR'd heading "Live Captions", then the 1 px divider under it (luma
+~82 on black) for the pane's exact width, then black rows down to its bottom. It sends the
+box (shares of the frame) and `cropHeight` when the pane is first found, moves or goes, and
+again on a new socket. The client crops caption frames from that box: from its lowest text
+up `cropHeight` (about 7 caption lines, under tenir-ocr's 16 boxes), opening on a blank row.
+Docked right and popped out both have the heading; the bottom caption panel has neither
+heading nor divider and is not read, so the operator docks Teams captions on the right.
 
 OCR cost stays near the spike's sizing: a full frame (~5 strips) every 30 s per window adds
 about one strip-read in six to the caption crops at the meeting cadence.
@@ -220,6 +231,7 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 
 **Teams parser** (`teams.py`, XERK-2515), picked by the frame's `platform`:
 
+- Full frames: every line inside the located pane is caption text, never a participant.
 - Layout: title, call timer and toolbar share the top band (title = leftmost non-chrome text);
   tile labels sit bottom-left of each tile; the People pane's list counts as participants too.
 - Names: Zoom's shape plus directory `Last, First`; `(Guest)`, `(External)` or org suffixes
@@ -297,8 +309,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
   in the crop, or the server would get captions with no speaker. The api reads a name-shaped
   first row followed by text as a header even when the roster lacks it (header, no speaker):
-  in a screen share only a strip of tiles is visible, and the name was stored as speech. Only `zoom` has a finder; Teams windows are skipped until
-  XERK-2515 adds one.
+  in a screen share only a strip of tiles is visible, and the name was stored as speech.
+- **Teams crop**: `tenir_capture/caption_pane.py` crops the box the api sent
+  (`screen.region`, above); until one arrives, after the api says the pane is gone, or once
+  the box isn't mostly black any more, a Teams window sends only its full frames. The region
+  is dropped when the window is lost or the socket reconnects.
 - **Cadence**: as *Screen ingest* above; the client caps a server's ask at 5 fps and one full
   frame per 5 s, and treats a faster cadence as due at once.
 - **Notices**: a minimized window is paused with a desktop notification (WGC gets no frames
@@ -363,8 +378,15 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   `python scripts/caption_ocr/caption_bench.py --images <dir with truth.json> --out <dir>`.
 - **The box finder is Zoom-specific and tuned on synthetic frames.** It assumes a centred box of
   white text at Zoom's default caption size (`BOX_MAX_LINE`); retune on real captures, and again
-  if the operator enlarges captions. Teams draws captions differently and has no client-side
-  finder yet: the client may send a fixed bottom-band crop, which the Teams parser tolerates.
+  if the operator enlarges captions.
+- **Teams captions start up to a full-frame interval late.** The pane is located on full
+  frames (every `fullFrameSeconds`, 30 s idle), so the first crop waits for one; the pane
+  keeps its history, so the merge still reads the opening lines while they show. A pane that
+  closes or moves is noticed on the next full frame; meanwhile the client sends crops only
+  while the old box is still mostly black.
+- **The Teams pane finder is measured on six real captures** (dark theme, docked right and
+  popped out, 100% and 125%, in a remote desktop). Light theme, other scalings and other
+  languages' heading text are unmeasured; a non-English Teams needs its heading added.
 - **The Teams parser is tuned on a synthetic layout** (`api/tests/fixtures/screen/
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.

@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from PIL import Image
+from teams_synth import make_desktop
 from websockets.sync.server import ServerConnection, serve
 
 from tenir_capture.config import Config, WindowSpec
@@ -34,9 +35,15 @@ class FakeCapture:
 
 
 class FakePlatform:
-    def __init__(self, titles: list[str], img: Image.Image | None) -> None:
+    def __init__(
+        self,
+        titles: list[str],
+        img: Image.Image | None,
+        images: dict[str, Image.Image] | None = None,
+    ) -> None:
         self.titles = titles
         self.img = img
+        self.images = images or {}  # per-title frames; the rest show ``img``
         self.minimized: set[str] = set()
         self.notes: list[str] = []
         self.captures: dict[str, FakeCapture] = {}
@@ -48,7 +55,7 @@ class FakePlatform:
         return title in self.minimized
 
     def capture(self, title: str) -> FakeCapture:
-        cap = self.captures[title] = FakeCapture(self.img)
+        cap = self.captures[title] = FakeCapture(self.images.get(title, self.img))
         return cap
 
     def notify(self, title: str, message: str) -> None:
@@ -103,28 +110,50 @@ def run_in_thread(r: Runner) -> tuple[threading.Thread, list[BaseException]]:
 def test_frames_stream_with_the_token_and_honour_the_servers_cadence(zoom_frame) -> None:
     got: queue.Queue = queue.Queue()
     auth: list[str | None] = []
+    teams_img, region = make_desktop()
+    assert region is not None
+    (left, top, right, bottom), crop = region
 
     def handler(ws: ServerConnection) -> None:
         auth.append(ws.request.headers.get("Authorization"))
         ws.send(json.dumps({"type": "screen.cadence", "fps": 5, "fullFrameSeconds": 5}))
+        told = False
         for msg in ws:
-            got.put(split(msg))
+            h = split(msg)
+            got.put(h)
+            if h["orgSiteKey"] == "org-a" and h["region"] == "full" and not told:
+                # What the api does on a Teams full frame showing the pane.
+                told = True
+                ws.send(
+                    json.dumps(
+                        {
+                            "type": "screen.region",
+                            "orgSiteKey": "org-a",
+                            "box": [left, top, right, bottom],
+                            "cropHeight": crop,
+                        }
+                    )
+                )
 
-    platform = FakePlatform(["Horizon 3 - VMware", "Horizon 1"], zoom_frame(caption=True))
+    platform = FakePlatform(
+        ["Horizon 3 - VMware", "Horizon 1"], zoom_frame(caption=True), {"Horizon 1": teams_img}
+    )
     with server(handler) as url:
         r = runner(url, platform)
         t, errors = run_in_thread(r)
-        first = [got.get(timeout=5) for _ in range(4)]
+        frames = [got.get(timeout=5) for _ in range(12)]
         r.stop.set()
         t.join(5)
     assert not errors
     assert auth == ["Bearer tok"]
-    assert [h["region"] for h in first[:2]] == ["full", "caption"]
-    assert {h["orgSiteKey"] for h in first} == {"org-c"}  # the Teams window isn't captured yet
-    assert first[0]["windowTitle"] == "Horizon 3 - VMware"
-    assert "Horizon 1" not in platform.captures
+    zoom = [h["region"] for h in frames if h["orgSiteKey"] == "org-c"]
+    teams = [h["region"] for h in frames if h["orgSiteKey"] == "org-a"]
+    assert zoom[:2] == ["full", "caption"]
     # 5 fps from the server: the caption crops come fast, not at the 0.2 fps default.
-    assert [h["region"] for h in first[2:]] == ["caption", "caption"]
+    assert zoom[2:4] == ["caption", "caption"]
+    # Teams sends only a full frame until the api says where the pane is, then crops it.
+    assert teams[0] == "full" and "caption" in teams
+    assert frames[0]["windowTitle"] in ("Horizon 3 - VMware", "Horizon 1")
     assert platform.captures["Horizon 3 - VMware"].stopped is False
     r.close()
     assert platform.captures["Horizon 3 - VMware"].stopped
@@ -160,6 +189,61 @@ def test_minimized_or_retitled_windows_pause_and_the_operator_is_told(zoom_frame
     r.step(sink)
     assert platform.captures["Horizon 3"].dead is False
     assert {split(d)["orgSiteKey"] for d in sink.sent} == {"org-c"}
+
+
+def test_a_teams_window_crops_only_where_the_api_said_and_forgets_it_with_the_window() -> None:
+    img, region = make_desktop()
+    assert region is not None
+    box, crop = region
+    platform = FakePlatform(["Horizon 1"], img)
+    clock = {"t": 0.0}
+    r = runner("http://x", platform, clock=lambda: clock["t"])
+    sink = Sink()
+    assert r.step(sink) == 1  # a full frame; no pane known yet, so no caption crop
+    msg = {"type": "screen.region", "orgSiteKey": "org-a", "box": list(box), "cropHeight": crop}
+    r.on_message(json.dumps(msg))
+    clock["t"] = 10
+    assert r.step(sink) == 2  # the first crop after none goes with a full frame
+    clock["t"] = 15
+    assert r.step(sink) == 1  # caption crops while the pane shows
+    r.on_message('{"type":"screen.region","orgSiteKey":"org-a"}')  # the pane closed
+    clock["t"] = 20
+    assert r.step(sink) == 0
+    r.on_message(json.dumps(msg))
+    platform.titles = []  # the window goes: its pane goes with it
+    clock["t"] = 30
+    r.step(sink)
+    platform.titles = ["Horizon 1"]
+    clock["t"] = 40
+    assert r.step(sink) == 1  # the window is back: a full frame only, until told again
+    # A pane for a Zoom window, or an unknown one, changes nothing.
+    r.on_message(json.dumps({**msg, "orgSiteKey": "org-c"}))
+    r.on_message(json.dumps({**msg, "orgSiteKey": "unknown"}))
+
+
+def test_a_reconnect_forgets_the_pane_until_the_api_says_it_again() -> None:
+    img, region = make_desktop()
+    assert region is not None
+    box, crop = region
+    msg = {"type": "screen.region", "orgSiteKey": "org-a", "box": list(box), "cropHeight": crop}
+    got: queue.Queue = queue.Queue()
+
+    def handler(ws: ServerConnection) -> None:
+        for m in ws:
+            got.put(split(m)["region"])
+
+    platform = FakePlatform(["Horizon 1"], img)
+    r = runner("http://x", platform)
+    r.on_message(json.dumps(msg))  # told on an earlier socket
+    with server(handler) as url:
+        r.config = Config(server=url, windows=r.config.windows)
+        t, errors = run_in_thread(r)
+        first = got.get(timeout=5)
+        time.sleep(0.5)
+        r.stop.set()
+        t.join(5)
+    assert not errors and first == "full"
+    assert got.empty()  # no caption crop: this socket's api hasn't located the pane
 
 
 def test_a_window_without_a_frame_yet_sends_nothing() -> None:

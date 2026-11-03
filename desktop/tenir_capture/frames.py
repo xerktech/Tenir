@@ -16,10 +16,13 @@ from dataclasses import dataclass
 from PIL import Image
 
 from tenir_capture.caption_box import crop_box
+from tenir_capture.caption_pane import PaneCrop, Region
 from tenir_capture.config import WindowSpec
 
-# Caption-box finders per platform. A platform without one is not captured yet.
-FINDERS: dict[str, Callable[[Image.Image], Image.Image | None]] = {"zoom": crop_box}
+Finder = Callable[[Image.Image], Image.Image | None]
+# A new caption finder per window, per platform. Zoom's box is found in the window's pixels;
+# Teams' pane is located by the api (screen.region) and held by its window's PaneCrop.
+FINDERS: dict[str, Callable[[], Finder]] = {"zoom": lambda: crop_box, "teams": PaneCrop}
 
 # The api decodes full frames up to this many pixels (api/src/api/screen/ocr.py
 # MAX_FRAME_PIXELS) and refuses frames over 4 MB; a bigger window is scaled down to fit.
@@ -96,7 +99,7 @@ class WindowPlan:
     right before the first caption crop after none (the server needs the tile names).
     """
 
-    def __init__(self, finder: Callable[[Image.Image], Image.Image | None]) -> None:
+    def __init__(self, finder: Finder) -> None:
         self.finder = finder
         self.next_at = 0.0
         self.last_full: float | None = None
@@ -125,10 +128,28 @@ class WindowPlan:
 
 @dataclass(frozen=True)
 class ServerMessage:
-    kind: str  # "cadence" | "notice" | "error" | "other"
+    kind: str  # "cadence" | "notice" | "region" | "error" | "other"
     org_site_key: str | None = None
     cadence: Cadence | None = None
     text: str = ""
+    region: Region | None = None  # kind "region": None means the pane is gone
+
+
+def _share(v: object) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and 0 <= v <= 1
+
+
+def _region(msg: dict) -> Region | None | bool:
+    """A screen.region's box and crop height, None for "no pane", False when malformed."""
+    box, crop = msg.get("box"), msg.get("cropHeight")
+    if box is None:
+        return None
+    if not (isinstance(box, list) and len(box) == 4 and all(map(_share, box))):
+        return False
+    left, top, right, bottom = (float(v) for v in box)
+    if not (left < right and top < bottom and _share(crop) and crop > 0):
+        return False
+    return (left, top, right, bottom), float(crop)
 
 
 def parse_server(raw: str | bytes) -> ServerMessage:
@@ -153,6 +174,11 @@ def parse_server(raw: str | bytes) -> ServerMessage:
             cad = Cadence(fps=min(float(fps), 5.0), full_frame_seconds=max(float(full), 5.0))
             return ServerMessage("cadence", key, cad)
         return ServerMessage("other")
+    if kind == "screen.region" and key is not None:
+        region = _region(msg)
+        if region is False:
+            return ServerMessage("other")
+        return ServerMessage("region", key, region=region)
     if kind == "screen.notice" and key is not None:
         return ServerMessage("notice", key, text=str(msg.get("kind", "")))
     if kind == "error":

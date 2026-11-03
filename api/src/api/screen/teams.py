@@ -5,8 +5,9 @@ Same two inputs as Zoom (``zoom.py``), different layout:
 - A **full window frame**: the meeting title and call timer sit top-left and the toolbar
   (Chat, People, React, ..., Leave) top-right, in one top band; there is no bottom toolbar.
   Participant names are the name-shaped labels at each tile's bottom-left, and also the
-  People pane's list when it is open (both are participants). Live captions sit in a panel
-  along the bottom of the stage, left-aligned, so the caption region spans the full width.
+  People pane's list when it is open (both are participants). The live-captions pane (docked
+  right or popped out) is located by ``teams_pane`` and all its lines are captions; without
+  it, caption rows are told from names by their spacing (``_caption_lines``).
 - A **caption-panel crop**: entries stacked oldest to newest, each an avatar (a photo, or a
   circle of initials that OCR reads as ``AL``), the speaker's name on its own line, then the
   caption text wrapping over one or more lines. The newest entry is rewritten in place as the
@@ -33,6 +34,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from api.screen.ocr import MAX_FRAME_PIXELS, OcrLine, OcrResult
+from api.screen.teams_pane import find_pane
 from api.screen.zoom import (
     CaptionBlock,
     FullFrame,
@@ -365,10 +367,10 @@ def _just_under(row: OcrLine, head: OcrLine) -> bool:
 
 
 def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
-    """Participants and title from a full Teams window (``jpeg`` is unused: no border check)."""
-    del jpeg
+    """Participants, title and the live-captions pane from a full Teams window (``jpeg``
+    gives the pane's edges; no active-speaker border check)."""
     h = ocr.height
-    out = FullFrame()
+    out = FullFrame(caption_pane=find_pane(ocr, jpeg))
     top = [ln for ln in ocr.lines if ln.box[3] <= h * _TOP_BAND and not _is_ui(ln.text)]
     if top:
         # The title is the leftmost text up there; the toolbar sits to its right.
@@ -376,6 +378,14 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
         if len(best.text) >= 3:
             out.title = best.text.strip()
     caption = _caption_lines(list(ocr.lines), h)
+    if (pane := out.caption_pane) is not None:
+        # Everything inside the pane is caption text or a speaker header, wherever it sits.
+        x0, y0, x1, y1 = pane.box
+        caption |= {
+            id(ln)
+            for ln in ocr.lines
+            if x0 * ocr.width <= ln.cx <= x1 * ocr.width and y0 * h <= ln.cy <= y1 * h
+        }
     text_h = sorted(ln.height for ln in ocr.lines if _initials(ln.text, any_case=True) is None)
     median_h = text_h[len(text_h) // 2] if text_h else 0.0
     for ln in _reading_order(ocr.lines):

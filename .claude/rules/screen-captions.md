@@ -4,6 +4,7 @@ paths:
   - "api/tests/test_turma_delivery.py"
   - "api/tests/test_screen.py"
   - "api/tests/test_screen_teams.py"
+  - "api/tests/test_screen_teams_pane.py"
   - "api/tests/test_pg_screen_live.py"
   - "api/tests/fixtures/screen/**"
   - "api/src/api/history.py"
@@ -232,6 +233,14 @@ paths:
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
     onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
+- Teams' caption pane is located on full frames by the api (`teams_pane.find_pane`, XERK-2608):
+  the OCR'd heading "Live Captions", the 1 px divider under it (luma 70-82, black above; not
+  below, a scrolled entry sits on it) for the pane's width, black rows for its bottom.
+  `ws.tell_pane` sends `screen.region` on change only, per socket. Measured on six real captures.
+  - The divider band starts at 55: at 30 it took the stage (~31) beside the pane as divider.
+  - The bottom caption panel has no heading or divider: unsupported, captions dock right.
+  - Lines inside the pane are never participants (`parse_full_frame` adds them to `caption`).
+  - Tests: `test_screen_teams_pane.py`.
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
   never key the POST on anything but the conversation id, or a retry duplicates the meeting.

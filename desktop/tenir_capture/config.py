@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-# Platforms whose caption box the client can find (see frames.FINDERS). A window on any other
-# platform is skipped with a warning until its finder ships (Teams: after XERK-2515).
+# Platforms the client captures; each has a caption finder in frames.FINDERS.
 PLATFORMS = ("zoom", "teams")
 # The short org label Turma resolves in POST /api/orgs/<org>/meetings (XERK-2638).
 ORG_LABEL = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
