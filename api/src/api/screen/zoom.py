@@ -11,6 +11,7 @@ Two inputs (XERK-2505, hybrid wire format):
 
 Tuned on synthetic frames (the operator's screenshot wasn't available, docs/meeting-captions.md
 Caveats): the geometry thresholds are deliberately loose and the roster match is what decides.
+One real capture since (XERK-2643, a screen share under a strip of tiles) set the tile-gap check.
 """
 
 from __future__ import annotations
@@ -75,6 +76,9 @@ _BORDER_MIN_PIXELS = 24
 # JPEG is small on the wire but huge decoded (13000x13000 in 2.6 MB is ~500 MB of RGB), so
 # anything bigger, or not the size OCR read, is skipped rather than decoded.
 _MAX_DECODE_PIXELS = MAX_FRAME_PIXELS
+# The gap between Zoom's tiles and the share is near-black (luma ~5 on a real capture; the
+# synthetic test windows use 26). Light shared content is ~255.
+_GAP_MAX_LUMA = 48
 
 # Zoom's meeting-toolbar buttons. Seeing several of them in the toolbar band means a meeting
 # is on screen (a desktop's icon labels are name-shaped too, so tiles alone can't tell).
@@ -254,44 +258,72 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
     } & _MEETING_CONTROLS
     out.in_meeting = len(controls) >= _MIN_CONTROLS
     caption = _caption_region(list(ocr.lines), w, h)
-    tiles: list[tuple[str, OcrLine]] = []
+    lines: list[tuple[str, OcrLine]] = []
     for ln in _reading_order(ocr.lines):
         if ln.box[1] < h * _TITLE_BAND or ln.cy > h * _TOOLBAR_BAND:
             continue
         if caption and caption[0] <= ln.cy <= caption[1] and abs(ln.cx - w / 2) < w * 0.3:
             continue
         name = clean_tile_name(ln.text)
-        if _is_ui(name) or not is_name_like(name):
-            continue
+        if not _is_ui(name) and is_name_like(name):
+            lines.append((name, ln))
+    img = _decode(jpeg, (w, h)) if jpeg and lines else None
+    if img is not None:
+        # Before deduping: a share showing a participant's name ahead of their tile (a Jira
+        # assignee) would otherwise claim the name and drop the real tile with it (QA).
+        px = np.asarray(img, dtype=np.int16).max(axis=2)
+        lines = [(name, ln) for name, ln in lines if _over_tile_gap(px, ln)]
+    tiles: list[tuple[str, OcrLine]] = []
+    for name, ln in lines:
         if name not in out.participants:
             out.participants.append(name)
             tiles.append((name, ln))
-    if jpeg and tiles:
-        out.active_speaker = _active_tile(jpeg, tiles, (w, h))
+    if img is not None and tiles:
+        out.active_speaker = _active_tile(img, tiles)
     return out
 
 
-def _active_tile(
-    jpeg: bytes, tiles: list[tuple[str, OcrLine]], size: tuple[int, int]
-) -> str | None:
-    """The tile name sitting inside Zoom's green active-speaker border, if exactly one does.
-
-    Zoom labels a tile at its bottom-left corner, so the tile's own border runs just left of
-    and just below the label. Green is counted on each side separately and a tile scores the
-    smaller count: one window around the label also caught the border of the tile above or to
-    the left, so on a 3x3 gallery two tiles scored alike and none won (QA with real OCR).
-    Best effort: an undecodable frame or no clear winner is None, and the caption header
-    alone then names the speaker.
-    """
+def _decode(jpeg: bytes, size: tuple[int, int]):  # -> PIL.Image.Image | None
+    """The frame as RGB, or None when it is undecodable, not the size OCR read, or too big."""
     try:
         from PIL import Image
 
         img = Image.open(io.BytesIO(jpeg))  # reads the header only
         if img.size != size or size[0] * size[1] > _MAX_DECODE_PIXELS:
             return None
-        img = img.convert("RGB")
+        return img.convert("RGB")
     except Exception:
         return None
+
+
+def _over_tile_gap(px: np.ndarray, ln: OcrLine) -> bool:
+    """A tile label sits at its tile's bottom-left, so the dark gap under the tile (or the
+    window's edge) runs a few pixels below it. Text inside a screen share sits on the shared
+    content instead: the Jira board's sidebar items and ticket keys became "participants"
+    (XERK-2643, real capture). ``px`` is the frame's per-pixel max channel.
+
+    Accepted: a dark-themed share (an editor, a dark web page) has dark rows under its text
+    too, so its name-shaped lines still pass; the roster match on caption headers decides.
+    """
+    height = px.shape[0]
+    x0, x1 = max(0, int(ln.box[0])), min(px.shape[1], int(ln.box[2]))
+    y0 = max(0, int(ln.box[3]))
+    y1 = min(height, int(ln.box[3] + ln.height) + 3)
+    if x1 <= x0 or y0 >= height:
+        return True
+    rows = np.percentile(px[y0:y1, x0:x1], 90, axis=1)
+    return bool((rows <= _GAP_MAX_LUMA).any())
+
+
+def _active_tile(img, tiles: list[tuple[str, OcrLine]]) -> str | None:
+    """The tile name sitting inside Zoom's green active-speaker border, if exactly one does.
+
+    Zoom labels a tile at its bottom-left corner, so the tile's own border runs just left of
+    and just below the label. Green is counted on each side separately and a tile scores the
+    smaller count: one window around the label also caught the border of the tile above or to
+    the left, so on a 3x3 gallery two tiles scored alike and none won (QA with real OCR).
+    Best effort: no clear winner is None, and the caption header alone then names the speaker.
+    """
     width, height = img.size
 
     def green(box: tuple[float, float, float, float]) -> int:

@@ -227,3 +227,15 @@ paths:
     `test_the_written_failure_reasons_match_the_requeue_list`.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.
+- Zoom tile names: a name-shaped line is a tile label only if a near-black row (the tile gap)
+  runs within one label height below it (`zoom._over_tile_gap`, XERK-2643). A share's text sits
+  on its content: a real Jira share put sidebar items and ticket keys in the roster.
+  - Measured on the real capture: gap luma ~5, light share 255. A dark-themed share still
+    passes (accepted). Without decodable pixels every line is kept, as before.
+  - Filter before deduping names: a share showing an assignee's name above their tile
+    otherwise claimed the name and the real tile was dropped (QA).
+  - A label inset more than one label height above the gap fails the check; all real labels
+    measured 3-5 px above it. Re-measure on a real gallery / speaker-view capture.
+  - Tests: `test_a_screen_shares_text_is_not_taken_for_participants`,
+    `test_a_dark_screen_share_still_passes_as_tiles`,
+    `test_a_label_with_no_pixels_under_it_is_kept`.
