@@ -86,7 +86,7 @@ def test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text(mark) -> None:
     d = ImageDraw.Draw(img)
     x0, x1, y0, y1 = int(left * w), int(right * w), int(top * h), int(bottom * h)
     if mark == "border":
-        d.line((x0, y0, x0, y1), fill=(150, 150, 150))
+        d.line((x0 + 8, y0, x0 + 8, y1), fill=(150, 150, 150))  # just inside the margin
     else:
         d.rectangle((x1 - 6, y1 - 60, x1 - 3, y1 - 20), fill=(160, 160, 160))
     crop = crop_pane(img, region)
