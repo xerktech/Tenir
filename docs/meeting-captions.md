@@ -163,7 +163,8 @@ is a whole remote desktop and Teams floats anywhere in it, so the client can't f
 captions by window geometry. On each Teams full frame the api looks for the pane
 (`teams_pane.py`): in the pixels, a 1 px divider (luma ~82, black above it) wide enough for
 a pane, with black margins below it down to the pane's bottom; then only the strip above each
-such divider (at most 4) is OCR'd, and the pane is the one that reads "Live Captions". The
+such divider (at most 4, header-like strips first) is OCR'd, alongside the frame's own
+OCR, and the pane is the one that reads "Live Captions". The
 full frame's own OCR can't be used: over a text-dense desktop every strip is too dense and
 the heading is never read. It sends the box (shares of the frame) and `cropHeight` (six
 heading heights) when the pane is first found, moves or goes, and again on a new socket; an

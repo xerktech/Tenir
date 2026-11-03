@@ -42,13 +42,19 @@ DIVIDER_ABOVE = 3  # rows above the divider that are black (the heading's bottom
 ABOVE_BLACK = 24  # ... up to JPEG ringing off the divider (14-27 measured on real frames)
 DIVIDER_GAP = 6  # px of ringing a divider run bridges
 DIVIDER_FILL = 0.9  # share of a bridged run that is divider
-SPLIT_ROW = 15  # each half of a divider split over two rows is at least this bright
+# A window scaled down spreads the 1 px divider over two rows (25 + 54, 37 + 41 measured at
+# 0.79x), and content right under it bleeds into the second: the top row is at least this
+# bright, and with the row under it reaches the divider's level.
+SPLIT_ROW = 18
 MIN_WIDTH = 150  # px: a pane is ~300 px wide even in a small remote window
 MAX_CANDIDATES = 4  # dividers OCR'd per frame: each costs one small OCR request
 # Strip above the divider read for the heading, as a share of the pane's width (the heading
-# sits 23-45 px above the divider at 100-125% on a ~400-730 px pane).
-BAND = 0.3
-BAND_PX = (60, 200)
+# sits 23-45 px above the divider at 100-125% on a ~400-730 px pane). Taller took in the
+# toolbar's text, and at 0.6x the strip came back too dense (QA, real capture).
+BAND = 0.15
+BAND_PX = (48, 120)
+GLYPH = 150  # heading glyphs: candidates with some in the strip's left half are read first
+HEADER_BLACK = 0.45  # ...and a strip at least this black (real pane headers: 0.57-0.94)
 # A pane row: its left or right margin strip is at least this black. Real panes at JPEG
 # quality 60 measured >= 0.68 on one side on every row; the content below a pane <= 0.14.
 MARGIN_DARK = 0.6
@@ -131,11 +137,9 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
     lo, hi = DIVIDER
     k = DIVIDER_ABOVE
     a = g.astype(np.int16)
-    one = (a[k:-1] >= lo) & (a[k:-1] <= hi)
-    # A window the remote session or the client scaled down splits the 1 px divider over
-    # two rows (25 + 54, 37 + 41 measured at 0.79x): their sum is the line.
-    pair = a[k:-1] + a[k + 1 :]
-    split = (a[k:-1] >= SPLIT_ROW) & (a[k + 1 :] >= SPLIT_ROW) & (pair >= lo) & (pair <= hi)
+    top_row = a[k:-1]
+    one = (top_row >= lo) & (top_row <= hi)
+    split = (top_row >= SPLIT_ROW) & (top_row <= hi) & (top_row + a[k + 1 :] >= lo)
     # (A black area over a grey one passes here too; the pane check below rejects it: its
     # margins aren't black under the line.)
     line = one | split
@@ -150,8 +154,6 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
         for left, right in _runs(line[r], MIN_WIDTH, DIVIDER_GAP):
             if line[r, left:right].mean() < DIVIDER_FILL:
                 continue
-            if any(abs(y + 2 - c.top) <= 3 and abs(left - c.left) <= 3 for c in found):
-                continue  # a 2 px divider after JPEG: the same pane's next row
             top = y + 2
             bottom = _bottom(g, top, left, right)
             if bottom - top < MIN_HEIGHT:
@@ -161,7 +163,18 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
             buf = io.BytesIO()
             img.crop(band).save(buf, format="JPEG", quality=90)
             found.append(Candidate(left, top, right, bottom, band, buf.getvalue()))
-    return sorted(found, key=lambda c: (c.left - c.right, c.top))[:MAX_CANDIDATES]
+
+    # Read first the strips that look like the pane's header: mostly black, with glyphs where
+    # the heading sits (its left half). Wider dark windows under grey lines otherwise pushed
+    # the pane out of the candidates (QA).
+    def inked(c: Candidate) -> bool:
+        x0, y0, x1, y1 = c.band
+        strip = g[y0:y1, x0:x1]
+        return bool((strip[:, : strip.shape[1] // 2] > GLYPH).any()) and bool(
+            (strip <= PANE_BLACK).mean() >= HEADER_BLACK
+        )
+
+    return sorted(found, key=lambda c: (not inked(c), c.left - c.right, c.top))[:MAX_CANDIDATES]
 
 
 def pane_of(c: Candidate, band_ocr: OcrResult, size: tuple[int, int]) -> CaptionPane | None:

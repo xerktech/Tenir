@@ -42,7 +42,7 @@ from api.screen.meetings import (
     meetings,
     now_ms,
 )
-from api.screen.ocr import HttpOcrClient, OcrClient, OcrError
+from api.screen.ocr import HttpOcrClient, OcrClient, OcrError, image_size
 from api.screen.zoom import CaptionPane
 
 router = APIRouter()
@@ -278,22 +278,31 @@ async def screen_ws(ws: WebSocket) -> None:
         loop = asyncio.get_running_loop()
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
+        async def read_pane() -> tuple[CaptionPane | None, bool]:
+            try:
+                return await locate_pane(ocr, jpeg, image_size(jpeg)), True
+            except OcrError as exc:
+                # Keep the client's last region: a blip must not stop a meeting's crops.
+                log.warning("screen OCR of the caption pane heading failed: %s", exc)
+                metrics.incr("screen.ocr_errors")
+                return None, False
+
+        # Teams' pane is located alongside the frame's own OCR, not after it: a full frame can
+        # take most of the OCR timeout (43 s measured, QA), and one that fails must not leave
+        # the client without its region.
+        teams_full = header.platform is Platform.teams and header.region.value == "full"
+        pane_task = asyncio.create_task(read_pane()) if teams_full else None
         try:
             result = await ocr.read(jpeg, full=header.region.value == "full")
         except OcrError as exc:
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")
+            if pane_task is not None:
+                pane, pane_read = await pane_task
+                if pane_read and not closing.is_set():
+                    await tell_pane(header.orgSiteKey, pane)
             return
-        pane: CaptionPane | None = None
-        pane_read = False
-        if header.platform is Platform.teams and header.region.value == "full":
-            try:
-                pane = await locate_pane(ocr, jpeg, (result.width, result.height))
-                pane_read = True
-            except OcrError as exc:
-                # Keep the client's last region: a blip must not stop a meeting's crops.
-                log.warning("screen OCR of the caption pane heading failed: %s", exc)
-                metrics.incr("screen.ocr_errors")
+        pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
         reattached = (tracker := tracker_for(header)).notify is not send

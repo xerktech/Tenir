@@ -240,7 +240,13 @@ paths:
     too_dense and the heading is never read (QA, real capture: 25 of 25 strips).
   - Pane rows: the left OR right margin strip >= 0.6 black. Whole-row darkness (0.5) had no
     headroom on real panes (0.36 at JPEG q60) and shrank the box onto stale entries (QA).
-  - A downscaled window splits the divider over two rows (25 + 54): their sum is the line.
+  - A downscaled window splits the divider over two rows (25 + 54): a top row >= 18 plus the
+    row under it is the line, with no cap on the sum (an avatar under it bleeds in, QA 0.79x).
+  - The heading strip is 0.15 of the pane's width tall (48-120 px): 0.3 took in the toolbar
+    and came back too_dense at 0.6x. Candidates whose strip is >= 0.45 black with glyphs in
+    its left half are OCR'd first: wider dark windows under grey lines pushed the pane out.
+  - The pane is located alongside the frame's own OCR, not after it: that read took up to
+    43 s of the 45 s timeout (QA), and a failed one still tells the client its region.
   - `cropHeight` is 6 heading heights (~7 caption lines); pane lines from full-frame OCR may
     be missing, and a heading-height pitch overshot to 13 of 16 boxes (QA).
   - `tell_pane` sends `screen.region` on change only, per socket, records it after the send,
@@ -249,7 +255,8 @@ paths:
   - Tests: `test_screen_teams_pane.py`.
 - Teams' "Speaker N" rows are headers of their own speaker (`teams._SPEAKER_LABEL`), counted as
   avatar evidence, matched on a roster copy so they never become participants. Without it a
-  real meeting recorded nothing (QA). Test: `test_teams_speaker_labels_are_headers`.
+  real meeting recorded nothing (QA). Tests: `test_teams_speaker_labels_are_headers`,
+  `test_a_speaker_label_heads_its_entry_even_where_pixels_show_no_avatar`.
 - Delivery to Turma (`turma.py`, XERK-2513) is at-least-once on purpose: exactly-once comes from
   the hub's idempotency on `meetingId`. Never mark `sent` before the hub's 200 `{ok: true}`, and
   never key the POST on anything but the conversation id, or a retry duplicates the meeting.
