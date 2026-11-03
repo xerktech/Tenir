@@ -482,7 +482,11 @@ def caption_blocks(
     ``avatar``. With ``avatars_decide`` (avatars were found in the crop's pixels) it alone
     decides a header the roster doesn't match, with or without a roster: a name-shaped row in
     it is a header even before a name-shaped first line ("Hank Ives" / "Acme Global
-    Partners"), and one outside it is caption text (a slide heading).
+    Partners"), and one outside it is caption text (a slide heading). So is a row the roster
+    does match ("Raman, Priya" / "Kunal Shah" / "will demo", XERK-2604), wherever it sits:
+    a rule that also asked where the row sits flipped it back to a header once the header
+    above scrolled off, and the merge stored the entry twice (QA). A missed avatar merges
+    that speaker into the one before (accepted).
 
     ``name_rows`` (Zoom, from pixels): rows drawn as speaker names. A name-shaped one is a
     header whatever follows it: the last row (no text shown yet), another name-shaped row
@@ -491,12 +495,14 @@ def caption_blocks(
     named = name_rows or set()
     blocks: list[CaptionBlock] = []
     for i, row in enumerate(rows):
-        speaker = roster.match(row, prefer=active) if name_like(row) else None
+        # Avatars were found and none is beside this row: whatever it reads, it is caption.
+        no_header = avatars_decide and i not in marked
+        speaker = roster.match(row, prefer=active) if name_like(row) and not no_header else None
         if speaker is not None:
             blocks.append(CaptionBlock(speaker, True, avatar=i in marked))
             continue
         head, sep, rest = row.partition(":")
-        if sep and name_like(head.strip()):
+        if sep and not no_header and name_like(head.strip()):
             speaker = roster.match(head.strip(), prefer=active)
             if speaker is not None:
                 text = [rest.strip()] if rest.strip() else []

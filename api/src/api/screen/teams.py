@@ -305,7 +305,63 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
             _is_sentence(ln.text) and not is_teams_name(clean_name(ln.text)) for ln in stack
         ):
             out.update(id(ln) for ln in stack)
+    return out | _under_avatar_headers(low, lines)
+
+
+
+# How far under a speaker header's top its first caption row starts, in header heights. Real
+# OCR: 0.6-0.9 (1920, 2475 at 1.5x), synthetic 1.25; the next People-pane row 1.7 at the
+# tightest real OCR measured, so 1.5 left 4 px of margin before a pane name was lost (QA).
+_UNDER_HEADER = 1.3
+
+
+def _under_avatar_headers(low: list[OcrLine], lines: list[OcrLine]) -> set[int]:
+    """Ids of a panel header with an initials avatar and of the rows starting right under it:
+    a one-word interim ("Raman, Priya" / "Okay", XERK-2604) is no sentence, so no stack rule
+    hides it, and it joined the roster. The header comes back via ``_panel_speakers``.
+
+    Avatar evidence: initials read into the header's box ("KS Kunal Shah"), a circle box
+    beside it, or the header's initials glued onto the row under it ("KS Okay", real OCR at
+    100%; that row is caption, the header stays as read). Only rows under a header, not its
+    whole stack: a compact People pane links a photo-avatar name under an initials one (QA).
+    A status line right under a pane name goes too; it is no name."""
+    out: set[int] = set()
+    heads: list[OcrLine] = []
+    for ln in low:
+        if _initials(ln.text, any_case=True) is not None:
+            continue
+        text = clean_name(ln.text)
+        if _strip_avatar_token(text, Roster()) != text:
+            heads.append(ln)
+            out.add(id(ln))
+    low_ids = {id(ln) for ln in low}
+    for b in lines:
+        name = _avatar_for(b, tuple(lines))
+        if name is not None and id(name) in low_ids and id(b) in low_ids:
+            # The circle too: ``_panel_speakers`` finds the header by it.
+            if id(name) not in out:
+                heads.append(name)
+            out.update((id(name), id(b)))
+    for ln in low:
+        token, sep, rest = ln.text.strip().partition(" ")
+        if not sep or _initials(token) is None or _is_avatar(token, clean_name(rest)):
+            continue
+        for h in low:
+            if h is not ln and _just_under(ln, h) and _is_avatar(token, clean_name(h.text)):
+                out.add(id(ln))  # the header's avatar glued onto its first caption row
+    for ln in low:
+        if id(ln) in out or _initials(ln.text, any_case=True) is not None:
+            continue
+        if any(_just_under(ln, h) for h in heads):
+            out.add(id(ln))
     return out
+
+
+def _just_under(row: OcrLine, head: OcrLine) -> bool:
+    return (
+        head.box[1] < row.box[1] <= head.box[1] + _UNDER_HEADER * head.height
+        and abs(row.box[0] - head.box[0]) <= 3 * head.height
+    )
 
 
 def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:

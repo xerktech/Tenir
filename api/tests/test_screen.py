@@ -418,6 +418,9 @@ def test_parse_result_rejects_garbage() -> None:
         parse_result([], (1, 1))
     with pytest.raises(OcrError):
         parse_result({"lines": [{"text": "x", "box": [1, 2]}]}, (1, 1))
+    for bad in (float("inf"), float("-inf"), float("nan"), "inf", "nan"):
+        with pytest.raises(OcrError, match="non-finite box"):
+            parse_result({"lines": [{"text": "x", "box": [0, 0, bad, 1]}]}, (1, 1))
     got = parse_result({"lines": [{"text": "  ", "box": [0, 0, 1, 1]}]}, (4, 4))
     assert got.lines == ()
     # tenir-ocr's answer for a slide-like image: no lines, never partial.
