@@ -157,7 +157,7 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
             if line[r, left:right].mean() < DIVIDER_FILL:
                 continue
             # The same divider a row on (JPEG ringing above it reads as one too), or a piece of
-            # it an avatar under it broke: keep the wider run.
+            # it an avatar under it broke: keep the wider run, once it passes as a pane.
             same = [
                 c
                 for c in found
@@ -167,11 +167,11 @@ def candidates(jpeg: bytes | None, size: tuple[int, int]) -> list[Candidate]:
             ]
             if any(c.right - c.left >= right - left for c in same):
                 continue
-            found = [c for c in found if c not in same]
             top = y + 2
             bottom = _bottom(g, top, left, right)
             if bottom - top < MIN_HEIGHT:
                 continue
+            found = [c for c in found if c not in same]
             band_h = int(min(max(BAND * (right - left), BAND_PX[0]), BAND_PX[1]))
             band = (left, max(0, y - band_h), right, y)
             buf = io.BytesIO()

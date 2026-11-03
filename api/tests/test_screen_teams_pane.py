@@ -83,6 +83,9 @@ def render(
         d.line((1640, DIVIDER_Y - 1, x1, DIVIDER_Y - 1), fill=(20, 20, 20))
     elif divider == "dim":  # a 0.6x window's 1 px line at 44 (QA, real capture)
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(44, 44, 44))
+    elif divider == "evict":  # a wider grey line 4 rows under the divider, black above it
+        d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(82, 82, 82))
+        d.line((x0 - 10, DIVIDER_Y + 4, x1 + 10, DIVIDER_Y + 4), fill=(82, 82, 82))
     elif divider == "white":  # a white rule: not Teams' grey divider
         d.line((x0, DIVIDER_Y, x1, DIVIDER_Y), fill=(255, 255, 255))
     elif divider == "double":  # 2 px after JPEG
@@ -151,6 +154,7 @@ def test_the_pane_is_found_by_its_divider_and_confirmed_by_its_heading() -> None
         {"divider": "lifted"},  # an avatar under a 1 px line (QA, real pop-out at 0.79x)
         {"divider": "ringing"},  # a ringing row above part of the line: the full run wins
         {"divider": "dim"},  # a 0.6x window's dim line
+        {"divider": "evict"},  # a wider line that isn't a pane doesn't evict the pane (QA)
         {"long_lines": True, "entries": 4},  # wrapped lines across the pane (QA: box shrank)
         {"avatar_x": PANE_X[0] + 2, "entries": 6},  # the left margin lit: the right one holds
         {"separator": True},  # a rule across the pane: a short gap in both margins
@@ -166,6 +170,7 @@ def test_the_pane_is_found_by_its_divider_and_confirmed_by_its_heading() -> None
         "lifted-by-avatar",
         "ringing-above",
         "dim-line",
+        "wider-line-under",
         "long-lines",
         "left-margin-lit",
         "separator",

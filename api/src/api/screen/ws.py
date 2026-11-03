@@ -149,9 +149,7 @@ def _same_pane(a: CaptionPane, b: CaptionPane) -> bool:
     )
 
 
-async def locate_pane(
-    ocr: OcrClient, jpeg: bytes, size: tuple[int, int]
-) -> CaptionPane | None:
+async def locate_pane(ocr: OcrClient, jpeg: bytes, size: tuple[int, int]) -> CaptionPane | None:
     """The Teams live-captions pane of a full frame: divider-shaped lines found in the pixels,
     then the strip above each OCR'd for the heading. Raises OcrError."""
     loop = asyncio.get_running_loop()
@@ -278,6 +276,7 @@ async def screen_ws(ws: WebSocket) -> None:
         loop = asyncio.get_running_loop()
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
+
         async def read_pane() -> tuple[CaptionPane | None, bool]:
             try:
                 return await locate_pane(ocr, jpeg, image_size(jpeg)), True

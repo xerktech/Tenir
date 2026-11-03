@@ -29,6 +29,12 @@ GLYPH = 120  # glyph cores
 INK = 40  # anything on a row at all (glyph edges, avatars)
 MIN_PX = 8  # a box smaller than this is no pane
 PAD = 6  # px kept under the lowest text
+BORDER = 0.9  # a column lit on this share of the box's rows is a border (avatars: ~0.75)
+# The pane's margins hold no text (the api finds its bottom by them): avatars start ~11 px
+# in, text wraps ~30 px before the right edge, where the scrollbar's thumb shows.
+MARGIN_LEFT = 0.01
+MARGIN_RIGHT = 0.04
+MARGIN_RIGHT_MIN = 6
 MAX_PIXELS = 480_000  # under tenir-ocr's 0.5 Mpx cap (api STRIP_PIXELS)
 
 
@@ -56,12 +62,21 @@ def crop_pane(img: Image.Image, region: Region | None) -> Image.Image | None:
     g = np.asarray(ImageOps.grayscale(pane), dtype=np.uint8)
     if (g <= PANE_BLACK).mean() < PANE_DARK:
         return None
-    rows = np.flatnonzero((g > GLYPH).any(axis=1))
+    # Text is looked for inside the pane's margins, in columns not lit down most of the box:
+    # a window border the box caught at its edge, or the scrollbar's thumb in the right
+    # margin, made the lowest "text" the pane's blank bottom and every crop empty (QA).
+    inner = np.zeros(g.shape[1], dtype=bool)
+    inner[
+        int(MARGIN_LEFT * g.shape[1]) : g.shape[1]
+        - max(MARGIN_RIGHT_MIN, int(MARGIN_RIGHT * g.shape[1]))
+    ] = True
+    lines = (g > GLYPH)[:, inner & ((g > GLYPH).mean(axis=0) < BORDER)]
+    rows = np.flatnonzero(lines.any(axis=1))
     if rows.size == 0:
         return None  # an empty pane
     last = int(rows[-1]) + 1
     start = max(0, last - int(share * h))
-    ink = (g > INK).any(axis=1)
+    ink = (g > INK)[:, (g > INK).mean(axis=0) < BORDER].any(axis=1)  # any ink but borders
     open_at = start
     while open_at < last and ink[open_at]:
         open_at += 1  # move down to a blank row: a line cut by the crop's top is noise

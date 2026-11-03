@@ -75,6 +75,26 @@ def test_nothing_is_sent_without_a_pane_showing_text(case) -> None:
     assert crop_pane(img, region) is None
 
 
+@pytest.mark.parametrize("mark", ["border", "scrollbar"])
+def test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text(mark) -> None:
+    # Real capture at 0.6-0.7x: the box caught a window border at its edge, or the pane's
+    # scrollbar thumb in its right margin, and every crop was the pane's blank bottom (QA).
+    img, region = make_desktop()
+    assert region is not None
+    (left, top, right, bottom), _share = region
+    w, h = img.size
+    d = ImageDraw.Draw(img)
+    x0, x1, y0, y1 = int(left * w), int(right * w), int(top * h), int(bottom * h)
+    if mark == "border":
+        d.line((x0, y0, x0, y1), fill=(150, 150, 150))
+    else:
+        d.rectangle((x1 - 6, y1 - 60, x1 - 3, y1 - 20), fill=(160, 160, 160))
+    crop = crop_pane(img, region)
+    assert crop is not None
+    g = np.asarray(ImageOps.grayscale(crop))
+    assert (g[:, 20:-20] > 120).mean() > 0.05  # the entries, not a blank tail
+
+
 def test_a_crop_over_the_ocr_pixel_cap_is_scaled_under_it() -> None:
     img, region = make_desktop((5000, 3000), (100, 100, 4900, 2900), ui=3.0, captions=ENTRIES * 4)
     assert region is not None
