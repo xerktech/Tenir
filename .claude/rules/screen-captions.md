@@ -110,7 +110,10 @@ paths:
   the panel draws names dimmer than text. Only without readable pixels does the old "header
   only under a row ending . ? !" rule apply; it stored names after unpunctuated entries as
   speech (XERK-2644). Row 0 stays position-only: the client starts the crop at the name line.
-  Tests: `test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech`.
+  - A dim name-shaped row (`name_rows`) is a header whatever follows: the last row, a
+    name-shaped first line ("Sounds Good"), a one-word name. Each was stored as speech (QA).
+  - Tests: `test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech`,
+    `test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech`.
 - The fixture is synthetic OCR output (no real capture may be committed: public repo). Re-tune
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
