@@ -27,5 +27,20 @@ paths:
   `/status` min-version gate, so an unbuilt checkout always starts.
 - Tests: `tests/test_runner.py::test_minimized_or_retitled_windows_pause_and_the_operator_is_told`,
   `tests/test_frames.py::test_caption_crops_go_only_while_a_caption_shows_with_a_full_frame_first`.
+- Teams crops come from the box the api sends (`screen.region`, `caption_pane.PaneCrop`), never
+  from client-side geometry: the captured window is a whole remote desktop with Teams floating
+  in it. Six QA rounds of a pixel panel finder never converged, and it found nothing on real
+  remote-desktop frames. Each window gets its own `PaneCrop` (`FINDERS` holds factories).
+  - The region is dropped when the window is lost and on every new socket; the api re-sends.
+    Tests: `test_a_teams_window_crops_only_where_the_api_said_and_forgets_it_with_the_window`,
+    `test_a_reconnect_forgets_the_pane_until_the_api_says_it_again`.
+  - The crop ends at the box's lowest glyph row (a pane fills from the top, then scrolls) and
+    opens on a blank row; a box no longer mostly black sends nothing. Tests: `test_caption_pane.py`.
+  - The lowest text is looked for inside the pane's margins (8% left, 4% right): a window
+    border or corner caught at the box's edge, or the scrollbar thumb, made every real
+    0.6-0.7x crop blank (QA). Test: `test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text`.
+  - The blank row a crop opens on is checked on every column: skipping lit columns moved real
+    crops 9 px, OCR then read initials into the names, and a real meeting recorded nothing (QA).
+    Test: `test_the_crop_opens_between_entries_not_through_an_avatar`.
 - `ruff` is pinned in `desktop/pyproject.toml`: unpinned, CI pulled a release with new default
   rules (BLE001, RUF100) and lint flipped between runs. Bump it deliberately.

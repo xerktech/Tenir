@@ -18,6 +18,7 @@ from PIL import Image
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 from websockets.sync.client import ClientConnection, connect
 
+from tenir_capture.caption_pane import PaneCrop
 from tenir_capture.config import Config, WindowSpec
 from tenir_capture.frames import (
     DEFAULT_CADENCE,
@@ -89,15 +90,8 @@ class Runner:
         self._default = DEFAULT_CADENCE
         self._watched: dict[str, _Watched] = {}
         for spec in self.config.windows:
-            finder = FINDERS.get(spec.platform)
-            if finder is None:
-                log.warning(
-                    "%s (%s): %s captions aren't supported yet; not capturing this window",
-                    spec.org_name,
-                    spec.org_site_key,
-                    spec.platform,
-                )
-                continue
+            # config.parse only admits platforms with a finder.
+            finder = FINDERS[spec.platform]()
             self._watched[spec.org_site_key] = _Watched(spec, WindowPlan(finder))
         self._next_refresh = 0.0
 
@@ -139,6 +133,8 @@ class Runner:
                 log.debug("capture stop failed", exc_info=True)
         w.capture = None
         w.plan = WindowPlan(w.plan.finder)  # a new window starts with a full frame
+        if isinstance(w.plan.finder, PaneCrop):
+            w.plan.finder.region = None  # a new window: the api locates its pane again
 
     def close(self) -> None:
         for w in self._watched.values():
@@ -162,6 +158,11 @@ class Runner:
             template = NOTICES.get(msg.text)
             if w is not None and template is not None:
                 self.platform.notify("Tenir capture", template.format(org=w.spec.org_name))
+        elif msg.kind == "region" and msg.org_site_key is not None:
+            w = self._watched.get(msg.org_site_key)
+            if w is not None and isinstance(w.plan.finder, PaneCrop):
+                w.plan.finder.region = msg.region
+                log.info("%s: caption pane %s", w.spec.org_name, msg.region or "gone")
         elif msg.kind == "error":
             log.warning("server: %s", msg.text)
 
@@ -217,6 +218,8 @@ class Runner:
             self._default = DEFAULT_CADENCE
             for w in self._watched.values():
                 w.cadence = None
+                if isinstance(w.plan.finder, PaneCrop):
+                    w.plan.finder.region = None  # the new socket's server says it again
         done = threading.Event()
         receiver = threading.Thread(target=self._receive, args=(ws, done), daemon=True)
         receiver.start()

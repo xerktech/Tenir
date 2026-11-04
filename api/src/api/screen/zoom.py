@@ -172,6 +172,11 @@ class Roster:
 
         return self.aliases.get(alias_key(name), name)
 
+    def copy(self) -> Roster:
+        out = Roster(self.aliases)
+        out._names = dict(self._names)
+        return out
+
     def add(self, name: str) -> str | None:
         """Add a tile name; returns its display form when it is new, else None."""
         display = self.display(name)
@@ -206,6 +211,16 @@ class Roster:
         return good[0][1]
 
 
+@dataclass(frozen=True)
+class CaptionPane:
+    """Where a full frame shows its caption pane (Teams, ``teams_pane``), as shares of the
+    frame: ``box`` (left, top, right, bottom) below the pane's heading, and ``crop``, how
+    much of the pane's height above its lowest text the client sends."""
+
+    box: tuple[float, float, float, float]
+    crop: float
+
+
 @dataclass
 class FullFrame:
     participants: list[str] = field(default_factory=list)
@@ -213,6 +228,8 @@ class FullFrame:
     title: str | None = None
     # The meeting toolbar was on screen (Zoom hides it while the mouse is idle).
     in_meeting: bool = False
+    # Teams: the live-captions pane, which the client is told to crop (screen.region).
+    caption_pane: CaptionPane | None = None
 
 
 def _caption_region(lines: list[OcrLine], width: int, height: int) -> tuple[float, float] | None:

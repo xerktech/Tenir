@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from tenir_capture.config import WindowSpec
+from tenir_capture.config import PLATFORMS, WindowSpec
 from tenir_capture.frames import (
+    FINDERS,
     MAX_FULL_PIXELS,
     Cadence,
     WindowPlan,
@@ -99,6 +100,13 @@ def test_the_real_finder_sends_the_zoom_caption_box_and_nothing_without_one(zoom
     # Only the caption box crosses the wire, under tenir-ocr's 0.5 Mpx cap.
     assert crop.width * crop.height < 500_000 and crop.height < 200
     assert plan.frames(1, zoom_frame(caption=False, dark=True), CAD) == []
+
+
+def test_every_configurable_platform_has_a_finder() -> None:
+    # The runner indexes FINDERS by a window's platform directly.
+    assert set(FINDERS) == set(PLATFORMS)
+    # Each window gets its own finder: a Teams pane located in one window isn't another's.
+    assert FINDERS["teams"]() is not FINDERS["teams"]()
 
 
 def test_huge_windows_are_scaled_to_what_the_server_decodes() -> None:

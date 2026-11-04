@@ -27,8 +27,8 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
      set (a bad `org` is an error, never a fall-back to `orgSiteKey`). Switching a window from
      its site key to a label starts a new org key in Tenir: speaker names learned so far and the
      history org filter stay with the old key, under which the earlier meetings remain.
-   - `platform`: `zoom` or `teams`. Teams windows are skipped (logged) until the Teams
-     caption crop ships (XERK-2515).
+   - `platform`: `zoom` or `teams`. In Teams, turn on live captions and keep them docked on
+     the right (or popped out): the bottom caption panel isn't read.
 3. Pair it once: `tenir-capture.exe --pair` asks for your Tenir username and password and
    saves a screen-only device token to `%APPDATA%\Tenir\device-token`. The token works for 365
    days, and only on `/ws/screen`. It is listed under this PC's hostname in the web Devices tab
