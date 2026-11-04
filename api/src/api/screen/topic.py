@@ -94,7 +94,7 @@ async def title_for(conv: Conversation, client: httpx.AsyncClient | None = None)
         resp.raise_for_status()
         message = resp.json()["choices"][0]["message"]
         return clean(message.get("content") or "")
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 — any odd answer (content as a list) is no title
         log.warning("meeting %s: no topic title (%r)", conv.id, exc)
         return None
     finally:

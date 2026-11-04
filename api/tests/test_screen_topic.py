@@ -83,6 +83,8 @@ def test_the_title_comes_from_the_cue_model(monkeypatch: pytest.MonkeyPatch) -> 
         httpx.Response(200, json={"choices": []}),
         httpx.Response(200, content=b"not json"),
         httpx.ConnectError("down"),
+        httpx.Response(200, json={"choices": [{"message": [1]}]}),
+        httpx.Response(200, json={"choices": [{"message": {"content": ["a"]}}]}),
     ],
 )
 def test_any_model_failure_gives_no_title(monkeypatch: pytest.MonkeyPatch, answer) -> None:

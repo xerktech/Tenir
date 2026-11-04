@@ -311,7 +311,9 @@ def test_one_orgs_stuck_backlog_never_starves_another_org(clock) -> None:
     real_get = store.get
     store.get = lambda *a, **k: reads.append(a[1]) or real_get(*a, **k)  # type: ignore[method-assign]
     assert asyncio.run(d.run_once()) == 1
-    assert len(reads) == 2  # a deferred org's backlog is skipped before it is loaded
+    # A deferred org's backlog is skipped before it is loaded: "other" is read, then re-read
+    # after it is titled (it may have been deleted meanwhile), and one stuck meeting.
+    assert len(reads) == 3
     assert store.get("default", "other").delivery_state == "sent"
     # The refused org was asked once this pass, not 25 times.
     assert hub.paths.count(f"/api/orgs/{SITE}/meetings") == 1
@@ -702,3 +704,56 @@ def test_a_meeting_that_already_has_a_title_keeps_it(clock) -> None:
     hub = Hub(_ok())
     asyncio.run(_delivery(store, hub, clock, titler=titler).run_once())
     assert json.loads(hub.requests[0].content)["title"] == "Weekly sync"
+
+
+def test_a_meeting_deleted_while_it_is_titled_never_reaches_turma(clock) -> None:
+    """QA: titling made the gap between loading a meeting and posting it seconds long; a
+    meeting deleted in that gap was still posted."""
+    store = InMemoryConversationStore()
+    _untitled(store)
+
+    async def titler(conv):
+        store.delete("default", conv.id)  # the user deletes it meanwhile
+        return "Late Title"
+
+    hub = Hub(_ok())
+    d = _delivery(store, hub, clock, titler=titler)
+    asyncio.run(d.run_once())
+    assert hub.requests == []
+
+
+def test_a_slow_or_crashing_titler_never_holds_up_delivery(clock, monkeypatch) -> None:
+    """QA: httpx's timeout is per read, so a trickling model held the delivery loop for
+    minutes; the whole titling call is capped, and an exception is no title."""
+    monkeypatch.setattr(turma, "TITLE_SECONDS", 0.05)
+    store = InMemoryConversationStore()
+    _untitled(store, "slow")
+    _untitled(store, "crash")
+
+    async def titler(conv):
+        if conv.id == "slow":
+            await asyncio.sleep(30)
+        raise AttributeError("'list' object has no attribute 'strip'")
+
+    hub = Hub(_ok())
+    d = _delivery(store, hub, clock, titler=titler)
+    assert asyncio.run(d.run_once()) == 2
+    assert all("title" not in json.loads(r.content) for r in hub.requests)
+
+
+def test_a_failed_title_is_asked_once_even_across_retries(clock) -> None:
+    store = InMemoryConversationStore()
+    _untitled(store)
+    asked: list[str] = []
+
+    async def titler(conv):
+        asked.append(conv.id)
+        return None
+
+    hub = Hub(httpx.Response(503), httpx.Response(503), _ok())
+    d = _delivery(store, hub, clock, titler=titler)
+    for _ in range(3):
+        asyncio.run(d.run_once())
+        clock["now"] += 3600
+    assert len(hub.requests) == 3 and asked == ["c1"]
+    assert d._titled == set()  # forgotten once delivered
