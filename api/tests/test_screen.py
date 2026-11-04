@@ -97,14 +97,16 @@ class StubOcr:
     def __init__(self) -> None:
         self.by_jpeg: dict[bytes, OcrResult] = {}
         self.full: dict[bytes, bool] = {}  # what ws passed as read(full=) per frame
+        self.split_once: dict[bytes, bool] = {}  # what ws passed as read(split_once=)
         self.fail = False
 
     def register(self, jpeg: bytes, result: OcrResult) -> bytes:
         self.by_jpeg[jpeg] = result
         return jpeg
 
-    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult:
+    async def read(self, jpeg: bytes, *, full: bool = False, split_once: bool = False) -> OcrResult:
         self.full[jpeg] = full
+        self.split_once[jpeg] = split_once
         if self.fail:
             raise OcrError("down")
         return self.by_jpeg[jpeg]
@@ -688,6 +690,113 @@ def test_a_small_window_frame_is_split_but_a_caption_crop_never_is() -> None:
     assert asyncio.run(crop()).lines == () and dense == [300, 148]
 
 
+def test_a_dense_teams_caption_crop_is_halved_once_and_both_halves_read() -> None:
+    """XERK-2652: a real 679x240 Teams pane crop holding 11-12 lines plus avatars came back
+    too_dense every time and the whole frame was dropped. A Teams crop is halved once; a
+    half still too dense is not halved again (that is a slide, and it bounds the cost)."""
+    from api.screen import ocr as ocr_mod
+
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        h = Image.open(io.BytesIO(request.content)).size[1]
+        calls.append(h)
+        if h > 200:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        line = {"text": f"Line {len(calls)}", "box": [10, 40, 200, 56]}
+        return httpx.Response(200, json={"lines": [line], "too_dense": False})
+
+    async def run(split_once: bool) -> OcrResult:
+        return await _mock_ocr(handler).read(_jpeg(679, 240), split_once=split_once)
+
+    got = asyncio.run(run(True))
+    top, bottom = ocr_mod.halves(0, 240)
+    assert calls == [240, top[1] - top[0], bottom[1] - bottom[0]]
+    # Each half's line, shifted into crop coordinates; the result keeps the crop's size.
+    assert [(ln.text, ln.box[1]) for ln in got.lines] == [
+        ("Line 2", top[0] + 40),
+        ("Line 3", bottom[0] + 40),
+    ]
+    assert (got.width, got.height) == (679, 240)
+
+    # Without split_once (a Zoom crop) the refusal stands: one request, no lines.
+    calls.clear()
+    assert asyncio.run(run(False)).lines == () and calls == [240]
+
+    # A half that is still too dense is not split again.
+    dense: list[int] = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        dense.append(Image.open(io.BytesIO(request.content)).size[1])
+        return httpx.Response(200, json={"lines": [], "too_dense": True})
+
+    async def slide() -> OcrResult:
+        return await _mock_ocr(refuse).read(_jpeg(679, 240), split_once=True)
+
+    assert asyncio.run(slide()).lines == () and dense == [240, 144, 144]
+
+    # A crop too short to halve is refused as before.
+    dense.clear()
+    short = ocr_mod.MIN_SPLIT_HEIGHT
+    assert asyncio.run(_mock_ocr(refuse).read(_jpeg(679, short), split_once=True)).lines == ()
+    assert dense == [short]
+
+
+def test_a_line_both_halves_read_differently_is_kept_once() -> None:
+    """QA on XERK-2652 (real Paddle): a name header in the halves' overlap read as
+    "CO Okafor, Chidi" in one half and "Okafor, Chidi" in the other, and a text line as
+    "week so," / "week so.". Both survived exact-text dedupe, so the parser doubled the header
+    and gave its lines to the previous speaker. The reading further from its cut is kept."""
+    from api.screen import ocr as ocr_mod
+
+    top, bottom = ocr_mod.halves(0, 240)  # (0, 144), (96, 240): overlap rows 96-144
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        h = Image.open(io.BytesIO(request.content)).size[1]
+        seen.append(h)
+        if len(seen) == 1:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        if len(seen) == 2:  # top half: header at frame y 100 (44 px above its cut)
+            lines = [
+                {"text": "Kunal Shah", "box": [46, 10, 200, 28]},
+                {"text": "CO Okafor, Chidi", "box": [13, 100, 200, 118]},
+                {"text": "week so,", "box": [45, 122, 312, 140]},  # 4 px above the cut
+            ]
+        else:  # bottom half (frame y = box y + 96)
+            lines = [
+                {"text": "Okafor, Chidi", "box": [46, 5, 200, 22]},  # 5 px below its cut
+                {"text": "week so.", "box": [47, 27, 310, 43]},  # 27 px below its cut
+                {"text": "the next line", "box": [45, 80, 300, 98]},
+            ]
+        return httpx.Response(200, json={"lines": lines, "too_dense": False})
+
+    got = asyncio.run(_mock_ocr(handler).read(_jpeg(679, 240), split_once=True))
+    assert [ln.text for ln in got.lines] == [
+        "Kunal Shah",
+        "CO Okafor, Chidi",
+        "week so.",
+        "the next line",
+    ]
+    assert seen == [240, top[1] - top[0], bottom[1] - bottom[0]]
+
+
+def test_a_large_teams_crop_halves_each_dense_strip_once() -> None:
+    """QA on XERK-2652: a Teams crop over STRIP_PIXELS is read in strips, and one halving
+    shared by the whole crop left a second dense strip dropped. Each strip halves once."""
+    from api.screen import ocr as ocr_mod
+
+    heights: list[int] = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        heights.append(Image.open(io.BytesIO(request.content)).size[1])
+        return httpx.Response(200, json={"lines": [], "too_dense": True})
+
+    assert asyncio.run(_mock_ocr(refuse).read(_jpeg(1200, 800), split_once=True)).lines == ()
+    tall = [b - t > ocr_mod.MIN_SPLIT_HEIGHT for t, b in ocr_mod.strips(1200, 800)]
+    assert sum(tall) > 1 and len(heights) == sum(3 if x else 1 for x in tall)
+
+
 def test_strips_cover_the_frame_with_overlap() -> None:
     from api.screen import ocr as ocr_mod
 
@@ -854,6 +963,7 @@ def replay(
         wait_handled(i + 1)
         # Full frames are read with too-dense strips halved; caption crops never (XERK-2610).
         assert ocr.full[jpeg] is (frame["region"] == "full")
+        assert ocr.split_once[jpeg] is False  # a dense Zoom crop is a slide (XERK-2652)
     return start + len(frames)
 
 
