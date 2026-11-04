@@ -75,7 +75,9 @@ def test_nothing_is_sent_without_a_pane_showing_text(case) -> None:
     assert crop_pane(img, region) is None
 
 
-@pytest.mark.parametrize("mark", ["border", "scrollbar", "corner"])
+@pytest.mark.parametrize(
+    "mark", ["border", "scrollbar", "corner", "scrollbar, box 10 px wide", "corner, box 12 px wide"]
+)
 def test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text(mark) -> None:
     # Real capture at 0.6-0.7x: the box caught a window border at its edge, or the pane's
     # scrollbar thumb in its right margin, and every crop was the pane's blank bottom (QA).
@@ -89,8 +91,16 @@ def test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text(mark) -> None:
         d.line((x0 + 8, y0, x0 + 8, y1), fill=(150, 150, 150))  # in the left margin
     elif mark == "scrollbar":
         d.rectangle((x1 - 6, y1 - 60, x1 - 3, y1 - 20), fill=(160, 160, 160))
-    else:  # a window's rounded corner, at the bottom of a box placed a few px too wide
+    elif mark == "corner":  # a window's rounded corner, at the bottom of a box a few px wide
         d.rectangle((x0, y1 - 10, x0 + 8, y1 - 4), fill=(160, 160, 160))
+    elif mark == "scrollbar, box 10 px wide":
+        # Real capture at 1.0-0.9x with the box's right edge 8-12 px out: the thumb sits past
+        # the 6 px minimum, so only the 4% right margin skips it (QA).
+        d.rectangle((x1 - 14, y1 - 60, x1 - 8, y1 - 20), fill=(160, 160, 160))
+    else:
+        # Real capture at 0.6x with the box's left edge 8-12 px out: the corner reaches past a
+        # 4% margin, so the 8% left margin is what skips it (QA).
+        d.rectangle((x0, y1 - 10, x0 + 24, y1 - 4), fill=(160, 160, 160))
     crop = crop_pane(img, region)
     assert crop is not None
     g = np.asarray(ImageOps.grayscale(crop))
