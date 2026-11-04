@@ -9,7 +9,12 @@
  * Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.
  */
 export type TenirWsMessages =
-  ClientMessage | ServerMessage | ScreenFrameHeader | ScreenCadence | ScreenNotice | ScreenRegion;
+  | ClientMessage
+  | ServerMessage
+  | ScreenFrameHeader
+  | ScreenCadence
+  | ScreenNotice
+  | ScreenRegion;
 export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
