@@ -36,10 +36,11 @@ paths:
     `test_a_reconnect_forgets_the_pane_until_the_api_says_it_again`.
   - The crop ends at the box's lowest glyph row (a pane fills from the top, then scrolls) and
     opens on a blank row; a box no longer mostly black sends nothing. Tests: `test_caption_pane.py`.
-  - The lowest text is looked for inside the pane's margins (8% left, 4% right) and in columns
-    lit on < 90% of rows: a window border or corner caught at the box's edge, or the scrollbar
-    thumb, made every real 0.6-0.7x crop blank (QA). Not 50%: an avatar column is lit ~75%.
+  - The lowest text is looked for inside the pane's margins (8% left, 4% right): a window
+    border or corner caught at the box's edge, or the scrollbar thumb, made every real
+    0.6-0.7x crop blank (QA). Test: `test_a_border_or_scrollbar_in_the_box_is_not_the_newest_text`.
   - The blank row a crop opens on is checked on every column: skipping lit columns moved real
     crops 9 px, OCR then read initials into the names, and a real meeting recorded nothing (QA).
+    Test: `test_the_crop_opens_between_entries_not_through_an_avatar`.
 - `ruff` is pinned in `desktop/pyproject.toml`: unpinned, CI pulled a release with new default
   rules (BLE001, RUF100) and lint flipped between runs. Bump it deliberately.

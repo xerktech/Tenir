@@ -29,7 +29,6 @@ GLYPH = 120  # glyph cores
 INK = 40  # anything on a row at all (glyph edges, avatars)
 MIN_PX = 8  # a box smaller than this is no pane
 PAD = 6  # px kept under the lowest text
-BORDER = 0.9  # a column lit on this share of the box's rows is a border (avatars: ~0.75)
 # The pane's margins hold no text (the api finds its bottom by them): text starts 11-16% in
 # (after the avatars), and wraps ~30 px before the right edge, where the scrollbar's thumb
 # shows. The left margin also skips a window's rounded corner just outside a box placed a
@@ -64,15 +63,14 @@ def crop_pane(img: Image.Image, region: Region | None) -> Image.Image | None:
     g = np.asarray(ImageOps.grayscale(pane), dtype=np.uint8)
     if (g <= PANE_BLACK).mean() < PANE_DARK:
         return None
-    # Text is looked for inside the pane's margins, in columns not lit down most of the box:
-    # a window border the box caught at its edge, or the scrollbar's thumb in the right
-    # margin, made the lowest "text" the pane's blank bottom and every crop empty (QA).
-    inner = np.zeros(g.shape[1], dtype=bool)
-    inner[
+    # Text is looked for inside the pane's margins: a window border or corner the box caught
+    # at its edge, or the scrollbar's thumb in the right margin, made the lowest "text" the
+    # pane's blank bottom and every crop empty (QA).
+    lines = (g > GLYPH)[
+        :,
         int(MARGIN_LEFT * g.shape[1]) : g.shape[1]
-        - max(MARGIN_RIGHT_MIN, int(MARGIN_RIGHT * g.shape[1]))
-    ] = True
-    lines = (g > GLYPH)[:, inner & ((g > GLYPH).mean(axis=0) < BORDER)]
+        - max(MARGIN_RIGHT_MIN, int(MARGIN_RIGHT * g.shape[1])),
+    ]
     rows = np.flatnonzero(lines.any(axis=1))
     if rows.size == 0:
         return None  # an empty pane
