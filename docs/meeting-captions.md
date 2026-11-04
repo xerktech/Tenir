@@ -216,7 +216,11 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   hence full frames every 30 s. A too-dense strip (a camera-off gallery row: initials circles
   plus labels pass 16 boxes) is halved and re-read while taller than 128 px, at most 24 halvings
   per frame (XERK-2610); a strip still too dense (a slide) contributes nothing. A full frame
-  under the cap is read this way too; a caption crop is never split.
+  under the cap is read this way too.
+- A too-dense Zoom caption crop is a slide and is never split. A too-dense Teams caption crop
+  (its pane can show 11-12 lines plus avatars) has each strip halved once and both halves
+  read (XERK-2652); a half still too dense contributes nothing. A line both halves read
+  (their boxes mostly overlap) is kept once, from the half where it sits further from the cut.
 - 413 / 503 / timeout (45 s) drop that frame; the next one retries.
 - Empty `API_OCR_URL` keeps `/ws/screen` off (close 1013).
 

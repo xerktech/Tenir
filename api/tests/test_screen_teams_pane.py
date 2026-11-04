@@ -320,7 +320,7 @@ class BandOcr(StubOcr):
         super().__init__()
         self.band: OcrResult | Exception = heading()
 
-    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult:
+    async def read(self, jpeg: bytes, *, full: bool = False, split_once: bool = False) -> OcrResult:
         if jpeg in self.by_jpeg:
             return await super().read(jpeg, full=full)
         if isinstance(self.band, Exception):
@@ -386,7 +386,7 @@ def test_the_pane_is_told_even_when_the_frames_own_ocr_fails(band_screen) -> Non
 
     real_read = ocr.read
 
-    async def read(data: bytes, *, full: bool = False) -> OcrResult:
+    async def read(data: bytes, *, full: bool = False, split_once: bool = False) -> OcrResult:
         if full:
             raise OcrError("timed out")
         return await real_read(data, full=full)

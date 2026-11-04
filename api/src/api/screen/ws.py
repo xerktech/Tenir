@@ -292,7 +292,11 @@ async def screen_ws(ws: WebSocket) -> None:
         teams_full = header.platform is Platform.teams and header.region.value == "full"
         pane_task = asyncio.create_task(read_pane()) if teams_full else None
         try:
-            result = await ocr.read(jpeg, full=header.region.value == "full")
+            result = await ocr.read(
+                jpeg,
+                full=header.region.value == "full",
+                split_once=header.platform.value == "teams",
+            )
         except BaseException as exc:
             if not isinstance(exc, OcrError):
                 if pane_task is not None:

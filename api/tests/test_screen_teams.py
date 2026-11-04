@@ -1064,6 +1064,8 @@ def test_replayed_teams_meeting_has_the_right_speakers_and_no_duplicate_lines(sc
             jpeg = ocr.register(unique_jpeg(i), ocr_of(frame))
             ws.send_bytes(envelope(teams_header(base + frame["t"], frame["region"]), jpeg))
             wait_handled(i + 1)
+            # A dense Teams caption crop is halved once, not dropped (XERK-2652).
+            assert ocr.split_once[jpeg] is True
             if i == 1:
                 # Tile labels alone (no caption text) don't start a meeting.
                 assert store.list(admin.household) == []

@@ -293,3 +293,11 @@ paths:
   - Tests: `test_a_screen_shares_text_is_not_taken_for_participants`,
     `test_a_dark_screen_share_still_passes_as_tiles`,
     `test_a_label_with_no_pixels_under_it_is_kept`.
+- A too-dense caption crop is split only on Teams, and only once (`read(split_once=)`, XERK-2652):
+  a real Teams pane crop (11-12 lines + avatars) passes tenir-ocr's 16 boxes. On Zoom a dense
+  crop is a slide, so never split it. Test:
+  `test_a_dense_teams_caption_crop_is_halved_once_and_both_halves_read`.
+- The halves read a line in their overlap differently ("CO Okafor, Chidi" / "Okafor, Chidi"),
+  so exact-text `_dedupe` kept both and a doubled header misattributed lines (real Paddle, QA).
+  `_drop_rereads` dedupes by box overlap.
+  Test: `test_a_line_both_halves_read_differently_is_kept_once`.
