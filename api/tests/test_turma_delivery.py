@@ -733,6 +733,7 @@ def test_a_slow_or_crashing_titler_never_holds_up_delivery(clock, monkeypatch) -
     async def titler(conv):
         if conv.id == "slow":
             await asyncio.sleep(30)
+            return "Too Late"  # only reaches the hub if the cap is gone
         raise AttributeError("'list' object has no attribute 'strip'")
 
     hub = Hub(_ok())
