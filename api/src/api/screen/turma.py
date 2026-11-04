@@ -46,6 +46,7 @@ import httpx
 from api.config import settings
 from api.metrics import metrics
 from api.persistence import Conversation, ConversationStore
+from api.screen import topic
 
 log = logging.getLogger("api.screen.turma")
 
@@ -160,8 +161,12 @@ class TurmaDelivery:
         retry_max_seconds: float = 300.0,
         give_up_seconds: float = 86_400.0,
         clock=time.time,
+        titler=None,
     ) -> None:
         self.store = store
+        # Titles a meeting by its topic before its first delivery attempt (topic.py).
+        self.titler = titler or topic.title_for
+        self._titled: set[str] = set()  # asked once per process: a failure doesn't block
         self.url = url.rstrip("/")
         self.token = token
         self.client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
@@ -220,6 +225,12 @@ class TurmaDelivery:
             return "skipped"
         if conv.delivery_state not in (None, "pending"):
             return "skipped"
+        if conv.meeting_title is None and cid not in self._titled:
+            self._titled.add(cid)
+            title = await self.titler(conv)
+            if title:
+                await asyncio.to_thread(self.store.set_meeting_title, household, cid, title)
+                conv.meeting_title = title
         built = meeting_body(conv)
         if built is None:
             await self._fail(household, cid, "no caption lines to send")

@@ -1078,7 +1078,7 @@ def test_replayed_teams_meeting_has_the_right_speakers_and_no_duplicate_lines(sc
     assert conv is not None and conv.status == "ready"
     assert (conv.platform, conv.org_site_key, conv.org_name) == ("teams", "yprime", "YPrime")
     expected = FIXTURE["expected"]
-    assert conv.meeting_title == expected["title"]
+    assert conv.meeting_title is None  # titled by topic at delivery (XERK-2506)
     assert conv.participants == expected["participants"]
     assert [{"speaker": s.speaker, "text": s.text} for s in conv.segments] == expected["lines"]
     starts = [s.start_ms for s in conv.segments]

@@ -649,3 +649,56 @@ def test_status_shows_a_delivery_config_error_red_at_once(monkeypatch, url, toke
     (c,) = [c for c in asyncio.run(st.refresh()) if c.id == "turma"]
     assert (c.state, c.detail) == (st.STATE_DOWN, detail)
     assert not turma.configured()
+
+
+# --- topic titles (XERK-2506) ---------------------------------------------------------------
+
+
+def _untitled(store: InMemoryConversationStore, cid: str = "c1"):
+    store.create("default", cid, owner="u1", screen=ScreenMeta(SITE, "Acme", "zoom"))
+    store.add_segment("default", cid, Segment("s0", "retry the ingest", 0, 900, speaker="Ana"))
+    store.finish("default", cid)
+
+
+def test_an_untitled_meeting_is_titled_by_topic_once_before_delivery(clock) -> None:
+    store = InMemoryConversationStore()
+    _untitled(store)
+    asked: list[str] = []
+
+    async def titler(conv):
+        asked.append(conv.id)
+        return "Payment Ingest Retries"
+
+    hub = Hub(httpx.Response(503), _ok())
+    d = _delivery(store, hub, clock, titler=titler)
+    asyncio.run(d.run_once())  # refused for now: retried later
+    clock["now"] += 3600
+    asyncio.run(d.run_once())
+    assert asked == ["c1"]  # asked once, not per attempt
+    assert [json.loads(r.content)["title"] for r in hub.requests] == ["Payment Ingest Retries"] * 2
+    assert store.get("default", "c1").meeting_title == "Payment Ingest Retries"
+
+
+def test_a_failed_topic_title_never_holds_up_delivery(clock) -> None:
+    store = InMemoryConversationStore()
+    _untitled(store)
+
+    async def titler(conv):
+        return None
+
+    hub = Hub(_ok())
+    d = _delivery(store, hub, clock, titler=titler)
+    assert asyncio.run(d.run_once()) == 1
+    assert "title" not in json.loads(hub.requests[0].content)
+
+
+def test_a_meeting_that_already_has_a_title_keeps_it(clock) -> None:
+    store = InMemoryConversationStore()
+    _meeting(store)
+
+    async def titler(conv):
+        raise AssertionError("not asked")
+
+    hub = Hub(_ok())
+    asyncio.run(_delivery(store, hub, clock, titler=titler).run_once())
+    assert json.loads(hub.requests[0].content)["title"] == "Weekly sync"
