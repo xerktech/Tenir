@@ -78,7 +78,9 @@ class OcrError(RuntimeError):
 
 
 class OcrClient(Protocol):
-    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult: ...
+    async def read(
+        self, jpeg: bytes, *, full: bool = False, split_once: bool = False
+    ) -> OcrResult: ...
 
 
 def parse_lines(payload: object) -> list[OcrLine]:
@@ -148,6 +150,33 @@ def _dedupe(lines: list[OcrLine]) -> list[OcrLine]:
     return kept
 
 
+def _too_dense(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("too_dense") is True
+
+
+def _overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """Intersection over the smaller box's area."""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return w * h / max(1, smaller)
+
+
+def _drop_rereads(pieces: list[tuple[OcrLine, int, int]]) -> list[OcrLine]:
+    """``(line, piece, margin)``: of two lines from different pieces whose boxes mostly
+    overlap, keep the one further from its piece's cut. Both halves of a caption crop read a
+    line in their overlap, often differently ("week so," / "week so.", an avatar's initials
+    joined or not), so exact-text ``_dedupe`` kept both, and a doubled name header handed the
+    next lines to the wrong speaker (XERK-2652 QA, real Paddle)."""
+    kept: list[tuple[OcrLine, int]] = []
+    for ln, piece, _ in sorted(pieces, key=lambda p: -p[2]):
+        if not any(p != piece and _overlap(ln.box, k.box) >= 0.5 for k, p in kept):
+            kept.append((ln, piece))
+    return [ln for ln, _ in kept]
+
+
 class HttpOcrClient:
     """Posts frames to tenir-ocr. One pooled client per process."""
 
@@ -166,13 +195,20 @@ class HttpOcrClient:
         except ValueError as exc:  # body is not JSON
             raise OcrError(f"OCR response is not JSON: {exc!r}") from exc
 
-    async def read(self, jpeg: bytes, *, full: bool = False) -> OcrResult:
+    async def read(self, jpeg: bytes, *, full: bool = False, split_once: bool = False) -> OcrResult:
         """``full``: a whole window frame, whose too-dense strips are halved and re-read even
-        when it fits one request (a small window's gallery is still over 16 boxes). A caption
-        crop (``full=False``) is never split: too dense there means a slide, store nothing."""
+        when it fits one request (a small window's gallery is still over 16 boxes).
+        ``split_once``: a Teams caption crop, halved once if too dense. Its pane can hold 11-12
+        lines plus avatars, over tenir-ocr's 16 boxes, and refusing it dropped the frame
+        (XERK-2652). Any other caption crop is never split: on Zoom too dense means a slide."""
         width, height = image_size(jpeg)
+        # (top, bottom, halvings above it): a Teams crop halves each strip at most once.
+        pending: list[tuple[int, int, int]] = []
         if width * height <= STRIP_PIXELS and not full:
-            return parse_result(await self._post(jpeg), (width, height))
+            payload = await self._post(jpeg)
+            if not (split_once and _too_dense(payload) and height > MIN_SPLIT_HEIGHT):
+                return parse_result(payload, (width, height))
+            pending = [(t, b, 1) for t, b in halves(0, height)]
         if width * height > MAX_FRAME_PIXELS:
             raise OcrError(f"frame too large to read: {width}x{height}")
         from PIL import Image
@@ -183,23 +219,21 @@ class HttpOcrClient:
             img = Image.open(io.BytesIO(jpeg)).convert("RGB")
         except Exception as exc:
             raise OcrError(f"not a readable image: {exc!r}") from exc
-        lines: list[OcrLine] = []
-        pending, splits = strips(width, height), 0
+        # (line in frame coordinates, piece read, distance to that piece's nearest cut)
+        pieces: list[tuple[OcrLine, int, int]] = []
+        pending = pending or [(t, b, 0) for t, b in strips(width, height)]
+        splits = n = 0
         while pending:
-            top, bottom = pending.pop(0)
+            top, bottom, depth = pending.pop(0)
             buf = io.BytesIO()
             img.crop((0, top, width, bottom)).save(buf, format="JPEG", quality=90)
             payload = await self._post(buf.getvalue())
-            if (
-                isinstance(payload, dict)
-                and payload.get("too_dense") is True
-                and full
-                and bottom - top > MIN_SPLIT_HEIGHT
-                and splits < MAX_SPLITS
-            ):
+            may_split = splits < MAX_SPLITS if full else split_once and depth == 0
+            if _too_dense(payload) and bottom - top > MIN_SPLIT_HEIGHT and may_split:
                 splits += 1
-                pending[:0] = halves(top, bottom)
+                pending[:0] = [(t, b, depth + 1) for t, b in halves(top, bottom)]
                 continue
+            n += 1
             for ln in parse_lines(payload):
                 # A line touching a cut edge is a fragment ("Priya Ra"); the overlap is taller
                 # than a text line, so the neighbouring strip reads it whole.
@@ -207,11 +241,15 @@ class HttpOcrClient:
                     bottom < height and ln.box[3] >= bottom - top - _EDGE
                 ):
                     continue
-                lines.append(
-                    OcrLine(
-                        ln.text, (ln.box[0], ln.box[1] + top, ln.box[2], ln.box[3] + top), ln.score
-                    )
+                margin = min(
+                    ln.box[1] if top > 0 else height,
+                    bottom - top - ln.box[3] if bottom < height else height,
                 )
+                box = (ln.box[0], ln.box[1] + top, ln.box[2], ln.box[3] + top)
+                pieces.append((OcrLine(ln.text, box, ln.score), n, margin))
+        # Only Teams crops drop overlapping re-reads: full frames' strip reads are tuned for
+        # tile-name recall (XERK-2610) and Zoom crops are unchanged; neither was re-measured.
+        lines = _drop_rereads(pieces) if split_once and not full else [p[0] for p in pieces]
         return OcrResult(width=width, height=height, lines=tuple(_dedupe(lines)[:MAX_LINES]))
 
     async def aclose(self) -> None:
