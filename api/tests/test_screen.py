@@ -781,6 +781,20 @@ def test_a_line_both_halves_read_differently_is_kept_once() -> None:
     assert seen == [240, top[1] - top[0], bottom[1] - bottom[0]]
 
 
+def test_rereads_are_matched_from_half_overlap_not_only_exact_boxes() -> None:
+    """The halves' boxes for one line shift by a few px; ~60% overlap is the same line, ~40%
+    (a neighbouring row) is not. Pins the 0.5 threshold (QA mutant 0.5 -> 0.99 escaped)."""
+    from api.screen import ocr as ocr_mod
+
+    a = OcrLine("week so,", (40, 100, 300, 120))
+    same = OcrLine("week so.", (40, 108, 300, 128))  # 12 of 20 rows shared: 60%
+    other = OcrLine("next row", (40, 112, 300, 132))  # 8 of 20 rows shared: 40%
+    assert ocr_mod._drop_rereads([(a, 0, 4), (same, 1, 20)]) == [same]
+    assert ocr_mod._drop_rereads([(a, 0, 4), (other, 1, 20)]) == [other, a]
+    # Two lines from the same piece are never rereads of each other.
+    assert ocr_mod._drop_rereads([(a, 0, 4), (same, 0, 20)]) == [same, a]
+
+
 def test_a_large_teams_crop_halves_each_dense_strip_once() -> None:
     """QA on XERK-2652: a Teams crop over STRIP_PIXELS is read in strips, and one halving
     shared by the whole crop left a second dense strip dropped. Each strip halves once."""
