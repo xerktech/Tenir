@@ -89,7 +89,6 @@ class MeetingTracker:
         self.notify: Notify | None = None
         self.roster: Roster | None = None
         self.active: str | None = None
-        self.title: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
         # The stored lines of the meeting that last ended here (XERK-2615), see on_caption.
@@ -102,7 +101,6 @@ class MeetingTracker:
         self._captions_off_at: int | None = None
         self._caption_seen_ms: int | None = None
         self._stored_people: set[str] = set()
-        self._stored_title: str | None = None
         # Final lines not yet written. The merger counts a line final once, so a failed or
         # cancelled write must be retried from here, never re-derived (it would dedup away).
         self._unsaved: list[Segment] = []
@@ -136,11 +134,11 @@ class MeetingTracker:
         for name in frame.participants:
             roster.add(name)
         self.active = roster.match(frame.active_speaker) if frame.active_speaker else None
-        if frame.title:
-            self.title = frame.title
+        # frame.title is not stored: in a remote-desktop window the top band is the client's
+        # toolbar (Horizon's Ctrl+Alt+Del row became a meeting's title). The meeting is
+        # titled by its topic when it is delivered (topic.py).
         if self.conversation_id is not None:
             await self._store_people(ts)
-            await self._store_title()
         if frame.in_meeting:
             self._meeting_seen_ms = ts
         await self._check_captions_off(ts)
@@ -238,7 +236,6 @@ class MeetingTracker:
         self.merger = merger
         self._unsaved = []
         self._stored_people = set()
-        self._stored_title = None
         metrics.incr("screen.meetings_started")
         log.info(
             "screen meeting started: %s (%s, %s)",
@@ -247,7 +244,6 @@ class MeetingTracker:
             self.meta.platform,
         )
         await self._store_people(ts)
-        await self._store_title()
         await self._send(self.cadence.message(meeting=True, org_site_key=self.meta.org_site_key))
 
     async def _store_people(self, ts: int) -> None:
@@ -264,13 +260,6 @@ class MeetingTracker:
             [(n, at) for n in new],
         )
         self._stored_people.update(new)
-
-    async def _store_title(self) -> None:
-        if self.title and self.title != self._stored_title:
-            await self._io(
-                self.store.set_meeting_title, self.household, self.conversation_id, self.title
-            )
-            self._stored_title = self.title
 
     async def _store(self, segments: list[Segment]) -> None:
         """Write new final lines, after any a failed write left behind (upsert by id)."""
@@ -301,7 +290,6 @@ class MeetingTracker:
         # The next meeting on this window starts with whoever its tiles show then.
         self.roster = None
         self.active = None
-        self.title = None
         await self._send(self.cadence.message(meeting=False, org_site_key=self.meta.org_site_key))
         return conversation_id
 

@@ -46,6 +46,7 @@ import httpx
 from api.config import settings
 from api.metrics import metrics
 from api.persistence import Conversation, ConversationStore
+from api.screen import topic
 
 log = logging.getLogger("api.screen.turma")
 
@@ -149,6 +150,10 @@ def _hub_error(resp: httpx.Response) -> str:
     return reason
 
 
+# Whole-call cap on titling a meeting by topic (topic.py) before its first delivery.
+TITLE_SECONDS = 20.0
+
+
 class TurmaDelivery:
     def __init__(
         self,
@@ -160,8 +165,12 @@ class TurmaDelivery:
         retry_max_seconds: float = 300.0,
         give_up_seconds: float = 86_400.0,
         clock=time.time,
+        titler=None,
     ) -> None:
         self.store = store
+        # Titles a meeting by its topic before its first delivery attempt (topic.py).
+        self.titler = titler or topic.title_for
+        self._titled: set[str] = set()  # asked once per process: a failure doesn't block
         self.url = url.rstrip("/")
         self.token = token
         self.client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
@@ -220,6 +229,24 @@ class TurmaDelivery:
             return "skipped"
         if conv.delivery_state not in (None, "pending"):
             return "skipped"
+        if conv.meeting_title is None and cid not in self._titled:
+            self._titled.add(cid)
+            try:
+                # Bounded as a whole: httpx's timeout is per read, and this runs inside the
+                # delivery loop, so a slow model would hold every other meeting back (QA).
+                title = await asyncio.wait_for(self.titler(conv), TITLE_SECONDS)
+            except Exception as exc:  # noqa: BLE001 — a title must never block delivery
+                log.warning("meeting %s: no topic title (%r)", cid, exc)
+                title = None
+            if title:
+                await asyncio.to_thread(self.store.set_meeting_title, household, cid, title)
+            # Re-read: the meeting may have been deleted (or delivered) while it was titled,
+            # and a deleted meeting must not reach Turma (QA).
+            conv = await asyncio.to_thread(self.store.get, household, cid)
+            if conv is None or conv.delivery_state not in (None, "pending"):
+                self._titled.discard(cid)
+                self._backoff.pop(cid, None)
+                return "skipped"
         built = meeting_body(conv)
         if built is None:
             await self._fail(household, cid, "no caption lines to send")
@@ -254,6 +281,7 @@ class TurmaDelivery:
                 self._backoff.pop(cid, None)
                 metrics.incr("turma.meetings_sent")
                 log.info("meeting %s delivered to turma (%s)", cid, conv.org_site_key)
+                self._titled.discard(cid)
                 return "sent"
             reason = _hub_error(resp)
             if resp.status_code in PERMANENT:
@@ -274,6 +302,7 @@ class TurmaDelivery:
         return outcome
 
     async def _fail(self, household: str, cid: str, reason: str) -> None:
+        self._titled.discard(cid)
         self._backoff.pop(cid, None)
         await self._set(household, cid, "failed", reason)
         metrics.incr("turma.meetings_failed")

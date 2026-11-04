@@ -301,3 +301,6 @@ paths:
   so exact-text `_dedupe` kept both and a doubled header misattributed lines (real Paddle, QA).
   `_drop_rereads` dedupes by box overlap.
   Test: `test_a_line_both_halves_read_differently_is_kept_once`.
+- Meeting titles come from the transcript (`topic.py`, at delivery), never the window's top band:
+  on a Horizon window that band is the remote-desktop toolbar. Don't reintroduce `frame.title`
+  storage. Tests: `test_screen_topic.py`, `test_an_untitled_meeting_is_titled_by_topic_once_before_delivery`.

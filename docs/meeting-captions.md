@@ -156,7 +156,7 @@ the tile names and the active-speaker border, which are outside the crop. So fra
 
 - `caption`: the caption-box crop, at the cadence's `fps`, only while a caption is on screen.
 - `full`: the whole window, every `fullFrameSeconds` and right before the first caption crop
-  after none. Read for participant names, the green border and the meeting title.
+  after none. Read for participant names and the green border.
 
 **Teams: the api locates the caption pane** (`screen.region`, XERK-2608). The captured window
 is a whole remote desktop and Teams floats anywhere in it, so the client can't find the
@@ -297,6 +297,13 @@ also drops a line.
 reconnects. Starts when captions first appear, ends `API_SCREEN_MEETING_END_SECONDS` (180) after
 the last one (a 5 s sweep), and becomes a `ready` conversation with `source='screen'`,
 `org_site_key`, `org_name`, `platform`, `meeting_title`, `participants` and `segments.speaker`.
+
+**Title** (`topic.py`, XERK-2506): never read off the window. In a remote-desktop window the
+top band is the client's toolbar (Horizon's Ctrl+Alt+Del row became a title), and Zoom's own is
+"Zoom Meeting". Right before its first delivery to Turma an untitled meeting is titled by its
+topic: one call to the cue chat model (`API_LLM_MODEL`, thinking off) over the first ~12k
+characters of the transcript. Asked once per process; no cue backend or a failure means no
+title, never a held-up delivery.
 A graceful shutdown finishes open meetings; a crash leaves them to the boot stale sweep.
 Deleting the user closes their open screen sockets.
 

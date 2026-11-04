@@ -1021,7 +1021,9 @@ def test_replayed_zoom_meeting_becomes_a_ready_conversation(screen) -> None:
         "zoom",
     )
     expected = FIXTURE["expected"]
-    assert conv.meeting_title == expected["title"]
+    # The window's top band is never the title (a remote desktop's toolbar was): the
+    # meeting is titled by topic at delivery (test_screen_topic.py).
+    assert conv.meeting_title is None
     assert conv.participants == expected["participants"]
     got = [{"speaker": s.speaker, "text": s.text} for s in conv.segments]
     assert got == expected["lines"]
@@ -1044,7 +1046,8 @@ def test_history_api_shows_speakers_org_and_participants(screen) -> None:
         (item,) = client.get("/conversations").json()
         assert item["source"] == "screen" and item["orgSiteKey"] == "tesoro"
         assert item["orgName"] == "Tesoro" and item["platform"] == "zoom"
-        assert item["meetingTitle"] == "Q3 Release Sync" and item["status"] == "ready"
+        # Titled by topic at delivery, not from the window (XERK-2506).
+        assert item.get("meetingTitle") is None and item["status"] == "ready"
         detail = client.get(f"/conversations/{item['id']}").json()
         assert detail["participants"] == ["Priya Raman", "Sean O'Neil", "kunal@tesoroxp.com"]
         assert {s["speaker"] for s in detail["segments"]} == {"Priya Raman", "Sean O'Neil"}
