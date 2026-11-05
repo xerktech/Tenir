@@ -104,6 +104,24 @@ def test_detail_shows_each_segments_stored_speaker_and_the_participants() -> Non
         assert body["participants"] == ["sam@example.com", "Priya Raman"]
 
 
+def test_a_screen_meeting_reads_back_as_sentences_and_a_mic_one_as_stored() -> None:
+    # XERK-2696: screen meetings are stored one row per wrapped caption line.
+    _meeting(NORTHWIND, "northwind", "Northwind", text="ship it")
+    _mic(MIC)
+    store = _store()
+    store.add_segment(HH, NORTHWIND, Segment("w", "on friday.", 950, 980, speaker="sam@example.com"))
+    store.add_segment(HH, MIC, Segment("m2", "and more", 1000, 1900))
+    with TestClient(app) as client:
+        for path in ("", "/export"):
+            meeting = client.get(f"/conversations/{NORTHWIND}{path}").json()
+            assert [(s["speaker"], s["text"], s["startMs"], s["endMs"]) for s in meeting["segments"]] == [
+                ("sam@example.com", "ship it on friday.", 0, 980),
+                ("Priya Raman", "agreed", 1000, 1900),
+            ]
+            mic = client.get(f"/conversations/{MIC}{path}").json()
+            assert [s["text"] for s in mic["segments"]] == ["ship it at home", "and more"]
+
+
 def test_speakers_cannot_be_renamed_through_history() -> None:
     _meeting(NORTHWIND, "northwind", "Northwind")
     with TestClient(app) as client:

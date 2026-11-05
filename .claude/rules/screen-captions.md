@@ -2,6 +2,7 @@
 paths:
   - "api/src/api/screen/**"
   - "api/tests/test_turma_delivery.py"
+  - "api/tests/test_screen_utterances.py"
   - "api/tests/test_screen.py"
   - "api/tests/test_screen_teams.py"
   - "api/tests/test_screen_teams_pane.py"
@@ -304,3 +305,8 @@ paths:
 - Meeting titles come from the transcript (`topic.py`, at delivery), never the window's top band:
   on a Horizon window that band is the remote-desktop toolbar. Don't reintroduce `frame.title`
   storage. Tests: `test_screen_topic.py`, `test_an_untitled_meeting_is_titled_by_topic_once_before_delivery`.
+- Segments stay one per wrapped caption row; readers re-join them into sentences
+  (`utterances.sentences`, XERK-2696): history detail/export, `turma.meeting_body`, `topic`.
+  Joining in the merger would fight its row alignment. Any new reader of screen segments
+  goes through it too. The history list's `segmentCount` still counts stored rows.
+  Tests: `test_screen_utterances.py`, `test_wrapped_caption_rows_reach_the_hub_as_sentences`.

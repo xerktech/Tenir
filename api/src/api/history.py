@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import Principal, current_principal
 from api.auth.deps import principal_from_request
+from api.screen.utterances import sentences
 from api.session import is_valid_session_id
 from api.persistence import (
     Conversation,
@@ -155,7 +156,12 @@ class ConversationOut(ConversationSummaryOut):
         base = ConversationSummaryOut.of(conv.summary()).model_dump()
         return cls(
             **base,
-            segments=[SegmentOut.of(s) for s in conv.segments],
+            # A screen meeting is stored one row per wrapped caption line; read it back as
+            # sentences (XERK-2696). Mic turns are already whole.
+            segments=[
+                SegmentOut.of(s)
+                for s in (sentences(conv.segments) if conv.source == "screen" else conv.segments)
+            ],
             cues=[CueOut.of(c) for c in conv.cues],
             songs=[SongOut.of(s) for s in conv.songs],
             participants=list(conv.participants),
