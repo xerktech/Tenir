@@ -47,6 +47,7 @@ from api.config import settings
 from api.metrics import metrics
 from api.persistence import Conversation, ConversationStore
 from api.screen import topic
+from api.screen.utterances import sentences
 
 log = logging.getLogger("api.screen.turma")
 
@@ -94,10 +95,9 @@ def meeting_body(conv: Conversation) -> tuple[dict[str, object], int] | None:
     (more than the body carries when the meeting is past the hub's limits); None when it has
     no caption text to send."""
     segments = []
-    for seg in sorted(conv.segments, key=lambda s: (s.start_ms, s.segment_id)):
-        text = seg.text.strip()
-        if not text:
-            continue
+    # Sentences, not wrapped caption rows (XERK-2696); already sorted and non-blank.
+    for seg in sentences(conv.segments, SEGMENT_TEXT_MAX):
+        text = seg.text
         start = max(0, seg.start_ms)
         item: dict[str, object] = {
             # Code points, as the hub counts them; it would cut there itself.
