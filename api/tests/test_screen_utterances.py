@@ -212,6 +212,7 @@ def test_every_closer_stays_on_the_sentence_it_closes(closer) -> None:
     ]
 
 
-def test_guillemets_are_not_closers() -> None:
+@pytest.mark.parametrize("quoted", ["»Gut«", "›Gut‹"])
+def test_guillemets_are_not_closers(quoted) -> None:
     # German opens quotes with » and ›; they start the next sentence.
-    assert [s.text for s in sentences(_rows(("Ana", "はい。»Gut«")))] == ["はい。", "»Gut«"]
+    assert [s.text for s in sentences(_rows(("Ana", f"はい。{quoted}")))] == ["はい。", quoted]
