@@ -231,6 +231,11 @@ class CaptionMerger:
             if ln.final
         ]
         self.last_speaker: str | None = None
+        # The earliest first_ms a new line may take: one after the newest line's. Readers
+        # order rows by start time, and a clamped clock (MeetingTracker.clock) can repeat a
+        # ts, so starts stay strictly increasing across snapshots, not only within one
+        # (XERK-2702). A tie would come back in random (segment id) order.
+        self._next_first = 0
         # Lines this merger has seen for the first time (carried ones excluded).
         self.new_lines = 0
 
@@ -283,7 +288,6 @@ class CaptionMerger:
         out: dict[str, Segment] = {}
         to_finalize: list[_Line] = []
         speaker = self.last_speaker
-        new_in_snapshot = 0
         for i, (line_shown, at) in enumerate(zip(shown, aligned, strict=True)):
             block = blocks[line_shown.block]
             if block.has_header:
@@ -299,10 +303,10 @@ class CaptionMerger:
             elif i < last_aligned:
                 continue  # an OCR glitch above known lines: never a new line
             else:
-                # Lines first seen together keep their on-screen order: each a millisecond
-                # after the one above, so stores ordering by start time agree.
-                first = ts + new_in_snapshot
-                new_in_snapshot += 1
+                # New lines keep the order they appeared in: each at least a millisecond
+                # after the line before it, so stores ordering by start time agree.
+                first = max(ts, self._next_first)
+                self._next_first = first + 1
                 line = _Line(speaker, line_shown.text, line_shown.norm, first, first, ts)
                 self._lines.append(line)
                 self.new_lines += 1
@@ -345,7 +349,7 @@ class CaptionMerger:
         if grew and ts - line.changed_ms <= _EXTEND_MS:
             line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             seg.text = shown.text
-            seg.end_ms = self._rel(ts)
+            seg.end_ms = self._rel(max(ts, line.first_ms))
             out[seg.segment_id] = seg
 
     def flush(self, ts: int) -> list[Segment]:
