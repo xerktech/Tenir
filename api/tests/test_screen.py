@@ -2339,6 +2339,8 @@ def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
         (True, "No, no, no."),
         (False, "I'm not gonna enable the kDa in"),
     ]
+    # The revised segment keeps when it was said, not when Teams rewrote it.
+    assert out[0].end_ms == draft.end_ms
 
 
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
@@ -2417,3 +2419,30 @@ def test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it() -> None:
     stored = _teams_entry(draft, final, before=[[blk("Ravi", "so")]])
     words = " ".join(_words(text) for _, text in stored)
     assert "the how right in overlay" in words, stored
+
+
+@pytest.mark.parametrize(
+    "misread_top",
+    [
+        "so enable should like we",  # clipped while scrolling
+        "Yes so so enab|e shouId like we",  # misread
+        "Yes so so enable should like we'",  # stray character
+    ],
+)
+def test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored(misread_top: str) -> None:
+    """QA (XERK-2694): a matched row of a rewritten entry takes the final text only when the
+    rewrap moved words across its line break. A misread on the one frame the rewrite is seen
+    must not overwrite the stored line (XERK-2597); later clean frames can't repair it."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, misread_top, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 5
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert "yes so so enable should like we" in stored.values(), stored

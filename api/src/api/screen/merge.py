@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -211,6 +212,19 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
+
+
+def _rewrapped(shown: _Shown, known: _Line, rows: list[_Shown], lines: list[_Line]) -> bool:
+    """Whether ``shown`` differs from ``known`` only by words a re-wrap moved across a line
+    break: each word it gained is in a neighbouring known line, each it lost is in a
+    neighbouring shown row. Anything else (a misread, a stray char, a clipped top row) is
+    OCR, which never overwrites a stored line (XERK-2597)."""
+    mine, theirs = Counter(_words(shown.text)), Counter(_words(known.text))
+    if mine == theirs:
+        return True  # punctuation or case only
+    near_known = Counter(w for ln in lines if ln is not known for w in _words(ln.text))
+    near_shown = Counter(w for r in rows for w in _words(r.text))
+    return not (mine - theirs - near_known) and not (theirs - mine - near_shown)
 
 
 def _revisions(
@@ -417,9 +431,14 @@ class CaptionMerger:
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
-                if line_shown.block in revised_blocks:
-                    # A row of a rewritten entry the alignment still matched: the rewrite may
-                    # have moved words onto it ("...it, the how" over "...it the").
+                if line_shown.block in revised_blocks and _rewrapped(
+                    line_shown,
+                    line,
+                    shown[i - 1 : i] + shown[i + 1 : i + 2],
+                    tail[max(0, at - 1) : at + 2],
+                ):
+                    # A row of a rewritten entry the alignment still matched: the rewrite moved
+                    # words onto it ("...it, the how" over "...it the").
                     self._revise(line, line_shown, ts, out)
                 else:
                     self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)

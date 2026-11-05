@@ -72,8 +72,9 @@ paths:
     folds Ana's new line into her old one.
   - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
     known "sounds good" is a repeat, not a revision (QA: the reply was lost).
-  - Aligned rows of a revised block take the final text (a rewrap moves words onto them);
-    `end_ms` stays put (the rewrite lands after other speakers).
+  - Aligned rows of a revised block take the final text only when the rewrap moved words
+    across their line break (`_rewrapped`): taking any re-read stored a misread or clipped top
+    row seen on the one rewrite frame, for good (QA, XERK-2597). `end_ms` stays put.
   - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
@@ -84,7 +85,8 @@ paths:
   - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
     `test_a_rewritten_entry_keeps_the_drafts_segment_ids`, `test_a_new_entry_like_an_old_one_is_not_a_rewrite`,
     `test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite`,
-    `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`.
+    `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`,
+    `test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
