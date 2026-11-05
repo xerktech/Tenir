@@ -132,5 +132,35 @@ def test_a_row_is_cut_a_bounded_number_of_times() -> None:
 
 
 def test_an_utterance_can_fill_the_cap_exactly_but_not_pass_it() -> None:
-    got = sentences(_rows(("Ana", "a" * 10), ("Ana", "b" * 9), ("Ana", "c")), max_chars=20)
-    assert [s.text for s in got] == ["a" * 10 + " " + "b" * 9, "c"]
+    got = sentences(_rows(("Ana", "a" * 10), ("Ana", "b" * 9)), max_chars=20)
+    assert [len(s.text) for s in got] == [20]
+    got = sentences(_rows(("Ana", "a" * 10), ("Ana", "b" * 10)), max_chars=20)
+    assert [len(s.text) for s in got] == [10, 10]
+
+
+def test_a_pause_of_exactly_the_gap_still_joins() -> None:
+    for gap, count in [(MAX_GAP_MS, 1), (MAX_GAP_MS + 1, 2)]:
+        rows = [
+            Segment("a", "so the plan", 0, 900, speaker="Ana"),
+            Segment("b", "is this", 900 + gap, 2000 + gap, speaker="Ana"),
+        ]
+        assert len(sentences(rows)) == count, gap
+
+
+def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
+    for first, second in [
+        ("with Prof.", "Lee today."),
+        ("(see Dr.)", "Smith now."),
+        ("こんにちは。", "元気ですか？"),
+        ("Done!”", "Next one."),
+    ]:
+        wrapped = [s.text for s in sentences(_rows(("Ana", first), ("Ana", second)))]
+        whole = [s.text for s in sentences(_rows(("Ana", f"{first} {second}")))]
+        assert wrapped == whole, (first, wrapped, whole)
+    assert [s.text for s in sentences(_rows(("Ana", "with Prof. Lee today.")))] == [
+        "with Prof. Lee today."
+    ]
+    assert [s.text for s in sentences(_rows(("Ana", "こんにちは。元気ですか？")))] == [
+        "こんにちは。",
+        "元気ですか？",
+    ]

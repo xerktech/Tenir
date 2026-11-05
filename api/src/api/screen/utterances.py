@@ -36,9 +36,10 @@ MAX_CHARS = 2000  # the Turma hub's per-segment cap (turma.SEGMENT_TEXT_MAX)
 MAX_GAP_MS = 8000
 MAX_CUTS = 6
 
-_END = re.compile(r"[.?!…。！？][\"'”’)\]]*$")
-# A candidate cut: a sentence end, closing quotes, whitespace. `_ends_at` decides it.
-_CUT = re.compile(r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)")
+_END = re.compile(r"[.?!…。！？][\"'”’)\]」』]*$")
+# A candidate cut: a sentence end, closing quotes, whitespace (none needed after a full-width
+# mark: CJK puts no space there). `_ends_at` decides it.
+_CUT = re.compile(r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)|(?<=[。！？])[\"'”’)\]」』]*\s*(?=\S)")
 # Searched only over the few chars before a period (pos/endpos), so it stays O(1) per cut.
 _TITLES = re.compile(r"(?<!\S)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|vs)\.$")
 _TITLE_SPAN = 6
