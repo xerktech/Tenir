@@ -82,7 +82,8 @@ paths:
     rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted),
     but on the crop's header-less top row (the only row a crop clips) a read that is the stored
     or held text with its start cut off is ignored: a clipped static row reads alike on every
-    frame (QA). Accepted: a rewrite there dropping leading words keeps the draft row. Applied to
+    frame (QA). Accepted: a rewrite there dropping leading words keeps the draft row. "Top row"
+    is the crop's, not shown[0] after the `_MAX_SHOWN` cut (QA, 13+ rows). Applied to
     every row, it refused real rewrites under a header or below another block (QA).
   - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
     the ended meeting's segment into the next conversation (QA). Test:

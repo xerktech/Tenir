@@ -398,6 +398,8 @@ class CaptionMerger:
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
         shown, tail, aligned, revised = self._match(blocks, ts)
+        # Whether shown[0] is the crop's top row: _shown keeps only the bottom _MAX_SHOWN.
+        uncut = len(shown) == sum(1 for b in blocks for text in b.lines if _norm(text))
         last_aligned = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
         out: dict[str, Segment] = {}
         to_finalize: list[_Line] = []
@@ -443,7 +445,7 @@ class CaptionMerger:
                         out,
                         bottom=i == len(shown) - 1,
                         # Only the crop's top row, with no header above it, can be cut off.
-                        clippable=i == 0 and not blocks[line_shown.block].has_header,
+                        clippable=i == 0 and uncut and not blocks[line_shown.block].has_header,
                     )
             elif i in revised:
                 line = tail[revised[i]]

@@ -2628,3 +2628,22 @@ def test_a_clipped_draft_row_after_a_rewrite_is_not_stored() -> None:
     clipped = ["so enable should like we", *_REWRAP_DRAFT[1:]]
     stored, _ = _rewrite_run([_REWRAP_FINAL, _REWRAP_DRAFT] + [clipped] * 3)
     assert "so enable should like we" not in stored.values(), stored
+
+
+def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None:
+    """QA (XERK-2694): a crop over ``_MAX_SHOWN`` rows is cut to its bottom ones; the first
+    row kept is not the crop's top row, so its leading-word rewrite is taken."""
+    middle = [f"ravi middle line number {k} words" for k in range(8)]
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
+
+    def frame(row1: str, rows: list[str]) -> list[CaptionBlock]:
+        return [blk(None, "tail of ravi row zero", row1, *middle, *rows, header=False)]
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    frames = [frame("um we were saying that the build", _REWRAP_DRAFT)] * 6
+    frames += [frame("we were saying that the build", final)] * 8
+    for t, f in enumerate(frames):
+        stored.update({s.segment_id: s.text for s in m.feed(f, t * 1000)})
+    stored.update({s.segment_id: s.text for s in m.flush(60_000)})
+    assert "we were saying that the build" in stored.values(), stored
