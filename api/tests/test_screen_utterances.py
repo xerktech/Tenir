@@ -157,6 +157,17 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
         wrapped = [s.text for s in sentences(_rows(("Ana", first), ("Ana", second)))]
         whole = [s.text for s in sentences(_rows(("Ana", f"{first} {second}")))]
         assert wrapped == whole, (first, wrapped, whole)
+    # Closers and repeated marks stay on their sentence (QA).
+    for row, want in [
+        ("「元気？」", ["「元気？」"]),
+        ("他说“你好！”", ["他说“你好！”"]),
+        ("本当？！", ["本当？！"]),
+        ("ええ。。。そうですね", ["ええ。。。", "そうですね"]),
+        ("彼は「はい。」次です。", ["彼は「はい。」", "次です。"]),
+    ]:
+        assert [s.text for s in sentences(_rows(("Ana", row)))] == want, row
+    got = sentences(_rows(("Ana", "彼は「はい。」"), ("Ana", "Next one.")))
+    assert [s.text for s in got] == ["彼は「はい。」", "Next one."]
     assert [s.text for s in sentences(_rows(("Ana", "with Prof. Lee today.")))] == [
         "with Prof. Lee today."
     ]

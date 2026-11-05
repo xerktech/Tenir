@@ -38,8 +38,12 @@ MAX_CUTS = 6
 
 _END = re.compile(r"[.?!…。！？][\"'”’)\]」』]*$")
 # A candidate cut: a sentence end, closing quotes, whitespace (none needed after a full-width
-# mark: CJK puts no space there). `_ends_at` decides it.
-_CUT = re.compile(r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)|(?<=[。！？])[\"'”’)\]」』]*\s*(?=\S)")
+# mark: CJK puts no space there). The full-width cut must land on text, never on a closer or
+# another mark, or "「元気？」" lost its "」" and "なに？？？" fanned out (QA). `_ends_at` decides it.
+_CUT = re.compile(
+    r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)"
+    r"|(?<=[。！？])[\"'”’)\]」』]*\s*(?=[^\s\"'”’)\]」』。！？])"
+)
 # Searched only over the few chars before a period (pos/endpos), so it stays O(1) per cut.
 _TITLES = re.compile(r"(?<!\S)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|vs)\.$")
 _TITLE_SPAN = 6
