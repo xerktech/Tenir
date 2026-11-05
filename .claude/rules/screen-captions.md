@@ -80,8 +80,10 @@ paths:
     in a row agree on; a read equal to the stored text drops what is held. Confirming whenever
     the held text recurred stored jitter flipping back later; only the very next read lost the
     rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted),
-    but a read that is the stored text with its start cut off is ignored: a crop clipping a
-    static row reads it alike on every frame (QA).
+    but on the crop's header-less top row (the only row a crop clips) a read that is the stored
+    or held text with its start cut off is ignored: a clipped static row reads alike on every
+    frame (QA). Accepted: a rewrite there dropping leading words keeps the draft row. Applied to
+    every row, it refused real rewrites under a header or below another block (QA).
   - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
     the ended meeting's segment into the next conversation (QA). Test:
     `test_a_rewrite_never_revises_the_ended_meetings_carried_line`.

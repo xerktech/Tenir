@@ -2597,3 +2597,34 @@ def test_a_case_or_punctuation_rewrite_of_a_matched_row_is_taken_at_once() -> No
     final = ["Yes, so so enable should like we.", *_REWRAP_FINAL[1:]]
     _, emitted = _rewrite_run([final])
     assert "Yes, so so enable should like we." in emitted[0], emitted
+
+
+_REWRAP_DRAFT = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+
+
+@pytest.mark.parametrize("where", ["under its header", "below another block"])
+def test_a_rewrite_dropping_leading_words_is_taken_where_no_crop_cuts(where: str) -> None:
+    """QA (XERK-2694): only the crop's header-less top row can be cut off; elsewhere a row
+    that lost its leading words is Teams' rewrite (fillers dropped) and is taken."""
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
+
+    def frame(rows: list[str]) -> list[CaptionBlock]:
+        if where == "under its header":
+            return [blk("Ravi", *rows)]
+        return [blk("Mia", "earlier words from mia here"), blk(None, *rows, header=False)]
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    for t, rows in enumerate([_REWRAP_DRAFT] * 6 + [final] * 8):
+        stored.update({s.segment_id: s.text for s in m.feed(frame(rows), t * 1000)})
+    stored.update({s.segment_id: s.text for s in m.flush(60_000)})
+    assert "so so enable should like we" in stored.values(), stored
+    assert "yes so so enable should like we" not in stored.values(), stored
+
+
+def test_a_clipped_draft_row_after_a_rewrite_is_not_stored() -> None:
+    """QA (XERK-2694): the rewrite arms the top row, the draft comes back, then the crop
+    clips the draft's start on every frame: that cut-off read is not taken either."""
+    clipped = ["so enable should like we", *_REWRAP_DRAFT[1:]]
+    stored, _ = _rewrite_run([_REWRAP_FINAL, _REWRAP_DRAFT] + [clipped] * 3)
+    assert "so enable should like we" not in stored.values(), stored

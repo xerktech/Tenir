@@ -436,7 +436,15 @@ class CaptionMerger:
                         line.pending = line_shown.text
                         line.rewrite_until = ts + _REVISE_MS
                 else:
-                    self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)
+                    self._update(
+                        line,
+                        line_shown,
+                        ts,
+                        out,
+                        bottom=i == len(shown) - 1,
+                        # Only the crop's top row, with no header above it, can be cut off.
+                        clippable=i == 0 and not blocks[line_shown.block].has_header,
+                    )
             elif i in revised:
                 line = tail[revised[i]]
                 line.seen_ms = ts
@@ -476,7 +484,14 @@ class CaptionMerger:
         return sorted(out.values(), key=lambda seg: seg.start_ms)
 
     def _update(
-        self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment], *, bottom: bool
+        self,
+        line: _Line,
+        shown: _Shown,
+        ts: int,
+        out: dict[str, Segment],
+        *,
+        bottom: bool,
+        clippable: bool = False,
     ) -> None:
         if ts <= line.rewrite_until:
             # A rewritten row: a read equal to the stored text drops what was held (jitter
@@ -486,11 +501,13 @@ class CaptionMerger:
                 line.pending = None
                 return
             mine = _words(shown.text)
-            if any(
+            if clippable and any(
                 len(mine) < len(full) and full[len(full) - len(mine) :] == mine
                 for full in (_words(line.text), _words(line.pending or ""))
             ):
-                return  # the crop cut the row's start off: alike on every frame it lasts
+                # The crop cut the row's start off: alike on every frame it lasts. Elsewhere
+                # a row that lost its leading words is a rewrite (Teams drops fillers).
+                return
             if line.pending is not None and _norm(line.pending) == shown.norm:
                 self._revise(line, shown, ts, out)
                 return
