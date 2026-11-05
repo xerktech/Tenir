@@ -80,3 +80,21 @@ def test_the_crop_keeps_a_dark_avatar_left_of_the_name() -> None:
     # The whole circle is in the crop, left of the name line, with no ink cut at its edge.
     assert blue.sum() > 300 and int(np.flatnonzero(blue)[-1]) < name_left
     assert blue[0] == 0
+
+
+def test_the_avatar_room_stops_at_the_frame_s_left_edge() -> None:
+    """A caption box starting nearer the frame's left edge than AVATAR_ROOM keeps what is
+    there, never a strip of padding past the edge."""
+    img = Image.new("RGB", (640, 1313), (21, 21, 21))
+    d = ImageDraw.Draw(img)
+    d.text(
+        (12, 1110),
+        "so the release went out on friday and the rollout",
+        font=_font(22),
+        fill="white",
+    )
+    band = upscale_to(crop_band(img), img.height)
+    box = find_caption_box(band)
+    assert box is not None and box[0] < AVATAR_ROOM
+    crop = crop_box(img)
+    assert crop is not None and crop.width == box[2]

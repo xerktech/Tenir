@@ -2443,9 +2443,6 @@ def test_a_dim_last_first_or_guest_name_starts_a_meeting_and_is_not_speech(name:
         "required",
         "see also",
         "v2.3.1",
-        # XERK-2700: a grey Title Case line read as a capitalised name and vouched.
-        "Last Updated",
-        "Bo Chen",
     ],
 )
 def test_a_grey_meta_line_on_a_docs_page_starts_no_meeting(grey: str) -> None:
@@ -2464,7 +2461,7 @@ def test_a_grey_meta_line_on_a_docs_page_starts_no_meeting(grey: str) -> None:
 def test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting(name: str, light: bool) -> None:
     """XERK-2700: only a capitalised dim name vouched for a start, so a meeting whose speakers
     all had lower-case display names never started. Zoom's avatar circle beside the name
-    tells it from a docs page's grey line, roster or not."""
+    tells it from a docs page's grey line ("by jsmith" has none), roster or not."""
     for names in ((), ("Ana Lopez",)):
         store = InMemoryConversationStore()
         frame = panel_crop((name, True), ("we shipped the release on friday", False), light=light)
@@ -2472,20 +2469,6 @@ def test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting(name: str, light
         (conv,) = store.list("default")
         segments = store.get("default", conv.id).segments
         assert [s.text for s in segments] == ["we shipped the release on friday"]
-
-
-def test_a_page_of_title_case_headings_starts_no_meeting() -> None:
-    """XERK-2700: with every row name-shaped there is no text row to compare brightness
-    against, and the position rule's header started a meeting with no roster."""
-    store = InMemoryConversationStore()
-    page = panel_crop(("Getting Started", False), ("Api Reference", False), ("Release Notes", False))
-    _feed(_tracker(store), [page] * 6)
-    assert store.list("default") == []
-    # A real entry whose caption reads as a name still starts one: the avatar vouches.
-    entry = panel_crop(("Bo Chen", True), ("Sounds Good", False))
-    _feed(_tracker(store), [entry] * 6)
-    (conv,) = store.list("default")
-    assert [s.text for s in store.get("default", conv.id).segments] == ["Sounds Good"]
 
 
 def test_the_avatar_needs_a_round_patch_level_with_the_name() -> None:
@@ -2505,7 +2488,7 @@ def test_the_avatar_needs_a_round_patch_level_with_the_name() -> None:
     square = zoom._grey_pixels(buf.getvalue(), ocr, groups)
     assert square is not None and zoom._has_avatar(square, groups[0]) is False
     flush = [OcrLine("Bo Chen", (2.0, *groups[0][0].box[1:]))]
-    assert zoom._has_avatar(px, flush) is None  # no room to tell
+    assert zoom._has_avatar(px, flush) is False
 
 
 def _cut_left(frame: tuple[OcrResult, bytes], x: int) -> tuple[OcrResult, bytes]:
@@ -2521,13 +2504,27 @@ def _cut_left(frame: tuple[OcrResult, bytes], x: int) -> tuple[OcrResult, bytes]
     return OcrResult(img.width, img.height, lines), buf.getvalue()
 
 
-def test_a_crop_cut_at_the_name_keeps_the_capitalised_name_rule() -> None:
-    """QA (XERK-2700): older clients cut a dark avatar off the crop. With no room to show one,
-    a capitalised dim name still vouches, as before; a lower-case one still doesn't."""
+@pytest.mark.parametrize("avatar", ["cut off", "none", "navy", "square"])
+def test_with_no_avatar_seen_the_capitalised_name_rule_stands(avatar: str) -> None:
+    """QA (XERK-2700): requiring an avatar stopped meetings of off-roster speakers whose avatar
+    wasn't seen: cut off by an older client, not drawn, too close to the panel's colour, or not
+    round. The avatar only adds: a capitalised dim name vouches without one, a lower-case one
+    doesn't (a docs page's grey "by jsmith" looks the same)."""
     text = ("we shipped the release on friday", False)
     for name, starts in (("Bo Chen", True), ("Raman, Priya", True), ("jsmith", False)):
+        frame = panel_crop((name, True, avatar == "cut off"), text)
+        if avatar == "cut off":
+            frame = _cut_left(frame, 44)
+        elif avatar in ("navy", "square"):
+            ocr, jpeg = frame
+            img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            shape = draw.ellipse if avatar == "navy" else draw.rectangle
+            shape((8, 6, 36, 34), fill=(20, 40, 90) if avatar == "navy" else (230, 200, 180))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80)
+            frame = (ocr, buf.getvalue())
         store = InMemoryConversationStore()
-        frame = _cut_left(panel_crop((name, True), text), 44)
         _feed(_tracker(store), [frame] * 6, roster_names=("Ana Lopez",))
         assert len(store.list("default")) == starts, name
 

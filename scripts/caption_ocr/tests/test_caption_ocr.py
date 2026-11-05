@@ -14,8 +14,14 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import caption_bench as bench  # noqa: E402
-from caption_bench import AVATAR_ROOM  # noqa: E402
-from caption_bench import crop_band, crop_box, find_caption_box, group_lines, upscale_to  # noqa: E402
+from caption_bench import (  # noqa: E402
+    AVATAR_ROOM,
+    crop_band,
+    crop_box,
+    find_caption_box,
+    group_lines,
+    upscale_to,
+)
 from capture_windows import frame_stats, is_good, resolve  # noqa: E402
 from caption_score import aggregate, char_accuracy, score_frame, split_speaker  # noqa: E402
 from caption_synth import _font, generate, make_frame  # noqa: E402

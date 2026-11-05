@@ -498,28 +498,22 @@ def parse_caption_crop(
         return blocks
     if not any(b.has_header for b in blocks):
         return []
-    # Only unmatched headers. Without pixels the position rule's header stands. With them, a
-    # speaker off the roster is vouched for only by a name row with Zoom's avatar circle
-    # beside it, dim too when the crop shows text to compare against (XERK-2700): a docs
-    # page's grey meta lines ("Last Updated", "by jsmith") are dim and name-shaped but have
-    # no circle, and a page of Title Case headings has no dim row to compare at all.
-    #
-    # A crop cut flush with a name row's left edge shows no avatar either way: capture clients
-    # before XERK-2700 cut it off whenever it was darker than their glyph threshold (Zoom's
-    # blue or green circles). There the XERK-2693 rule stands: a dim row that reads as a
-    # capitalised name vouches (no text row to compare against: any name-shaped header).
-    if px is None:
+    # Only unmatched headers. Without pixels, or with no text row to compare brightness
+    # against, the position rule's header stands. Otherwise a dim row that reads as a
+    # capitalised name ("Raman, Priya" and "(Guest)" allowed) vouches for a speaker off the
+    # roster: a docs page's heading is as bright as its text, and any-shape dim rows let its
+    # grey meta lines ("updated 3 days ago") start meetings (QA). So does a dim display name
+    # of any case with Zoom's avatar circle beside it ("jsmith", XERK-2700). The avatar only
+    # adds: with none seen (cut off, low contrast, square) the capitalised rule stands, as
+    # requiring one stopped those speakers' meetings (QA). A grey Title Case docs line
+    # ("Last Updated") still vouches: telling it from a name needs real crops (XERK-2705).
+    if px is None or dim is None:
         return blocks
-
-    def vouches(row: str, group: list[OcrLine]) -> bool:
-        if not (row in dim_names if dim is not None else is_name_like(row)):
-            return False
-        avatar = _has_avatar(px, group)
-        if avatar is None:
-            return dim is None or is_name_like(_name_form(row))
-        return avatar
-
-    return blocks if any(vouches(r, g) for r, g in zip(rows, groups, strict=True)) else []
+    vouched = any(
+        row in dim_names and (is_name_like(_name_form(row)) or _has_avatar(px, group))
+        for row, group in zip(rows, groups, strict=True)
+    )
+    return blocks if vouched else []
 
 
 def _name_form(text: str) -> str:
@@ -605,17 +599,17 @@ _AVATAR_TALL = (0.8, 4.0)
 _AVATAR_LIT = 0.12
 
 
-def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool | None:
+def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
     """A round patch of ink left of this row's first box, overlapping its height: Zoom's
     avatar beside a speaker's name line. A docs page's grey meta line or heading has bare
-    page (or a bullet, an outline icon: not filled circles) there. None when the row starts
+    page (or a bullet, an outline icon: not filled circles) there. False when the row starts
     at the crop's left edge, with no room to show a circle."""
     x0, y0, _, y1 = group[0].box
     h = max(y1 - y0, 1.0)
     right = int(x0 - 0.1 * h)
     left = max(0, int(x0 - _AVATAR_REACH * h))
     if right - left < _AVATAR_TALL[0] * h:
-        return None
+        return False
     ink = px.ink[:, left:right] > _AVATAR_INK
     lit = ink.mean(axis=1) >= _AVATAR_LIT
     return any(
