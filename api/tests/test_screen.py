@@ -2362,3 +2362,58 @@ def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
         "we ship on friday.",
         "Then lunch",
     ]
+
+
+@pytest.mark.parametrize(
+    ("first", "then"),
+    [
+        ([blk("Ana", "sounds good")], [blk("Ana", "okay", "sounds good"), blk("Cy", "yes")]),
+        ([blk("Ravi", "Yes.")], [blk("Ravi", "OK.", "Yes."), blk("Bo", "great")]),
+    ],
+)
+def test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite(
+    first: list, then: list
+) -> None:
+    """QA (XERK-2694): frames dropped, then the same speaker's new line above a repeat of her
+    last one. Nothing aligns; the repeat must not revise the old line away."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed(first, t * 1000)
+    out += m.feed(then, 7000)
+    out += m.flush(20_000)
+    said = [ln for b in first for ln in b.lines] + [ln for b in then for ln in b.lines]
+    assert [s.text for s in out] == said
+
+
+def test_a_new_line_sharing_a_word_with_the_last_is_not_a_rewrite() -> None:
+    """Revising needs most of the old line's words: one shared word is a new line."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Ana", "let me check the logs")], t * 1000)
+    out += m.feed([blk("Ana", "check this out")], 7000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["let me check the logs", "check this out"]
+
+
+def test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it() -> None:
+    """QA (XERK-2694): a header-less entry whose rewrite moves "how" up onto a row the
+    alignment still matches; that row takes the final text, so no word is lost."""
+    draft = [
+        blk(None, "yes so so enable should like we", "the cluster not need pods it the", header=False),
+        blk(None, "how right right in overlay", header=False),
+    ]
+    draft = [blk(None, *draft[0].lines, *draft[1].lines, header=False)]
+    final = [
+        blk(
+            None,
+            "Yes so enable should like we the",
+            "cluster not need pods it, the how",
+            "right in overlay.",
+            header=False,
+        )
+    ]
+    stored = _teams_entry(draft, final, before=[[blk("Ravi", "so")]])
+    words = " ".join(_words(text) for _, text in stored)
+    assert "the how right in overlay" in words, stored

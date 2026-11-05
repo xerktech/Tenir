@@ -226,7 +226,7 @@ def _revisions(
     words, with the next run of the same speaker's recent lines after the last aligned known
     line (the lines the box should still show but the alignment couldn't place). When the
     rows keep ``_REVISED`` of that run's words in order, each row takes the first unclaimed
-    line its words matched; rows matching none (words the rewrite added) stay new.
+    line its words matched, until a row matches none: it and the rows after it stay new.
 
     A block of only new rows under its own header that revises nothing is a fresh entry:
     everything below it is newer (a repeat there is said again), so revising stops."""
@@ -251,14 +251,8 @@ def _revisions(
             first == 0 or shown[first - 1].block != shown[first].block
         )
         speaker = speakers[first]
-        # Known lines above the first revised one may have scrolled off; once revising, a
-        # skipped known line would be one the box should show between two revised entries.
         q = next(
-            (
-                k
-                for k in range(p, len(cands) if not out else min(p + 1, len(cands)))
-                if _same_speaker(speaker, tail[cands[k]].speaker)
-            ),
+            (k for k in range(p, len(cands)) if _same_speaker(speaker, tail[cands[k]].speaker)),
             None,
         )
         if q is None:
@@ -280,15 +274,20 @@ def _revisions(
             for mb in sm.get_matching_blocks()
             for k in range(mb.size)
         ]
-        if not draft or len(pairs) < _REVISED * len(draft):
-            if fresh:
-                break
-            continue
+        # Claims are a prefix of the run: a row above them pairing with nothing is a line said
+        # before them, so they are said again ("okay", "sounds good" after "sounds good").
+        claims: dict[int, int] = {}
         taken = -1
         for i in rows:
             j = next((j for r, j in pairs if r == i and j > taken), None)
-            if j is not None:
-                out[i] = taken = j
+            if j is None:
+                break
+            claims[i] = taken = j
+        if not claims or len(pairs) < _REVISED * len(draft):
+            if fresh:
+                break
+            continue
+        out.update(claims)
         p = end
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
@@ -404,6 +403,7 @@ class CaptionMerger:
         # line shown below it, so known lines keep on-screen order: Teams adds lines to an
         # entry above another speaker's (that entry went on). Otherwise it goes at the end.
         known_at = [tail[a] if a is not None else None for a in aligned]
+        revised_blocks = {shown[i].block for i in revised}
         for i, j in revised.items():
             known_at[i] = tail[j]
         for i, (line_shown, at) in enumerate(zip(shown, aligned, strict=True)):
@@ -417,7 +417,12 @@ class CaptionMerger:
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
-                self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)
+                if line_shown.block in revised_blocks:
+                    # A row of a rewritten entry the alignment still matched: the rewrite may
+                    # have moved words onto it ("...it, the how" over "...it the").
+                    self._revise(line, line_shown, ts, out)
+                else:
+                    self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)
             elif i in revised:
                 line = tail[revised[i]]
                 line.seen_ms = ts
@@ -487,8 +492,8 @@ class CaptionMerger:
             return
         line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
         if line.segment is not None:
+            # end_ms stays when it was said: the rewrite lands after others spoke.
             line.segment.text = shown.text
-            line.segment.end_ms = self._rel(ts)
             out[line.segment.segment_id] = line.segment
 
     def flush(self, ts: int) -> list[Segment]:
