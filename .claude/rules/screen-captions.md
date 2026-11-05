@@ -232,6 +232,11 @@ paths:
     within 1.3 header heights) are caption, never the whole stack: a compact People pane
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
     onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
+  - Avatar initials OCR glued onto an entry's first caption row ("MH Yeah", "P( No", "M I")
+    are stripped (`_strip_glued_initials`, XERK-2695) only when the row's box starts on the
+    avatar (left of the name line and text column): a caption opening "I"/"OK" at the text
+    column is the speaker's words. Tests: `test_avatar_initials_glued_onto_the_first_caption_row_are_stripped`,
+    `test_a_first_caption_word_at_the_text_column_is_kept_even_as_initials`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Teams' caption pane is located on full frames by the api (`ws.locate_pane`, XERK-2608): pixels
   first (`teams_pane.candidates`: a divider of luma 40-170 with black above, black margins
@@ -281,6 +286,13 @@ paths:
     `test_the_written_failure_reasons_match_the_requeue_list`.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.
+- Roster: a name that starts another and reads alike (>= `_NAME_MATCH`) is one person, kept
+  under the longer reading (`zoom._same_name`, XERK-2695): a truncated tile label stored "Tim
+  Mahl" and "Tim Mahler" as two speakers. The tracker relabels the merger's held lines on a
+  rename (`CaptionMerger.rename`) or the box re-stored them; lines already written keep the cut
+  name. "Priya Ra" (0.84) and "Speaker 1"/"Speaker 12" (digit end) are never merged.
+  Tests: `test_a_cut_off_name_is_the_same_person_as_its_full_reading`,
+  `test_a_cut_off_name_replaced_mid_meeting_stores_no_line_twice`.
 - Zoom tile names: a name-shaped line is a tile label only if a near-black row (the tile gap)
   runs within one label height below it (`zoom._over_tile_gap`, XERK-2643). A share's text sits
   on its content: a real Jira share put sidebar items and ticket keys in the roster.

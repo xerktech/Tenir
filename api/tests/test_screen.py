@@ -28,6 +28,7 @@ from api.screen.merge import CaptionMerger
 from api.screen.ocr import HttpOcrClient, OcrError, OcrLine, OcrResult, parse_result
 from api.screen.zoom import (
     CaptionBlock,
+    FullFrame,
     Roster,
     clean_tile_name,
     is_name_like,
@@ -196,6 +197,34 @@ def test_roster_matches_exact_fuzzy_and_aliases() -> None:
     assert roster.match("Someone Else") is None
     assert roster.match("") is None
     assert "Priya Raman" in roster and len(roster) == 2
+
+
+@pytest.mark.parametrize("order", [("Tim Mahl", "Tim Mahler"), ("Tim Mahler", "Tim Mahl")])
+def test_a_cut_off_name_is_the_same_person_as_its_full_reading(order) -> None:
+    # XERK-2695: a truncated Zoom tile label put one speaker in the roster twice, and his
+    # lines were stored under both names (25 / 26 in one real meeting).
+    roster = Roster()
+    for name in order:
+        roster.add(name)
+    assert roster.names == ["Tim Mahler"]
+    assert roster.match("Tim Mahl") == roster.match("Tim Mahler") == "Tim Mahler"
+    assert "Tim Mahl" in roster and len(roster) == 1
+    assert roster.renamed == ({"Tim Mahl": "Tim Mahler"} if order[0] == "Tim Mahl" else {})
+    assert roster.copy().match("Tim Mahl") == "Tim Mahler"
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("Priya Ra", "Priya Raman"),  # a strip-edge fragment (0.84): dropped by ocr instead
+        ("Speaker 1", "Speaker 12"),  # numbered labels are different people
+        ("Tim Mahler", "Tom Mahler"),  # alike but neither starts the other
+    ],
+)
+def test_names_that_are_not_cut_offs_of_each_other_stay_apart(a: str, b: str) -> None:
+    roster = Roster()
+    assert roster.add(a) == a and roster.add(b) == b
+    assert len(roster) == 2 and not roster.renamed
 
 
 def test_ambiguous_header_resolves_only_to_the_active_speaker() -> None:
@@ -1413,6 +1442,37 @@ def test_a_failed_segment_write_is_retried_not_lost(monkeypatch: pytest.MonkeyPa
         assert [s.text for s in store.get("default", conv.id).segments] == [
             "first important line",
             "next",
+        ]
+
+    asyncio.run(run())
+
+
+def test_a_cut_off_name_replaced_mid_meeting_stores_no_line_twice() -> None:
+    """XERK-2695: once a full frame shows "Tim Mahler" for the "Tim Mahl" already in the
+    roster, the box's lines re-read under the full name must align with those held."""
+
+    async def run() -> None:
+        store = InMemoryConversationStore()
+        t = _tracker(store)
+        await t.on_full(FullFrame(participants=["Tim Mahl", "Ana Ruiz"]), 0)
+        await t.on_caption([blk("Tim Mahl", "we ship on friday")], 0)
+        await t.on_caption([blk("Tim Mahl", "we ship on friday"), blk("Ana Ruiz", "okay")], 500)
+        await t.on_full(FullFrame(participants=["Tim Mahler", "Ana Ruiz"]), 1000)
+        assert t.roster is not None and t.roster.names == ["Ana Ruiz", "Tim Mahler"]
+        await t.on_caption(
+            [
+                blk("Tim Mahler", "we ship on friday"),
+                blk("Ana Ruiz", "okay"),
+                blk("Tim Mahler", "and test monday"),
+            ],
+            1500,
+        )
+        await t.end(10_000)
+        (conv,) = store.list("default")
+        assert [(s.speaker, s.text) for s in store.get("default", conv.id).segments] == [
+            ("Tim Mahl", "we ship on friday"),  # written before the full name was seen
+            ("Ana Ruiz", "okay"),
+            ("Tim Mahler", "and test monday"),
         ]
 
     asyncio.run(run())

@@ -154,11 +154,17 @@ class Roster:
 
     def __init__(self, aliases: dict[str, str] | None = None) -> None:
         self._names: dict[str, str] = {}  # norm -> display
+        # norm of a cut-off reading of a roster name ("Tim Mahl") -> that name's display.
+        self._cut: dict[str, str] = {}
+        # Display names replaced by a longer reading of the same person (old -> new), for
+        # the caller to remap what it already holds under the old one; it clears this.
+        self.renamed: dict[str, str] = {}
         # alias_key -> display name (speaker_aliases); applied to everything added.
         self.aliases = dict(aliases or {})
 
     def __contains__(self, name: str) -> bool:
-        return norm_name(name) in self._names
+        key = norm_name(name)
+        return key in self._names or key in self._cut
 
     def __len__(self) -> int:
         return len(self._names)
@@ -175,14 +181,28 @@ class Roster:
     def copy(self) -> Roster:
         out = Roster(self.aliases)
         out._names = dict(self._names)
+        out._cut = dict(self._cut)
         return out
 
     def add(self, name: str) -> str | None:
         """Add a tile name; returns its display form when it is new, else None."""
         display = self.display(name)
         key = norm_name(name)
-        if not key or key in self._names or len(self._names) >= _MAX_ROSTER:
+        if not key or key in self or len(self._names) + len(self._cut) >= _MAX_ROSTER:
             return None
+        same = _same_name(key, self._names)
+        if same is not None and len(same) > len(key):
+            self._cut[key] = self._names[same]  # a cut-off reading of a name already known
+            return None
+        if same is not None:
+            # The roster holds a cut-off reading of this name: keep the longer one, and
+            # point the cut one (and anything held under it) at it.
+            old = self._names.pop(same)
+            self._cut[same] = display
+            for k, d in self._cut.items():
+                if d == old:
+                    self._cut[k] = display
+            self.renamed[old] = display
         self._names[key] = display
         return display
 
@@ -195,6 +215,8 @@ class Roster:
             return None
         if key in self._names:
             return self._names[key]
+        if key in self._cut:
+            return self._cut[key]
         alias = self.display(header)
         if alias != header and norm_name(alias) in self._names:
             return self._names[norm_name(alias)]
@@ -209,6 +231,24 @@ class Roster:
             names = {d for r, d in good if good[0][0] - r < 0.05}
             return prefer if prefer in names else None
         return good[0][1]
+
+
+def _same_name(key: str, names: dict[str, str]) -> str | None:
+    """The roster key ``key`` is a cut-off reading of, or that is one of ``key``: one starts
+    with the other and they read alike (``_NAME_MATCH``). A Zoom tile label truncated by its
+    tile, or a name cut by the crop, read "Tim Mahl" for "Tim Mahler" and stored one person
+    under two names (XERK-2695). "Priya Ra" (0.84) is no match: such strip-edge fragments are
+    dropped by ``ocr`` instead. A short one ending in a digit is never cut: "Speaker 1" is
+    not "Speaker 12"."""
+    for k in names:
+        short = min(k, key, key=len)
+        if not short[-1:].isalpha():
+            continue
+        if (k.startswith(key) or key.startswith(k)) and SequenceMatcher(
+            None, key, k
+        ).ratio() >= _NAME_MATCH:
+            return k
+    return None
 
 
 @dataclass(frozen=True)
