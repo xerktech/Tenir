@@ -2478,3 +2478,45 @@ def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -
     texts = list(stored.values())
     assert glitched not in texts and "yes so so enable should like we" in texts, stored
     assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
+
+
+@pytest.mark.parametrize(
+    "top", ["Yes, the pods need enable should we.", "Yes the pods need enable should we now"]
+)
+def test_a_rewrite_never_revises_the_ended_meetings_carried_line(top: str) -> None:
+    """QA (XERK-2694): a carried line's segment belongs to the ended meeting (XERK-2615), so
+    a rewrite of the block it sits in must not re-emit it into the next conversation."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    old = set()
+    for t in range(5):
+        old |= {s.segment_id for s in m1.feed([blk("Ana", "yes the pods need enable should we")], t * 1000)}
+    old |= {s.segment_id for s in m1.flush(5000)}
+    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
+    draft = ["yes the pods need enable should we", "the cluster not need pods it the", "how right right in overlay"]
+    final = [top, "cluster not need pods it, the how", "right in overlay."]
+    emitted = []
+    for k, rows in enumerate([draft] * 6 + [final] * 5):
+        emitted += m2.feed([blk("Ana", *rows)], 65_000 + k * 1000)
+    emitted += m2.flush(90_000)
+    assert not {s.segment_id for s in emitted} & old
+
+
+def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:
+    """QA (XERK-2694): a rewrite's new words on a matched row must be read on the next frame
+    too; a clean read in between drops them, so jitter flipping back later is never stored."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes the pods need enable should we", "the cluster is up now", "how right right in overlay"]
+    final = ["Yes the pods need enable should we", "the cluster is up now,", "right in overlay."]
+    misread = "Yes pods need enable should we"
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, misread, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 3
+    frames += [[blk(None, misread, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 3
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert misread not in stored.values(), stored

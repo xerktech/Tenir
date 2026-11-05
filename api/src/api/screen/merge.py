@@ -419,12 +419,18 @@ class CaptionMerger:
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
-                if line_shown.block in revised_blocks and line_shown.norm != line.norm:
+                if (
+                    line_shown.block in revised_blocks
+                    and line_shown.norm != line.norm
+                    and not line.carried  # the ended meeting's segment (XERK-2615)
+                ):
                     # A row of a rewritten entry the alignment still matched: the rewrite may
                     # have moved or dropped words on it ("...it, the how" over "the ...it the").
                     # One frame can be an OCR misread (XERK-2597), so it is taken only when a
-                    # later frame reads it the same (``_update``); case or punctuation at once.
-                    if _words(line_shown.text) == _words(line.text):
+                    # the next read agrees (here or in ``_update``); case or punctuation at once.
+                    if _words(line_shown.text) == _words(line.text) or (
+                        line.pending is not None and _norm(line.pending) == line_shown.norm
+                    ):
                         self._revise(line, line_shown, ts, out)
                     else:
                         line.pending = line_shown.text
@@ -471,10 +477,13 @@ class CaptionMerger:
     def _update(
         self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment], *, bottom: bool
     ) -> None:
+        # A held rewrite stands only if this, the next read, agrees: a clean read in between
+        # means it was jitter, which flipping back later must not confirm.
+        pending, line.pending = line.pending, None
         if shown.norm == line.norm:
             return
-        if line.pending is not None and _norm(line.pending) == shown.norm:
-            self._revise(line, shown, ts, out)  # a rewrite read twice
+        if pending is not None and _norm(pending) == shown.norm:
+            self._revise(line, shown, ts, out)  # a rewrite read twice in a row
             return
         grew = shown.norm.startswith(line.norm + " ")
         if not line.final:
@@ -498,7 +507,7 @@ class CaptionMerger:
 
     def _revise(self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment]) -> None:
         """A rewritten entry's row replaces the known line it revises, stored or not."""
-        if shown.norm == line.norm:
+        if shown.norm == line.norm or line.carried:
             return
         line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
         line.pending = None
