@@ -439,8 +439,7 @@ def parse_caption_crop(
         return i == 0 or (dim is None and rows[i - 1].rstrip().endswith((".", "?", "!")))
 
     # A row the pixels show as a name line may be any display name ("jsmith", "Raman, Priya",
-    # "Bo Chen (Guest)"): is_name_like alone stored those as speech and, with the start gate
-    # below, they never started a meeting (XERK-2693 QA).
+    # "Bo Chen (Guest)"): is_name_like alone stored those as speech (XERK-2693 QA).
     dim_names = {rows[i] for i in dim or () if _is_display_name(rows[i])}
 
     def name_like(text: str) -> bool:
@@ -458,12 +457,20 @@ def parse_caption_crop(
         return blocks
     if not any(b.has_header for b in blocks):
         return []
-    # Only unmatched headers. With pixels, a dim name row is always one (``name_rows``) and
-    # only it vouches for a speaker off the roster: a docs page's heading is as bright as its
-    # text. Without pixels the position rule's header stands.
-    if dim is not None and not dim_names:
+    # Only unmatched headers. With pixels, only a dim row that reads as a capitalised name
+    # ("Raman, Priya" and "(Guest)" allowed) vouches for a speaker off the roster: a docs
+    # page's heading is as bright as its text, and any-shape dim rows let its grey meta lines
+    # ("updated 3 days ago", "required") start meetings (QA). A meeting of lower-case names
+    # only starts once a name-shaped speaker talks (XERK-2700). Without pixels the position
+    # rule's header stands.
+    if dim is not None and not any(is_name_like(_name_form(t)) for t in dim_names):
         return []
     return blocks
+
+
+def _name_form(text: str) -> str:
+    """A display name as ``is_name_like`` reads it: "Raman, Priya (Guest)" -> "Raman Priya"."""
+    return " ".join(clean_tile_name(text).replace(",", " ").split())
 
 
 def _is_display_name(text: str) -> bool:

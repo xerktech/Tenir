@@ -2288,6 +2288,8 @@ def test_header_less_lines_mid_meeting_are_still_kept() -> None:
         ("^ D ^ A ^",),
         ("Mute Stop Video Participants", "^ ^"),
         ("Mute ^ Stop Video ^ Participants ^ Chat React Share More",),
+        # Exactly three quarters labels.
+        ("Chat Share More today",),
     ],
 )
 def test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored(toolbar: tuple) -> None:
@@ -2312,6 +2314,8 @@ def test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored(toolbar: tuple) -
         "Share Screen with the team",
         # Lower-case toolbar words are speech however many there are.
         "chat share more",
+        # Two labels of three: under three quarters.
+        "Share Screen today",
     ],
 )
 def test_speech_using_toolbar_words_is_kept(speech: str) -> None:
@@ -2319,11 +2323,10 @@ def test_speech_using_toolbar_words_is_kept(speech: str) -> None:
     assert [b.lines for b in blocks] == [[speech]]
 
 
-@pytest.mark.parametrize("name", ["jsmith", "malcolm h", "Raman, Priya", "Bo Chen (Guest)"])
-def test_a_dim_display_name_of_any_shape_starts_a_meeting_and_is_not_speech(name: str) -> None:
-    """QA (XERK-2693): lower-case, "Last, First" and suffixed names aren't name-shaped, so they
-    never vouched for a header and the meeting never started; before, they were stored as
-    speech."""
+@pytest.mark.parametrize("name", ["Raman, Priya", "Bo Chen (Guest)"])
+def test_a_dim_last_first_or_guest_name_starts_a_meeting_and_is_not_speech(name: str) -> None:
+    """QA (XERK-2693): "Last, First" and suffixed names aren't name-shaped, so they never
+    vouched for a header and the meeting never started; before, they were stored as speech."""
     for names in ((), (name,)):
         store = InMemoryConversationStore()
         frame = panel_crop((name, True), ("we shipped the release on friday", False))
@@ -2332,3 +2335,35 @@ def test_a_dim_display_name_of_any_shape_starts_a_meeting_and_is_not_speech(name
         assert [s.text for s in store.get("default", conv.id).segments] == [
             "we shipped the release on friday"
         ]
+
+
+@pytest.mark.parametrize(
+    "grey",
+    ["updated 3 days ago", "by jsmith", "Edit this page", "required", "see also", "v2.3.1"],
+)
+def test_a_grey_meta_line_on_a_docs_page_starts_no_meeting(grey: str) -> None:
+    """Delta QA: letting a dim row of any shape vouch for a start let these start meetings."""
+    store = InMemoryConversationStore()
+    frame = panel_crop(("Release Notes", False), (grey, True), *((r, False) for r in _DOCS_PAGE))
+    for names in ((), ("Ana Lopez",)):
+        _feed(_tracker(store), [frame] * 6, roster_names=names)
+    assert store.list("default") == []
+
+
+@pytest.mark.parametrize("name", ["jsmith", "malcolm h"])
+def test_a_lower_case_dim_name_is_a_header_mid_meeting_not_speech(name: str) -> None:
+    # It can't start a meeting alone (a docs page's grey lines look the same, XERK-2700), but
+    # once one is live it heads its entry rather than being stored as speech.
+    ocr, jpeg = panel_crop((name, True), ("we shipped the release on friday", False))
+    assert parse_caption_crop(ocr, Roster(), jpeg=jpeg) == []
+    blocks = parse_caption_crop(ocr, Roster(), live=True, jpeg=jpeg)
+    assert [(b.has_header, b.lines) for b in blocks] == [
+        (True, ["we shipped the release on friday"])
+    ]
+
+
+@pytest.mark.parametrize("grey", ["Parameters:", "Note,", "x" * 30 + " " + "y" * 40])
+def test_a_dim_row_that_is_no_display_name_stays_text(grey: str) -> None:
+    ocr, jpeg = panel_crop(("Ana Lopez", True), ("we shipped it", False), (grey, True))
+    blocks = parse_caption_crop(ocr, _roster("Ana Lopez"), live=True, jpeg=jpeg)
+    assert [b.lines for b in blocks] == [["we shipped it", grey]]
