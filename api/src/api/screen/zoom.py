@@ -438,19 +438,44 @@ def parse_caption_crop(
         # With pixels, a header below the top is a dim row, which ``name_rows`` settles.
         return i == 0 or (dim is None and rows[i - 1].rstrip().endswith((".", "?", "!")))
 
+    # A row the pixels show as a name line may be any display name ("jsmith", "Raman, Priya",
+    # "Bo Chen (Guest)"): is_name_like alone stored those as speech and, with the start gate
+    # below, they never started a meeting (XERK-2693 QA).
+    dim_names = {rows[i] for i in dim or () if _is_display_name(rows[i])}
+
+    def name_like(text: str) -> bool:
+        return is_name_like(text) or text in dim_names
+
     blocks = caption_blocks(
-        rows, roster, active=active, unknown_headers=header_can_sit, name_rows=dim
+        rows,
+        roster,
+        active=active,
+        name_like=name_like,
+        unknown_headers=header_can_sit,
+        name_rows=dim,
     )
     if live or any(b.has_header and b.speaker for b in blocks):
         return blocks
     if not any(b.has_header for b in blocks):
         return []
-    # Only unmatched headers. With pixels, a dim name-shaped row is always one
-    # (``name_rows``) and only it vouches for a speaker off the roster: a docs page's heading
-    # is as bright as its text. Without pixels the position rule's header stands.
-    if dim is not None and not any(is_name_like(rows[i]) for i in dim):
+    # Only unmatched headers. With pixels, a dim name row is always one (``name_rows``) and
+    # only it vouches for a speaker off the roster: a docs page's heading is as bright as its
+    # text. Without pixels the position rule's header stands.
+    if dim is not None and not dim_names:
         return []
     return blocks
+
+
+def _is_display_name(text: str) -> bool:
+    """Loose shape of a Zoom display name, for rows already drawn as name lines: one to five
+    tokens with a letter, not ending a sentence. Any case, commas and a "(Guest)" suffix."""
+    tokens = clean_tile_name(text).split()
+    return (
+        0 < len(tokens) <= 5
+        and len(text) <= 64
+        and text.rstrip()[-1] not in ".?!:;,"
+        and any(c.isalpha() for c in tokens[0])
+    )
 
 
 def _is_caption_row(text: str) -> bool:
@@ -465,6 +490,8 @@ def _is_toolbar_row(text: str) -> bool:
     tokens = text.split()
     if "^" in text and not any(sum(c.isalnum() for c in t) >= 2 for t in tokens):
         return True
+    # The carets under the buttons may be read into the labels' row ("Mute ^ Stop Video ^").
+    tokens = [t for t in tokens if t != "^"]
     labels = sum(t[:1].isupper() and norm_name(t) in _TOOLBAR_WORDS for t in tokens)
     return labels >= 2 and labels >= 0.75 * len(tokens)
 

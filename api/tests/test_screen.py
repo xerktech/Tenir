@@ -2287,6 +2287,7 @@ def test_header_less_lines_mid_meeting_are_still_kept() -> None:
         ("Participants Chat React Share More",),
         ("^ D ^ A ^",),
         ("Mute Stop Video Participants", "^ ^"),
+        ("Mute ^ Stop Video ^ Participants ^ Chat React Share More",),
     ],
 )
 def test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored(toolbar: tuple) -> None:
@@ -2301,8 +2302,33 @@ def test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored(toolbar: tuple) -
 
 
 @pytest.mark.parametrize(
-    "speech", ["share more of it", "Share more of it", "we can chat more", "More video please"]
+    "speech",
+    [
+        "share more of it",
+        "Share more of it",
+        "we can chat more",
+        "More video please",
+        # Two labels, under three quarters of the row: speech, not the toolbar.
+        "Share Screen with the team",
+        # Lower-case toolbar words are speech however many there are.
+        "chat share more",
+    ],
 )
 def test_speech_using_toolbar_words_is_kept(speech: str) -> None:
     blocks = parse_caption_crop(crop("Ana Lopez", speech), _roster("Ana Lopez"))
     assert [b.lines for b in blocks] == [[speech]]
+
+
+@pytest.mark.parametrize("name", ["jsmith", "malcolm h", "Raman, Priya", "Bo Chen (Guest)"])
+def test_a_dim_display_name_of_any_shape_starts_a_meeting_and_is_not_speech(name: str) -> None:
+    """QA (XERK-2693): lower-case, "Last, First" and suffixed names aren't name-shaped, so they
+    never vouched for a header and the meeting never started; before, they were stored as
+    speech."""
+    for names in ((), (name,)):
+        store = InMemoryConversationStore()
+        frame = panel_crop((name, True), ("we shipped the release on friday", False))
+        _feed(_tracker(store), [frame] * 6, roster_names=names)
+        (conv,) = store.list("default")
+        assert [s.text for s in store.get("default", conv.id).segments] == [
+            "we shipped the release on friday"
+        ]

@@ -118,12 +118,18 @@ paths:
 - Not live, a Zoom crop needs a header (XERK-2693): a roster match, or off the roster a dim
   name row in its pixels (any header without pixels). Header-less dark docs pages started two
   false meetings. Live, header-less crops still pass (an entry whose name scrolled off).
+  - A dim row counts as a name in any shape (`_is_display_name`): "jsmith", "Raman, Priya"
+    aren't `is_name_like`, so under the gate they never started a meeting (QA).
+  - Still starts one: a grey Title Case line on a dark docs page; every row Title Case with no
+    roster (no text row, so no dim reading); legacy `Name: text` needs a roster match. Telling
+    these apart (avatar?) needs real Zoom crops.
   - Toolbar rows are dropped before parsing (`_is_toolbar_row`): Title Case labels need >= 2
     and 3/4 of the row, so speech like "Share more of it" stays.
   - Not done: dropping wide/dense share text bleeding into the crop; needs real crops to tune.
   - Tests: `test_a_dark_docs_page_in_the_caption_band_starts_no_meeting`,
     `test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored`,
-    `test_an_off_roster_speaker_s_dim_name_still_starts_a_meeting`.
+    `test_an_off_roster_speaker_s_dim_name_still_starts_a_meeting`,
+    `test_a_dim_display_name_of_any_shape_starts_a_meeting_and_is_not_speech`.
 - The fixture is synthetic OCR output (no real capture may be committed: public repo). Re-tune
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
