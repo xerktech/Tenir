@@ -2220,3 +2220,145 @@ def test_a_bright_name_shaped_caption_row_stays_speech_even_after_a_sentence_end
     for bad in (tiny_jpeg(), b"not a jpeg"):
         blocks = parse_caption_crop(ocr, roster, jpeg=bad)
         assert [b.speaker for b in blocks] == ["Ana Lopez", None]
+
+
+# --- Teams rewrites a finished entry (XERK-2694) -------------------------------------------
+#
+# Teams finalises a live-caption entry by rewriting it in place: punctuation, fixed words, and
+# the lines re-wrapped. Each case is one entry's draft and final rows from a real meeting
+# (XERK-2506 capture, 2026-11-04), same speaker, re-drawn several seconds after the draft.
+
+
+def _teams_entry(draft: list, final: list, before: list | None = None) -> list:
+    """Show ``draft`` until it is stored (stable), then the rewritten ``final``; returns the
+    (speaker, text) rows stored, in order, after updates in place."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    t = 0
+    for snapshot in [*(before or []), draft, final]:
+        for _ in range(5):
+            for seg in m.feed(snapshot, t):
+                stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+            t += 1000
+    for seg in m.flush(t + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    return [(sp, text) for _, sp, text in sorted(stored.values(), key=lambda v: v[0])]
+
+
+REWRITES = {
+    "rewrapped": (
+        [
+            blk(
+                "Ravi",
+                "Copy OK let me do this because I",
+                "have to",
+                "at least I will understand.",
+                "Like what am I doing here",
+            )
+        ],
+        [
+            blk(
+                "Ravi",
+                "Copy. OK, let me do this because",
+                "I have to do it in prod as well, so",
+                "at least I will understand.",
+                "Like what am I doing here?",
+            )
+        ],
+    ),
+    "grown": (
+        [blk("Pelin", "Whenever like we need to do it", "like"), blk("Ravi", "Oh.")],
+        [
+            blk("Pelin", "Whenever, like we need to do it", "like with the keto."),
+            blk("Ravi", "Oh."),
+        ],
+    ),
+    "split": (
+        [blk("Ravi", "No no no I'm not")],
+        [blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")],
+    ),
+    "split_no_match": (
+        [blk("Ravi", "Oh I guess are we missing the")],
+        [blk("Ravi", "Oh, I guess.", "Are we missing the cedar in test")],
+    ),
+    "split_punctuated": (
+        [blk("Ravi", "Alright that's it that's all it was")],
+        [blk("Ravi", "Alright, that's it.", "That's all it was.")],
+    ),
+    "entry_above_grew": (
+        [
+            blk("Ravi", "We need to do this"),
+            blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
+        ],
+        [
+            blk("Ravi", "We need to do this.", "You see the demo website."),
+            blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", REWRITES)
+def test_a_rewritten_teams_entry_is_stored_once(case: str) -> None:
+    """XERK-2694: the final version updates the draft's segments; nothing is stored twice."""
+    draft, final = REWRITES[case]
+    stored = _teams_entry(draft, final)
+    # Every word of the final version is kept, in order, under its speaker (a line added to
+    # an entry above another speaker's is stored when it was seen, after theirs)...
+    for speaker in {b.speaker for b in final}:
+        want = [
+            w for b in final if b.speaker == speaker for ln in b.lines for w in _words(ln).split()
+        ]
+        got = [w for sp, text in stored if sp == speaker for w in _words(text).split()]
+        it = iter(got)
+        assert all(w in it for w in want), stored
+        # ...and none twice: a line the alignment matched keeps its draft text, which may
+        # carry one word the rewrap moved to the next line ("...because I" / "I have to").
+        assert len(got) <= len(want) + 1, stored
+
+
+def _words(text: str) -> str:
+    import re
+
+    return " ".join(re.findall(r"[\w']+", text.casefold()))
+
+
+def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
+    """The final version upserts the draft's stored segments (same ids), so the store keeps
+    one copy and its text is the final one."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Ravi", "No no no I'm not")], t * 1000)
+    (draft,) = out
+    out = []
+    for t in range(5, 10):
+        out += m.feed([blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")], t * 1000)
+    out += m.flush(20_000)
+    assert [(s.segment_id == draft.segment_id, s.text) for s in out] == [
+        (True, "No, no, no."),
+        (False, "I'm not gonna enable the kDa in"),
+    ]
+
+
+def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
+    """Only a recent line of the same speaker the box no longer shows can be revised: the
+    same words from someone else, or after the revision window, are new lines."""
+    stored = _teams_entry(
+        [blk("Ana", "okay"), blk("Bo", "so we ship on friday")],
+        [blk("Ana", "okay"), blk("Bo", "so we ship on friday"), blk("Cy", "okay so we ship")],
+    )
+    assert stored == [("Ana", "okay"), ("Bo", "so we ship on friday"), ("Cy", "okay so we ship")]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(0, 5000, 1000):
+        out += m.feed([blk("Ana", "we ship on friday")], t)
+    out += m.feed([blk("Bo", "sure")], 40_000)
+    out += m.feed([blk("Bo", "sure"), blk("Ana", "we ship on friday.", "Then lunch")], 41_000)
+    out += m.flush(60_000)
+    assert [s.text for s in out] == [
+        "we ship on friday",
+        "sure",
+        "we ship on friday.",
+        "Then lunch",
+    ]

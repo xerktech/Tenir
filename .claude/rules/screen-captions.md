@@ -64,6 +64,21 @@ paths:
   - Tests: `test_simulated_rolling_captions_store_what_was_said`,
     `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
     and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
+- Teams rewrites a finished entry (punctuation, fixed words, re-wrapped lines; XERK-2694), so its
+  rows align as new. `merge._revisions` offers rows the alignment calls new to the recent
+  (`_REVISE_MS`) unshown known lines after the last aligned one, block by block, by words
+  (case/punctuation stripped, `_REVISED` coverage); matches upsert those segments (same ids).
+  - Revising must reach the newest recent known line, and can't skip a known line once it
+    started: else "okay", Bo, "okay so lets start" folds Ana's new line into her old one.
+  - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
+  - New lines go just above the known line shown below them (Teams adds lines to an entry
+    above another speaker's); appending them broke the next snapshot's order.
+  - Accepted: an aligned row keeps its draft text, and a rewrite with fewer rows than the draft
+    leaves the unclaimed draft lines stored.
+  - Measured (1000 seeds, vs. before): clean same; noise 3 dup runs (4); 30% drops lose
+    154 (152); noise + drops 363 dup runs (409).
+  - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
+    `test_a_rewritten_entry_keeps_the_drafts_segment_ids`, `test_a_new_entry_like_an_old_one_is_not_a_rewrite`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
