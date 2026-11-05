@@ -38,7 +38,8 @@ MAX_CUTS = 6
 
 # Closing quotes and brackets, ASCII and full-width: they stay on the sentence they close.
 # One set feeds every rule below; a closer missing from one rule split "（はい。）" (QA).
-_CLOSERS = "\"'”’)]」』）】》〉〕＂"
+# Not » or ›: German opens quotes with them.
+_CLOSERS = "\"'”’)]」』）】》〉〕＂］｝〗〙〛｣〞〟"
 _FW_MARKS = "。！？"
 _C = re.escape(_CLOSERS)
 _END = re.compile(rf"[.?!…{_FW_MARKS}][{_C}]*$")
@@ -50,20 +51,19 @@ _CUT = re.compile(
     rf"|(?<=[{_FW_MARKS}])[{_C}]*(?:\s+(?=\S)|(?=[^\s{_C}{_FW_MARKS}]))"
 )
 # A piece starting with one of these continues the last sentence's punctuation ("本当？" "！").
-# Not ASCII " or ': they open quotes as often as they close them...
+# Not ASCII " or ': they open quotes as often as they close them, so 'Really? "' orphans its
+# quote. Accepted: a guard on "only closers left in the row" broke one-row vs wrapped parity,
+# since a row is not the end of the text (QA).
 _NO_START = frozenset(_CLOSERS.replace('"', "").replace("'", "") + _FW_MARKS)
-# ...unless nothing but closers follows ('元気？ "'): a piece of only closers is never cut off.
-_ONLY_CLOSERS = re.compile(rf"[{_C}\s]*$")
 # Searched only over the few chars before a period (pos/endpos), so it stays O(1) per cut.
 _TITLES = re.compile(r"(?<!\S)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|vs)\.$")
 _TITLE_SPAN = 6
 
 
-def _ends_at(text: str, end: int, following: str, pos: int = 0) -> bool:
-    """Whether ``text[:end]`` (ending in a sentence mark) ends a sentence before
-    ``following[pos:]``."""
-    head = following[pos : pos + 1]
-    if head.islower() or head in _NO_START or _ONLY_CLOSERS.match(following, pos):
+def _ends_at(text: str, end: int, following: str) -> bool:
+    """Whether ``text[:end]`` (ending in a sentence mark) ends a sentence before ``following``."""
+    head = following[:1]
+    if head.islower() or head in _NO_START:
         return False
     return not _TITLES.search(text, max(0, end - _TITLE_SPAN), end)
 
@@ -74,7 +74,7 @@ def _pieces(text: str) -> list[str]:
     for m in _CUT.finditer(text):
         if len(out) >= MAX_CUTS:
             break
-        if not _ends_at(text, m.start(), text, m.end()):
+        if not _ends_at(text, m.start(), text[m.end() : m.end() + 1]):
             continue
         out.append(text[start : m.end()].strip())
         start = m.end()
