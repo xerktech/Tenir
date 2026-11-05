@@ -472,7 +472,8 @@ def parse_caption_crop(
         g for g in row_groups(ocr.lines) if _is_caption_row(_row_text(g))
     ]  # minus noise rows with fewer than two letters or digits, and the toolbar
     rows = [_row_text(g) for g in groups]
-    dim = _dim_rows(jpeg, ocr, groups)
+    px = _grey_pixels(jpeg, ocr, groups)
+    dim = _dim_rows(px, groups)
 
     def header_can_sit(i: int) -> bool:
         # With pixels, a header below the top is a dim row, which ``name_rows`` settles.
@@ -497,20 +498,18 @@ def parse_caption_crop(
         return blocks
     if not any(b.has_header for b in blocks):
         return []
-    # Only unmatched headers. With pixels, only a dim row that reads as a capitalised name
-    # ("Raman, Priya" and "(Guest)" allowed) vouches for a speaker off the roster: a docs
-    # page's heading is as bright as its text, and any-shape dim rows let its grey meta lines
-    # ("updated 3 days ago", "required") start meetings (QA). A meeting of lower-case names
-    # only starts once a name-shaped speaker talks (XERK-2700). Without pixels the position
-    # rule's header stands.
-    if dim is not None and not any(is_name_like(_name_form(t)) for t in dim_names):
-        return []
-    return blocks
-
-
-def _name_form(text: str) -> str:
-    """A display name as ``is_name_like`` reads it: "Raman, Priya (Guest)" -> "Raman Priya"."""
-    return " ".join(clean_tile_name(text).replace(",", " ").split())
+    # Only unmatched headers. Without pixels the position rule's header stands. With them, a
+    # speaker off the roster is vouched for only by a name row with Zoom's avatar circle
+    # beside it, dim too when the crop shows text to compare against (XERK-2700): a docs
+    # page's grey meta lines ("Last Updated", "by jsmith") are dim and name-shaped but have
+    # no circle, and a page of Title Case headings has no dim row to compare at all.
+    if px is None:
+        return blocks
+    vouched = any(
+        (row in dim_names if dim is not None else is_name_like(row)) and _has_avatar(px, group)
+        for row, group in zip(rows, groups, strict=True)
+    )
+    return blocks if vouched else []
 
 
 def _is_display_name(text: str) -> bool:
@@ -553,14 +552,20 @@ def _row_text(group: list[OcrLine]) -> str:
 _NAME_DIM = 0.8
 
 
-def _dim_rows(jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]) -> set[int] | None:
-    """Indices of the rows drawn dimmer than the crop's caption text (Zoom's name lines),
-    read from the crop's pixels: None when they can't be read (no image, a size OCR didn't
-    read, no text row to compare against).
+@dataclass(frozen=True)
+class _Pixels:
+    """A caption crop's pixels: ``ink`` is each pixel's grey distance from the panel colour
+    (the crop's median grey)."""
 
-    A row's ink is the 99.5th percentile of its pixels' distance from the panel colour (the
-    crop's median grey), inside its OCR boxes only: the avatar left of a name is bright."""
-    if not jpeg or len(groups) < 2:
+    ink: np.ndarray  # rows x columns, int16
+
+
+def _grey_pixels(
+    jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]
+) -> _Pixels | None:
+    """The crop's pixels, None when they can't be read (no image, a size OCR didn't read, a
+    box that isn't finite)."""
+    if not jpeg or not all(math.isfinite(v) for g in groups for ln in g for v in ln.box):
         return None
     try:
         from PIL import Image
@@ -571,23 +576,99 @@ def _dim_rows(jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]) -
         g = np.asarray(img.convert("L"), dtype=np.int16)
     except Exception:
         return None
-    bg = float(np.median(g))
+    return _Pixels(np.abs(g - int(np.median(g))))
+
+
+# Zoom's avatar circle: grey distance from the panel that counts as its ink, how far left of
+# the name it may sit (name heights), its height range (name heights), and the share of the
+# search column's width a y line needs lit to count. The real panel (2026 capture) draws a
+# filled circle left of the name line, starting level with it; synthetic tuned, re-measure
+# on real crops (the panel_crop fixture draws it 28 px at a 20 px name).
+_AVATAR_INK = 40
+_AVATAR_REACH = 3.0
+_AVATAR_TALL = (0.8, 4.0)
+_AVATAR_LIT = 0.12
+
+
+def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
+    """A round patch of ink left of this row's first box, overlapping its height: Zoom's
+    avatar beside a speaker's name line. A docs page's grey meta line or heading has bare
+    page (or a bullet, an outline icon: not filled circles) there."""
+    x0, y0, _, y1 = group[0].box
+    h = max(y1 - y0, 1.0)
+    right = int(x0 - 0.1 * h)
+    left = max(0, int(x0 - _AVATAR_REACH * h))
+    if right - left < _AVATAR_TALL[0] * h:
+        return False  # the row starts at the crop's edge: no room for a circle
+    ink = px.ink[:, left:right] > _AVATAR_INK
+    lit = ink.mean(axis=1) >= _AVATAR_LIT
+    return any(
+        _AVATAR_TALL[0] * h <= bottom - top <= _AVATAR_TALL[1] * h
+        and top < y1
+        and bottom > y0
+        # The circle starts level with the name; a text row meeting its lower half isn't it.
+        and top <= (y0 + y1) / 2
+        and _is_round(ink[top:bottom])
+        for top, bottom in _runs(lit)
+    )
+
+
+def _dim_rows(px: _Pixels | None, groups: list[list[OcrLine]]) -> set[int] | None:
+    """Indices of the rows drawn dimmer than the crop's caption text (Zoom's name lines),
+    read from the crop's pixels: None when they can't be read or there is no text row to
+    compare against.
+
+    A row's ink is the 99.5th percentile of its pixels' distance from the panel colour,
+    inside its OCR boxes only: the avatar left of a name is bright."""
+    if px is None or len(groups) < 2:
+        return None
     inks: list[float] = []
     for group in groups:
         parts = []
         for ln in group:
-            if not all(math.isfinite(v) for v in ln.box):
-                return None
             x0, y0, x1, y1 = (max(0, int(round(v))) for v in ln.box)
-            box = g[y0:y1, x0:x1]
+            box = px.ink[y0:y1, x0:x1]
             if box.size:
-                parts.append(np.abs(box - bg).reshape(-1))
+                parts.append(box.reshape(-1))
         inks.append(float(np.percentile(np.concatenate(parts), 99.5)) if parts else 0.0)
     # The text's ink: the brightest row that isn't name-shaped (a crop always has text).
     text = [ink for ink, gr in zip(inks, groups, strict=True) if not is_name_like(_row_text(gr))]
     if not text or max(text) <= 0:
         return None
     return {i for i, ink in enumerate(inks) if ink < _NAME_DIM * max(text)}
+
+
+def _runs(lit: np.ndarray) -> list[tuple[int, int]]:
+    """The [top, bottom) spans of consecutive lit y lines."""
+    out: list[tuple[int, int]] = []
+    y, height = 0, len(lit)
+    while y < height:
+        if not lit[y]:
+            y += 1
+            continue
+        top = y
+        while y < height and lit[y]:
+            y += 1
+        out.append((top, y))
+    return out
+
+
+def _is_round(ink: np.ndarray) -> bool:
+    """A run of lit lines (``ink``: rows x columns) is a filled circle: about as wide as tall
+    at its middle, and narrower near its top and bottom than there. A square picture or a
+    tile's edge is as wide at the ends."""
+    tall = len(ink)
+
+    def width(y: int) -> int:
+        # The ink count, not its span: JPEG speckles beside a circle widened the span (QA).
+        return int(np.count_nonzero(ink[y]))
+
+    mid = width(tall // 2)
+    if not 0.7 * tall <= mid <= 1.4 * tall:
+        return False
+    k = max(1, round(0.15 * tall))
+    ends = max(width(k), width(tall - 1 - k))
+    return ends <= 0.9 * mid
 
 
 def caption_blocks(

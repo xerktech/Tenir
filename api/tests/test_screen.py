@@ -2190,10 +2190,11 @@ def test_an_off_roster_speaker_change_mid_crop_is_a_header_not_speech() -> None:
 _PANEL, _NAME_GREY, _TEXT_WHITE = (21, 21, 21), (154, 154, 154), (255, 255, 255)
 
 
-def panel_crop(*rows: tuple[str, bool], light: bool = False) -> tuple[OcrResult, bytes]:
+def panel_crop(*rows: tuple, light: bool = False) -> tuple[OcrResult, bytes]:
     """A Zoom caption-panel crop drawn like the real one (2026): ``(text, is_name)`` rows, each
     name dim grey beside a bright avatar circle, caption text white, on the dark panel. Returns
-    the OCR boxes read off it and its JPEG. ``light``: dark text on a light panel."""
+    the OCR boxes read off it and its JPEG. ``light``: dark text on a light panel. A third
+    item ``(text, is_name, avatar)`` overrides the circle: a docs page's grey line has none."""
     font = ImageFont.load_default(size=20)
     bg, name, text = _PANEL, _NAME_GREY, _TEXT_WHITE
     if light:
@@ -2201,9 +2202,9 @@ def panel_crop(*rows: tuple[str, bool], light: bool = False) -> tuple[OcrResult,
     img = Image.new("RGB", (700, 34 * len(rows) + 10), bg)
     draw = ImageDraw.Draw(img)
     lines = []
-    for i, (row, is_name) in enumerate(rows):
+    for i, (row, is_name, *rest) in enumerate(rows):
         y = 6 + 34 * i
-        if is_name:
+        if rest[0] if rest else is_name:
             draw.ellipse((8, y, 36, y + 28), fill=(230, 200, 180))
         draw.text((50, y), row, font=font, fill=name if is_name else text)
         lines.append(OcrLine(row, tuple(float(v) for v in draw.textbbox((50, y), row, font=font))))
@@ -2281,16 +2282,19 @@ def test_dim_rows_reads_no_pixels_it_cannot_trust() -> None:
     """The brightness read gives up (None: the sentence rule decides) on a JPEG of another
     size than OCR read, a crop with no caption-text row to compare against, and a box with a
     non-finite coordinate (it raised and dropped the frame, QA D2)."""
+    def dim_rows(jpeg: bytes, ocr: OcrResult) -> set[int] | None:
+        groups = zoom.row_groups(ocr.lines)
+        return zoom._dim_rows(zoom._grey_pixels(jpeg, ocr, groups), groups)
+
     ocr, jpeg = panel_crop(("Tim Mahler", True), ("and then", False), ("Shad Tischer", True))
-    groups = zoom.row_groups(ocr.lines)
-    assert zoom._dim_rows(jpeg, ocr, groups) == {0, 2}
+    assert dim_rows(jpeg, ocr) == {0, 2}
     big = io.BytesIO()
     Image.open(io.BytesIO(jpeg)).resize((ocr.width * 2, ocr.height * 2)).save(big, "JPEG")
-    assert zoom._dim_rows(big.getvalue(), ocr, groups) is None
+    assert dim_rows(big.getvalue(), ocr) is None
     names, names_jpeg = panel_crop(("Tim Mahler", True), ("Shad Tischer", True))
-    assert zoom._dim_rows(names_jpeg, names, zoom.row_groups(names.lines)) is None
+    assert dim_rows(names_jpeg, names) is None
     bad = OcrResult(ocr.width, ocr.height, (*ocr.lines, OcrLine("x y", (float("nan"), 0, 5, 5))))
-    assert zoom._dim_rows(jpeg, bad, zoom.row_groups(bad.lines)) is None
+    assert dim_rows(jpeg, bad) is None
 
 
 def test_a_bright_name_shaped_caption_row_stays_speech_even_after_a_sentence_end() -> None:
@@ -2432,27 +2436,76 @@ def test_a_dim_last_first_or_guest_name_starts_a_meeting_and_is_not_speech(name:
 
 @pytest.mark.parametrize(
     "grey",
-    ["updated 3 days ago", "by jsmith", "Edit this page", "required", "see also", "v2.3.1"],
+    [
+        "updated 3 days ago",
+        "by jsmith",
+        "Edit this page",
+        "required",
+        "see also",
+        "v2.3.1",
+        # XERK-2700: a grey Title Case line read as a capitalised name and vouched.
+        "Last Updated",
+        "Bo Chen",
+    ],
 )
 def test_a_grey_meta_line_on_a_docs_page_starts_no_meeting(grey: str) -> None:
     """Delta QA: letting a dim row of any shape vouch for a start let these start meetings."""
     store = InMemoryConversationStore()
-    frame = panel_crop(("Release Notes", False), (grey, True), *((r, False) for r in _DOCS_PAGE))
+    frame = panel_crop(
+        ("Release Notes", False), (grey, True, False), *((r, False) for r in _DOCS_PAGE)
+    )
     for names in ((), ("Ana Lopez",)):
         _feed(_tracker(store), [frame] * 6, roster_names=names)
     assert store.list("default") == []
 
 
 @pytest.mark.parametrize("name", ["jsmith", "malcolm h"])
-def test_a_lower_case_dim_name_is_a_header_mid_meeting_not_speech(name: str) -> None:
-    # It can't start a meeting alone (a docs page's grey lines look the same, XERK-2700), but
-    # once one is live it heads its entry rather than being stored as speech.
-    ocr, jpeg = panel_crop((name, True), ("we shipped the release on friday", False))
-    assert parse_caption_crop(ocr, Roster(), jpeg=jpeg) == []
-    blocks = parse_caption_crop(ocr, Roster(), live=True, jpeg=jpeg)
-    assert [(b.has_header, b.lines) for b in blocks] == [
-        (True, ["we shipped the release on friday"])
-    ]
+@pytest.mark.parametrize("light", [False, True])
+def test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting(name: str, light: bool) -> None:
+    """XERK-2700: only a capitalised dim name vouched for a start, so a meeting whose speakers
+    all had lower-case display names never started. Zoom's avatar circle beside the name
+    tells it from a docs page's grey line, roster or not."""
+    for names in ((), ("Ana Lopez",)):
+        store = InMemoryConversationStore()
+        frame = panel_crop((name, True), ("we shipped the release on friday", False), light=light)
+        _feed(_tracker(store), [frame] * 6, roster_names=names)
+        (conv,) = store.list("default")
+        segments = store.get("default", conv.id).segments
+        assert [s.text for s in segments] == ["we shipped the release on friday"]
+
+
+def test_a_page_of_title_case_headings_starts_no_meeting() -> None:
+    """XERK-2700: with every row name-shaped there is no text row to compare brightness
+    against, and the position rule's header started a meeting with no roster."""
+    store = InMemoryConversationStore()
+    page = panel_crop(("Getting Started", False), ("Api Reference", False), ("Release Notes", False))
+    _feed(_tracker(store), [page] * 6)
+    assert store.list("default") == []
+    # A real entry whose caption reads as a name still starts one: the avatar vouches.
+    entry = panel_crop(("Bo Chen", True), ("Sounds Good", False))
+    _feed(_tracker(store), [entry] * 6)
+    (conv,) = store.list("default")
+    assert [s.text for s in store.get("default", conv.id).segments] == ["Sounds Good"]
+
+
+def test_the_avatar_needs_a_round_patch_level_with_the_name() -> None:
+    """A square icon, a bullet, or nothing left of a dim name line is no avatar; a row
+    flush with the crop's left edge has no room for one."""
+    ocr, jpeg = panel_crop(("Bo Chen", True), ("we shipped it", False))
+    groups = zoom.row_groups(ocr.lines)
+    px = zoom._grey_pixels(jpeg, ocr, groups)
+    assert px is not None
+    assert zoom._has_avatar(px, groups[0])
+    assert not zoom._has_avatar(px, groups[1])  # its text row: the circle is above it
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((8, 6, 36, 34), fill=(230, 200, 180))  # a square picture, not a circle
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    square = zoom._grey_pixels(buf.getvalue(), ocr, groups)
+    assert square is not None and not zoom._has_avatar(square, groups[0])
+    flush = [OcrLine("Bo Chen", (2.0, *groups[0][0].box[1:]))]
+    assert not zoom._has_avatar(px, flush)
 
 
 @pytest.mark.parametrize("grey", ["Parameters:", "Note,", "x" * 30 + " " + "y" * 40])

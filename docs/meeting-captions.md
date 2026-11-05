@@ -235,8 +235,8 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
   a name-shaped line followed by text is a header with no speaker.
 - Zoom crops start no meeting without a speaker header (XERK-2693): a header-less crop, or one
-  whose only header is off the roster and drawn as bright as the text (a docs page's heading),
-  yields nothing until a meeting is live. Rows of Zoom's toolbar ("Participants Chat React
+  whose only header is off the roster and lacks Zoom's avatar circle beside a dim name line (a
+  docs page's heading or grey meta line, XERK-2700), yields nothing until a meeting is live. Rows of Zoom's toolbar ("Participants Chat React
   Share More", "^ D ^ A ^") are dropped from every crop.
 - Speaker aliases (`speaker_aliases`, per member and org) rename tile names, e.g. an email to a
   first name. Only the meeting owner's aliases apply; one member's renames never show in

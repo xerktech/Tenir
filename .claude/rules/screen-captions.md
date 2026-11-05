@@ -120,11 +120,17 @@ paths:
   name row in its pixels (any header without pixels). Header-less dark docs pages started two
   false meetings. Live, header-less crops still pass (an entry whose name scrolled off).
   - A dim row of any display-name shape (`_is_display_name`: "jsmith", "Raman, Priya") is a
-    header, not speech. Only one that reads as a capitalised name (`_name_form`) vouches for a
-    start: any-shape vouching let docs pages' grey meta lines start 55/63 probes (QA).
-  - Open (XERK-2700): lower-case-only speakers start nothing; a grey Title Case docs line, or
-    all-Title-Case rows with no roster, still start one; legacy off-roster `Name: text` doesn't.
-    Telling these apart (avatar?) needs real Zoom crops.
+    header, not speech.
+  - Off the roster, only a name row with Zoom's avatar circle left of it (`_has_avatar`, round
+    ink patch level with the name) vouches for a start, and it must be dim when the crop has a
+    text row (XERK-2700). Shape rules failed both ways: any-shape dim rows let docs grey meta
+    lines start 55/63 probes; capitalised-only let "Last Updated" start and "jsmith" never.
+  - Without readable pixels the position rule's header still starts a meeting.
+  - Open: off-roster legacy `Name: text` starts nothing (no avatar); a name line not dim
+    enough after downscale/JPEG blocks a start; avatar thresholds are synthetic. Need real crops.
+  - Tests: `test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting`,
+    `test_a_page_of_title_case_headings_starts_no_meeting`,
+    `test_the_avatar_needs_a_round_patch_level_with_the_name`.
   - Toolbar rows are dropped before parsing (`_is_toolbar_row`): Title Case labels need >= 2
     and 3/4 of the row, so speech like "Share more of it" stays.
   - Not done: dropping wide/dense share text bleeding into the crop; needs real crops to tune.

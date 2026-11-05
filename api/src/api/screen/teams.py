@@ -44,7 +44,9 @@ from api.screen.zoom import (
     is_name_like,
     norm_name,
     row_groups,
+    _is_round,
     _reading_order,
+    _runs,
     _TIME,
 )
 
@@ -681,21 +683,6 @@ def _pixel_avatars(jpeg: bytes | None, ocr: OcrResult) -> set[int] | None:
     return None if col is None else _round_avatars(col)
 
 
-def _runs(lit: np.ndarray) -> list[tuple[int, int]]:
-    """The [top, bottom) spans of consecutive lit y lines."""
-    out: list[tuple[int, int]] = []
-    y, height = 0, len(lit)
-    while y < height:
-        if not lit[y]:
-            y += 1
-            continue
-        top = y
-        while y < height and lit[y]:
-            y += 1
-        out.append((top, y))
-    return out
-
-
 def _avatar_sized(col: _AvatarInk, top: int, bottom: int) -> bool:
     return _AVATAR_ROWS[0] * col.row_h <= bottom - top <= _AVATAR_ROWS[1] * col.row_h
 
@@ -734,24 +721,6 @@ def _ink_below(col: _AvatarInk, box: OcrLine) -> bool:
         top <= mid and bottom >= need and _avatar_sized(col, top, bottom)
         for top, bottom in _runs(col.lit)
     )
-
-
-def _is_round(ink: np.ndarray) -> bool:
-    """A run of lit lines (``ink``: rows x columns) is a filled circle: about as wide as tall
-    at its middle, and narrower near its top and bottom than there. A square picture or a
-    tile's edge is as wide at the ends."""
-    tall = len(ink)
-
-    def width(y: int) -> int:
-        # The ink count, not its span: JPEG speckles beside a circle widened the span (QA).
-        return int(np.count_nonzero(ink[y]))
-
-    mid = width(tall // 2)
-    if not 0.7 * tall <= mid <= 1.4 * tall:
-        return False
-    k = max(1, round(0.15 * tall))
-    ends = max(width(k), width(tall - 1 - k))
-    return ends <= 0.9 * mid
 
 
 def parse_caption_crop(
