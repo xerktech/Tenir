@@ -485,6 +485,12 @@ class CaptionMerger:
             if shown.norm == line.norm:
                 line.pending = None
                 return
+            mine = _words(shown.text)
+            if any(
+                len(mine) < len(full) and full[len(full) - len(mine) :] == mine
+                for full in (_words(line.text), _words(line.pending or ""))
+            ):
+                return  # the crop cut the row's start off: alike on every frame it lasts
             if line.pending is not None and _norm(line.pending) == shown.norm:
                 self._revise(line, shown, ts, out)
                 return

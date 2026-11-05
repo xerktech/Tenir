@@ -79,7 +79,9 @@ paths:
   - For `_REVISE_MS` after a rewrite, a matched row takes the first differing text two reads
     in a row agree on; a read equal to the stored text drops what is held. Confirming whenever
     the held text recurred stored jitter flipping back later; only the very next read lost the
-    rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted).
+    rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted),
+    but a read that is the stored text with its start cut off is ignored: a crop clipping a
+    static row reads it alike on every frame (QA).
   - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
     the ended meeting's segment into the next conversation (QA). Test:
     `test_a_rewrite_never_revises_the_ended_meetings_carried_line`.

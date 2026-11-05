@@ -2547,3 +2547,53 @@ def test_one_noisy_frame_after_a_rewrite_only_delays_it(noisy: str) -> None:
     for seg in m.flush(60_000):
         stored[seg.segment_id] = seg.text
     assert list(stored.values())[-3:] == final, stored
+
+
+def _rewrite_run(frames: list[list[str]]) -> tuple[dict[str, str], list[list[str]]]:
+    """Feed the rewrap fixture's draft, then ``frames`` (rows of one header-less block, one
+    frame a second); returns the stored texts and each frame's emitted texts."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    stored: dict[str, str] = {}
+    emitted: list[list[str]] = []
+    feed = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    feed += [[blk(None, *rows, header=False)] for rows in frames]
+    for t, frame in enumerate(feed):
+        segs = m.feed(frame, t * 1000)
+        stored.update({s.segment_id: s.text for s in segs})
+        emitted.append([s.text for s in segs])
+    stored.update({s.segment_id: s.text for s in m.flush(len(feed) * 1000 + 60_000)})
+    return stored, emitted[10:]
+
+
+_REWRAP_FINAL = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
+
+
+def test_a_clipped_top_row_read_alike_after_a_rewrite_is_not_stored() -> None:
+    """QA (XERK-2694): a crop cutting a row's start reads it the same on every frame; two
+    alike reads of it inside the rewrite window must not replace the row."""
+    clipped = ["so enable should like we the", *_REWRAP_FINAL[1:]]
+    # The rewrite frame arms row 0 with new words; the crop then clips it on every frame.
+    stored, _ = _rewrite_run([_REWRAP_FINAL] + [clipped] * 3)
+    assert "so enable should like we the" not in stored.values(), stored
+
+
+def test_the_rewrite_window_closes_once_taken_and_after_it_expires() -> None:
+    """QA (XERK-2694): once a rewrite is taken, later alike misreads are OCR again (the window
+    closed); and new words read only after the window are never taken."""
+    misread = ["Yes so enab1e should like we the", *_REWRAP_FINAL[1:]]
+    stored, emitted = _rewrite_run([_REWRAP_FINAL] * 3 + [misread] * 3 + [_REWRAP_FINAL] * 2)
+    assert all("Yes so enab1e should like we the" not in e for e in emitted), emitted
+    assert "Yes so enable should like we the" in stored.values(), stored
+    # The rewrite frame arms row 0; the draft is re-read until the window has passed.
+    still = ["yes so so enable should like we", *_REWRAP_FINAL[1:]]
+    stored, _ = _rewrite_run([_REWRAP_FINAL] + [still] * 35 + [_REWRAP_FINAL] * 3)
+    assert "yes so so enable should like we" in stored.values(), stored
+
+
+def test_a_case_or_punctuation_rewrite_of_a_matched_row_is_taken_at_once() -> None:
+    """Only new words wait for a second read: "Yes, so so ..." over "yes so so ..." is the
+    same words, stored on the rewrite frame itself."""
+    final = ["Yes, so so enable should like we.", *_REWRAP_FINAL[1:]]
+    _, emitted = _rewrite_run([final])
+    assert "Yes, so so enable should like we." in emitted[0], emitted
