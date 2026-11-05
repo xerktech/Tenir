@@ -503,13 +503,28 @@ def parse_caption_crop(
     # beside it, dim too when the crop shows text to compare against (XERK-2700): a docs
     # page's grey meta lines ("Last Updated", "by jsmith") are dim and name-shaped but have
     # no circle, and a page of Title Case headings has no dim row to compare at all.
+    #
+    # A crop cut flush with a name row's left edge shows no avatar either way: capture clients
+    # before XERK-2700 cut it off whenever it was darker than their glyph threshold (Zoom's
+    # blue or green circles). There the XERK-2693 rule stands: a dim row that reads as a
+    # capitalised name vouches (no text row to compare against: any name-shaped header).
     if px is None:
         return blocks
-    vouched = any(
-        (row in dim_names if dim is not None else is_name_like(row)) and _has_avatar(px, group)
-        for row, group in zip(rows, groups, strict=True)
-    )
-    return blocks if vouched else []
+
+    def vouches(row: str, group: list[OcrLine]) -> bool:
+        if not (row in dim_names if dim is not None else is_name_like(row)):
+            return False
+        avatar = _has_avatar(px, group)
+        if avatar is None:
+            return dim is None or is_name_like(_name_form(row))
+        return avatar
+
+    return blocks if any(vouches(r, g) for r, g in zip(rows, groups, strict=True)) else []
+
+
+def _name_form(text: str) -> str:
+    """A display name as ``is_name_like`` reads it: "Raman, Priya (Guest)" -> "Raman Priya"."""
+    return " ".join(clean_tile_name(text).replace(",", " ").split())
 
 
 def _is_display_name(text: str) -> bool:
@@ -557,7 +572,7 @@ class _Pixels:
     """A caption crop's pixels: ``ink`` is each pixel's grey distance from the panel colour
     (the crop's median grey)."""
 
-    ink: np.ndarray  # rows x columns, int16
+    ink: np.ndarray  # rows x columns
 
 
 def _grey_pixels(
@@ -576,7 +591,7 @@ def _grey_pixels(
         g = np.asarray(img.convert("L"), dtype=np.int16)
     except Exception:
         return None
-    return _Pixels(np.abs(g - int(np.median(g))))
+    return _Pixels(np.abs(g - float(np.median(g))))
 
 
 # Zoom's avatar circle: grey distance from the panel that counts as its ink, how far left of
@@ -590,16 +605,17 @@ _AVATAR_TALL = (0.8, 4.0)
 _AVATAR_LIT = 0.12
 
 
-def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
+def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool | None:
     """A round patch of ink left of this row's first box, overlapping its height: Zoom's
     avatar beside a speaker's name line. A docs page's grey meta line or heading has bare
-    page (or a bullet, an outline icon: not filled circles) there."""
+    page (or a bullet, an outline icon: not filled circles) there. None when the row starts
+    at the crop's left edge, with no room to show a circle."""
     x0, y0, _, y1 = group[0].box
     h = max(y1 - y0, 1.0)
     right = int(x0 - 0.1 * h)
     left = max(0, int(x0 - _AVATAR_REACH * h))
     if right - left < _AVATAR_TALL[0] * h:
-        return False  # the row starts at the crop's edge: no room for a circle
+        return None
     ink = px.ink[:, left:right] > _AVATAR_INK
     lit = ink.mean(axis=1) >= _AVATAR_LIT
     return any(

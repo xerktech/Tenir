@@ -33,6 +33,7 @@ from caption_score import aggregate, score_frame  # noqa: E402
 # The caption-box finder ships in the capture client (desktop/); the bench measures that code.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "desktop"))
 from tenir_capture.caption_box import (  # noqa: E402,F401  (re-exported for the tests)
+    AVATAR_ROOM,
     BAND_TOP,
     crop_band,
     crop_box,

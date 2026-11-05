@@ -2495,17 +2495,65 @@ def test_the_avatar_needs_a_round_patch_level_with_the_name() -> None:
     groups = zoom.row_groups(ocr.lines)
     px = zoom._grey_pixels(jpeg, ocr, groups)
     assert px is not None
-    assert zoom._has_avatar(px, groups[0])
-    assert not zoom._has_avatar(px, groups[1])  # its text row: the circle is above it
+    assert zoom._has_avatar(px, groups[0]) is True
+    assert zoom._has_avatar(px, groups[1]) is False  # its text row: the circle is above it
     img = Image.open(io.BytesIO(jpeg)).convert("RGB")
     draw = ImageDraw.Draw(img)
     draw.rectangle((8, 6, 36, 34), fill=(230, 200, 180))  # a square picture, not a circle
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=80)
     square = zoom._grey_pixels(buf.getvalue(), ocr, groups)
-    assert square is not None and not zoom._has_avatar(square, groups[0])
+    assert square is not None and zoom._has_avatar(square, groups[0]) is False
     flush = [OcrLine("Bo Chen", (2.0, *groups[0][0].box[1:]))]
-    assert not zoom._has_avatar(px, flush)
+    assert zoom._has_avatar(px, flush) is None  # no room to tell
+
+
+def _cut_left(frame: tuple[OcrResult, bytes], x: int) -> tuple[OcrResult, bytes]:
+    """``frame`` cut ``x`` px in from the left, as a capture client before XERK-2700 sent it:
+    the crop began at the glyphs, so a dark avatar left of the name was cut off."""
+    ocr, jpeg = frame
+    img = Image.open(io.BytesIO(jpeg)).crop((x, 0, ocr.width, ocr.height))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    lines = tuple(
+        OcrLine(ln.text, (ln.box[0] - x, ln.box[1], ln.box[2] - x, ln.box[3])) for ln in ocr.lines
+    )
+    return OcrResult(img.width, img.height, lines), buf.getvalue()
+
+
+def test_a_crop_cut_at_the_name_keeps_the_capitalised_name_rule() -> None:
+    """QA (XERK-2700): older clients cut a dark avatar off the crop. With no room to show one,
+    a capitalised dim name still vouches, as before; a lower-case one still doesn't."""
+    text = ("we shipped the release on friday", False)
+    for name, starts in (("Bo Chen", True), ("Raman, Priya", True), ("jsmith", False)):
+        store = InMemoryConversationStore()
+        frame = _cut_left(panel_crop((name, True), text), 44)
+        _feed(_tracker(store), [frame] * 6, roster_names=("Ana Lopez",))
+        assert len(store.list("default")) == starts, name
+
+
+def test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing() -> None:
+    """With a text row to compare against, the vouching row must be dim: a docs heading drawn
+    as bright as its text, with a round icon beside it, is no speaker (QA mutant)."""
+    store = InMemoryConversationStore()
+    frame = panel_crop(("Release Notes", False, True), *((r, False) for r in _DOCS_PAGE))
+    _feed(_tracker(store), [frame] * 6)
+    assert store.list("default") == []
+
+
+def test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar() -> None:
+    """Zoom's avatar starts level with the name line; a circle that only meets the row's lower
+    half belongs to something below it (QA mutant)."""
+    ocr, jpeg = panel_crop(("Bo Chen", True, False), ("we shipped it", False))
+    groups = zoom.row_groups(ocr.lines)
+    y0, y1 = groups[0][0].box[1], groups[0][0].box[3]
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    top = int((y0 + y1) / 2) + 3
+    ImageDraw.Draw(img).ellipse((8, top, 36, top + 28), fill=(230, 200, 180))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    px = zoom._grey_pixels(buf.getvalue(), ocr, groups)
+    assert px is not None and zoom._has_avatar(px, groups[0]) is False
 
 
 @pytest.mark.parametrize("grey", ["Parameters:", "Note,", "x" * 30 + " " + "y" * 40])

@@ -330,9 +330,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
   bench imports it from there. A real capture showed Zoom's caption panel (avatar, dim name
   line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
-  in the crop, or the server would get captions with no speaker. The api reads a name-shaped
-  first row followed by text as a header even when the roster lacks it (header, no speaker):
-  in a screen share only a strip of tiles is visible, and the name was stored as speech.
+  in the crop, or the server would get captions with no speaker. The crop also keeps
+  `AVATAR_ROOM` px left of the box: the api needs the avatar circle (XERK-2700). The api
+  reads a name-shaped first row followed by text as a header even when the roster lacks it
+  (header, no speaker): in a screen share only a strip of tiles is visible, and the name was
+  stored as speech.
 - **Teams crop**: `tenir_capture/caption_pane.py` crops the box the api sent
   (`screen.region`, above); until one arrives, after the api says the pane is gone, or once
   the box isn't mostly black any more, a Teams window sends only its full frames. The region

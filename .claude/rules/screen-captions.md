@@ -126,11 +126,21 @@ paths:
     text row (XERK-2700). Shape rules failed both ways: any-shape dim rows let docs grey meta
     lines start 55/63 probes; capitalised-only let "Last Updated" start and "jsmith" never.
   - Without readable pixels the position rule's header still starts a meeting.
-  - Open: off-roster legacy `Name: text` starts nothing (no avatar); a name line not dim
-    enough after downscale/JPEG blocks a start; avatar thresholds are synthetic. Need real crops.
+  - The avatar is only visible because the client keeps `AVATAR_ROOM` px left of the box
+    (`desktop/tenir_capture/caption_box.py`): cut at the glyphs, any avatar darker than
+    `BOX_WHITE` (Zoom's blue/green) was dropped and off-roster speakers stopped starting (QA).
+  - A row flush with the crop's left edge (`_has_avatar` -> None: an older client) keeps the
+    XERK-2693 rule: a capitalised dim name vouches. Don't turn None into False.
+  - Accepted: a filled disc >= ~16 px or emoji beside a grey lower-case line on a white-on-dark
+    page starts a meeting. Navy/dark-green avatars on dark and rounded-square avatars aren't
+    seen (synthetic, QA). Both, plus legacy `Name: text` off the roster: XERK-2705, real crops.
   - Tests: `test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting`,
     `test_a_page_of_title_case_headings_starts_no_meeting`,
-    `test_the_avatar_needs_a_round_patch_level_with_the_name`.
+    `test_the_avatar_needs_a_round_patch_level_with_the_name`,
+    `test_a_crop_cut_at_the_name_keeps_the_capitalised_name_rule`,
+    `test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing`,
+    `test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar`,
+    `desktop/tests/test_caption_panel.py::test_the_crop_keeps_a_dark_avatar_left_of_the_name`.
   - Toolbar rows are dropped before parsing (`_is_toolbar_row`): Title Case labels need >= 2
     and 3/4 of the row, so speech like "Share more of it" stays.
   - Not done: dropping wide/dense share text bleeding into the crop; needs real crops to tune.
