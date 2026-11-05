@@ -39,6 +39,10 @@ BOX_MAX_LINE = 26
 LINE_SPLIT_GAP = 2  # rows of no ink that separate two text lines
 LINE_MIN_ROWS = 5  # shorter glyph runs aren't text lines (a blurred 0.5x line is ~13 rows)
 NAME_DIM = 0.8  # a speaker-name line peaks below this share of the caption text's brightness
+# px kept left of the box for the avatar circle beside Zoom's name line (26 px + a 16 px gap on
+# the real panel): the glyph threshold cut a dark avatar off, and the api reads the avatar to
+# tell a speaker from a docs page's grey line (XERK-2700).
+AVATAR_ROOM = 2 * BOX_MAX_LINE
 
 
 def crop_band(img: Image.Image, top: float = BAND_TOP, bottom: float = BAND_BOTTOM) -> Image.Image:
@@ -241,4 +245,7 @@ def crop_box(img: Image.Image) -> Image.Image | None:
     # Find the box at caption-font scale so the pixel thresholds hold for small remote windows.
     band = upscale_to(crop_band(img), img.height)
     box = find_caption_box(band)
-    return band.crop(with_speaker_line(band, box)) if box else None
+    if not box:
+        return None
+    left, top, right, bottom = with_speaker_line(band, box)
+    return band.crop((max(0, left - AVATAR_ROOM), top, right, bottom))

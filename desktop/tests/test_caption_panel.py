@@ -11,7 +11,13 @@ import numpy as np
 from caption_synth import _font
 from PIL import Image, ImageDraw
 
-from tenir_capture.caption_box import crop_band, crop_box, find_caption_box, upscale_to
+from tenir_capture.caption_box import (
+    AVATAR_ROOM,
+    crop_band,
+    crop_box,
+    find_caption_box,
+    upscale_to,
+)
 
 LINES = [
     "So, uh, the release went out on friday, and the rollout to the second region",
@@ -20,12 +26,12 @@ LINES = [
 ]
 
 
-def panel_frame(name: bool = True) -> Image.Image:
+def panel_frame(name: bool = True, avatar: tuple[int, int, int] = (170, 150, 130)) -> Image.Image:
     img = Image.new("RGB", (1772, 1313), (21, 21, 21))
     d = ImageDraw.Draw(img)
     d.rectangle((140, 40, 1630, 1000), fill=(190, 240, 215))  # the shared screen
     d.text((442, 1052), "The build is green.", font=_font(22), fill=(255, 255, 255))
-    d.ellipse((400, 1090, 426, 1116), fill=(170, 150, 130))  # the speaker's avatar
+    d.ellipse((400, 1090, 426, 1116), fill=avatar)  # the speaker's avatar
     if name:
         d.text((442, 1088), "Bo Chen", font=_font(16), fill=(154, 154, 154))
     for i, text in enumerate(LINES):
@@ -59,4 +65,36 @@ def test_without_a_name_line_the_crop_is_the_box_alone() -> None:
     box = box_of(img)
     crop = crop_box(img)
     assert crop is not None
-    assert crop.size == (box[2] - box[0], box[3] - box[1])
+    assert crop.size == (box[2] - box[0] + AVATAR_ROOM, box[3] - box[1])
+
+
+def test_the_crop_keeps_a_dark_avatar_left_of_the_name() -> None:
+    """XERK-2700: the api tells a speaker from a docs page's grey line by the avatar beside the
+    name. The box was cut at the glyphs, so a dark circle (Zoom's blue) never reached it."""
+    img = panel_frame(avatar=(14, 113, 235))
+    crop = crop_box(img)
+    assert crop is not None
+    px = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    blue = (np.abs(px - (14, 113, 235)).max(axis=2) < 30).sum(axis=0)
+    name_left = int(np.flatnonzero(np.asarray(crop.convert("L"))[:20].max(axis=0) > 120)[0])
+    # The whole circle is in the crop, left of the name line, with no ink cut at its edge.
+    assert blue.sum() > 300 and int(np.flatnonzero(blue)[-1]) < name_left
+    assert blue[0] == 0
+
+
+def test_the_avatar_room_stops_at_the_frame_s_left_edge() -> None:
+    """A caption box starting nearer the frame's left edge than AVATAR_ROOM keeps what is
+    there, never a strip of padding past the edge."""
+    img = Image.new("RGB", (640, 1313), (21, 21, 21))
+    d = ImageDraw.Draw(img)
+    d.text(
+        (12, 1110),
+        "so the release went out on friday and the rollout",
+        font=_font(22),
+        fill="white",
+    )
+    band = upscale_to(crop_band(img), img.height)
+    box = find_caption_box(band)
+    assert box is not None and box[0] < AVATAR_ROOM
+    crop = crop_box(img)
+    assert crop is not None and crop.width == box[2]

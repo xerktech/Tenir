@@ -14,7 +14,14 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import caption_bench as bench  # noqa: E402
-from caption_bench import crop_band, crop_box, find_caption_box, group_lines, upscale_to  # noqa: E402
+from caption_bench import (  # noqa: E402
+    AVATAR_ROOM,
+    crop_band,
+    crop_box,
+    find_caption_box,
+    group_lines,
+    upscale_to,
+)
 from capture_windows import frame_stats, is_good, resolve  # noqa: E402
 from caption_score import aggregate, char_accuracy, score_frame, split_speaker  # noqa: E402
 from caption_synth import _font, generate, make_frame  # noqa: E402
@@ -126,7 +133,9 @@ class TestCaptionBox:
         # tight: BOX_PAD plus anti-aliasing, never strips of video beside the box
         assert box[2] - box[0] <= br - bl + 32 and box[3] - box[1] <= bb - bt + 24
         crop = crop_box(f.image)
-        assert crop is not None and crop.size == (box[2] - box[0], box[3] - box[1])
+        # The crop keeps room for the avatar left of Zoom's name line (XERK-2700).
+        left = max(0, box[0] - AVATAR_ROOM)
+        assert crop is not None and crop.size == (box[2] - left, box[3] - box[1])
 
     @pytest.mark.parametrize("seed", range(4))
     @pytest.mark.parametrize("dark", [False, True])

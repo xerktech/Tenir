@@ -235,8 +235,9 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
   fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
   a name-shaped line followed by text is a header with no speaker.
 - Zoom crops start no meeting without a speaker header (XERK-2693): a header-less crop, or one
-  whose only header is off the roster and drawn as bright as the text (a docs page's heading),
-  yields nothing until a meeting is live. Rows of Zoom's toolbar ("Participants Chat React
+  whose only header is off the roster and isn't a dim name line (a docs page's heading or grey
+  meta line), yields nothing until a meeting is live. A dim name vouches when it is
+  capitalised or has Zoom's avatar circle beside it (lower-case names, XERK-2700). Rows of Zoom's toolbar ("Participants Chat React
   Share More", "^ D ^ A ^") are dropped from every crop.
 - Speaker aliases (`speaker_aliases`, per member and org) rename tile names, e.g. an email to a
   first name. Only the meeting owner's aliases apply; one member's renames never show in
@@ -332,9 +333,11 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
 - **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
   bench imports it from there. A real capture showed Zoom's caption panel (avatar, dim name
   line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
-  in the crop, or the server would get captions with no speaker. The api reads a name-shaped
-  first row followed by text as a header even when the roster lacks it (header, no speaker):
-  in a screen share only a strip of tiles is visible, and the name was stored as speech.
+  in the crop, or the server would get captions with no speaker. The crop also keeps
+  `AVATAR_ROOM` px left of the box: the api needs the avatar circle (XERK-2700). The api
+  reads a name-shaped first row followed by text as a header even when the roster lacks it
+  (header, no speaker): in a screen share only a strip of tiles is visible, and the name was
+  stored as speech.
 - **Teams crop**: `tenir_capture/caption_pane.py` crops the box the api sent
   (`screen.region`, above); until one arrives, after the api says the pane is gone, or once
   the box isn't mostly black any more, a Teams window sends only its full frames. The region

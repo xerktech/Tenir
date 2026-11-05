@@ -22,6 +22,8 @@ paths:
   block, so the finder alone dropped every speaker). It takes one dim line only: a white line
   above is the previous entry. 0 of 240 synthetic overlay boxes change. Test:
   `desktop/tests/test_caption_panel.py`.
+- `crop_box` keeps `AVATAR_ROOM` px left of the box for the avatar: the api reads it to tell
+  a speaker from a docs page's grey line (XERK-2700). Don't trim the crop back to the glyphs.
 - `find_caption_box` keys on centred white glyphs, not the box's dark fill: dark fill fails on
   camera-off meetings. Any change must keep the camera-off and no-caption tests green.
 - Its thresholds trade recall against slide false positives (`FILL_DARK` 85 → 65 missed
