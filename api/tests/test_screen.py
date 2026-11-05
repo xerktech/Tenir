@@ -357,6 +357,39 @@ def test_growing_line_is_stored_once_when_stable() -> None:
     assert m.flush(10_000) == []
 
 
+def test_lines_from_snapshots_with_equal_ts_keep_increasing_starts() -> None:
+    # XERK-2702: a clamped clock repeats a ts across snapshots. A wrapped row first seen in
+    # the second must start after the row it continues, or the tie reads back in random order.
+    m = CaptionMerger(start_ms=0, stable_ms=1000)
+    m.feed([blk("A", "Are we missing the cedar in test")], 5000)
+    m.feed([blk("A", "Are we missing the cedar in test", "environment?")], 5000)
+    m.feed([blk("A", "Are we missing the cedar in test", "environment?", "yes")], 4000)
+    out = m.flush(9000)
+    assert [(s.text, s.start_ms) for s in out] == [
+        ("Are we missing the cedar in test", 5000),
+        ("environment?", 5001),
+        ("yes", 5002),
+    ]
+
+
+def test_extended_line_never_ends_before_it_starts() -> None:
+    # XERK-2702: a line pushed a millisecond past a repeated ts and then completed in place at
+    # that ts must not end before its start.
+    m = CaptionMerger(start_ms=0, stable_ms=60_000)
+    m.feed([blk("A", "hello there everyone")], 5000)
+    m.feed([blk("A", "hello there everyone", "we need to deploy the"), blk("B", "right")], 5000)
+    out = m.feed(
+        [
+            blk("A", "hello there everyone", "we need to deploy the service today"),
+            blk("B", "right"),
+        ],
+        5000,
+    )
+    assert [(s.text, s.start_ms, s.end_ms) for s in out] == [
+        ("we need to deploy the service today", 5001, 5001)
+    ]
+
+
 def test_new_speaker_block_finalizes_the_lines_above_it() -> None:
     m = CaptionMerger(start_ms=0, stable_ms=60_000)
     m.feed([blk("A", "first line")], 0)
