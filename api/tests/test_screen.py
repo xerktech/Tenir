@@ -2520,3 +2520,30 @@ def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:
     for seg in m.flush(60_000):
         stored[seg.segment_id] = seg.text
     assert misread not in stored.values(), stored
+
+
+@pytest.mark.parametrize(
+    "noisy",
+    [
+        "so enable should like we the",  # clipped
+        "Yes so enable should like we the'",  # stray character
+        "yes so so enable should like we",  # still the draft
+    ],
+)
+def test_one_noisy_frame_after_a_rewrite_only_delays_it(noisy: str) -> None:
+    """QA (XERK-2694): a noisy read right after the rewrite frame must not lose the rewrite
+    when every later frame reads it cleanly."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, *final, header=False)]]
+    frames += [[blk(None, noisy, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 8
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert list(stored.values())[-3:] == final, stored

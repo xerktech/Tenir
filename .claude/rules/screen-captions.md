@@ -76,9 +76,10 @@ paths:
     (`_Line.pending`, confirmed in `_update`); case/punctuation at once. Taking the one rewrite
     frame stored misreads for good (XERK-2597); a word-move heuristic refused real Teams edits
     (it drops words too) and lost the moved word. `end_ms` stays put.
-  - A held rewrite (`pending`) must be confirmed by the very next read of its line; any other
-    read drops it, or jitter flipping back frames later was stored (QA). Two identical misreads
-    in a row are stored (accepted: identical pixels OCR alike).
+  - For `_REVISE_MS` after a rewrite, a matched row takes the first differing text two reads
+    in a row agree on; a read equal to the stored text drops what is held. Confirming whenever
+    the held text recurred stored jitter flipping back later; only the very next read lost the
+    rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted).
   - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
     the ended meeting's segment into the next conversation (QA). Test:
     `test_a_rewrite_never_revises_the_ended_meetings_carried_line`.

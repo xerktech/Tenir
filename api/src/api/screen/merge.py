@@ -110,8 +110,10 @@ class _Line:
     seen_ms: int
     segment: Segment | None = None  # set once final
     carried: bool = False  # the ended meeting's line, seeded into the next merger
-    # A rewritten entry's text for this line, read on one frame; taken once a second agrees.
+    # A matched row of a rewritten entry: until ``rewrite_until`` it takes the first differing
+    # text two reads in a row agree on (``pending``: the last such read).
     pending: str | None = None
+    rewrite_until: int = 0
 
     @property
     def final(self) -> bool:
@@ -426,14 +428,13 @@ class CaptionMerger:
                 ):
                     # A row of a rewritten entry the alignment still matched: the rewrite may
                     # have moved or dropped words on it ("...it, the how" over "the ...it the").
-                    # One frame can be an OCR misread (XERK-2597), so it is taken only when a
-                    # the next read agrees (here or in ``_update``); case or punctuation at once.
-                    if _words(line_shown.text) == _words(line.text) or (
-                        line.pending is not None and _norm(line.pending) == line_shown.norm
-                    ):
+                    # One frame can be an OCR misread (XERK-2597), so new words wait for two
+                    # reads in a row (``_update``); case or punctuation is taken at once.
+                    if _words(line_shown.text) == _words(line.text):
                         self._revise(line, line_shown, ts, out)
                     else:
                         line.pending = line_shown.text
+                        line.rewrite_until = ts + _REVISE_MS
                 else:
                     self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)
             elif i in revised:
@@ -477,13 +478,20 @@ class CaptionMerger:
     def _update(
         self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment], *, bottom: bool
     ) -> None:
-        # A held rewrite stands only if this, the next read, agrees: a clean read in between
-        # means it was jitter, which flipping back later must not confirm.
-        pending, line.pending = line.pending, None
+        if ts <= line.rewrite_until:
+            # A rewritten row: a read equal to the stored text drops what was held (jitter
+            # flipping back later must not confirm it); a differing read is taken when the
+            # read before it agrees, else held. One noisy frame then only delays the rewrite.
+            if shown.norm == line.norm:
+                line.pending = None
+                return
+            if line.pending is not None and _norm(line.pending) == shown.norm:
+                self._revise(line, shown, ts, out)
+                return
+            line.pending = shown.text
+        else:
+            line.pending = None
         if shown.norm == line.norm:
-            return
-        if pending is not None and _norm(pending) == shown.norm:
-            self._revise(line, shown, ts, out)  # a rewrite read twice in a row
             return
         grew = shown.norm.startswith(line.norm + " ")
         if not line.final:
@@ -510,7 +518,7 @@ class CaptionMerger:
         if shown.norm == line.norm or line.carried:
             return
         line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
-        line.pending = None
+        line.pending, line.rewrite_until = None, 0
         if line.segment is not None:
             # end_ms stays when it was said: the rewrite lands after others spoke.
             line.segment.text = shown.text
