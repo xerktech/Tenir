@@ -332,7 +332,7 @@ def test_ocr_pieces_on_one_row_are_joined_and_noise_dropped() -> None:
             line("~", 600, 2, 610, 20),
         ),
     )
-    blocks = parse_caption_crop(result, Roster())
+    blocks = parse_caption_crop(result, Roster(), live=True)  # header-less: mid-meeting
     assert blocks[0].lines == ["for the login timeout"]
 
 
@@ -1162,7 +1162,7 @@ def test_store_failure_on_a_frame_keeps_the_socket(screen, monkeypatch: pytest.M
     monkeypatch.setattr(store, "speaker_aliases", boom)
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         ws.receive_text()
-        jpeg = ocr.register(unique_jpeg(1), crop("hello there"))
+        jpeg = ocr.register(unique_jpeg(1), crop("Priya Raman", "hello there"))
         ws.send_bytes(envelope(header(int(time.time() * 1000), "caption"), jpeg))
         wait_handled(1)
         ws.send_text(json.dumps({"type": "ping"}))
@@ -1178,7 +1178,7 @@ def test_meeting_start_for_a_deleted_account_closes_the_socket(screen) -> None:
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         ws.receive_text()
         get_user_store().delete(admin.user_id)
-        jpeg = ocr.register(unique_jpeg(1), crop("hello there"))
+        jpeg = ocr.register(unique_jpeg(1), crop("Priya Raman", "hello there"))
         ws.send_bytes(envelope(header(int(time.time() * 1000), "caption"), jpeg))
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
@@ -2280,3 +2280,150 @@ def test_a_bright_name_shaped_caption_row_stays_speech_even_after_a_sentence_end
     for bad in (tiny_jpeg(), b"not a jpeg"):
         blocks = parse_caption_crop(ocr, roster, jpeg=bad)
         assert [b.speaker for b in blocks] == ["Ana Lopez", None]
+
+
+# --- XERK-2693: no meeting from speaker-less text, no toolbar rows -----------------------
+
+# Text the capture client cropped off a dark docs page in production (XERK-2693): bright text
+# centred low on a dark page passes its caption-box finder.
+_DOCS_PAGE = (
+    "3 GitHub App - Tesoro Relea",
+    "SHA256:loVVq1x8Zk the signing key",
+    "organizations:read The VGS CLI's org lookup befc",
+    "routes:write Applying routes Adding",
+)
+
+
+def _feed(tracker: MeetingTracker, frames, *, roster_names=()) -> None:
+    """Each (ocr, jpeg) crop through the Zoom parser and the tracker, one a second, as ws does."""
+
+    async def run() -> None:
+        roster = await tracker.ensure_roster()
+        for name in roster_names:
+            roster.add(name)
+        for i, (ocr, jpeg) in enumerate(frames):
+            blocks = parse_caption_crop(
+                ocr, roster, live=tracker.conversation_id is not None, jpeg=jpeg
+            )
+            await tracker.on_caption(blocks, i * 1000)
+        if tracker.conversation_id is not None:
+            await tracker.end(len(frames) * 1000 + 60_000)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("names", [(), ("Ana Lopez",)])
+def test_a_dark_docs_page_in_the_caption_band_starts_no_meeting(names: tuple) -> None:
+    """Two false meetings were docs pages read as speaker-less captions, then sent to Turma."""
+    store = InMemoryConversationStore()
+    no_pixels = [(crop(*_DOCS_PAGE), None)] * 12
+    _feed(_tracker(store), no_pixels, roster_names=names)
+    # A heading over its text is name-shaped, but drawn as bright as the text: not a speaker.
+    heading = panel_crop(("Tesoro Release Notes", False), *((r, False) for r in _DOCS_PAGE))
+    _feed(_tracker(store), [heading] * 12, roster_names=names)
+    assert store.list("default") == []
+
+
+def test_an_off_roster_speaker_s_dim_name_still_starts_a_meeting() -> None:
+    """The pixel check must not refuse a real speaker the tiles don't show (a screen share)."""
+    store = InMemoryConversationStore()
+    frame = panel_crop(("Bo Chen", True), ("we shipped the release on friday", False))
+    _feed(_tracker(store), [frame] * 6, roster_names=("Ana Lopez",))
+    (conv,) = store.list("default")
+    assert [s.text for s in store.get("default", conv.id).segments] == [
+        "we shipped the release on friday"
+    ]
+
+
+def test_header_less_lines_mid_meeting_are_still_kept() -> None:
+    # Live, an entry whose name line scrolled off the crop is still that speaker's speech.
+    blocks = parse_caption_crop(crop(*_DOCS_PAGE[:1]), Roster(), live=True)
+    assert [b.lines for b in blocks] == [[_DOCS_PAGE[0]]]
+
+
+@pytest.mark.parametrize(
+    "toolbar",
+    [
+        ("Participants Chat React Share More",),
+        ("^ D ^ A ^",),
+        ("Mute Stop Video Participants", "^ ^"),
+        ("Mute ^ Stop Video ^ Participants ^ Chat React Share More",),
+        # Exactly three quarters labels.
+        ("Chat Share More today",),
+    ],
+)
+def test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored(toolbar: tuple) -> None:
+    """Seen ~10 times in one real meeting: the toolbar under the panel stored as captions."""
+    store = InMemoryConversationStore()
+    frame = crop("Ana Lopez", "we should ship it today.", *toolbar)
+    _feed(_tracker(store), [(frame, None)] * 6, roster_names=("Ana Lopez",))
+    (conv,) = store.list("default")
+    assert [s.text for s in store.get("default", conv.id).segments] == ["we should ship it today."]
+    # A toolbar row alone starts nothing.
+    assert parse_caption_crop(crop(*toolbar), Roster()) == []
+
+
+@pytest.mark.parametrize(
+    "speech",
+    [
+        "share more of it",
+        "Share more of it",
+        "we can chat more",
+        "More video please",
+        # Two labels, under three quarters of the row: speech, not the toolbar.
+        "Share Screen with the team",
+        # Lower-case toolbar words are speech however many there are.
+        "chat share more",
+        # Two labels of three: under three quarters.
+        "Share Screen today",
+    ],
+)
+def test_speech_using_toolbar_words_is_kept(speech: str) -> None:
+    blocks = parse_caption_crop(crop("Ana Lopez", speech), _roster("Ana Lopez"))
+    assert [b.lines for b in blocks] == [[speech]]
+
+
+@pytest.mark.parametrize("name", ["Raman, Priya", "Bo Chen (Guest)"])
+def test_a_dim_last_first_or_guest_name_starts_a_meeting_and_is_not_speech(name: str) -> None:
+    """QA (XERK-2693): "Last, First" and suffixed names aren't name-shaped, so they never
+    vouched for a header and the meeting never started; before, they were stored as speech."""
+    for names in ((), (name,)):
+        store = InMemoryConversationStore()
+        frame = panel_crop((name, True), ("we shipped the release on friday", False))
+        _feed(_tracker(store), [frame] * 6, roster_names=names)
+        (conv,) = store.list("default")
+        assert [s.text for s in store.get("default", conv.id).segments] == [
+            "we shipped the release on friday"
+        ]
+
+
+@pytest.mark.parametrize(
+    "grey",
+    ["updated 3 days ago", "by jsmith", "Edit this page", "required", "see also", "v2.3.1"],
+)
+def test_a_grey_meta_line_on_a_docs_page_starts_no_meeting(grey: str) -> None:
+    """Delta QA: letting a dim row of any shape vouch for a start let these start meetings."""
+    store = InMemoryConversationStore()
+    frame = panel_crop(("Release Notes", False), (grey, True), *((r, False) for r in _DOCS_PAGE))
+    for names in ((), ("Ana Lopez",)):
+        _feed(_tracker(store), [frame] * 6, roster_names=names)
+    assert store.list("default") == []
+
+
+@pytest.mark.parametrize("name", ["jsmith", "malcolm h"])
+def test_a_lower_case_dim_name_is_a_header_mid_meeting_not_speech(name: str) -> None:
+    # It can't start a meeting alone (a docs page's grey lines look the same, XERK-2700), but
+    # once one is live it heads its entry rather than being stored as speech.
+    ocr, jpeg = panel_crop((name, True), ("we shipped the release on friday", False))
+    assert parse_caption_crop(ocr, Roster(), jpeg=jpeg) == []
+    blocks = parse_caption_crop(ocr, Roster(), live=True, jpeg=jpeg)
+    assert [(b.has_header, b.lines) for b in blocks] == [
+        (True, ["we shipped the release on friday"])
+    ]
+
+
+@pytest.mark.parametrize("grey", ["Parameters:", "Note,", "x" * 30 + " " + "y" * 40])
+def test_a_dim_row_that_is_no_display_name_stays_text(grey: str) -> None:
+    ocr, jpeg = panel_crop(("Ana Lopez", True), ("we shipped it", False), (grey, True))
+    blocks = parse_caption_crop(ocr, _roster("Ana Lopez"), live=True, jpeg=jpeg)
+    assert [b.lines for b in blocks] == [["we shipped it", grey]]
