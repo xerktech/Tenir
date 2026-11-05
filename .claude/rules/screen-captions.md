@@ -65,6 +65,45 @@ paths:
   - Tests: `test_simulated_rolling_captions_store_what_was_said`,
     `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
     and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
+- Teams rewrites a finished entry (punctuation, fixed words, re-wrapped lines; XERK-2694), so its
+  rows align as new. `merge._revisions` offers rows the alignment calls new to the recent
+  (`_REVISE_MS`) unshown known lines after the last aligned one, block by block, by words
+  (case/punctuation stripped, `_REVISED` coverage); matches upsert those segments (same ids).
+  - Revising must reach the newest recent known line: else "okay", Bo, "okay so lets start"
+    folds Ana's new line into her old one.
+  - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
+    known "sounds good" is a repeat, not a revision (QA: the reply was lost).
+  - Aligned rows of a revised block take new words only once two frames read them alike
+    (`_Line.pending`, confirmed in `_update`); case/punctuation at once. Taking the one rewrite
+    frame stored misreads for good (XERK-2597); a word-move heuristic refused real Teams edits
+    (it drops words too) and lost the moved word. `end_ms` stays put.
+  - For `_REVISE_MS` after a rewrite, a matched row takes the first differing text two reads
+    in a row agree on; a read equal to the stored text drops what is held. Confirming whenever
+    the held text recurred stored jitter flipping back later; only the very next read lost the
+    rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted),
+    but on the crop's header-less top row (the only row a crop clips) a read that is the stored
+    or held text with its start cut off is ignored: a clipped static row reads alike on every
+    frame (QA). Accepted: a rewrite there dropping leading words keeps the draft row. "Top row"
+    is the crop's, not shown[0] after the `_MAX_SHOWN` cut (QA, 13+ rows). Applied to
+    every row, it refused real rewrites under a header or below another block (QA).
+  - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
+    the ended meeting's segment into the next conversation (QA). Test:
+    `test_a_rewrite_never_revises_the_ended_meetings_carried_line`.
+  - The merger re-emits the same `Segment` object it mutates: copy a field before asserting
+    it changed or didn't (a test compared an object with itself).
+  - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
+  - New lines go just above the known line shown below them (Teams adds lines to an entry
+    above another speaker's); appending them broke the next snapshot's order.
+  - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
+    draft lines stored; removing them needs a segment delete in the store.
+  - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
+    389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
+  - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
+    `test_a_rewritten_entry_keeps_the_drafts_segment_ids`, `test_a_new_entry_like_an_old_one_is_not_a_rewrite`,
+    `test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite`,
+    `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`,
+    `test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored`,
+    `test_a_one_frame_misread_of_a_rewritten_row_is_never_stored`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):

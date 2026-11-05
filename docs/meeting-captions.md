@@ -292,7 +292,9 @@ above the window have scrolled off; snapshot lines below the last aligned one ar
 unmatched line above it is an OCR glitch and is ignored. A line is final when another
 speaker's block follows it, when unchanged for `API_SCREEN_LINE_STABLE_SECONDS` (3), or at
 meeting end; a final that grows while still the newest line is extended in place (upsert by
-segment id). The same words said again align as a new line; a line still on screen never
+segment id). A Teams entry rewritten once it ends (punctuation, fixed words, re-wrapped lines)
+revises the same speaker's lines from the last 30 s in place too, rather than storing a second
+copy. The same words said again align as a new line; a line still on screen never
 does. Known limits: the same words after a silence that cleared the box within 20 s are
 dropped, and a short phrase repeated back to back by one speaker can lose a copy when OCR
 also drops a line.

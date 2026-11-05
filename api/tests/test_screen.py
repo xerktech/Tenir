@@ -2315,6 +2315,433 @@ def test_a_bright_name_shaped_caption_row_stays_speech_even_after_a_sentence_end
         assert [b.speaker for b in blocks] == ["Ana Lopez", None]
 
 
+# --- Teams rewrites a finished entry (XERK-2694) -------------------------------------------
+#
+# Teams finalises a live-caption entry by rewriting it in place: punctuation, fixed words, and
+# the lines re-wrapped. Each case is one entry's draft and final rows from a real meeting
+# (XERK-2506 capture, 2026-11-04), same speaker, re-drawn several seconds after the draft.
+
+
+def _teams_entry(draft: list, final: list, before: list | None = None) -> list:
+    """Show ``draft`` until it is stored (stable), then the rewritten ``final``; returns the
+    (speaker, text) rows stored, in order, after updates in place."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    t = 0
+    for snapshot in [*(before or []), draft, final]:
+        for _ in range(5):
+            for seg in m.feed(snapshot, t):
+                stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+            t += 1000
+    for seg in m.flush(t + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    return [(sp, text) for _, sp, text in sorted(stored.values(), key=lambda v: v[0])]
+
+
+REWRITES = {
+    "rewrapped": (
+        [
+            blk(
+                "Ravi",
+                "Copy OK let me do this because I",
+                "have to",
+                "at least I will understand.",
+                "Like what am I doing here",
+            )
+        ],
+        [
+            blk(
+                "Ravi",
+                "Copy. OK, let me do this because",
+                "I have to do it in prod as well, so",
+                "at least I will understand.",
+                "Like what am I doing here?",
+            )
+        ],
+    ),
+    "grown": (
+        [blk("Pelin", "Whenever like we need to do it", "like"), blk("Ravi", "Oh.")],
+        [
+            blk("Pelin", "Whenever, like we need to do it", "like with the keto."),
+            blk("Ravi", "Oh."),
+        ],
+    ),
+    "split": (
+        [blk("Ravi", "No no no I'm not")],
+        [blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")],
+    ),
+    "split_no_match": (
+        [blk("Ravi", "Oh I guess are we missing the")],
+        [blk("Ravi", "Oh, I guess.", "Are we missing the cedar in test")],
+    ),
+    "split_punctuated": (
+        [blk("Ravi", "Alright that's it that's all it was")],
+        [blk("Ravi", "Alright, that's it.", "That's all it was.")],
+    ),
+    "entry_above_grew": (
+        [
+            blk("Ravi", "We need to do this"),
+            blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
+        ],
+        [
+            blk("Ravi", "We need to do this.", "You see the demo website."),
+            blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", REWRITES)
+def test_a_rewritten_teams_entry_is_stored_once(case: str) -> None:
+    """XERK-2694: the final version updates the draft's segments; nothing is stored twice."""
+    draft, final = REWRITES[case]
+    stored = _teams_entry(draft, final)
+    # Every word of the final version is kept, in order, under its speaker (a line added to
+    # an entry above another speaker's is stored when it was seen, after theirs)...
+    for speaker in {b.speaker for b in final}:
+        want = [
+            w for b in final if b.speaker == speaker for ln in b.lines for w in _words(ln).split()
+        ]
+        got = [w for sp, text in stored if sp == speaker for w in _words(text).split()]
+        it = iter(got)
+        assert all(w in it for w in want), stored
+        # ...and none twice: a line the alignment matched keeps its draft text, which may
+        # carry one word the rewrap moved to the next line ("...because I" / "I have to").
+        assert len(got) <= len(want) + 1, stored
+
+
+def _words(text: str) -> str:
+    import re
+
+    return " ".join(re.findall(r"[\w']+", text.casefold()))
+
+
+def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
+    """The final version upserts the draft's stored segments (same ids), so the store keeps
+    one copy and its text is the final one."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Ravi", "No no no I'm not")], t * 1000)
+    (draft,) = out
+    said_until = draft.end_ms  # the merger re-emits the same Segment object, changed
+    out = []
+    for t in range(5, 10):
+        out += m.feed([blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")], t * 1000)
+    out += m.flush(20_000)
+    assert [(s.segment_id == draft.segment_id, s.text) for s in out] == [
+        (True, "No, no, no."),
+        (False, "I'm not gonna enable the kDa in"),
+    ]
+    # The revised segment keeps when it was said, not when Teams rewrote it.
+    assert out[0].end_ms == said_until
+
+
+def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
+    """Only a recent line of the same speaker the box no longer shows can be revised: the
+    same words from someone else, or after the revision window, are new lines."""
+    stored = _teams_entry(
+        [blk("Ana", "okay"), blk("Bo", "so we ship on friday")],
+        [blk("Ana", "okay"), blk("Bo", "so we ship on friday"), blk("Cy", "okay so we ship")],
+    )
+    assert stored == [("Ana", "okay"), ("Bo", "so we ship on friday"), ("Cy", "okay so we ship")]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(0, 5000, 1000):
+        out += m.feed([blk("Ana", "we ship on friday")], t)
+    out += m.feed([blk("Bo", "sure")], 40_000)
+    out += m.feed([blk("Bo", "sure"), blk("Ana", "we ship on friday.", "Then lunch")], 41_000)
+    out += m.flush(60_000)
+    assert [s.text for s in out] == [
+        "we ship on friday",
+        "sure",
+        "we ship on friday.",
+        "Then lunch",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("first", "then"),
+    [
+        ([blk("Ana", "sounds good")], [blk("Ana", "okay", "sounds good"), blk("Cy", "yes")]),
+        ([blk("Ravi", "Yes.")], [blk("Ravi", "OK.", "Yes."), blk("Bo", "great")]),
+    ],
+)
+def test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite(
+    first: list, then: list
+) -> None:
+    """QA (XERK-2694): frames dropped, then the same speaker's new line above a repeat of her
+    last one. Nothing aligns; the repeat must not revise the old line away."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed(first, t * 1000)
+    out += m.feed(then, 7000)
+    out += m.flush(20_000)
+    said = [ln for b in first for ln in b.lines] + [ln for b in then for ln in b.lines]
+    assert [s.text for s in out] == said
+
+
+def test_a_new_line_sharing_a_word_with_the_last_is_not_a_rewrite() -> None:
+    """Revising needs most of the old line's words: one shared word is a new line."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Ana", "let me check the logs")], t * 1000)
+    out += m.feed([blk("Ana", "check this out")], 7000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["let me check the logs", "check this out"]
+
+
+def test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it() -> None:
+    """QA (XERK-2694): a header-less entry whose rewrite moves "how" up onto a row the
+    alignment still matches; that row takes the final text, so no word is lost."""
+    draft = [
+        blk(None, "yes so so enable should like we", "the cluster not need pods it the", header=False),
+        blk(None, "how right right in overlay", header=False),
+    ]
+    draft = [blk(None, *draft[0].lines, *draft[1].lines, header=False)]
+    final = [
+        blk(
+            None,
+            "Yes so enable should like we the",
+            "cluster not need pods it, the how",
+            "right in overlay.",
+            header=False,
+        )
+    ]
+    stored = _teams_entry(draft, final, before=[[blk("Ravi", "so")]])
+    words = " ".join(_words(text) for _, text in stored)
+    assert "the how right in overlay" in words, stored
+
+
+@pytest.mark.parametrize(
+    "misread_top",
+    [
+        "so enable should like we",  # clipped while scrolling
+        "Yes so so enab|e shouId like we",  # misread
+        "Yes so so enable should like we'",  # stray character
+    ],
+)
+def test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored(misread_top: str) -> None:
+    """QA (XERK-2694): a matched row of a rewritten entry takes the final text only when the
+    rewrap moved words across its line break. A misread on the one frame the rewrite is seen
+    must not overwrite the stored line (XERK-2597); later clean frames can't repair it."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, misread_top, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 5
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    texts = list(stored.values())
+    assert "yes so so enable should like we" in texts, stored
+    # The rewrite's other rows still land once read cleanly: nothing moved by the rewrap lost.
+    assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
+
+
+@pytest.mark.parametrize(
+    "glitched",
+    [
+        "Yes so so enable should we",  # a word lost
+        "Yes so so enable cluster should like we",  # a word gained that the next line has
+    ],
+)
+def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -> None:
+    """QA (XERK-2694): a matched row of a rewritten entry takes new words only when two
+    frames read them alike, so a misread on the rewrite frame is never stored, while the
+    rewrite's own changes still land."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, glitched, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 5
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    texts = list(stored.values())
+    assert glitched not in texts and "yes so so enable should like we" in texts, stored
+    assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
+
+
+@pytest.mark.parametrize(
+    "top", ["Yes, the pods need enable should we.", "Yes the pods need enable should we now"]
+)
+def test_a_rewrite_never_revises_the_ended_meetings_carried_line(top: str) -> None:
+    """QA (XERK-2694): a carried line's segment belongs to the ended meeting (XERK-2615), so
+    a rewrite of the block it sits in must not re-emit it into the next conversation."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    old = set()
+    for t in range(5):
+        old |= {s.segment_id for s in m1.feed([blk("Ana", "yes the pods need enable should we")], t * 1000)}
+    old |= {s.segment_id for s in m1.flush(5000)}
+    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
+    draft = ["yes the pods need enable should we", "the cluster not need pods it the", "how right right in overlay"]
+    final = [top, "cluster not need pods it, the how", "right in overlay."]
+    emitted = []
+    for k, rows in enumerate([draft] * 6 + [final] * 5):
+        emitted += m2.feed([blk("Ana", *rows)], 65_000 + k * 1000)
+    emitted += m2.flush(90_000)
+    assert not {s.segment_id for s in emitted} & old
+
+
+def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:
+    """QA (XERK-2694): a rewrite's new words on a matched row must be read on the next frame
+    too; a clean read in between drops them, so jitter flipping back later is never stored."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes the pods need enable should we", "the cluster is up now", "how right right in overlay"]
+    final = ["Yes the pods need enable should we", "the cluster is up now,", "right in overlay."]
+    misread = "Yes pods need enable should we"
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, misread, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 3
+    frames += [[blk(None, misread, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 3
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert misread not in stored.values(), stored
+
+
+@pytest.mark.parametrize(
+    "noisy",
+    [
+        "so enable should like we the",  # clipped
+        "Yes so enable should like we the'",  # stray character
+        "yes so so enable should like we",  # still the draft
+    ],
+)
+def test_one_noisy_frame_after_a_rewrite_only_delays_it(noisy: str) -> None:
+    """QA (XERK-2694): a noisy read right after the rewrite frame must not lose the rewrite
+    when every later frame reads it cleanly."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, *final, header=False)]]
+    frames += [[blk(None, noisy, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 8
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert list(stored.values())[-3:] == final, stored
+
+
+def _rewrite_run(frames: list[list[str]]) -> tuple[dict[str, str], list[list[str]]]:
+    """Feed the rewrap fixture's draft, then ``frames`` (rows of one header-less block, one
+    frame a second); returns the stored texts and each frame's emitted texts."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    stored: dict[str, str] = {}
+    emitted: list[list[str]] = []
+    feed = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    feed += [[blk(None, *rows, header=False)] for rows in frames]
+    for t, frame in enumerate(feed):
+        segs = m.feed(frame, t * 1000)
+        stored.update({s.segment_id: s.text for s in segs})
+        emitted.append([s.text for s in segs])
+    stored.update({s.segment_id: s.text for s in m.flush(len(feed) * 1000 + 60_000)})
+    return stored, emitted[10:]
+
+
+_REWRAP_FINAL = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
+
+
+def test_a_clipped_top_row_read_alike_after_a_rewrite_is_not_stored() -> None:
+    """QA (XERK-2694): a crop cutting a row's start reads it the same on every frame; two
+    alike reads of it inside the rewrite window must not replace the row."""
+    clipped = ["so enable should like we the", *_REWRAP_FINAL[1:]]
+    # The rewrite frame arms row 0 with new words; the crop then clips it on every frame.
+    stored, _ = _rewrite_run([_REWRAP_FINAL] + [clipped] * 3)
+    assert "so enable should like we the" not in stored.values(), stored
+
+
+def test_the_rewrite_window_closes_once_taken_and_after_it_expires() -> None:
+    """QA (XERK-2694): once a rewrite is taken, later alike misreads are OCR again (the window
+    closed); and new words read only after the window are never taken."""
+    misread = ["Yes so enab1e should like we the", *_REWRAP_FINAL[1:]]
+    stored, emitted = _rewrite_run([_REWRAP_FINAL] * 3 + [misread] * 3 + [_REWRAP_FINAL] * 2)
+    assert all("Yes so enab1e should like we the" not in e for e in emitted), emitted
+    assert "Yes so enable should like we the" in stored.values(), stored
+    # The rewrite frame arms row 0; the draft is re-read until the window has passed.
+    still = ["yes so so enable should like we", *_REWRAP_FINAL[1:]]
+    stored, _ = _rewrite_run([_REWRAP_FINAL] + [still] * 35 + [_REWRAP_FINAL] * 3)
+    assert "yes so so enable should like we" in stored.values(), stored
+
+
+def test_a_case_or_punctuation_rewrite_of_a_matched_row_is_taken_at_once() -> None:
+    """Only new words wait for a second read: "Yes, so so ..." over "yes so so ..." is the
+    same words, stored on the rewrite frame itself."""
+    final = ["Yes, so so enable should like we.", *_REWRAP_FINAL[1:]]
+    _, emitted = _rewrite_run([final])
+    assert "Yes, so so enable should like we." in emitted[0], emitted
+
+
+_REWRAP_DRAFT = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+
+
+@pytest.mark.parametrize("where", ["under its header", "below another block"])
+def test_a_rewrite_dropping_leading_words_is_taken_where_no_crop_cuts(where: str) -> None:
+    """QA (XERK-2694): only the crop's header-less top row can be cut off; elsewhere a row
+    that lost its leading words is Teams' rewrite (fillers dropped) and is taken."""
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
+
+    def frame(rows: list[str]) -> list[CaptionBlock]:
+        if where == "under its header":
+            return [blk("Ravi", *rows)]
+        return [blk("Mia", "earlier words from mia here"), blk(None, *rows, header=False)]
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    for t, rows in enumerate([_REWRAP_DRAFT] * 6 + [final] * 8):
+        stored.update({s.segment_id: s.text for s in m.feed(frame(rows), t * 1000)})
+    stored.update({s.segment_id: s.text for s in m.flush(60_000)})
+    assert "so so enable should like we" in stored.values(), stored
+    assert "yes so so enable should like we" not in stored.values(), stored
+
+
+def test_a_clipped_draft_row_after_a_rewrite_is_not_stored() -> None:
+    """QA (XERK-2694): the rewrite arms the top row, the draft comes back, then the crop
+    clips the draft's start on every frame: that cut-off read is not taken either."""
+    clipped = ["so enable should like we", *_REWRAP_DRAFT[1:]]
+    stored, _ = _rewrite_run([_REWRAP_FINAL, _REWRAP_DRAFT] + [clipped] * 3)
+    assert "so enable should like we" not in stored.values(), stored
+
+
+def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None:
+    """QA (XERK-2694): a crop over ``_MAX_SHOWN`` rows is cut to its bottom ones; the first
+    row kept is not the crop's top row, so its leading-word rewrite is taken."""
+    middle = [f"ravi middle line number {k} words" for k in range(8)]
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
+
+    def frame(row1: str, rows: list[str]) -> list[CaptionBlock]:
+        return [blk(None, "tail of ravi row zero", row1, *middle, *rows, header=False)]
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    frames = [frame("um we were saying that the build", _REWRAP_DRAFT)] * 6
+    frames += [frame("we were saying that the build", final)] * 8
+    for t, f in enumerate(frames):
+        stored.update({s.segment_id: s.text for s in m.feed(f, t * 1000)})
+    stored.update({s.segment_id: s.text for s in m.flush(60_000)})
+    assert "we were saying that the build" in stored.values(), stored
+
+
 # --- XERK-2693: no meeting from speaker-less text, no toolbar rows -----------------------
 
 # Text the capture client cropped off a dark docs page in production (XERK-2693): bright text
