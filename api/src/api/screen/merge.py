@@ -234,6 +234,17 @@ class CaptionMerger:
         # Lines this merger has seen for the first time (carried ones excluded).
         self.new_lines = 0
 
+    def rename(self, old: str, new: str) -> None:
+        """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
+        reading of a name with the full one (XERK-2695). Unrenamed, the box's lines under the
+        new name aligned with none of them (a misread needs the same speaker) and were stored
+        a second time. Lines already written keep the name they were stored under."""
+        for ln in self._lines:
+            if ln.speaker == old:
+                ln.speaker = new
+        if self.last_speaker == old:
+            self.last_speaker = new
+
     def recent(self) -> list[_Line]:
         """The newest known lines, for the window's next merger (``carried``)."""
         return self._lines[-_TAIL:]

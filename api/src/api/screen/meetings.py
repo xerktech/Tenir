@@ -133,6 +133,11 @@ class MeetingTracker:
         roster = await self.ensure_roster()
         for name in frame.participants:
             roster.add(name)
+        # A cut-off name replaced by its full reading: relabel the lines held under it.
+        if self.merger is not None:
+            for old, new in roster.renamed.items():
+                self.merger.rename(old, new)
+        roster.renamed.clear()
         self.active = roster.match(frame.active_speaker) if frame.active_speaker else None
         # frame.title is not stored: in a remote-desktop window the top band is the client's
         # toolbar (Horizon's Ctrl+Alt+Del row became a meeting's title). The meeting is
