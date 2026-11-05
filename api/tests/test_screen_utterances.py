@@ -153,6 +153,11 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
         ("(see Dr.)", "Smith now."),
         ("こんにちは。", "元気ですか？"),
         ("Done!”", "Next one."),
+        ("はい。", '"OK," he said.'),
+        ("好的。", '"Yes."'),
+        ("元気？", "」と聞いた。"),
+        ("ええ。", "。。そうですね"),
+        ("本当？", "！"),
     ]:
         wrapped = [s.text for s in sentences(_rows(("Ana", first), ("Ana", second)))]
         whole = [s.text for s in sentences(_rows(("Ana", f"{first} {second}")))]
@@ -160,12 +165,18 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
     # Closers and repeated marks stay on their sentence (QA).
     for row, want in [
         ("「元気？」", ["「元気？」"]),
+        ("元気？\"", ["元気？\""]),
+        ('はい。 "OK," he said.', ["はい。", '"OK," he said.']),
+        ("了解。 'Next' item.", ["了解。", "'Next' item."]),
         ("他说“你好！”", ["他说“你好！”"]),
         ("本当？！", ["本当？！"]),
         ("ええ。。。そうですね", ["ええ。。。", "そうですね"]),
         ("彼は「はい。」次です。", ["彼は「はい。」", "次です。"]),
     ]:
         assert [s.text for s in sentences(_rows(("Ana", row)))] == want, row
+    # A wrap between two marks, or before a closer, keeps them on one sentence.
+    got = sentences(_rows(("Ana", "本当？"), ("Ana", "！"), ("Ana", "元気？"), ("Ana", "」と聞いた。")))
+    assert [s.text for s in got] == ["本当？ ！", "元気？ 」と聞いた。"]
     got = sentences(_rows(("Ana", "彼は「はい。」"), ("Ana", "Next one.")))
     assert [s.text for s in got] == ["彼は「はい。」", "Next one."]
     assert [s.text for s in sentences(_rows(("Ana", "with Prof. Lee today.")))] == [

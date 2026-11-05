@@ -42,8 +42,11 @@ _END = re.compile(r"[.?!…。！？][\"'”’)\]」』]*$")
 # another mark, or "「元気？」" lost its "」" and "なに？？？" fanned out (QA). `_ends_at` decides it.
 _CUT = re.compile(
     r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)"
-    r"|(?<=[。！？])[\"'”’)\]」』]*\s*(?=[^\s\"'”’)\]」』。！？])"
+    r"|(?<=[。！？])[\"'”’)\]」』]*(?:\s+(?=\S)|(?=[^\s\"'”’)\]」』。！？]))"
 )
+# A piece starting with one of these continues the last sentence's punctuation ("本当？" "！").
+# Not ASCII " or ': they open quotes as often as they close them.
+_NO_START = frozenset("”’)]」』。！？")
 # Searched only over the few chars before a period (pos/endpos), so it stays O(1) per cut.
 _TITLES = re.compile(r"(?<!\S)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|vs)\.$")
 _TITLE_SPAN = 6
@@ -51,7 +54,8 @@ _TITLE_SPAN = 6
 
 def _ends_at(text: str, end: int, following: str) -> bool:
     """Whether ``text[:end]`` (ending in a sentence mark) ends a sentence before ``following``."""
-    if following[:1].islower():
+    head = following[:1]
+    if head.islower() or head in _NO_START:
         return False
     return not _TITLES.search(text, max(0, end - _TITLE_SPAN), end)
 
