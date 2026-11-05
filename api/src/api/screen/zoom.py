@@ -97,6 +97,13 @@ _MEETING_CONTROLS = {
     "end",
 }
 _MIN_CONTROLS = 3
+# Words of Zoom's toolbar labels as it draws them (Title Case). A caption crop low over the
+# window catches the toolbar row ("Participants Chat React Share More", XERK-2693).
+_TOOLBAR_WORDS = {w for label in _UI_TEXT | _MEETING_CONTROLS for w in label.split()} | {
+    "react",
+    "raise",
+    "hand",
+}
 
 # Full-frame bands, as fractions of the frame height.
 _TITLE_BAND = 0.07
@@ -413,11 +420,17 @@ def parse_caption_crop(
     name dimmer than caption text, so with the crop's pixels a dim name-shaped row is the next
     entry's header and a bright one is text (XERK-2644: under an entry left unpunctuated the
     name was stored as the previous speaker's speech). Without readable pixels, a header can
-    sit only below a row that ends a sentence."""
-    del live
+    sit only below a row that ends a sentence.
+
+    Unless a meeting is ``live``, a crop must show a speaker header to yield anything
+    (XERK-2693): bright text centred low on a dark page (docs, release notes) passes the
+    client's box finder, and its header-less lines started meetings. A header counts when the
+    roster matches it or, off the roster, when the pixels show it as a dim name line (with no
+    pixels to read, any header). During a meeting a header-less crop is an entry whose
+    name scrolled off, and it stays. Zoom's toolbar rows are never caption text."""
     groups = [
-        g for g in row_groups(ocr.lines) if sum(c.isalnum() for c in _row_text(g)) >= 2
-    ]  # minus noise rows with fewer than two letters or digits
+        g for g in row_groups(ocr.lines) if _is_caption_row(_row_text(g))
+    ]  # minus noise rows with fewer than two letters or digits, and the toolbar
     rows = [_row_text(g) for g in groups]
     dim = _dim_rows(jpeg, ocr, groups)
 
@@ -425,9 +438,35 @@ def parse_caption_crop(
         # With pixels, a header below the top is a dim row, which ``name_rows`` settles.
         return i == 0 or (dim is None and rows[i - 1].rstrip().endswith((".", "?", "!")))
 
-    return caption_blocks(
+    blocks = caption_blocks(
         rows, roster, active=active, unknown_headers=header_can_sit, name_rows=dim
     )
+    if live or any(b.has_header and b.speaker for b in blocks):
+        return blocks
+    if not any(b.has_header for b in blocks):
+        return []
+    # Only unmatched headers. With pixels, a dim name-shaped row is always one
+    # (``name_rows``) and only it vouches for a speaker off the roster: a docs page's heading
+    # is as bright as its text. Without pixels the position rule's header stands.
+    if dim is not None and not any(is_name_like(rows[i]) for i in dim):
+        return []
+    return blocks
+
+
+def _is_caption_row(text: str) -> bool:
+    return sum(c.isalnum() for c in text) >= 2 and not _is_toolbar_row(text)
+
+
+def _is_toolbar_row(text: str) -> bool:
+    """A row of Zoom's own toolbar: its Title Case button labels ("Participants Chat React
+    Share More"), or the carets and single letters under its buttons ("^ D ^ A ^"). Caption
+    text is lower-case sentences, so needing two labels and three quarters of the row keeps
+    speech like "Share more of it" (XERK-2693)."""
+    tokens = text.split()
+    if "^" in text and not any(sum(c.isalnum() for c in t) >= 2 for t in tokens):
+        return True
+    labels = sum(t[:1].isupper() and norm_name(t) in _TOOLBAR_WORDS for t in tokens)
+    return labels >= 2 and labels >= 0.75 * len(tokens)
 
 
 def _row_text(group: list[OcrLine]) -> str:
