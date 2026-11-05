@@ -36,26 +36,34 @@ MAX_CHARS = 2000  # the Turma hub's per-segment cap (turma.SEGMENT_TEXT_MAX)
 MAX_GAP_MS = 8000
 MAX_CUTS = 6
 
-_END = re.compile(r"[.?!…。！？][\"'”’)\]」』]*$")
-# A candidate cut: a sentence end, closing quotes, whitespace (none needed after a full-width
-# mark: CJK puts no space there). The full-width cut must land on text, never on a closer or
-# another mark, or "「元気？」" lost its "」" and "なに？？？" fanned out (QA). `_ends_at` decides it.
+# Closing quotes and brackets, ASCII and full-width: they stay on the sentence they close.
+# One set feeds every rule below; a closer missing from one rule split "（はい。）" (QA).
+_CLOSERS = "\"'”’)]」』）】》〉〕＂"
+_FW_MARKS = "。！？"
+_C = re.escape(_CLOSERS)
+_END = re.compile(rf"[.?!…{_FW_MARKS}][{_C}]*$")
+# A candidate cut: a sentence end, closers, whitespace (none needed after a full-width mark:
+# CJK puts no space there, so that cut must land on text, never on a closer or another mark).
+# `_ends_at` decides whether it is one.
 _CUT = re.compile(
-    r"(?<=[.?!…])[\"'”’)\]]*\s+(?=\S)"
-    r"|(?<=[。！？])[\"'”’)\]」』]*(?:\s+(?=\S)|(?=[^\s\"'”’)\]」』。！？]))"
+    rf"(?<=[.?!…])[{_C}]*\s+(?=\S)"
+    rf"|(?<=[{_FW_MARKS}])[{_C}]*(?:\s+(?=\S)|(?=[^\s{_C}{_FW_MARKS}]))"
 )
 # A piece starting with one of these continues the last sentence's punctuation ("本当？" "！").
-# Not ASCII " or ': they open quotes as often as they close them.
-_NO_START = frozenset("”’)]」』。！？")
+# Not ASCII " or ': they open quotes as often as they close them...
+_NO_START = frozenset(_CLOSERS.replace('"', "").replace("'", "") + _FW_MARKS)
+# ...unless nothing but closers follows ('元気？ "'): a piece of only closers is never cut off.
+_ONLY_CLOSERS = re.compile(rf"[{_C}\s]*$")
 # Searched only over the few chars before a period (pos/endpos), so it stays O(1) per cut.
 _TITLES = re.compile(r"(?<!\S)(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|vs)\.$")
 _TITLE_SPAN = 6
 
 
-def _ends_at(text: str, end: int, following: str) -> bool:
-    """Whether ``text[:end]`` (ending in a sentence mark) ends a sentence before ``following``."""
-    head = following[:1]
-    if head.islower() or head in _NO_START:
+def _ends_at(text: str, end: int, following: str, pos: int = 0) -> bool:
+    """Whether ``text[:end]`` (ending in a sentence mark) ends a sentence before
+    ``following[pos:]``."""
+    head = following[pos : pos + 1]
+    if head.islower() or head in _NO_START or _ONLY_CLOSERS.match(following, pos):
         return False
     return not _TITLES.search(text, max(0, end - _TITLE_SPAN), end)
 
@@ -66,7 +74,7 @@ def _pieces(text: str) -> list[str]:
     for m in _CUT.finditer(text):
         if len(out) >= MAX_CUTS:
             break
-        if not _ends_at(text, m.start(), text[m.end() : m.end() + 1]):
+        if not _ends_at(text, m.start(), text, m.end()):
             continue
         out.append(text[start : m.end()].strip())
         start = m.end()

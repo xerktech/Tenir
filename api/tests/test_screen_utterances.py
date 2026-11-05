@@ -158,6 +158,9 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
         ("元気？", "」と聞いた。"),
         ("ええ。", "。。そうですね"),
         ("本当？", "！"),
+        ("（はい。）", "次です。"),
+        ("Wow!", "” Then"),
+        ("元気？", '"'),
     ]:
         wrapped = [s.text for s in sentences(_rows(("Ana", first), ("Ana", second)))]
         whole = [s.text for s in sentences(_rows(("Ana", f"{first} {second}")))]
@@ -165,6 +168,15 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
     # Closers and repeated marks stay on their sentence (QA).
     for row, want in [
         ("「元気？」", ["「元気？」"]),
+        ("（はい。）次です。", ["（はい。）", "次です。"]),
+        ("他说（好的！）下一个。", ["他说（好的！）", "下一个。"]),
+        ("《好！》下一个。【注意！】次です。", ["《好！》", "下一个。", "【注意！】", "次です。"]),
+        ("他说＂好！＂下一个。", ["他说＂好！＂", "下一个。"]),
+        ("“你好！ ”", ["“你好！ ”"]),
+        ("Wow! ” Then", ["Wow! ” Then"]),
+        ('元気？ "', ['元気？ "']),
+        ('元気？ ” "', ['元気？ ” "']),
+        ('Really? "', ['Really? "']),
         ("元気？\"", ["元気？\""]),
         ('はい。 "OK," he said.', ["はい。", '"OK," he said.']),
         ("了解。 'Next' item.", ["了解。", "'Next' item."]),

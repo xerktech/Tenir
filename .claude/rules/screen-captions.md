@@ -314,4 +314,8 @@ paths:
   - One `_ends_at` test decides mid-row cuts and row-end breaks; separate rules split wraps
     after "Dr." / "e.g." (QA). Cuts per row are capped (`MAX_CUTS`): "A. A. ..." rows fanned
     out ~50x. Title checks scan only the chars before the period (a prefix rescan was O(n²)).
+  - One closer set (`_CLOSERS`, ASCII + full-width) feeds every rule: each rule that carried its
+    own copy lost a closer once (「」, then （）) across five QA rounds. ASCII " and ' open as
+    often as they close, so they never block a cut, but a piece of only closers is never cut off.
+  - After any `_CUT` change, A/B one row vs the same text wrapped (QA kit `split2.py`).
   Tests: `test_screen_utterances.py`, `test_wrapped_caption_rows_reach_the_hub_as_sentences`.
