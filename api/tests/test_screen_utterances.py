@@ -175,7 +175,7 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
         ("“你好！ ”", ["“你好！ ”"]),
         ("Wow! ” Then", ["Wow! ” Then"]),
         ('元気？ "', ['元気？ "']),
-        ('元気？ ” "', ['元気？ ” "']),
+        ('元気？ " "', ['元気？ " "']),
         ('Really? "', ['Really? "']),
         ("元気？\"", ["元気？\""]),
         ('はい。 "OK," he said.', ["はい。", '"OK," he said.']),
