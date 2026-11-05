@@ -73,7 +73,7 @@ def clock():
 
 def test_a_ready_meeting_is_posted_once_in_the_contract_shape(clock) -> None:
     store = InMemoryConversationStore()
-    conv = _meeting(store, lines=("hello there.", "   ", "let's ship it"))
+    conv = _meeting(store, lines=("hello there.", "   ", "Let's ship it"))
     hub = Hub(_ok())
     d = _delivery(store, hub, clock)
 
@@ -91,7 +91,7 @@ def test_a_ready_meeting_is_posted_once_in_the_contract_shape(clock) -> None:
         "participants": ["Ana", "Bo"],
         "segments": [
             {"text": "hello there.", "startMs": 0, "endMs": 900, "speaker": "Ana"},
-            {"text": "let's ship it", "startMs": 2000, "endMs": 2900, "speaker": "Ana"},
+            {"text": "Let's ship it", "startMs": 2000, "endMs": 2900, "speaker": "Ana"},
         ],
         "title": "Weekly sync",
         "platform": "zoom",
@@ -311,7 +311,7 @@ def test_multibyte_text_goes_out_unescaped(clock) -> None:
 
 def test_a_meeting_whose_tail_is_cut_by_the_line_cap_says_so(clock) -> None:
     store = InMemoryConversationStore()
-    _meeting(store, lines=["x."] * 10_001)
+    _meeting(store, lines=["X."] * 10_001)
     asyncio.run(_delivery(store, Hub(_ok()), clock).run_once())
     assert store.get("default", "c1").delivery_error == (
         "sent the first 10000 of 10001 lines: the rest is past the hub's limit"

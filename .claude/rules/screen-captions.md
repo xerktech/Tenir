@@ -309,4 +309,9 @@ paths:
   (`utterances.sentences`, XERK-2696): history detail/export, `turma.meeting_body`, `topic`.
   Joining in the merger would fight its row alignment. Any new reader of screen segments
   goes through it too. The history list's `segmentCount` still counts stored rows.
+  - None-speaker rows never join (Zoom stores every off-roster speaker as None) and a pause
+    over `MAX_GAP_MS` breaks: both spliced different people / minutes-apart text (QA).
+  - One `_ends_at` test decides mid-row cuts and row-end breaks; separate rules split wraps
+    after "Dr." / "e.g." (QA). Cuts per row are capped (`MAX_CUTS`): "A. A. ..." rows fanned
+    out ~50x. Title checks scan only the chars before the period (a prefix rescan was O(n²)).
   Tests: `test_screen_utterances.py`, `test_wrapped_caption_rows_reach_the_hub_as_sentences`.

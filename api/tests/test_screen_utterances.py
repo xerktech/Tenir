@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from api.persistence import Segment
-from api.screen.utterances import sentences
+from api.screen.utterances import MAX_CUTS, MAX_GAP_MS, sentences
 
 
 def _rows(*rows):
@@ -64,8 +64,8 @@ def test_abbreviations_and_lower_case_after_a_period_do_not_cut() -> None:
 
 
 def test_closing_quotes_after_the_end_still_end_the_sentence() -> None:
-    got = sentences(_rows(("Ana", 'she said "no."'), ("Ana", "fine")))
-    assert [s.text for s in got] == ['she said "no."', "fine"]
+    got = sentences(_rows(("Ana", 'she said "no."'), ("Ana", "Fine")))
+    assert [s.text for s in got] == ['she said "no."', "Fine"]
 
 
 def test_unpunctuated_speech_is_cut_at_the_size_cap() -> None:
@@ -85,3 +85,52 @@ def test_rows_are_not_mutated() -> None:
     rows = _rows(("Ana", "a"), ("Ana", "b"))
     sentences(rows)
     assert [r.text for r in rows] == ["a", "b"]
+
+
+def test_rows_with_no_speaker_never_join() -> None:
+    # Zoom stores every off-roster speaker as None: two None rows may be two people (QA).
+    got = sentences(_rows((None, "so the plan is"), (None, "I disagree completely")))
+    assert [s.text for s in got] == ["so the plan is", "I disagree completely"]
+
+
+def test_a_long_pause_ends_an_unfinished_line() -> None:
+    rows = [
+        Segment("a", "okay let me share my screen", 0, 900, speaker="Ana"),
+        Segment("b", "right after lunch we can", 900 + MAX_GAP_MS + 1, 99_000, speaker="Ana"),
+        Segment("c", "start", 99_500, 99_900, speaker="Ana"),
+    ]
+    got = sentences(rows)
+    assert _out(got) == [
+        ("Ana", "okay let me share my screen", 0, 900),
+        ("Ana", "right after lunch we can start", 900 + MAX_GAP_MS + 1, 99_900),
+    ]
+
+
+def test_a_wrap_after_an_abbreviation_joins_like_the_unwrapped_text() -> None:
+    for first, second in [
+        ("I talked to Dr.", "Smith about it."),
+        ("bring some snacks, e.g.", "chips or nuts."),
+        ("and then...", "we just stopped"),
+    ]:
+        assert [s.text for s in sentences(_rows(("Ana", first), ("Ana", second)))] == [
+            f"{first} {second}"
+        ], first
+    got = sentences(_rows(("Ana", "Fine."), ("Ana", "Émile agrees.")))
+    assert [s.text for s in got] == ["Fine.", "Émile agrees."]
+    assert [s.text for s in sentences(_rows(("Ana", "Fine. Émile agrees.")))] == [
+        "Fine.",
+        "Émile agrees.",
+    ]
+
+
+def test_a_row_is_cut_a_bounded_number_of_times() -> None:
+    # QA: "A. A. A. ..." fanned 10k stored rows out to 530k segments.
+    row = " ".join(["A."] * 50)
+    got = sentences(_rows(("Ana", row)))
+    assert len(got) == MAX_CUTS + 1
+    assert " ".join(s.text for s in got) == row
+
+
+def test_an_utterance_can_fill_the_cap_exactly_but_not_pass_it() -> None:
+    got = sentences(_rows(("Ana", "a" * 10), ("Ana", "b" * 9), ("Ana", "c")), max_chars=20)
+    assert [s.text for s in got] == ["a" * 10 + " " + "b" * 9, "c"]
