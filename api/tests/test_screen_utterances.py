@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from api.persistence import Segment
 from api.screen.utterances import MAX_CUTS, MAX_GAP_MS, sentences
 
@@ -199,3 +201,17 @@ def test_one_row_and_the_same_text_wrapped_split_alike() -> None:
         "こんにちは。",
         "元気ですか？",
     ]
+
+
+# Spelled out, not read from _CLOSERS, so dropping one from the code fails here.
+@pytest.mark.parametrize("closer", list("\"'”’)]」』）】》〉〕＂］｝〗〙〛｣〞〟"))
+def test_every_closer_stays_on_the_sentence_it_closes(closer) -> None:
+    assert [s.text for s in sentences(_rows(("Ana", f"はい。{closer}次です。")))] == [
+        f"はい。{closer}",
+        "次です。",
+    ]
+
+
+def test_guillemets_are_not_closers() -> None:
+    # German opens quotes with » and ›; they start the next sentence.
+    assert [s.text for s in sentences(_rows(("Ana", "はい。»Gut«")))] == ["はい。", "»Gut«"]
