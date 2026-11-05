@@ -73,7 +73,7 @@ def clock():
 
 def test_a_ready_meeting_is_posted_once_in_the_contract_shape(clock) -> None:
     store = InMemoryConversationStore()
-    conv = _meeting(store, lines=("hello there", "   ", "let's ship it"))
+    conv = _meeting(store, lines=("hello there.", "   ", "Let's ship it"))
     hub = Hub(_ok())
     d = _delivery(store, hub, clock)
 
@@ -90,8 +90,8 @@ def test_a_ready_meeting_is_posted_once_in_the_contract_shape(clock) -> None:
         "endedAt": int(conv.ended_at.timestamp() * 1000),
         "participants": ["Ana", "Bo"],
         "segments": [
-            {"text": "hello there", "startMs": 0, "endMs": 900, "speaker": "Ana"},
-            {"text": "let's ship it", "startMs": 2000, "endMs": 2900, "speaker": "Ana"},
+            {"text": "hello there.", "startMs": 0, "endMs": 900, "speaker": "Ana"},
+            {"text": "Let's ship it", "startMs": 2000, "endMs": 2900, "speaker": "Ana"},
         ],
         "title": "Weekly sync",
         "platform": "zoom",
@@ -198,6 +198,42 @@ def test_retries_give_up_a_day_after_the_meeting_ended(clock) -> None:
     assert got.delivery_error == "gave up retrying: hub unreachable (ConnectError)"
 
 
+def test_wrapped_caption_rows_reach_the_hub_as_sentences(clock) -> None:
+    # XERK-2696: the merger stores one segment per wrapped caption row.
+    store = InMemoryConversationStore()
+    store.create("default", "c1", owner="u1", screen=ScreenMeta(SITE, "Acme", "teams"))
+    for i, (speaker, text) in enumerate(
+        [
+            ("Ana", "Are we missing the cedar in test"),
+            ("Ana", "environment?"),
+            ("Bo", "Otherwise the prod I'll I'll be"),
+            ("Bo", "going crazy prod will be."),
+        ]
+    ):
+        store.add_segment(
+            "default", "c1", Segment(f"s{i}", text, i * 1000, i * 1000 + 900, speaker=speaker)
+        )
+    store.set_meeting_title("default", "c1", "Weekly sync")
+    store.finish("default", "c1")
+    hub = Hub(_ok())
+    asyncio.run(_delivery(store, hub, clock).run_once())
+    assert json.loads(hub.requests[0].content)["segments"] == [
+        {
+            "text": "Are we missing the cedar in test environment?",
+            "startMs": 0,
+            "endMs": 1900,
+            "speaker": "Ana",
+        },
+        {
+            "text": "Otherwise the prod I'll I'll be going crazy prod will be.",
+            "startMs": 2000,
+            "endMs": 3900,
+            "speaker": "Bo",
+        },
+    ]
+    assert store.get("default", "c1").delivery_error is None
+
+
 def test_a_meeting_with_no_caption_text_fails_without_a_post(clock) -> None:
     store = InMemoryConversationStore()
     _meeting(store, lines=("  ",))
@@ -215,7 +251,7 @@ def test_body_respects_the_hubs_caps() -> None:
     conv.platform = "p" * 50
     conv.participants = [f"P{i}" for i in range(150)]
     conv.segments = [
-        Segment(f"s{i}", "x" * 2100 if i == 0 else "x", i, i + 1) for i in range(10_050)
+        Segment(f"s{i}", "x" * 2100 if i == 0 else "x.", i, i + 1) for i in range(10_050)
     ]
     body, total = turma.meeting_body(conv)
     assert total == 10_050
@@ -228,7 +264,7 @@ def test_body_respects_the_hubs_caps() -> None:
 def test_a_meeting_past_the_hubs_byte_limit_sends_what_fits_and_says_so(clock) -> None:
     # QA: 9000 lines x 130 chars was a 413, failed forever.
     store = InMemoryConversationStore()
-    _meeting(store, lines=[f"{i:05d} " + "é" * 124 for i in range(9000)])
+    _meeting(store, lines=[f"{i:05d} " + "é" * 123 + "." for i in range(9000)])
     hub = Hub(_ok())
     assert asyncio.run(_delivery(store, hub, clock).run_once()) == 1
     (req,) = hub.requests
@@ -250,7 +286,7 @@ def _hub_counted_bytes(body: dict) -> int:
     return len(json.dumps(segs, ensure_ascii=False, separators=(",", ":")).encode())
 
 
-@pytest.mark.parametrize("line", ["a" * 130, "日本語" * 166])
+@pytest.mark.parametrize("line", ["a" * 129 + ".", "日本語" * 166 + "。"])
 def test_a_big_meeting_fits_the_hubs_per_org_transcript_budget(clock, line) -> None:
     # Delta QA: fitted to the 1 MiB body alone, 9000 speaker-less lines measured 1.12 MB by
     # the hub's count, so it answered 429 for a day.
@@ -275,7 +311,7 @@ def test_multibyte_text_goes_out_unescaped(clock) -> None:
 
 def test_a_meeting_whose_tail_is_cut_by_the_line_cap_says_so(clock) -> None:
     store = InMemoryConversationStore()
-    _meeting(store, lines=["x"] * 10_001)
+    _meeting(store, lines=["X."] * 10_001)
     asyncio.run(_delivery(store, Hub(_ok()), clock).run_once())
     assert store.get("default", "c1").delivery_error == (
         "sent the first 10000 of 10001 lines: the rest is past the hub's limit"

@@ -333,8 +333,24 @@ class CaptionMerger:
             if ln.final
         ]
         self.last_speaker: str | None = None
+        # The earliest first_ms a new line may take: one after the newest line's. Readers
+        # order rows by start time, and a clamped clock (MeetingTracker.clock) can repeat a
+        # ts, so starts stay strictly increasing across snapshots, not only within one
+        # (XERK-2702). A tie would come back in random (segment id) order.
+        self._next_first = 0
         # Lines this merger has seen for the first time (carried ones excluded).
         self.new_lines = 0
+
+    def rename(self, old: str, new: str) -> None:
+        """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
+        reading of a name with the full one (XERK-2695). Unrenamed, the box's lines under the
+        new name aligned with none of them (a misread needs the same speaker) and were stored
+        a second time. Lines already written keep the name they were stored under."""
+        for ln in self._lines:
+            if ln.speaker == old:
+                ln.speaker = new
+        if self.last_speaker == old:
+            self.last_speaker = new
 
     def recent(self) -> list[_Line]:
         """The newest known lines, for the window's next merger (``carried``)."""
@@ -404,7 +420,6 @@ class CaptionMerger:
         out: dict[str, Segment] = {}
         to_finalize: list[_Line] = []
         speaker = self.last_speaker
-        new_in_snapshot = 0
         # The known line each row re-reads or revises. A new line goes just above the known
         # line shown below it, so known lines keep on-screen order: Teams adds lines to an
         # entry above another speaker's (that entry went on). Otherwise it goes at the end.
@@ -457,10 +472,10 @@ class CaptionMerger:
             elif i < last_aligned:
                 continue  # an OCR glitch above known lines: never a new line
             else:
-                # Lines first seen together keep their on-screen order: each a millisecond
-                # after the one above, so stores ordering by start time agree.
-                first = ts + new_in_snapshot
-                new_in_snapshot += 1
+                # New lines keep the order they appeared in: each at least a millisecond
+                # after the line before it, so stores ordering by start time agree.
+                first = max(ts, self._next_first)
+                self._next_first = first + 1
                 line = _Line(speaker, line_shown.text, line_shown.norm, first, first, ts)
                 below = next((ln for ln in known_at[i + 1 :] if ln is not None), None)
                 at_ = len(self._lines)
@@ -535,7 +550,7 @@ class CaptionMerger:
         if grew and ts - line.changed_ms <= _EXTEND_MS:
             line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             seg.text = shown.text
-            seg.end_ms = self._rel(ts)
+            seg.end_ms = self._rel(max(ts, line.first_ms))
             out[seg.segment_id] = seg
 
     def _revise(self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment]) -> None:

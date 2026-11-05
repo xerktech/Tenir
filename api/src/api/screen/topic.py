@@ -15,6 +15,7 @@ import httpx
 from api.config import settings
 from api.llm import adapt, system_content
 from api.persistence import Conversation
+from api.screen.utterances import sentences
 
 log = logging.getLogger("api.screen")
 
@@ -35,10 +36,8 @@ _SYSTEM = (
 def transcript(conv: Conversation) -> str:
     lines: list[str] = []
     size = 0
-    for seg in sorted(conv.segments, key=lambda s: (s.start_ms, s.segment_id)):
-        text = seg.text.strip()
-        if not text:
-            continue
+    for seg in sentences(conv.segments):
+        text = seg.text
         line = f"{seg.speaker}: {text}" if seg.speaker else text
         size += len(line) + 1
         if size > MAX_TRANSCRIPT_CHARS:

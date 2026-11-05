@@ -97,6 +97,13 @@ _MEETING_CONTROLS = {
     "end",
 }
 _MIN_CONTROLS = 3
+# Words of Zoom's toolbar labels as it draws them (Title Case). A caption crop low over the
+# window catches the toolbar row ("Participants Chat React Share More", XERK-2693).
+_TOOLBAR_WORDS = {w for label in _UI_TEXT | _MEETING_CONTROLS for w in label.split()} | {
+    "react",
+    "raise",
+    "hand",
+}
 
 # Full-frame bands, as fractions of the frame height.
 _TITLE_BAND = 0.07
@@ -154,11 +161,17 @@ class Roster:
 
     def __init__(self, aliases: dict[str, str] | None = None) -> None:
         self._names: dict[str, str] = {}  # norm -> display
+        # norm of a cut-off reading of a roster name ("Tim Mahl") -> that name's display.
+        self._cut: dict[str, str] = {}
+        # Display names replaced by a longer reading of the same person (old -> new), for
+        # the caller to remap what it already holds under the old one; it clears this.
+        self.renamed: dict[str, str] = {}
         # alias_key -> display name (speaker_aliases); applied to everything added.
         self.aliases = dict(aliases or {})
 
     def __contains__(self, name: str) -> bool:
-        return norm_name(name) in self._names
+        key = norm_name(name)
+        return key in self._names or key in self._cut
 
     def __len__(self) -> int:
         return len(self._names)
@@ -175,14 +188,28 @@ class Roster:
     def copy(self) -> Roster:
         out = Roster(self.aliases)
         out._names = dict(self._names)
+        out._cut = dict(self._cut)
         return out
 
     def add(self, name: str) -> str | None:
         """Add a tile name; returns its display form when it is new, else None."""
         display = self.display(name)
         key = norm_name(name)
-        if not key or key in self._names or len(self._names) >= _MAX_ROSTER:
+        if not key or key in self or len(self._names) + len(self._cut) >= _MAX_ROSTER:
             return None
+        same = _same_name(key, self._names)
+        if same is not None and len(same) > len(key):
+            self._cut[key] = self._names[same]  # a cut-off reading of a name already known
+            return None
+        if same is not None:
+            # The roster holds a cut-off reading of this name: keep the longer one, and
+            # point the cut one (and anything held under it) at it.
+            old = self._names.pop(same)
+            self._cut[same] = display
+            for k, d in self._cut.items():
+                if d == old:
+                    self._cut[k] = display
+            self.renamed[old] = display
         self._names[key] = display
         return display
 
@@ -195,6 +222,8 @@ class Roster:
             return None
         if key in self._names:
             return self._names[key]
+        if key in self._cut:
+            return self._cut[key]
         alias = self.display(header)
         if alias != header and norm_name(alias) in self._names:
             return self._names[norm_name(alias)]
@@ -209,6 +238,24 @@ class Roster:
             names = {d for r, d in good if good[0][0] - r < 0.05}
             return prefer if prefer in names else None
         return good[0][1]
+
+
+def _same_name(key: str, names: dict[str, str]) -> str | None:
+    """The roster key ``key`` is a cut-off reading of, or that is one of ``key``: one starts
+    with the other and they read alike (``_NAME_MATCH``). A Zoom tile label truncated by its
+    tile, or a name cut by the crop, read "Tim Mahl" for "Tim Mahler" and stored one person
+    under two names (XERK-2695). "Priya Ra" (0.84) is no match: such strip-edge fragments are
+    dropped by ``ocr`` instead. A short one ending in a digit is never cut: "Speaker 1" is
+    not "Speaker 12"."""
+    for k in names:
+        short = min(k, key, key=len)
+        if not short[-1:].isalpha():
+            continue
+        if (k.startswith(key) or key.startswith(k)) and SequenceMatcher(
+            None, key, k
+        ).ratio() >= _NAME_MATCH:
+            return k
+    return None
 
 
 @dataclass(frozen=True)
@@ -413,11 +460,17 @@ def parse_caption_crop(
     name dimmer than caption text, so with the crop's pixels a dim name-shaped row is the next
     entry's header and a bright one is text (XERK-2644: under an entry left unpunctuated the
     name was stored as the previous speaker's speech). Without readable pixels, a header can
-    sit only below a row that ends a sentence."""
-    del live
+    sit only below a row that ends a sentence.
+
+    Unless a meeting is ``live``, a crop must show a speaker header to yield anything
+    (XERK-2693): bright text centred low on a dark page (docs, release notes) passes the
+    client's box finder, and its header-less lines started meetings. A header counts when the
+    roster matches it or, off the roster, when the pixels show it as a dim name line (with no
+    pixels to read, any header). During a meeting a header-less crop is an entry whose
+    name scrolled off, and it stays. Zoom's toolbar rows are never caption text."""
     groups = [
-        g for g in row_groups(ocr.lines) if sum(c.isalnum() for c in _row_text(g)) >= 2
-    ]  # minus noise rows with fewer than two letters or digits
+        g for g in row_groups(ocr.lines) if _is_caption_row(_row_text(g))
+    ]  # minus noise rows with fewer than two letters or digits, and the toolbar
     rows = [_row_text(g) for g in groups]
     dim = _dim_rows(jpeg, ocr, groups)
 
@@ -425,9 +478,69 @@ def parse_caption_crop(
         # With pixels, a header below the top is a dim row, which ``name_rows`` settles.
         return i == 0 or (dim is None and rows[i - 1].rstrip().endswith((".", "?", "!")))
 
-    return caption_blocks(
-        rows, roster, active=active, unknown_headers=header_can_sit, name_rows=dim
+    # A row the pixels show as a name line may be any display name ("jsmith", "Raman, Priya",
+    # "Bo Chen (Guest)"): is_name_like alone stored those as speech (XERK-2693 QA).
+    dim_names = {rows[i] for i in dim or () if _is_display_name(rows[i])}
+
+    def name_like(text: str) -> bool:
+        return is_name_like(text) or text in dim_names
+
+    blocks = caption_blocks(
+        rows,
+        roster,
+        active=active,
+        name_like=name_like,
+        unknown_headers=header_can_sit,
+        name_rows=dim,
     )
+    if live or any(b.has_header and b.speaker for b in blocks):
+        return blocks
+    if not any(b.has_header for b in blocks):
+        return []
+    # Only unmatched headers. With pixels, only a dim row that reads as a capitalised name
+    # ("Raman, Priya" and "(Guest)" allowed) vouches for a speaker off the roster: a docs
+    # page's heading is as bright as its text, and any-shape dim rows let its grey meta lines
+    # ("updated 3 days ago", "required") start meetings (QA). A meeting of lower-case names
+    # only starts once a name-shaped speaker talks (XERK-2700). Without pixels the position
+    # rule's header stands.
+    if dim is not None and not any(is_name_like(_name_form(t)) for t in dim_names):
+        return []
+    return blocks
+
+
+def _name_form(text: str) -> str:
+    """A display name as ``is_name_like`` reads it: "Raman, Priya (Guest)" -> "Raman Priya"."""
+    return " ".join(clean_tile_name(text).replace(",", " ").split())
+
+
+def _is_display_name(text: str) -> bool:
+    """Loose shape of a Zoom display name, for rows already drawn as name lines: one to five
+    tokens with a letter, not ending a sentence. Any case, commas and a "(Guest)" suffix."""
+    tokens = clean_tile_name(text).split()
+    return (
+        0 < len(tokens) <= 5
+        and len(text) <= 64
+        and text.rstrip()[-1] not in ".?!:;,"
+        and any(c.isalpha() for c in tokens[0])
+    )
+
+
+def _is_caption_row(text: str) -> bool:
+    return sum(c.isalnum() for c in text) >= 2 and not _is_toolbar_row(text)
+
+
+def _is_toolbar_row(text: str) -> bool:
+    """A row of Zoom's own toolbar: its Title Case button labels ("Participants Chat React
+    Share More"), or the carets and single letters under its buttons ("^ D ^ A ^"). Caption
+    text is lower-case sentences, so needing two labels and three quarters of the row keeps
+    speech like "Share more of it" (XERK-2693)."""
+    tokens = text.split()
+    if "^" in text and not any(sum(c.isalnum() for c in t) >= 2 for t in tokens):
+        return True
+    # The carets under the buttons may be read into the labels' row ("Mute ^ Stop Video ^").
+    tokens = [t for t in tokens if t != "^"]
+    labels = sum(t[:1].isupper() and norm_name(t) in _TOOLBAR_WORDS for t in tokens)
+    return labels >= 2 and labels >= 0.75 * len(tokens)
 
 
 def _row_text(group: list[OcrLine]) -> str:

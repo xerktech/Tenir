@@ -2,6 +2,7 @@
 paths:
   - "api/src/api/screen/**"
   - "api/tests/test_turma_delivery.py"
+  - "api/tests/test_screen_utterances.py"
   - "api/tests/test_screen.py"
   - "api/tests/test_screen_teams.py"
   - "api/tests/test_screen_teams_pane.py"
@@ -154,6 +155,23 @@ paths:
     name-shaped first line ("Sounds Good"), a one-word name. Each was stored as speech (QA).
   - Tests: `test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech`,
     `test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech`.
+- Not live, a Zoom crop needs a header (XERK-2693): a roster match, or off the roster a dim
+  name row in its pixels (any header without pixels). Header-less dark docs pages started two
+  false meetings. Live, header-less crops still pass (an entry whose name scrolled off).
+  - A dim row of any display-name shape (`_is_display_name`: "jsmith", "Raman, Priya") is a
+    header, not speech. Only one that reads as a capitalised name (`_name_form`) vouches for a
+    start: any-shape vouching let docs pages' grey meta lines start 55/63 probes (QA).
+  - Open (XERK-2700): lower-case-only speakers start nothing; a grey Title Case docs line, or
+    all-Title-Case rows with no roster, still start one; legacy off-roster `Name: text` doesn't.
+    Telling these apart (avatar?) needs real Zoom crops.
+  - Toolbar rows are dropped before parsing (`_is_toolbar_row`): Title Case labels need >= 2
+    and 3/4 of the row, so speech like "Share more of it" stays.
+  - Not done: dropping wide/dense share text bleeding into the crop; needs real crops to tune.
+  - Tests: `test_a_dark_docs_page_in_the_caption_band_starts_no_meeting`,
+    `test_zooms_toolbar_rows_in_the_caption_crop_are_not_stored`,
+    `test_an_off_roster_speaker_s_dim_name_still_starts_a_meeting`,
+    `test_a_dim_last_first_or_guest_name_starts_a_meeting_and_is_not_speech`,
+    `test_a_grey_meta_line_on_a_docs_page_starts_no_meeting`.
 - The fixture is synthetic OCR output (no real capture may be committed: public repo). Re-tune
   thresholds on real frames once XERK-2506 can record them.
 - Replay tests wait on the `screen.frames_handled` counter: frames are processed off the
@@ -271,6 +289,11 @@ paths:
     within 1.3 header heights) are caption, never the whole stack: a compact People pane
     links a photo-avatar name under an initials one (QA). Real OCR at 100% glues the initials
     onto the caption row ("KS Okay"). Test: `test_real_ocr_of_a_one_word_interim_is_not_a_participant`.
+  - Avatar initials OCR glued onto an entry's first caption row ("MH Yeah", "P( No", "M I")
+    are stripped (`_strip_glued_initials`, XERK-2695) only when the row's box starts on the
+    avatar (left of the name line and text column): a caption opening "I"/"OK" at the text
+    column is the speaker's words. Tests: `test_avatar_initials_glued_onto_the_first_caption_row_are_stripped`,
+    `test_a_first_caption_word_at_the_text_column_is_kept_even_as_initials`.
   - `clean_name` skips text over 100 chars: suffixes strip one per pass (quadratic, ~1 s/frame).
 - Teams' caption pane is located on full frames by the api (`ws.locate_pane`, XERK-2608): pixels
   first (`teams_pane.candidates`: a divider of luma 40-170 with black above, black margins
@@ -320,6 +343,13 @@ paths:
     `test_the_written_failure_reasons_match_the_requeue_list`.
   - Tests: `test_a_hub_restart_mid_delivery_is_retried_with_backoff_and_lands_once`;
     SQL: `test_pg_screen_live.py::test_meeting_delivery_state_round_trips`.
+- Roster: a name that starts another and reads alike (>= `_NAME_MATCH`) is one person, kept
+  under the longer reading (`zoom._same_name`, XERK-2695): a truncated tile label stored "Tim
+  Mahl" and "Tim Mahler" as two speakers. The tracker relabels the merger's held lines on a
+  rename (`CaptionMerger.rename`) or the box re-stored them; lines already written keep the cut
+  name. "Priya Ra" (0.84) and "Speaker 1"/"Speaker 12" (digit end) are never merged.
+  Tests: `test_a_cut_off_name_is_the_same_person_as_its_full_reading`,
+  `test_a_cut_off_name_replaced_mid_meeting_stores_no_line_twice`.
 - Zoom tile names: a name-shaped line is a tile label only if a near-black row (the tile gap)
   runs within one label height below it (`zoom._over_tile_gap`, XERK-2643). A share's text sits
   on its content: a real Jira share put sidebar items and ticket keys in the roster.
@@ -343,3 +373,19 @@ paths:
 - Meeting titles come from the transcript (`topic.py`, at delivery), never the window's top band:
   on a Horizon window that band is the remote-desktop toolbar. Don't reintroduce `frame.title`
   storage. Tests: `test_screen_topic.py`, `test_an_untitled_meeting_is_titled_by_topic_once_before_delivery`.
+- Segments stay one per wrapped caption row; readers re-join them into sentences
+  (`utterances.sentences`, XERK-2696): history detail/export, `turma.meeting_body`, `topic`.
+  Joining in the merger would fight its row alignment. Any new reader of screen segments
+  goes through it too. The history list's `segmentCount` still counts stored rows.
+  - None-speaker rows never join (Zoom stores every off-roster speaker as None) and a pause
+    over `MAX_GAP_MS` breaks: both spliced different people / minutes-apart text (QA).
+  - One `_ends_at` test decides mid-row cuts and row-end breaks; separate rules split wraps
+    after "Dr." / "e.g." (QA). Cuts per row are capped (`MAX_CUTS`): "A. A. ..." rows fanned
+    out ~50x. Title checks scan only the chars before the period (a prefix rescan was O(n²)).
+  - One closer set (`_CLOSERS`, ASCII + full-width) feeds every rule: each rule that carried its
+    own copy lost a closer once (「」, then （）) across five QA rounds. ASCII " and ' open as
+    often as they close, so they never block a cut and 'Really? "' orphans its quote (accepted:
+    a "only closers left in the row" guard broke wrap parity, since a row isn't the text's end).
+    Not » or ›: German opens quotes with them.
+  - After any `_CUT` change, A/B one row vs the same text wrapped (QA kit `split2.py`).
+  Tests: `test_screen_utterances.py`, `test_wrapped_caption_rows_reach_the_hub_as_sentences`.

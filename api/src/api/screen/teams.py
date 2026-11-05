@@ -536,6 +536,24 @@ def _strip_header_boxes(lines: tuple[OcrLine, ...], roster: Roster) -> tuple[Ocr
     return tuple(out)
 
 
+def _strip_glued_initials(row: str, above: str, roster: Roster) -> str:
+    """``row`` minus a leading token OCR read off the avatar of the speaker named on the row
+    ``above`` ("MH Yeah you don't", "P( No, but", "M I don't" under Mark Hale / Priya O.),
+    else unchanged. The token is 1-3 characters whose letters are capitals among the name's
+    initials; other characters are the circle misread ("(" for "O"). Only called for a row
+    whose box starts on the avatar, so a caption opening "I" or "OK" at the text column stays
+    (XERK-2695: 35 lines of one real Teams meeting carried them)."""
+    token, sep, rest = row.partition(" ")
+    name = clean_name(above)
+    if not sep or not rest.strip() or len(token) > 3 or not is_teams_name(name):
+        return row
+    name = roster.match(name) or name
+    letters = {c for c in token if c.isalpha()}
+    if not letters or not all(c.isupper() for c in letters):
+        return row
+    return rest.lstrip() if letters <= _initials_of(name) else row
+
+
 def _strip_misread_avatar(text: str, roster: Roster) -> str:
     """A roster name behind a short token OCR misread off its circle ("3 Lee, Bo", "BI Lee,
     Bo" for BL): the name alone, else ``text``. Real OCR, 1920x1080 and 1680x1050 (QA on
@@ -796,10 +814,19 @@ def parse_caption_crop(
         for label in sorted(labels):
             roster.add(label)
     boxes = _drop_tile_labels(_drop_avatar_boxes(ocr))
+    prev_left: float | None = None
     for group in row_groups(boxes.lines):
         raw = " ".join(b.text for b in group).strip()
         if sum(c.isalnum() for c in raw) < 2:
             continue  # noise, as caption_rows drops it
+        left = min(b.box[0] for b in group)
+        if rows and prev_left is not None and column is not None:
+            # The row under a name line, its box starting on the avatar: OCR glued the
+            # circle's initials onto it ("MH Yeah you ...", "P( No, ...").
+            edge = max(prev_left, column[0]) - _ON_AVATAR * column[1]
+            if left <= edge:
+                raw = _strip_glued_initials(raw, rows[-1], roster)
+        prev_left = left
         # A header opens the crop, follows an entry's finished (punctuated) last line, or
         # carries its avatar: small OCR drops the final "." (QA on XERK-2609).
         # Avatar evidence: a box marked above, or initials read into the row ("DA Diego

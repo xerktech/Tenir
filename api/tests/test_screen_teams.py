@@ -462,6 +462,56 @@ def test_initials_read_into_the_name_box_are_stripped(row: str) -> None:
     assert [(b.speaker, b.lines) for b in blocks] == [("Lee, Bo", ["Okay."])]
 
 
+@pytest.mark.parametrize(
+    ("speaker", "glued", "text"),
+    [
+        # XERK-2695, a real Teams meeting: the avatar's initials read into an entry's first row.
+        ("Mark Hale", "MH Yeah you don't have kaeda you", "Yeah you don't have kaeda you"),
+        ("Priya Okafor", "PO Whenever like we need to do it", "Whenever like we need to do it"),
+        ("Priya Okafor", "P( No, but Anurag said.", "No, but Anurag said."),
+        ("Mark Hale", "M I don't see anything.", "I don't see anything."),
+        ("Okafor, Priya", "PO Whenever we can", "Whenever we can"),  # any order
+    ],
+)
+def test_avatar_initials_glued_onto_the_first_caption_row_are_stripped(
+    speaker: str, glued: str, text: str
+) -> None:
+    # The glued box starts on the avatar (x 10), left of the name and the text column (56).
+    ocr = result(
+        line(speaker, 56, 4, 200, 20),
+        line(glued, 10, 26, 330, 46),
+        line("and the rest of it", 56, 48, 300, 68),
+    )
+    for r in (roster(speaker, "Ana Ruiz"), Roster()):
+        blocks = teams.parse_caption_crop(ocr, r)
+        assert [(b.speaker, b.lines) for b in blocks][-1][1] == [text, "and the rest of it"]
+
+
+@pytest.mark.parametrize(
+    ("speaker", "first"),
+    [
+        ("Ian Moss", "I think so."),  # the speaker's initial, but the row starts at the text
+        ("Olivia Kim", "OK then we ship it"),
+    ],
+)
+def test_a_first_caption_word_at_the_text_column_is_kept_even_as_initials(
+    speaker: str, first: str
+) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line(speaker, 56, 4, 200, 20), line(first, 56, 26, 300, 46)), roster(speaker)
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [(speaker, [first])]
+
+
+@pytest.mark.parametrize("glued", ["AR Yeah sure.", "MHX Yeah sure.", "Mh Yeah sure."])
+def test_a_leading_token_that_is_not_the_speakers_initials_stays_text(glued: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line("Mark Hale", 56, 4, 200, 20), line(glued, 10, 26, 300, 46)),
+        roster("Mark Hale"),
+    )
+    assert [(b.speaker, b.lines) for b in blocks] == [("Mark Hale", [glued])]
+
+
 def test_capital_caption_words_that_are_not_the_speakers_initials_stay_text() -> None:
     blocks = teams.parse_caption_crop(
         result(

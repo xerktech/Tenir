@@ -234,6 +234,10 @@ image of at most 0.5 Mpx and answers its lines with boxes; `too_dense` (a slide)
 - Caption blocks: a header is a line (or a `Name:` prefix) matching a roster name, exact or
   fuzzy (≥0.86). Any other line is caption text. Before any full frame there is no roster, so
   a name-shaped line followed by text is a header with no speaker.
+- Zoom crops start no meeting without a speaker header (XERK-2693): a header-less crop, or one
+  whose only header is off the roster and drawn as bright as the text (a docs page's heading),
+  yields nothing until a meeting is live. Rows of Zoom's toolbar ("Participants Chat React
+  Share More", "^ D ^ A ^") are dropped from every crop.
 - Speaker aliases (`speaker_aliases`, per member and org) rename tile names, e.g. an email to a
   first name. Only the meeting owner's aliases apply; one member's renames never show in
   another member's meetings (XERK-2606).
@@ -415,7 +419,8 @@ A ready screen meeting is posted to the Turma hub, which proposes work items fro
   teams_meeting.json`): no redacted Teams screenshot was available. Re-tune on real XERK-2506
   captures; three of the four orgs' meetings are Teams.
 - **A dark slide with white text centred low on screen reads as a caption.** It is the same
-  pixels as a caption box; the speaker-label parser (XERK-2505) is the next filter. Dark text on
+  pixels as a caption box; the speaker-label parser is the next filter: such a crop starts no
+  meeting without a speaker header (XERK-2693), but mid-meeting its lines are still stored. Dark text on
   light slides is rejected (the box fill must be mostly dark): 1 false box in 1,620 random
   white, mid-grey and coloured slides, against 0 missed boxes in 1,200 captioned frames.
 - **Latency is on a 35 W mobile-class CPU** shared with other workloads.
