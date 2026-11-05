@@ -135,6 +135,7 @@ paths:
     `BOX_WHITE` (Zoom's blue/green) never reached the api (QA).
   - Tests: `test_a_lower_case_speaker_beside_an_avatar_starts_a_meeting`,
     `test_with_no_avatar_seen_the_capitalised_name_rule_stands`,
+    `test_with_no_text_row_to_compare_the_position_header_still_starts`,
     `test_the_avatar_needs_a_round_patch_level_with_the_name`,
     `test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing`,
     `test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar`,

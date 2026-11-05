@@ -2529,6 +2529,16 @@ def test_with_no_avatar_seen_the_capitalised_name_rule_stands(avatar: str) -> No
         assert len(store.list("default")) == starts, name
 
 
+def test_with_no_text_row_to_compare_the_position_header_still_starts() -> None:
+    """Every row name-shaped ("Bo Chen" / "Sounds Good"): there is no caption-text row to
+    read the name's dimness against, so the position rule's header stands, as on main (QA)."""
+    store = InMemoryConversationStore()
+    frame = panel_crop(("Bo Chen", True, False), ("Sounds Good", False))
+    _feed(_tracker(store), [frame] * 6)
+    (conv,) = store.list("default")
+    assert [s.text for s in store.get("default", conv.id).segments] == ["Sounds Good"]
+
+
 def test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing() -> None:
     """With a text row to compare against, the vouching row must be dim: a docs heading drawn
     as bright as its text, with a round icon beside it, is no speaker (QA mutant)."""
