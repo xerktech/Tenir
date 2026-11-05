@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -111,6 +110,8 @@ class _Line:
     seen_ms: int
     segment: Segment | None = None  # set once final
     carried: bool = False  # the ended meeting's line, seeded into the next merger
+    # A rewritten entry's text for this line, read on one frame; taken once a second agrees.
+    pending: str | None = None
 
     @property
     def final(self) -> bool:
@@ -212,19 +213,6 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
-
-
-def _rewrapped(shown: _Shown, known: _Line, rows: list[_Shown], lines: list[_Line]) -> bool:
-    """Whether ``shown`` differs from ``known`` only by words a re-wrap moved across a line
-    break: each word it gained is in a neighbouring known line, each it lost is in a
-    neighbouring shown row. Anything else (a misread, a stray char, a clipped top row) is
-    OCR, which never overwrites a stored line (XERK-2597)."""
-    mine, theirs = Counter(_words(shown.text)), Counter(_words(known.text))
-    if mine == theirs:
-        return True  # punctuation or case only
-    near_known = Counter(w for ln in lines if ln is not known for w in _words(ln.text))
-    near_shown = Counter(w for r in rows for w in _words(r.text))
-    return not (mine - theirs - near_known) and not (theirs - mine - near_shown)
 
 
 def _revisions(
@@ -431,15 +419,15 @@ class CaptionMerger:
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
-                if line_shown.block in revised_blocks and _rewrapped(
-                    line_shown,
-                    line,
-                    shown[i - 1 : i] + shown[i + 1 : i + 2],
-                    tail[max(0, at - 1) : at + 2],
-                ):
-                    # A row of a rewritten entry the alignment still matched: the rewrite moved
-                    # words onto it ("...it, the how" over "...it the").
-                    self._revise(line, line_shown, ts, out)
+                if line_shown.block in revised_blocks and line_shown.norm != line.norm:
+                    # A row of a rewritten entry the alignment still matched: the rewrite may
+                    # have moved or dropped words on it ("...it, the how" over "the ...it the").
+                    # One frame can be an OCR misread (XERK-2597), so it is taken only when a
+                    # later frame reads it the same (``_update``); case or punctuation at once.
+                    if _words(line_shown.text) == _words(line.text):
+                        self._revise(line, line_shown, ts, out)
+                    else:
+                        line.pending = line_shown.text
                 else:
                     self._update(line, line_shown, ts, out, bottom=i == len(shown) - 1)
             elif i in revised:
@@ -485,6 +473,9 @@ class CaptionMerger:
     ) -> None:
         if shown.norm == line.norm:
             return
+        if line.pending is not None and _norm(line.pending) == shown.norm:
+            self._revise(line, shown, ts, out)  # a rewrite read twice
+            return
         grew = shown.norm.startswith(line.norm + " ")
         if not line.final:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
@@ -510,6 +501,7 @@ class CaptionMerger:
         if shown.norm == line.norm:
             return
         line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
+        line.pending = None
         if line.segment is not None:
             # end_ms stays when it was said: the rewrite lands after others spoke.
             line.segment.text = shown.text

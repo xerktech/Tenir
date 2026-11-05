@@ -2331,6 +2331,7 @@ def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
     for t in range(5):
         out += m.feed([blk("Ravi", "No no no I'm not")], t * 1000)
     (draft,) = out
+    said_until = draft.end_ms  # the merger re-emits the same Segment object, changed
     out = []
     for t in range(5, 10):
         out += m.feed([blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")], t * 1000)
@@ -2340,7 +2341,7 @@ def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
         (False, "I'm not gonna enable the kDa in"),
     ]
     # The revised segment keeps when it was said, not when Teams rewrote it.
-    assert out[0].end_ms == draft.end_ms
+    assert out[0].end_ms == said_until
 
 
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
@@ -2445,4 +2446,35 @@ def test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored(misread_top:
             stored[seg.segment_id] = seg.text
     for seg in m.flush(60_000):
         stored[seg.segment_id] = seg.text
-    assert "yes so so enable should like we" in stored.values(), stored
+    texts = list(stored.values())
+    assert "yes so so enable should like we" in texts, stored
+    # The rewrite's other rows still land once read cleanly: nothing moved by the rewrap lost.
+    assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
+
+
+@pytest.mark.parametrize(
+    "glitched",
+    [
+        "Yes so so enable should we",  # a word lost
+        "Yes so so enable cluster should like we",  # a word gained that the next line has
+    ],
+)
+def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -> None:
+    """QA (XERK-2694): a matched row of a rewritten entry takes new words only when two
+    frames read them alike, so a misread on the rewrite frame is never stored, while the
+    rewrite's own changes still land."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
+    stored: dict[str, str] = {}
+    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames += [[blk(None, glitched, *final[1:], header=False)]]
+    frames += [[blk(None, *final, header=False)]] * 5
+    for t, frame in enumerate(frames):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    texts = list(stored.values())
+    assert glitched not in texts and "yes so so enable should like we" in texts, stored
+    assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
