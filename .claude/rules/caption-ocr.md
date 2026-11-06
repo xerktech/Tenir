@@ -32,3 +32,7 @@ paths:
   (`Image.effect_noise` is unseeded and once made a box test flaky).
 - Scoring pairs lines one-to-one and reports precision; a scorer without it hid the band crop's
   tile-name noise (QA finding D2).
+- `caption_replay.py` (XERK-2731) replays sampler windows through the live `MeetingTracker`, never
+  a re-implementation: its numbers decide merge tuning. Its test must keep matching the socket
+  path's stored lines (`test_replaying_the_teams_fixture_stores_what_the_socket_stores`).
+- Replay finds the Teams pane from the full frame's own heading line, not a second band read.

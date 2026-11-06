@@ -21,6 +21,11 @@ on:
       # the harness tests build requests from the shipped translator prompt, so a
       # change there must re-run them (prompt-drift guard)
       - 'api/src/api/translate/**'
+      # caption_replay.py replays sampled frames through the live screen tracker, parsers
+      # and merger, and its test pins it to the socket path's stored lines
+      - 'api/src/api/screen/**'
+      - 'api/src/api/persistence/**'
+      - 'api/tests/fixtures/screen/teams_meeting.json'
       - '.github/workflows/scripts.yml'
 
 concurrency:
