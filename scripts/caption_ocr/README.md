@@ -8,6 +8,10 @@ Results and the decision they led to: [`docs/meeting-captions.md`](../../docs/me
   several crop strategies; prints line accuracy, speaker accuracy and per-frame latency.
 - `caption_synth.py` — synthetic Zoom-caption frames with ground truth, for when no real capture is at hand.
 - `caption_score.py` — the metrics.
+- `caption_replay.py` — replays one screen-sampler window (`API_SCREEN_SAMPLE_DIR`, XERK-2705)
+  through the live tracker/parser/merger with the saved OCR reads, and reports rows stored
+  twice, and with `--drop`/`--truth` rows lost, added or given another speaker (XERK-2731).
+  Run from `api/` after `pip install -e .`; real frames stay off the repo (public).
 
 ```bash
 apt install tesseract-ocr

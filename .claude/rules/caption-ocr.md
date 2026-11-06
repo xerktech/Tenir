@@ -32,3 +32,14 @@ paths:
   (`Image.effect_noise` is unseeded and once made a box test flaky).
 - Scoring pairs lines one-to-one and reports precision; a scorer without it hid the band crop's
   tile-name noise (QA finding D2).
+- `caption_replay.py` (XERK-2731) replays sampler windows through the live `MeetingTracker`, never
+  a re-implementation: its numbers decide merge tuning. Its test must keep matching the socket
+  path's stored lines (`test_replaying_the_teams_fixture_stores_what_the_socket_stores`).
+- The sampler keeps no band read of the Teams pane heading: replay uses the full frame's own
+  heading line, and when OCR missed it caption lines join the roster and rows are lost (QA).
+  Read `full_frames_without_pane`; non-zero → re-run with `--ocr` (real tenir-ocr).
+- `compare()` pairs rows by the longest in-order alignment, never a greedy search: best-match
+  over all later rows paired a reworded line with its repeat far ahead, and a bounded window
+  lost sync for good after 16 unmatched rows (both QA, everything after counted as lost).
+- Its chain maximises pairs first, own-speaker pairs only as the tie-break: speaker-blind it
+  invented speaker changes, same-speaker-only it hid real misattribution (both QA).
