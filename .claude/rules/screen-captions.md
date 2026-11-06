@@ -104,6 +104,44 @@ paths:
     `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`,
     `test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored`,
     `test_a_one_frame_misread_of_a_rewritten_row_is_never_stored`.
+- Teams re-flows a growing entry (XERK-2715): a word inserted or fixed moves words across row
+  breaks, so row-level rules stored a stale draft beside its re-flowed copy (~7% of real lines).
+  `CaptionMerger._reflow` then upserts each block as one entry: rows replace their lines' texts
+  in order; same-speaker lines between them whose words the nearby rows hold are dropped.
+  - A dropped stored line is re-emitted with text "" (same id): the store has no delete, and
+    `utterances.sentences` skips blanks. Every reader must go through it. `segmentCount` counts them.
+  - Only a re-flow is taken (`_moved`: a word crossed a break and the rest of the row reads
+    alike); a word changed within a row is jitter for the row rules. Without the "rest reads
+    alike" check, Zoom `_simulate` noise made up text in 9 runs instead of 2.
+  - Two frames in a row must read the rows above the bottom alike (`_reflow_reads`).
+  - A skipped line is dropped only when the rows around it hold its words AND they moved there
+    (those rows gained them, or no longer read as their lines, or its words sit at their break
+    and a neighbour changed since it was last seen: the row rules may have grown it already).
+    The live bottom line doesn't count as that change: it grows every frame (QA). Holding the words alone blanked
+    a real line OCR missed on 2 identical frames next to rows sharing its words, Teams and
+    Zoom alike (QA); a per-seed Zoom A/B caught it where aggregate counts matched.
+  - A stored bottom row is confirmed on two frames too; a live one is left to the row rules.
+    Excluding it stored a misread landing on the confirming frame for good (QA).
+  - The crop's header-less top row clipped mid-word (a char suffix of its line) keeps the line.
+  - Glitch rows between placed rows pair with the lines between them (`_fill_glitches`): a
+    re-flowed row resembling its draft aligns as a misread, and its new words were lost. A run
+    at the block's bottom pairs with its speaker's unshown lines right after: an ended entry
+    re-flows with the next speaker's block below it, which aligns (the ticket's own example).
+  - Case/punctuation-only changes are not a re-flow; the draft's case stays (as before).
+  - Measured with `_simulate_teams` (200 seeds, 38k words): words stored twice 607 -> 139, lost
+    522 -> 236; with `noise=0.2`, 1978 -> 1353 and 595 -> 255. Zoom `_simulate` (1000 seeds,
+    all four modes): every seed stores exactly what main does. After tuning `_reflow`, diff
+    per seed, not totals; `_simulate_teams` is synthetic, so replay real crops when there are some.
+  - Tests: `test_simulated_teams_reflow_stores_few_words_twice`,
+    `test_a_rewrite_pulling_a_word_onto_the_next_row_is_stored_once`,
+    `test_a_word_pulled_up_blanks_its_stored_draft_row`,
+    `test_a_rewrapped_middle_row_takes_its_new_words`, `test_a_one_frame_rewrap_is_never_stored`,
+    `test_a_middle_row_missed_on_two_frames_is_kept_when_its_neighbours_share_its_words`,
+    `test_a_misread_bottom_row_on_the_confirming_frame_is_never_stored`,
+    `test_a_top_row_clipped_mid_word_keeps_its_line_during_a_reflow`,
+    `test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once`,
+    `test_a_middle_row_missed_while_the_bottom_row_grows_is_kept`,
+    `test_a_line_the_ocr_missed_between_rows_is_kept`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):

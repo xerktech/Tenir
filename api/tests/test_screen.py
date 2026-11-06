@@ -20,11 +20,12 @@ from api import history
 from api.config import settings
 from api.metrics import metrics
 from api.persistence import InMemoryConversationStore, ScreenMeta
-from api.persistence.models import alias_key
+from api.persistence.models import Segment, alias_key
 from api.screen import ws as screen_ws
 from api.screen import zoom
 from api.screen.meetings import Cadence, MeetingTracker, meetings
 from api.screen.merge import CaptionMerger
+from api.screen.utterances import sentences
 from api.screen.ocr import HttpOcrClient, OcrError, OcrLine, OcrResult, parse_result
 from api.screen.zoom import (
     CaptionBlock,
@@ -2744,6 +2745,310 @@ def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None
         stored.update({s.segment_id: s.text for s in m.feed(f, t * 1000)})
     stored.update({s.segment_id: s.text for s in m.flush(60_000)})
     assert "we were saying that the build" in stored.values(), stored
+
+
+# --- XERK-2715: Teams re-flows a growing entry ------------------------------------------
+#
+# Teams wraps an entry as one text, so a word inserted or rewritten in it moves words across
+# its row breaks ("the." becomes "the API contract" and pulls "can" down from the row above).
+# Row by row, a row that gained leading words isn't a growth: it landed as a new line beside
+# its stale draft, and both were stored (~7% of a real meeting's lines).
+
+
+def _entry_run(frames: list[tuple[list[CaptionBlock], int]]) -> tuple[list[tuple], dict]:
+    """Feed each frame ``count`` times, one a second; returns the stored (speaker, text) rows
+    in order (blanked ones left out) and every segment's last text by id."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, object] = {}
+    t = 0
+    for blocks, count in frames:
+        for _ in range(count):
+            for seg in m.feed(blocks, t):
+                final[seg.segment_id] = seg
+            t += 1000
+    for seg in m.flush(t + 60_000):
+        final[seg.segment_id] = seg
+    rows = sorted(final.values(), key=lambda s: s.start_ms)
+    return [(s.speaker, s.text) for s in rows if s.text], {k: s.text for k, s in final.items()}
+
+
+def test_a_rewrite_pulling_a_word_onto_the_next_row_is_stored_once() -> None:
+    """The ticket's shape: a stored row "do the second task the." re-reads as "can do the
+    second task, the API contract" ("can" left the row above). Both rows take the final text
+    in place; the draft isn't kept beside it."""
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    stored, _ = _entry_run([([blk("Ana", *draft)], 6), ([blk("Ana", *final)], 6)])
+    assert stored == [("Ana", final[0]), ("Ana", final[1])]
+
+
+def test_a_word_moving_down_a_live_entry_is_stored_once() -> None:
+    """A word inserted while the entry grows pushes the end of each row onto the next."""
+    frames = [
+        ([blk("Ana", "we should check the cluster")], 2),
+        ([blk("Ana", "we should check the cluster logs")], 2),
+        ([blk("Ana", "we should check the cluster logs", "before we")], 2),
+        ([blk("Ana", "we should check the staging cluster", "logs before we deploy")], 6),
+        (
+            [
+                blk("Ana", "We should check the staging cluster", "logs before we deploy."),
+                blk("Bo", "sure"),
+            ],
+            6,
+        ),
+    ]
+    stored, _ = _entry_run(frames)
+    # Case alone is a rewrite, not a re-flow: the row rules keep the draft's.
+    assert [(sp, _words(text)) for sp, text in stored] == [
+        ("Ana", "we should check the staging cluster"),
+        ("Ana", "logs before we deploy"),
+        ("Bo", "sure"),
+    ]
+
+
+def test_a_word_pulled_up_blanks_its_stored_draft_row() -> None:
+    """The ticket's shape: "staging" joins the row above, the next row's words follow it. The
+    stored draft row "staging" is re-emitted blank (same id, which readers skip), not kept."""
+    draft = ["then we can ship the build to", "staging"]
+    final = ["then we can ship the build to staging", "right after lunch"]
+    stored, by_id = _entry_run([([blk("Ana", *draft)], 6), ([blk("Ana", *final)], 6)])
+    assert stored == [("Ana", final[0]), ("Ana", final[1])]
+    assert list(by_id.values()).count("") == 1
+    segs = [
+        Segment(segment_id=k, text=v, start_ms=0, end_ms=0, lang="en", speaker="Ana")
+        for k, v in by_id.items()
+    ]
+    assert all(seg.text for seg in sentences(segs))
+
+
+@pytest.mark.parametrize(
+    ("draft", "final"),
+    [
+        (
+            ["so we checked the logs and", "the build", "failed after the merge yesterday"],
+            [
+                "so we checked the logs",
+                "and the build broke right",
+                "failed after the merge yesterday",
+            ],
+        ),
+        (
+            ["alpha bravo charlie delta", "echo foxtrot", "golf hotel india"],
+            ["alpha bravo charlie", "delta echo foxtrot golf", "hotel india"],
+        ),
+    ],
+)
+def test_a_rewrapped_middle_row_takes_its_new_words(draft: list, final: list) -> None:
+    """A middle row that still resembles its draft aligns as an OCR misread of it, and the
+    words the re-flow moved onto it were lost; it now takes the entry's text in place."""
+    stored, _ = _entry_run([([blk("Ana", *draft)], 6), ([blk("Ana", *final)], 6)])
+    assert stored == [("Ana", row) for row in final]
+
+
+def test_a_one_frame_rewrap_is_never_stored() -> None:
+    """A re-flow is taken only when two frames in a row read it: one frame (a misread that
+    happens to move a word) changes nothing."""
+    rows = ["we should check the cluster", "logs before we deploy"]
+    moved = ["we should check the", "cluster logs before we deploy"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *rows)], 6), ([blk("Ana", *moved)], 1), ([blk("Ana", *rows)], 6)]
+    )
+    assert stored == [("Ana", rows[0]), ("Ana", rows[1])]
+
+
+_ALIKE_ROWS = ["so i think that we should", "do it and i think that", "we should ship it today."]
+
+
+@pytest.mark.parametrize("below", [[blk("Bo", "sure")], []])
+def test_a_middle_row_missed_on_two_frames_is_kept_when_its_neighbours_share_its_words(
+    below: list,
+) -> None:
+    """QA (XERK-2715): OCR missing a row on two identical frames left rows that hold half its
+    words ("i think that"); the line was blanked. Rows reading as their lines did moved no
+    words, so the line is an OCR miss and stays, in its place."""
+    rows = _ALIKE_ROWS
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *rows), *below], 6),
+            ([blk("Ana", rows[0], rows[2]), *below], 2),
+            ([blk("Ana", *rows), *below], 4),
+        ]
+    )
+    assert stored == [("Ana", row) for row in rows] + [(b.speaker, b.lines[0]) for b in below]
+
+
+def test_a_middle_row_missed_while_the_bottom_row_grows_is_kept() -> None:
+    """QA (XERK-2715): the missed row's words sit at its neighbours' break ("...so i think" /
+    "i think so we" / "so we can ..."), and the live bottom row changes every frame as it
+    grows; that change is no sign a word moved, so the row stays, in its place, once."""
+    top, mid = "we should check it so i think", "i think so we"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top, mid, "so we can deploy")], 4),
+            ([blk("Ana", top, "so we can deploy it")], 1),
+            ([blk("Ana", top, "so we can deploy it now")], 1),
+            ([blk("Ana", top, "so we can deploy it now ok")], 1),
+            ([blk("Ana", top, mid, "so we can deploy it now ok"), blk("Bo", "ok")], 6),
+        ]
+    )
+    assert stored == [("Ana", top), ("Ana", mid), ("Ana", "so we can deploy it now ok"), ("Bo", "ok")]
+
+
+def test_a_misread_bottom_row_on_the_confirming_frame_is_never_stored() -> None:
+    """QA (XERK-2715): a stored bottom row is confirmed like the rows above it, so a misread
+    on the frame after the re-flow doesn't replace it; the clean frames after it do."""
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    misread = [final[0], "can do tbe secand task, the apl contrcat"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *draft)], 6),
+            ([blk("Ana", *final)], 1),
+            ([blk("Ana", *misread)], 1),
+            ([blk("Ana", *final)], 6),
+        ]
+    )
+    assert stored == [("Ana", final[0]), ("Ana", final[1])]
+
+
+def test_a_top_row_clipped_mid_word_keeps_its_line_during_a_reflow() -> None:
+    """QA (XERK-2715): the crop cutting the header-less top row mid-word ("ent over ...")
+    must not replace the stored line while the rows below re-flow."""
+    top = "we went over the release plan"
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top, *draft)], 6),
+            ([blk(None, top, *draft, header=False)], 2),
+            ([blk(None, "ent over the release plan", *final, header=False)], 6),
+        ]
+    )
+    assert stored == [("Ana", top), ("Ana", final[0]), ("Ana", final[1])]
+
+
+def test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once() -> None:
+    """QA (XERK-2715): Teams re-flows an entry after it ends, with the next speaker's block
+    below it. That block aligns, so the re-flowed bottom row reads as a glitch above it; it
+    still pairs with the draft row it replaces, whose new words were lost."""
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *draft), blk("Bo", "sure")], 6), ([blk("Ana", *final), blk("Bo", "sure")], 6)]
+    )
+    assert stored == [("Ana", final[0]), ("Ana", final[1]), ("Bo", "sure")]
+
+
+def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
+    """A stored line a block skips is a stale copy only when the rows around it hold its
+    words; otherwise OCR missed it and it stays."""
+    rows = ["alpha bravo charlie", "delta echo foxtrot", "golf hotel india"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *rows)], 6), ([blk("Ana", rows[0], "golf hotel india juliet")], 6)]
+    )
+    assert [text for _, text in stored] == [*rows[:2], "golf hotel india juliet"]
+
+
+def _simulate_teams(seed: int, *, noise: float = 0.0) -> tuple[int, int, int]:
+    """Roll a Teams caption panel over 8 random entries: each grows a word per snapshot and is
+    wrapped as one text, while Teams adds and drops provisional periods and inserts or fixes
+    an earlier word (re-flowing the rows after it); a finished entry is capitalised and
+    punctuated. With ``noise``, that share of snapshots garbles one row. Returns words said,
+    and words stored beyond / short of what was said (per speaker, in order)."""
+    import random
+    import re
+    from difflib import SequenceMatcher
+
+    rng = random.Random(seed)
+    vocab = (
+        "so the build we need to check that cluster deploy test locally again repeat same "
+        "process push code there itself asking change design what did go second task api "
+        "contract then will do it or me can and pods enable right overlay logs fix"
+    ).split()
+    words_of = lambda text: re.findall(r"[\w']+", text.casefold())  # noqa: E731
+
+    def wrap(words: list[str]) -> list[str]:
+        rows: list[str] = []
+        for w in words:
+            if rows and len(rows[-1]) + 1 + len(w) <= 42:
+                rows[-1] += f" {w}"
+            else:
+                rows.append(w)
+        return rows
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, object] = {}
+    entries: list[tuple[str, list[str]]] = []
+    t = 0
+
+    def snapshot() -> None:
+        rows = [r for sp, words in entries for r in [("H", sp), *(("T", x) for x in wrap(words))]]
+        rows = rows[-8:]
+        if noise and rng.random() < noise:
+            k = rng.randrange(len(rows))
+            if rows[k][0] == "T":
+                rows[k] = (
+                    "T",
+                    "".join("~" if c % 5 == 0 else ch for c, ch in enumerate(rows[k][1])),
+                )
+        blocks: list[CaptionBlock] = []
+        for kind, val in rows:
+            if kind == "H":
+                blocks.append(blk(val))
+            else:
+                if not blocks:
+                    blocks.append(blk(None, header=False))
+                blocks[-1].lines.append(val)
+        for seg in m.feed([b for b in blocks if b.lines], t):
+            stored[seg.segment_id] = seg
+
+    for _ in range(8):
+        speaker = rng.choice([s for s in ("Ana", "Bo", "Cy") if not entries or s != entries[-1][0]])
+        words: list[str] = []
+        entries.append((speaker, words))
+        for w in [rng.choice(vocab) for _ in range(rng.randint(6, 40))]:
+            if words and words[-1].endswith("."):
+                words[-1] = words[-1][:-1]
+            words.append(w + ("." if rng.random() < 0.15 else ""))
+            if rng.random() < 0.08 and len(words) > 4:
+                at = rng.randint(max(0, len(words) - 12), len(words) - 2)
+                if rng.random() < 0.5:
+                    words.insert(at, rng.choice(vocab))
+                else:
+                    words[at] = rng.choice(vocab)
+            t += rng.choice([300, 500, 700])
+            snapshot()
+        words[0] = words[0].capitalize()
+        words[-1] += "" if words[-1].endswith(".") else "."
+        for _ in range(rng.randint(2, 8)):
+            t += 500
+            snapshot()
+    for seg in m.flush(t + 60_000):
+        stored[seg.segment_id] = seg
+    said_words = extra = lost = 0
+    for speaker in ("Ana", "Bo", "Cy"):
+        said = [w for sp, ws in entries if sp == speaker for w in words_of(" ".join(ws))]
+        got = [
+            w
+            for seg in sorted(stored.values(), key=lambda s: s.start_ms)
+            if seg.speaker == speaker
+            for w in words_of(seg.text)
+        ]
+        said_words += len(said)
+        for op, a1, a2, b1, b2 in SequenceMatcher(None, said, got, autojunk=False).get_opcodes():
+            extra += max(0, (b2 - b1) - (a2 - a1)) if op in ("insert", "replace") else 0
+            lost += max(0, (a2 - a1) - (b2 - b1)) if op in ("delete", "replace") else 0
+    return said_words, extra, lost
+
+
+def test_simulated_teams_reflow_stores_few_words_twice() -> None:
+    """XERK-2715, measured over 200 seeds (38k words said): words stored twice 607 -> 139,
+    words lost 522 -> 236. These 20 seeds stored 75 extra and lost 53 before the entry pass
+    (23 and 24 after)."""
+    totals = [sum(x) for x in zip(*(_simulate_teams(seed) for seed in range(20)), strict=True)]
+    said, extra, lost = totals
+    assert extra <= 0.008 * said, totals
+    assert lost <= 0.01 * said, totals
 
 
 # --- XERK-2693: no meeting from speaker-less text, no toolbar rows -----------------------
