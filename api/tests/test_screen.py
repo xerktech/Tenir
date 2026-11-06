@@ -2967,17 +2967,36 @@ def test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words() ->
     assert stored == [("Ana", "green, so ship it"), ("Bo", "sure.")]
 
 
-def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away() -> None:
+@pytest.mark.parametrize("above", [False, True])
+def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away(above: bool) -> None:
     """QA (XERK-2716): "yes I think so too." said between snapshots above a repeat of Ana's
-    next entry is a new line, not the stored "yes." re-flowing."""
+    next entry is a new line, not the stored "yes." re-flowing; also with Bo's block above it
+    (a row of another block above is not one of its entry's, or the new line is lost)."""
+    bo = [blk("Bo", "ok.")] if above else []
     stored, _ = _entry_run(
         [
-            ([blk("Ana", "yes.")], 5),
-            ([blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
-            ([blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
+            ([*bo, blk("Ana", "yes.")], 5),
+            ([*bo, blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
+            ([*bo, blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
         ]
     )
-    assert ("Ana", "yes I think so too.") in stored and len(stored) == 4
+    # With Bo above, the whole box is stored again (as on main): a line said between
+    # snapshots under a header makes everything below it new.
+    assert ("Ana", "yes I think so too.") in stored and (above or len(stored) == 4)
+
+
+def test_a_reflow_moving_two_words_down_above_the_same_speakers_next_entry_is_stored_once() -> (
+    None
+):
+    """QA (XERK-2716): the row above the grown one gained two words, so it no longer matches
+    its draft; the grown row still pairs as a row of its entry."""
+    draft = ["so we went over the plan and then", "the build is", "green."]
+    final = ["so we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *draft), blk("Ana", *nxt)], 6), ([blk("Ana", *final), blk("Ana", *nxt)], 6)]
+    )
+    assert stored == [("Ana", text) for text in (*final, *nxt)]
 
 
 def test_an_old_row_re_read_longer_is_jitter_not_growth() -> None:
@@ -2988,6 +3007,26 @@ def test_an_old_row_re_read_longer_is_jitter_not_growth() -> None:
         [([blk("Ana", *rows)], 75), ([blk("Ana", rows[0], "like l o", rows[2])], 6)]
     )
     assert stored == [("Ana", text) for text in rows]
+
+
+def test_a_growing_bottom_row_never_rewrites_the_rows_above() -> None:
+    """QA (XERK-2716, `_simulate_teams` seed 125): the live bottom row growing by whole words
+    is no re-flow; taking it copied a misaligned row's text onto a draft line, stored twice."""
+    top = "pods itself can locally design deploy"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top)], 1),
+            ([blk("Ana", top, "pods.")], 1),
+            ([blk("Ana", f"{top} pods", "itself")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right.")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need right deploy")], 6),
+        ]
+    )
+    words = [w for _, text in stored for w in _words(text).split()]
+    assert words == _words(f"{top} pods itself enable right so need right deploy").split()
 
 
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:

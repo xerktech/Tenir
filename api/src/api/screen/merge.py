@@ -163,8 +163,7 @@ def _score(shown: _Shown, known: _Line, *, growable: bool) -> float:
 
 
 def _misread(shown: _Shown, known: _Line, *, in_entry: bool = False) -> bool:
-    """Whether ``shown`` misreads ``known``. ``in_entry``: the row right above ``shown``, in
-    its block, matched the known line right above ``known``."""
+    """Whether ``shown`` misreads ``known``. ``in_entry``: ``shown`` is not its block's top row."""
     if not _same_speaker(shown.speaker, known.speaker):
         return False
     a, b = shown.norm, known.norm
@@ -173,10 +172,10 @@ def _misread(shown: _Shown, known: _Line, *, in_entry: bool = False) -> bool:
     # A finished Teams row re-flowing inside its entry: punctuation changed and words joined
     # it ("green." -> "green, so ship it", XERK-2716). Unpaired under a header it read as a
     # line said between snapshots and the whole box was stored again; paired, ``_reflow``
-    # takes its words. Only under a matched row of its own entry: a block's top row may be a
-    # new line starting with an old one's words ("yes." / "yes I think so too."), and a
-    # glitch there has no row above for ``_reflow`` to place it by (both lost words, QA).
-    if not (in_entry and known.final):
+    # takes its words. Only below another row of its block: a block's top row may be a new
+    # line starting with an old one's words ("yes." / "yes I think so too."), and a glitch
+    # there has no row above for ``_reflow`` to place it by (both lost words, QA).
+    if not in_entry:
         return False
     had = _words(known.text)
     return bool(had) and _words(shown.text)[: len(had)] == had
@@ -202,12 +201,7 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
             options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
-                in_entry = (
-                    i >= 2
-                    and j >= 2
-                    and shown[i - 2].block == shown[i - 1].block
-                    and move[i - 1][j - 1] == "match"
-                )
+                in_entry = i >= 2 and shown[i - 2].block == shown[i - 1].block
                 if _misread(shown[i - 1], tail[j - 1], in_entry=in_entry):
                     options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
@@ -716,7 +710,9 @@ class CaptionMerger:
             if any(not self._held(ln, lines, row_words) for ln in between):
                 continue
             # A glitch row that grew its line by whole words is taken too: ``_misread`` paired
-            # it ("like" -> "like with the keto."), so no other rule stores its new words.
+            # it ("like" -> "like with the keto."), so no other rule stores its new words. Not
+            # an aligned row: the live bottom row grows every frame, and taking it rewrote the
+            # rows above onto lines they were misaligned with (`_simulate_teams` seed 125).
             # Only a recent line: Teams re-flows an entry seconds after it ends, and an old
             # row re-read longer is OCR jitter ("like" -> "like l o" 70 s on, QA).
             grew = any(
