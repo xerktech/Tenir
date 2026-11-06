@@ -19,7 +19,9 @@ import json
 import logging
 import math
 import re
+import secrets
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -32,11 +34,22 @@ log = logging.getLogger(__name__)
 # Bytes written per process, whatever the frame cap: 2000 4 MB full frames would be 8 GB on a
 # volume the audio shares.
 MAX_BYTES = 1_000_000_000
+# Consecutive failed writes after which sampling stops: a broken directory otherwise logged a
+# warning on every frame for the whole meeting (QA).
+FAIL_LIMIT = 5
+# A write in flight this long is reported once: a stalled volume otherwise stopped sampling
+# with only a skip counter to show it (QA).
+STUCK_SECONDS = 30.0
+# Per process: the frame number restarts at 1, so a restart could reuse a file name (QA).
+_RUN = secrets.token_hex(3)
 
 _lock = threading.Lock()
 _busy = False
 _saved = 0
 _bytes = 0
+_failed = 0
+_started = 0.0
+_stuck_told = False
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screen-sample")
 
 
@@ -55,12 +68,20 @@ def submit(
     Returns whether it was queued: not while the previous write is still running, nor once the
     caps are reached.
     """
-    global _busy
+    global _busy, _started, _stuck_told
     with _lock:
-        if _busy or _saved >= limit or _bytes >= MAX_BYTES:
+        stuck = _busy and not _stuck_told and time.monotonic() - _started > STUCK_SECONDS
+        if stuck:
+            _stuck_told = True
+        if _busy or _saved >= limit or _bytes >= MAX_BYTES or _failed >= FAIL_LIMIT:
             metrics.incr("screen.samples_skipped")
-            return False
-        _busy = True
+            skip = True
+        else:
+            _busy, _started, skip = True, time.monotonic(), False
+    if stuck:
+        log.warning("screen sampling stalled: a write has been in flight %.0f s", STUCK_SECONDS)
+    if skip:
+        return False
     try:
         _pool.submit(_run, root, limit, header, jpeg, result, ts)
     except RuntimeError:  # the pool was shut down (process exit)
@@ -87,18 +108,18 @@ def _score(value: float) -> float | None:
 def save(
     root: str, limit: int, header: ScreenFrameHeader, jpeg: bytes, result: OcrResult, ts: int
 ) -> bool:
-    """Write one frame and its OCR as ``<root>/<platform>-<org>/<ts>-<n>-<region>.{jpg,json}``.
+    """Write one frame and its OCR as ``<root>/<platform>-<org>/<ts>-<run>-<n>-<region>.{jpg,json}``.
 
     Returns whether both were written. Only a frame written counts toward ``limit``; a failed
     write leaves no half pair behind. Never raises: sampling must not break a meeting.
     """
-    global _saved, _bytes
+    global _saved, _bytes, _failed
     with _lock:
-        if _saved >= limit or _bytes >= MAX_BYTES:
+        if _saved >= limit or _bytes >= MAX_BYTES or _failed >= FAIL_LIMIT:
             return False
         n = _saved + 1
     region = header.region.value
-    stem = f"{ts}-{n:05d}-{region}"
+    stem = f"{ts}-{_RUN}-{n:05d}-{region}"
     meta = {
         "platform": header.platform.value,
         "orgSiteKey": header.orgSiteKey,
@@ -117,7 +138,12 @@ def save(
         paths[0].write_bytes(jpeg)
         paths[1].write_text(json.dumps(meta, allow_nan=False), encoding="utf-8")
     except (OSError, ValueError) as exc:
+        with _lock:
+            _failed += 1
+            gave_up = _failed >= FAIL_LIMIT
         log.warning("screen sample not saved: %s", exc)
+        if gave_up:
+            log.warning("screen sampling stopped after %d failed writes", FAIL_LIMIT)
         for p in paths:
             try:
                 p.unlink(missing_ok=True)
@@ -127,6 +153,7 @@ def save(
     with _lock:
         _saved += 1
         _bytes += len(jpeg)
+        _failed = 0
         stopped = _saved >= limit or _bytes >= MAX_BYTES
     if stopped:
         log.info("screen sampling stopped: %d frames saved under %s", _saved, root)
@@ -134,10 +161,10 @@ def save(
 
 
 def _reset_for_tests() -> None:
-    global _saved, _bytes, _busy
+    global _saved, _bytes, _busy, _failed, _stuck_told
     with _lock:
-        _saved = _bytes = 0
-        _busy = False
+        _saved = _bytes = _failed = 0
+        _busy = _stuck_told = False
 
 
 __all__ = ["MAX_BYTES", "save", "submit"]

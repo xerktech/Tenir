@@ -50,9 +50,9 @@ def _wait_idle(timeout: float = 5.0) -> None:
 
 
 def test_replayed_frames_are_sampled_only_when_a_directory_is_set(
-    screen,
+    screen,  # noqa: F811
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from api.main import app
 
@@ -174,3 +174,66 @@ def test_an_unwritable_directory_never_breaks_the_frame(tmp_path: Path) -> None:
     blocker = tmp_path / "file"
     blocker.write_text("not a dir")
     assert samples.save(str(blocker), 3, _header(), b"j", _RESULT, 1) is False
+
+
+def test_a_frame_whose_account_went_while_ocr_ran_is_not_sampled(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QA D8: the account deleted mid-OCR closes the socket; its frame must not be written."""
+    from api.main import app
+    from api.screen import ws as screen_ws
+
+    _, ocr, token, admin = screen
+    monkeypatch.setattr(settings, "screen_sample_dir", str(tmp_path))
+    real_read = ocr.read
+
+    async def revoked_mid_read(jpeg, **kw):
+        screen_ws.revoke_user(admin.user_id)
+        return await real_read(jpeg, **kw)
+
+    monkeypatch.setattr(ocr, "read", revoked_mid_read)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        replay(client, ws, ocr, FIXTURE["frames"][:1], int(time.time() * 1000))
+    _wait_idle()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_sampling_stops_after_repeated_failed_writes(tmp_path: Path) -> None:
+    """QA: a broken directory logged a warning on every frame for the whole meeting."""
+    blocker = tmp_path / "file"
+    blocker.write_text("not a dir")
+    for t in range(samples.FAIL_LIMIT):
+        assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
+    assert samples.submit(str(tmp_path), 99, _header(), b"j", _RESULT, 1) is False
+    assert samples.save(str(tmp_path), 99, _header(), b"j", _RESULT, 1) is False
+
+
+def test_a_stalled_write_is_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    release = threading.Event()
+    monkeypatch.setattr(samples, "save", lambda *a: release.wait(5))
+    monkeypatch.setattr(samples, "STUCK_SECONDS", 0.0)
+    with caplog.at_level("WARNING", logger="api.screen.samples"):
+        assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, 1)
+        time.sleep(0.01)
+        for t in range(3):
+            assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, t) is False
+    release.set()
+    _wait_idle()
+    assert sum("stalled" in r.message for r in caplog.records) == 1
+
+
+def test_a_restart_never_reuses_a_samples_file_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA: the frame number restarts per process; a failed write once deleted an older pair."""
+    assert samples.save(str(tmp_path), 9, _header(), b"j", _RESULT, 7)
+    samples._reset_for_tests()
+    monkeypatch.setattr(samples, "_RUN", "beef00")  # the next process
+    nan = OcrResult(10, 10, (OcrLine("x", (0.0, float("nan"), 1.0, 1.0)),))
+    assert samples.save(str(tmp_path), 9, _header(), b"j", nan, 7) is False
+    assert len(list(tmp_path.rglob("*.jpg"))) == len(list(tmp_path.rglob("*.json"))) == 1

@@ -187,8 +187,8 @@ window's meeting starts it sends that window `API_SCREEN_MEETING_FPS` (1), and t
 again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (30).
 
 **Sampling real frames.** `API_SCREEN_SAMPLE_DIR` (empty: off) saves every frame the socket
-reads, as `<dir>/<platform>-<org>/<ts>-<n>-<region>.jpg` plus a `.json` with its OCR lines,
-up to `API_SCREEN_SAMPLE_MAX` (2000) frames per process. It exists to re-tune the parsers'
+reads, as `<dir>/<platform>-<org>-<hash>/<ts>-<run>-<n>-<region>.jpg` plus a `.json` with its OCR lines,
+up to `API_SCREEN_SAMPLE_MAX` (2000) frames and 1 GB per process, on its own thread (a frame never waits for a write; frames arriving mid-write are skipped). It stops after 5 failed writes in a row and warns once if a write stalls. It exists to re-tune the parsers'
 pixel thresholds on real crops (XERK-2705). The files are screenshots of client meetings: turn
 it on for one meeting, copy them off, delete them and turn it off. Never commit them.
 
