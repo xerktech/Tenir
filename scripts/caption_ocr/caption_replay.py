@@ -261,9 +261,12 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
     The pairing is the longest in-order one (a longest increasing subsequence over the alike
     pairs), so no run of unmatched rows on either side can throw the rest out of step: a
     greedy search paired a reworded line with its repeat far ahead (QA), and a bounded one
-    lost sync for good after 16 unmatched rows (QA). A reference row left over then takes the
-    most alike unused row within ``DUP_WINDOW`` of its neighbours' pairs: rows can store
-    slightly out of order.
+    lost sync for good after 16 unmatched rows (QA). The chain is over same-speaker pairs:
+    over any pair, the same words said by two speakers paired across them when one was
+    dropped, a speaker change that never happened (QA). A reference row left over then takes
+    the most alike unused row within ``DUP_WINDOW`` of its neighbours' pairs, its own
+    speaker's first: rows can store slightly out of order, and a misattributed row is paired
+    here.
     """
     import bisect
 
@@ -274,7 +277,8 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
     tail_at: list[tuple[int, int]] = []  # (i, j) at tails[k]
     back: dict[tuple[int, int], tuple[int, int] | None] = {}
     for i, found in enumerate(alike):
-        for _, j in sorted(found, key=lambda x: -x[1]):
+        own = [j for _, j in found if rows[j][0] == reference[i][0]]
+        for j in sorted(own, reverse=True):
             k = bisect.bisect_left(tails, j)
             back[(i, j)] = tail_at[k - 1] if k else None
             if k == len(tails):
@@ -296,9 +300,10 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
         k = bisect.bisect_left(paired, i)
         lo = pair[paired[k - 1]] - DUP_WINDOW if k else 0
         hi = pair[paired[k]] + DUP_WINDOW if k < len(paired) else len(rows)
-        near = [(r, j) for r, j in found if lo <= j <= hi and j not in used]
+        speaker = reference[i][0]
+        near = [(rows[j][0] == speaker, r, -j) for r, j in found if lo <= j <= hi and j not in used]
         if near:
-            pair[i] = max(near)[1]
+            pair[i] = -max(near)[2]
             used.add(pair[i])
     changed = sum(rows[j][0] != reference[i][0] for i, j in pair.items())
     return {

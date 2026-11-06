@@ -261,8 +261,16 @@ def test_truth_in_the_fixtures_own_shape_is_read(tmp_path: Path) -> None:
     "args", [["--drop", "1.5"], ["--drop", "1"], ["--drop", "-1"], ["--runs", "0"]]
 )
 def test_out_of_range_options_are_refused(tmp_path: Path, args: list[str]) -> None:
-    with pytest.raises(SystemExit):
-        cr.main([str(tmp_path), *args])
+    window = write_window(tmp_path, FIXTURE["frames"])
+    with pytest.raises(SystemExit) as exc:
+        cr.main([str(window), *args])
+    assert exc.value.code == 2  # argparse refused it, not a later failure
+
+
+def test_the_edges_of_the_option_ranges_are_accepted(tmp_path: Path, capsys) -> None:
+    window = write_window(tmp_path, FIXTURE["frames"])
+    assert cr.main([str(window), "--drop", "0.99", "--runs", "1", "--json"]) == 0
+    assert len(json.loads(capsys.readouterr().out)["drop"]["runs"]) == 1
 
 
 def test_a_malformed_ocr_read_names_its_file(tmp_path: Path) -> None:
@@ -332,3 +340,46 @@ def test_an_ocr_error_reading_the_pane_is_counted_and_replay_goes_on(tmp_path: P
     platform, frames = cr.load_window(_pane_window(tmp_path, heading=False))
     got = asyncio.run(cr.replay(platform, frames, ocr=_FailingOcr()))
     assert (got.pane_ocr_errors, got.full_frames_without_pane) == (1, 1)
+
+
+def test_the_same_words_from_two_speakers_one_dropped_change_no_speaker() -> None:
+    t = "thank you very much"
+    for reference in ([("B", t), ("A", t)], [("A", t), ("B", t)]):
+        got = cr.compare([("B", t)], reference)
+        assert (got["matched"], got["speaker_changed"], got["missing"]) == (1, 0, 1)
+
+
+def test_a_misattributed_row_in_a_run_is_paired_and_counted() -> None:
+    rows = list(LINES)
+    rows[40] = ("Zed", rows[40][1])
+    got = cr.compare(rows, LINES)
+    assert (got["matched"], got["speaker_changed"], got["missing"]) == (80, 1, 0)
+
+
+def test_a_row_exactly_at_the_match_ratio_is_paired() -> None:
+    # 4 of 5 words alike: ratio 2 * 4 / 10 = MATCH_RATIO.
+    got = cr.compare([("A", "one two three four five")], [("A", "one two three four six")])
+    assert got["matched"] == 1
+    got = cr.compare([("A", "one two three four five")], [("A", "one two three six seven")])
+    assert got["matched"] == 0
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_dropped_rows_of_a_meeting_with_stock_replies_are_counted_exactly(seed: int) -> None:
+    # Speakers trading stock replies ("thank you", "yes we can") between distinct lines:
+    # dropping rows only must count exactly the dropped rows missing, no speaker change and
+    # no row paired twice (QA mutants: greedy pairing, bisect_right, a reused row).
+    rng = random.Random(seed)
+    stock = ["thank you very much", "yes we can do that", "okay sounds good to me"]
+    reference = [
+        (rng.choice("ABC"), rng.choice(stock) if rng.random() < 0.4 else f"point {i} on {i * 7}")
+        for i in range(200)
+    ]
+    rows = [r for r in reference if rng.random() >= 0.2]
+    got = cr.compare(rows, reference)
+    assert got == {
+        "matched": len(rows),
+        "speaker_changed": 0,
+        "missing": len(reference) - len(rows),
+        "extra": 0,
+    }
