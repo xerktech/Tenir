@@ -209,10 +209,16 @@ def test_sampling_stops_after_repeated_failed_writes(tmp_path: Path) -> None:
     # A success in between resets the count: 4 failures, a write, 4 more keep sampling on.
     for t in range(4):
         assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
-    assert samples.save(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 1) is True
+    # submit still takes a frame after 4 failures (its gate is FAIL_LIMIT, not one less).
+    assert samples.submit(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 1) is True
+    _wait_idle()
+    assert len(list((tmp_path / "ok").rglob("*.jpg"))) == 1
     for t in range(4):
         assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
-    assert samples.save(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 2) is True
+    # submit still takes a frame after 4 failures (its gate is FAIL_LIMIT, not one less).
+    assert samples.submit(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 2) is True
+    _wait_idle()
+    assert len(list((tmp_path / "ok").rglob("*.jpg"))) == 2
     for t in range(5):
         assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
     assert samples.submit(str(tmp_path), 99, _header(), b"j", _RESULT, 1) is False
