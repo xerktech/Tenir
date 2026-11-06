@@ -261,37 +261,49 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
     The pairing is the longest in-order one (a longest increasing subsequence over the alike
     pairs), so no run of unmatched rows on either side can throw the rest out of step: a
     greedy search paired a reworded line with its repeat far ahead (QA), and a bounded one
-    lost sync for good after 16 unmatched rows (QA). The chain is over same-speaker pairs:
-    over any pair, the same words said by two speakers paired across them when one was
-    dropped, a speaker change that never happened (QA). A reference row left over then takes
-    the most alike unused row within ``DUP_WINDOW`` of its neighbours' pairs, its own
-    speaker's first: rows can store slightly out of order, and a misattributed row is paired
-    here.
+    lost sync for good after 16 unmatched rows (QA). Among the longest chains, the one pairing
+    most rows with their own speaker wins: a speaker-blind chain paired the same words said by
+    two speakers across them when one was dropped, and a same-speaker-only chain hid real
+    misattribution (both QA). A reference row left over then takes the most alike unused row
+    within ``DUP_WINDOW`` of its neighbours' pairs, its own speaker's first: rows can store
+    slightly out of order.
     """
     import bisect
 
     alike = _matches(rows, reference)
-    # LIS over j, reference rows in order; one i's candidates in descending j so at most one
-    # of them extends a chain.
-    tails: list[int] = []  # tails[k] = smallest j ending a chain of length k + 1
-    tail_at: list[tuple[int, int]] = []  # (i, j) at tails[k]
+    # A weighted LIS over j (reference rows in order), scored (pairs, same-speaker pairs),
+    # with a Fenwick tree of prefix maxima over j. One i's candidates go in descending j, so
+    # none of them chains onto another of the same i.
+    size = len(rows)
+    tree: list[tuple[int, int, tuple[int, int] | None]] = [(0, 0, None)] * (size + 1)
+
+    def best_below(j: int) -> tuple[int, int, tuple[int, int] | None]:
+        out = (0, 0, None)
+        while j > 0:
+            out = max(out, tree[j], key=lambda t: t[:2])
+            j -= j & -j
+        return out
+
+    def put(j: int, value: tuple[int, int, tuple[int, int] | None]) -> None:
+        j += 1
+        while j <= size:
+            tree[j] = max(tree[j], value, key=lambda t: t[:2])
+            j += j & -j
+
     back: dict[tuple[int, int], tuple[int, int] | None] = {}
+    end: tuple[int, int, tuple[int, int] | None] = (0, 0, None)
     for i, found in enumerate(alike):
-        own = [j for _, j in found if rows[j][0] == reference[i][0]]
-        for j in sorted(own, reverse=True):
-            k = bisect.bisect_left(tails, j)
-            back[(i, j)] = tail_at[k - 1] if k else None
-            if k == len(tails):
-                tails.append(j)
-                tail_at.append((i, j))
-            else:
-                tails[k] = j
-                tail_at[k] = (i, j)
+        for _, j in sorted(found, key=lambda x: -x[1]):
+            n, same, prev = best_below(j)
+            node = (n + 1, same + (rows[j][0] == reference[i][0]), (i, j))
+            back[(i, j)] = prev
+            put(j, node)
+            end = max(end, node, key=lambda t: t[:2])
     pair: dict[int, int] = {}
-    node = tail_at[-1] if tail_at else None
-    while node is not None:
-        pair[node[0]] = node[1]
-        node = back[node]
+    at = end[2]
+    while at is not None:
+        pair[at[0]] = at[1]
+        at = back[at]
     used = set(pair.values())
     paired = sorted(pair)
     for i, found in enumerate(alike):

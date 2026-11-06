@@ -383,3 +383,65 @@ def test_dropped_rows_of_a_meeting_with_stock_replies_are_counted_exactly(seed: 
         "missing": len(reference) - len(rows),
         "extra": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("rows", "reference", "expected"),
+    [
+        # Real misattribution, rows verbatim and in order: counted, never hidden (QA D10).
+        (
+            [("A", "okay thanks"), ("B", "okay thanks everyone")],
+            [("B", "okay thanks"), ("A", "okay thanks everyone")],
+            (2, 2, 0),
+        ),
+        (
+            [("A", "yes okay yes"), ("A", "yes okay"), ("B", "yes sure okay")],
+            [("B", "yes okay yes"), ("A", "yes okay"), ("A", "yes sure okay")],
+            (3, 2, 0),
+        ),
+        ([("A", "a b c")], [("A", "a b")], (1, 0, 0)),  # lengths exactly at the bar: 4 / 5
+    ],
+)
+def test_compare_counts_real_misattribution_and_the_length_bar(rows, reference, expected) -> None:
+    got = cr.compare(rows, reference)
+    assert (got["matched"], got["speaker_changed"], got["missing"]) == expected
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_misattributed_rows_are_counted_exactly(seed: int) -> None:
+    # Known misattribution over stock replies, no drops: every flipped row counted, no more.
+    rng = random.Random(seed)
+    stock = ["thank you very much", "yes we can do that", "okay sounds good to me"]
+    reference = [
+        (rng.choice("ABC"), rng.choice(stock) if rng.random() < 0.4 else f"point {i} on {i * 7}")
+        for i in range(200)
+    ]
+    flipped = 0
+    rows = []
+    for speaker, text in reference:
+        if rng.random() < 0.2:
+            speaker, flipped = speaker + "x", flipped + 1
+        rows.append((speaker, text))
+    got = cr.compare(rows, reference)
+    assert (got["matched"], got["speaker_changed"], got["missing"]) == (200, flipped, 0)
+
+
+def test_a_row_stored_out_of_order_takes_its_own_speakers_alike_row() -> None:
+    # The anchor pairs first, so the late row is a leftover: of the two alike rows near it, its
+    # own speaker's (ratio 0.8) beats another speaker's exact one.
+    t = "we ship the build on friday"
+    reference = [("P", "an anchor line nobody else says"), ("A", t)]
+    rows = [("B", t), ("A", "we ship the build on monday"), reference[0]]
+    got = cr.compare(rows, reference)
+    assert (got["matched"], got["speaker_changed"]) == (2, 0)
+
+
+def test_a_row_stored_a_few_rows_late_is_still_paired() -> None:
+    rows = LINES[1:4] + LINES[:1] + LINES[4:]
+    assert cr.compare(rows, LINES)["matched"] == 80
+
+
+def test_a_row_stored_far_out_of_order_is_lost_and_extra() -> None:
+    late = ("Ana", "a special line said once at the start")
+    got = cr.compare(LINES + [late], [late, *LINES])
+    assert (got["matched"], got["missing"], got["extra"]) == (80, 1, 1)

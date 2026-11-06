@@ -41,3 +41,5 @@ paths:
 - `compare()` pairs rows by the longest in-order alignment, never a greedy search: best-match
   over all later rows paired a reworded line with its repeat far ahead, and a bounded window
   lost sync for good after 16 unmatched rows (both QA, everything after counted as lost).
+- Its chain maximises pairs first, own-speaker pairs only as the tie-break: speaker-blind it
+  invented speaker changes, same-speaker-only it hid real misattribution (both QA).
