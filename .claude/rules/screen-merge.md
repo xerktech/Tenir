@@ -65,6 +65,25 @@ paths:
   - The merger re-emits the same `Segment` object it mutates: copy a field before asserting
     it changed or didn't (a test compared an object with itself).
   - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
+  - A run's draft (the speaker's consecutive unshown lines) is cut where her next block
+    re-reads one of them verbatim (XERK-2717): each Teams entry is its own block, so a one-row
+    entry growing above her next one ("green." -> "green, so ship it") was measured against
+    both and stored twice. `_align` can't pair it: a block's top row (XERK-2716, below).
+    - Cuts are tried before the full draft, longest first: a full draft passing coverage
+      swallowed a short third entry ("ok.") unclaimed, and it was stored again (QA).
+    - Only her own block cuts (exact speaker): Bo repeating her line broke a valid revision.
+    - Only a line seen within `_SAID_BETWEEN_MS` cuts: at 1 fps a new line plus a repeat of her
+      next entry can't both be said between snapshots; after dropped frames they can ("yes." /
+      "yes I think so too." stays a new line). Same frames, no gap: it is the entry growing.
+    - Measured per seed vs main (after XERK-2716): Zoom `_simulate`, `_simulate_teams` and kit
+      zf.py identical; kit x2716 tf.py "both" (200 seeds) extra words 8635 -> 7212, lost
+      5566 -> 5602 (late words now stored after the next entry; main's copies masked them).
+    - Tests: `test_an_entry_growing_above_the_same_speakers_next_entry_is_stored_once`,
+      `test_a_short_entry_after_the_same_speakers_next_one_is_stored_once`,
+      `test_bo_repeating_anas_next_entry_cuts_none_of_her_draft`,
+      `test_the_longest_cut_of_a_draft_is_tried_first`,
+      `test_a_header_less_next_block_still_cuts_the_draft`,
+      `test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away` (the gap).
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed

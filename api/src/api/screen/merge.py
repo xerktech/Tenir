@@ -89,6 +89,10 @@ _REVISE_MS = 30_000
 # A re-flowed entry (XERK-2715): a line its rows skip is a stale copy when they hold this share
 # of its words where it sat (Teams may also fix one of them).
 _HELD = 0.5
+# A grown entry above the same speaker's next one (XERK-2717) cuts its draft at that next entry
+# only when it was on screen this recently: at 1 fps a new line and a repeat of her next entry
+# can't both be said between two snapshots, but after dropped frames they can (XERK-2716).
+_SAID_BETWEEN_MS = 3_000
 _WORD = re.compile(r"[\w']+")
 
 
@@ -292,32 +296,62 @@ def _revisions(
             and (end == q or cands[end] == cands[end - 1] + 1)
         ):
             end += 1
-        draft = [(w, j) for j in cands[q:end] for w in _words(tail[j].text)]
-        mine = [(w, i) for i in rows for w in _words(shown[i].text)]
-        sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
-        pairs = [
-            (mine[mb.b + k][1], draft[mb.a + k][1])
-            for mb in sm.get_matching_blocks()
-            for k in range(mb.size)
+        # The draft is the speaker's whole run of unshown lines, cut first where the next
+        # block is hers and re-reads one of them verbatim: Teams shows each entry as its own
+        # block, so the run then holds her next entries too, and a one-row entry that grew
+        # ("green." -> "green, so ship it") covered too few of its words (XERK-2717). Cuts go
+        # first: a full draft passing coverage swallowed a short entry after the next one
+        # ("ok."), which was then stored again. Someone else repeating her line cuts nothing,
+        # and nor does a line last seen before dropped frames (``_SAID_BETWEEN_MS``).
+        nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
+        cuts = [
+            k
+            for k in range(q + 1, end)
+            if nxt is not None
+            and speakers[nxt] == tail[cands[q]].speaker
+            and shown[nxt].norm == tail[cands[k]].norm
+            and ts - tail[cands[k]].seen_ms <= _SAID_BETWEEN_MS
         ]
-        # Claims are a prefix of the run: a row above them pairing with nothing is a line said
-        # before them, so they are said again ("okay", "sounds good" after "sounds good").
-        claims: dict[int, int] = {}
-        taken = -1
-        for i in rows:
-            j = next((j for r, j in pairs if r == i and j > taken), None)
-            if j is None:
-                break
-            claims[i] = taken = j
-        if not claims or len(pairs) < _REVISED * len(draft):
+        ends = [*reversed(cuts), end]
+        found = next(
+            ((e, c) for e in ends if (c := _claims(shown, rows, tail, cands[q:e]))), None
+        )
+        if found is None:
             if fresh:
                 break
             continue
+        p, claims = found
         out.update(claims)
-        p = end
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
     return out if p == len(cands) else {}
+
+
+def _claims(
+    shown: list[_Shown], rows: list[int], tail: list[_Line], draft_lines: list[int]
+) -> dict[int, int] | None:
+    """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
+    rows keep under ``_REVISED`` of ``draft_lines``' words in order."""
+    draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
+    mine = [(w, i) for i in rows for w in _words(shown[i].text)]
+    sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
+    pairs = [
+        (mine[mb.b + k][1], draft[mb.a + k][1])
+        for mb in sm.get_matching_blocks()
+        for k in range(mb.size)
+    ]
+    # Claims are a prefix of the run: a row above them pairing with nothing is a line said
+    # before them, so they are said again ("okay", "sounds good" after "sounds good").
+    claims: dict[int, int] = {}
+    taken = -1
+    for i in rows:
+        j = next((j for r, j in pairs if r == i and j > taken), None)
+        if j is None:
+            break
+        claims[i] = taken = j
+    if not claims or len(pairs) < _REVISED * len(draft):
+        return None
+    return claims
 
 
 def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
