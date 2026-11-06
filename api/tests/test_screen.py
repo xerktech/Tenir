@@ -2854,6 +2854,7 @@ def test_a_word_inserted_mid_entry_on_a_matched_stored_row_is_stored() -> None:
     [
         "and the i notes",  # a stray glyph read as a one-letter word
         "and notes the are done",  # words out of order
+        "and the ll notes",  # two consonants: a stray glyph pair (XERK-2728)
     ],
 )
 def test_ocr_jitter_adding_a_word_on_every_frame_is_not_stored(jitter: str) -> None:
@@ -2922,6 +2923,15 @@ def test_a_word_moving_between_two_of_a_speakers_entries_is_not_growth() -> None
     assert stored == [("Ana", "we ship the build today"), ("Ana", "on friday"), ("Ana", "ok then")]
 
 
+def test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth() -> None:
+    """XERK-2728: a neighbour only blocks growth when a word moved off it. One reworded as it
+    re-flowed ("today" -> "tomorrow") is not the word this row gained, but the neighbour's
+    facing edge changed while this row gained a word on that side: still a re-flow."""
+    draft = _entries("we ship the build today", "on friday", "ok then")
+    stored = _teams_entry(draft, _entries("we ship the build", "tomorrow on friday", "ok then"))
+    assert stored == [("Ana", "we ship the build today"), ("Ana", "on friday"), ("Ana", "ok then")]
+
+
 @pytest.mark.parametrize("shown_for", [1, 2, 5])
 def test_a_word_moved_between_entries_stays_refused_once_its_entry_scrolls_off(
     shown_for: int,
@@ -2962,6 +2972,52 @@ def test_another_speakers_jittered_row_does_not_hold_back_a_growth() -> None:
         ]
     )
     assert stored == [("Ana", "i think that is fine"), ("Bo", "ok then")]
+
+
+def test_a_two_letter_word_inserted_mid_entry_is_stored() -> None:
+    """XERK-2728: only a vowel-less two-letter token is a stray glyph pair; "is" is speech."""
+    stored, _ = _entry_run(
+        [(_entries("green.", "the build green", "ok"), 5),
+         (_entries("green.", "the build is green", "ok"), 6)]
+    )
+    assert stored == [("Ana", "green."), ("Ana", "the build is green"), ("Ana", "ok")]
+
+
+@pytest.mark.parametrize(
+    ("frames", "grown"),
+    [
+        # Both entries gain a word in the same frame: neither moved a word off the other.
+        (
+            [(("we ship the build", "then we test it"), 5),
+             (("we ship the new build", "then we really test it"), 5)],
+            ("we ship the new build", "then we really test it"),
+        ),
+        # One OCR-jittered frame of the entry below, on the growth's first frame.
+        (
+            [(("we ship the build", "then we test it"), 5),
+             (("we ship the new build", "then we tesl it"), 1),
+             (("we ship the new build", "then we test it"), 5)],
+            ("we ship the new build", "then we test it"),
+        ),
+        # The entry below misread on every frame.
+        (
+            [(("we ship the build", "on friday"), 5), (("we ship the new build", "on fridav"), 6)],
+            ("we ship the new build", "on friday"),
+        ),
+        # The entry below re-punctuated in the same frame.
+        (
+            [(("we ship the build", "ok then"), 5), (("we ship the new build", "Ok then."), 6)],
+            ("we ship the new build", "ok then"),
+        ),
+    ],
+)
+def test_a_neighbour_changing_without_losing_the_added_words_does_not_refuse_a_growth(
+    frames: list, grown: tuple[str, str]
+) -> None:
+    """XERK-2728: any change on the speaker's neighbouring entry refused a growth for good.
+    Words re-flow onto a row only off a row that lost them, so only that refuses it."""
+    stored, _ = _entry_run([(_entries(*rows), n) for rows, n in frames])
+    assert stored == [("Ana", t) for t in grown]
 
 
 def test_a_word_inserted_as_the_live_entry_gains_a_row_is_stored() -> None:
@@ -3650,10 +3706,14 @@ def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
     )
     frames += [(28, tail), (31, tail)]
     final: dict[str, str] = {}
+    first: str | None = None
     for t, rows in frames:
         for seg in m.feed(_entries(*rows), t * 1000):
+            first = first or seg.segment_id
             final[seg.segment_id] = seg.text
-    assert "i that do." in final.values()
+    # Its segment keeps its words; Teams grew it ("i that i we do.", XERK-2728).
+    assert first is not None and final[first] == "i that i we do."
+    assert len(final.values()) == len(set(final.values()))  # no row stored twice
 
 
 @pytest.mark.parametrize("missed", [0, 1])

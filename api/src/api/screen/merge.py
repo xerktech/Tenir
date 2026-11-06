@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -306,8 +307,8 @@ def _inserted(was: list[str], now: list[str]) -> bool:
     as speech: Teams finishing or rewording an entry (XERK-2721). OCR jitter garbles or
     splits words, so it loses one of ``was``'s; a stray glyph read as a word ("x", "l"), a
     run of added words with no word of 2+ chars, is jitter too: static pixels repeat that
-    misread on every frame (QA). A doubled word, or "a"/"i" inside a longer run ("and a
-    fix"), is kept: refusing them lost growth main stored (QA)."""
+    misread on every frame (QA), as is a 2-char one with no vowel ("ll", ``_spoken``). A
+    doubled word, or "a"/"i" inside a longer run ("and a fix"), is kept: refusing them lost growth main stored (QA)."""
     if not was or len(now) <= len(was):
         return False
     added: list[int] = []
@@ -325,7 +326,18 @@ def _inserted(was: list[str], now: list[str]) -> bool:
             runs[-1].append(now[n])
         else:
             runs.append([now[n]])
-    return all(any(len(w) > 1 for w in run) for run in runs)
+    return all(any(_spoken(w) for w in run) for run in runs)
+
+
+def _spoken(word: str) -> bool:
+    """Whether an added word can be speech rather than a stray glyph OCR reads as a word: one
+    letter is a glyph ("x", "l"), and so are two ASCII consonants ("ll", "rn"; XERK-2728).
+    English two-letter words all hold a vowel or "y" ("is", "my"); digits are kept ("10")."""
+    if len(word) > 2:
+        return True
+    if len(word) < 2:
+        return False
+    return not (word.isascii() and word.isalpha() and not any(c in "aeiouy" for c in word))
 
 
 def _revisions(
@@ -850,17 +862,33 @@ class CaptionMerger:
         again (QA). Live lines read as their lines here: the row rules took this frame's
         text already."""
 
-        def steady(k: int) -> bool:
+        def steady(k: int, i: int, was: list[str], now: list[str]) -> bool:
             # A row with no known line is new this frame (the live entry gained a row as the
             # speaker went on) or a glitch: neither moved words off a line. Counting it as a
             # change refused real insertions for good (QA, ``grow_refused``).
             known = row_known[k]
-            return known is None or known.norm == shown[k].norm
+            if known is None:
+                return True
+            # Words re-flow onto the growing row only off a row that lost them, so only a
+            # neighbour missing a word this row adds is a change (XERK-2728). Any change used
+            # to count: a neighbour growing too, re-punctuated, or one OCR-jittered frame
+            # ("on fridav") refused a real growth for good.
+            kw, sw = _words(known.text), _words(shown[k].text)
+            if (Counter(kw) - Counter(sw)) & (Counter(now) - Counter(was)):
+                return False
+            # Or a word crossed the break between them: the neighbour's edge word facing this
+            # row changed while this row gained a word on that side. A row misaligned onto
+            # the wrong line can't show the moved word itself (``_simulate_teams`` seed 61).
+            if abs(k - i) != 1:
+                return True
+            edge = -1 if k < i else 0  # the neighbour's side facing this row
+            return kw[edge:][:1] == sw[edge:][:1] or now[-1 - edge :][:1] == was[-1 - edge :][:1]
 
         for line, row, confirmed in self._grows:
             if not any(ln is line for ln in self._lines):
                 continue  # ``_reflow`` dropped the line
             i = next(k for k, r in enumerate(shown) if r is row)
+            was, now = _words(line.text), _words(row.text)
             near = [
                 k
                 for k in range(len(shown))
@@ -876,7 +904,7 @@ class CaptionMerger:
                     )
                 )
             ]
-            if not all(steady(k) for k in near):
+            if not all(steady(k, i, was, now) for k in near):
                 line.grow_refused = row.norm
             elif confirmed:
                 self._revise(line, row, ts, out)
