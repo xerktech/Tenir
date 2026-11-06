@@ -781,6 +781,8 @@ class CaptionMerger:
         them). Starts stay unique: Postgres orders ties randomly."""
         prev = line.store_ms = self._lines[at].order_ms
         for ln in self._lines[at:]:
+            if ln.carried:
+                continue  # the ended meeting's segment is never re-emitted (XERK-2615)
             if ln.order_ms > prev:
                 break
             prev = ln.store_ms = prev + 1

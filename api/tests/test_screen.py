@@ -4099,8 +4099,10 @@ def test_lines_after_a_wrapped_row_keep_unique_increasing_starts() -> None:
     for t, blocks in enumerate(frames):
         for seg in m.feed(blocks, t * 1000):
             stored[seg.segment_id] = (seg.start_ms, seg.text)
+            assert seg.end_ms >= seg.start_ms  # a moved line's end moves with it
     for seg in m.flush(30_000):
         stored[seg.segment_id] = (seg.start_ms, seg.text)
+        assert seg.end_ms >= seg.start_ms
     rows = sorted(stored.values())
     assert [text for _, text in rows] == [
         "we ship the build", "on friday", "ok", "sure", "fine", "agreed",
