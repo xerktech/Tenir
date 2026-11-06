@@ -33,7 +33,7 @@ from api.contract import (
 )
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
-from api.screen import teams, teams_pane, zoom
+from api.screen import samples, teams, teams_pane, zoom
 from api.screen.meetings import (
     CPU_POOL,
     AccountGone,
@@ -321,6 +321,12 @@ async def screen_ws(ws: WebSocket) -> None:
         pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
+        if settings.screen_sample_dir:
+            # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
+            # forget on the sampler's own thread: a stalled volume never holds up this frame.
+            samples.submit(
+                settings.screen_sample_dir, settings.screen_sample_max, header, jpeg, result, ts
+            )
         reattached = (tracker := tracker_for(header)).notify is not send
         tracker.notify = send
         try:
