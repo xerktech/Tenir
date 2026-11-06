@@ -2545,6 +2545,141 @@ def test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite(
     assert [s.text for s in out] == said
 
 
+SAME_TEXT_ENTRIES = {
+    "two_alike": (
+        [["okay."]] * 5 + [["okay.", "okay."]] * 5 + [["okay, ship it", "okay."]] * 6,
+        ["okay, ship it", "okay."],
+    ),
+    "repeat_later": (
+        [["ok."], ["ok.", "notes"], ["ok.", "notes", "ok."]]
+        + [["ok, so ship it", "notes", "ok."]] * 6,
+        ["ok, so ship it", "notes", "ok."],
+    ),
+    # QA: growth onto the older of two alike entries is still taken...
+    "older_grows": (
+        [["yes we can"]] * 5
+        + [["yes we can", "yes we can"]] * 5
+        + [["yes we can okay", "yes we can"]] * 6,
+        ["yes we can okay", "yes we can"],
+    ),
+    # QA fuzz: growth reading only half like its draft (a "misread") is still a revision.
+    "grows_like_a_misread": (
+        [["notes"]] * 5 + [["notes", "notes"]] * 5 + [["notes the think", "notes"]] * 6,
+        ["notes the think", "notes"],
+    ),
+    # QA: the bottom twin growing is the live line growing, not a revision of the top one.
+    "bottom_twin_grows": (
+        [["notes"]] * 5 + [["notes", "notes"]] * 5 + [["notes", "notes the think"]] * 6,
+        ["notes", "notes the think"],
+    ),
+    # QA: growth seen before its twin was said, the twin then showing below it.
+    "grew_then_twin": (
+        [["sure", "it think"]] * 5
+        + [["sure is", "it think"]] * 3
+        + [["sure is", "it think", "sure"]] * 6,
+        ["sure is", "it think", "sure"],
+    ),
+    # ...and a garbled top row over a repeat said since is not stored.
+    "garbled_top": (
+        [["yes."]] * 5 + [["~es.", "yes."]] + [["yes.", "yes."]] * 5,
+        ["yes.", "yes."],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", SAME_TEXT_ENTRIES)
+def test_a_grown_entry_above_a_same_text_entry_is_stored_once(case: str) -> None:
+    """XERK-2719: one speaker's entries, each its own block, two of them reading alike. The top
+    one grows: it revises its draft, and the identical entry below stays a re-read. Pairing
+    the grown row with the newest alike line stored the row below anew on every frame."""
+    frames, said = SAME_TEXT_ENTRIES[case]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str]] = {}
+    for t, rows in enumerate(frames):
+        for seg in m.feed([blk("Ana", row) for row in rows], t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.text)
+    for seg in m.flush(len(frames) * 1000 + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.text)
+    assert [text for _, text in sorted(stored.values())] == said
+
+
+@pytest.mark.parametrize(
+    ("gap", "strays"),
+    [
+        (0, ["s"]),  # one frame: two reads in a row must agree
+        (70, ["s", "s"]),  # two frames on a line first seen 70 s ago: past _REVISE_MS
+        (10, ["s", "c", "s"]),  # a clean frame between resets the held read
+    ],
+)
+def test_a_stray_token_over_a_twin_row_is_not_stored(gap: int, strays: list) -> None:
+    """QA (XERK-2719): a grown twin row is taken only when two frames in a row read it alike,
+    on a recent line (as ``_reflow``'s rule): one frame of "like l o" over "like" was stored
+    for good."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    clean = [blk("Ana", "so we said", "like", "like")]
+    stray = [blk("Ana", "so we said", "like l o", "like")]
+    frames = [clean] * (5 + gap) + [stray if k == "s" else clean for k in strays] + [clean] * 6
+    out = []
+    for t, blocks in enumerate(frames):
+        out += m.feed(blocks, t * 1000)
+    out += m.flush(len(frames) * 1000 + 10_000)
+    assert "like l o" not in {s.text for s in out}
+
+
+def test_a_row_reading_another_line_exactly_is_not_revised_into_it() -> None:
+    """QA fuzz seed 183 (XERK-2719): "okay, so it should" re-reads entry 1 but pairs as a
+    misread of the "okay so" it starts with; revising that line stored entry 1 twice."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    first = [blk("Ana", "okay, so it should"), blk("Ana", "is yes"), blk("Ana", "okay so")]
+    grown = [
+        blk("Ana", "okay, so it should"),
+        blk("Ana", "is yes should should we"),
+        blk("Ana", "okay so"),
+    ]
+    out = m.feed(first, 14_700)
+    for ts in (17_400, 18_100, 18_600):
+        out += m.feed(grown, ts)
+    out += m.flush(80_000)
+    texts = [s.text for s in {s.segment_id: s for s in out}.values()]
+    assert texts.count("okay, so it should") == 1
+
+
+def test_a_carried_line_growing_above_its_twin_is_stored_as_new() -> None:
+    """QA (XERK-2719): the ended meeting's "notes" grows above a "notes" said since. It can't
+    be revised (its segment is the ended meeting's), so its growth is a new line, not lost."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    for t in range(5):
+        m1.feed([blk("Ana", "notes")], t * 1000)
+    m1.flush(5000)
+    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
+    stored: dict[str, tuple[int, str]] = {}
+    frames = [["notes", "notes"]] * 5 + [["notes the think", "notes"]] * 6
+    for k, rows in enumerate(frames):
+        for seg in m2.feed([blk("Ana", row) for row in rows], 65_000 + k * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.text)
+    for seg in m2.flush(90_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.text)
+    assert [text for _, text in sorted(stored.values())] == ["notes the think", "notes"]
+
+
+def test_a_carried_twin_growing_never_re_stores_a_carried_line() -> None:
+    """QA (XERK-2719): the twin guards skip carried lines. Refusing the misread for a carried
+    "notes" moved its growth onto the new "notes" and stored Bo's carried "sure" again."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    for t in range(5):
+        m1.feed([blk("Ana", "notes"), blk("Bo", "sure")], t * 1000)
+    m1.flush(5000)
+    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
+    out = []
+    for k in range(11):
+        top = "notes" if k < 5 else "notes the think"
+        out += m2.feed(
+            [blk("Ana", top), blk("Bo", "sure"), blk("Ana", "notes")], 65_000 + k * 1000
+        )
+    out += m2.flush(90_000)
+    assert "sure" not in {s.text for s in out}
+
+
 def test_a_new_line_sharing_a_word_with_the_last_is_not_a_rewrite() -> None:
     """Revising needs most of the old line's words: one shared word is a new line."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
