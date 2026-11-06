@@ -218,9 +218,11 @@ paths:
   - Pre-existing, kept: a matched stored line growing by whole words within `_EXTEND_MS`
     extends on one frame (any line, not only the newest); waiting delayed a line finalized
     by the next block and broke `test_extended_line_never_ends_before_it_starts`.
-  - Measured vs main (53baab2): `_simulate_teams` (200 seeds) words lost 236 -> 143 (stored
+  - A row reading another known line exactly is never growth of the line it misreads (as
+    XERK-2719's `_grew_over_twin`): growing it copied that line (`test_a_row_reading_another_line_exactly_is_not_revised_into_it`).
+  - Measured vs main (d386ad0): `_simulate_teams` (200 seeds) words lost 236 -> 143 (stored
     twice 139 -> 140); `noise=0.2` lost 255 -> 176 (1353 -> 1355). Zoom `_simulate` (1000
-    seeds): clean, noise, drops identical per seed; noise + drops 494 -> 439 runs with a
+    seeds): clean, noise, drops identical per seed; noise + drops 494 -> 453 runs with a
     duplicate (single runs can do worse). QA's multi-row re-flow fuzz: no seed stores a word
     twice that main didn't. `_simulate` returns each segment once: an upsert re-emits it.
   - Tests: `test_a_middle_entry_finishing_after_the_next_began_is_stored`,
