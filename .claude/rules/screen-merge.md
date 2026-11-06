@@ -1,0 +1,132 @@
+---
+paths:
+  - "api/src/api/screen/merge.py"
+  - "api/src/api/screen/meetings.py"
+  - "api/tests/test_screen.py"
+  - "api/tests/test_screen_teams.py"
+---
+
+# Screen caption merge (`merge.py`, tracker carry)
+
+- Merge = an ordered alignment of each snapshot against the recent known lines (`_align`),
+  not per-line matching. Every per-line rule tried (time window, order floor, fragment filter)
+  either dropped repeated replies or re-stored the whole box after one OCR glitch (four QA
+  rounds). Lines above the aligned region that match nothing are glitches, never new.
+  - An alignment must end on a match (or match nothing): ending on a skip let the newest
+    unshown line dodge its penalty and swallowed a repeat ("yes", "thanks", "yes").
+  - A glitch pairs with the known line it misreads ("misread" move, cheap). An unpaired line
+    under a verified header above a match costs more than "new": it is a line said between
+    two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
+  - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
+  - A stored line extends only on whole-word growth, so the ASR finishing its last word after
+    it was stored ("deploy" -> "deployment failed") loses the rest of that line. Accepted
+    (XERK-2597): three char-growth rules each traded it for stray OCR chars stored ("yesl",
+    "timeout'" freezing the line). `_simulate` never appends chars; re-tune on real captures.
+    Tests: `test_ocr_jitter_on_the_stored_bottom_line_is_not_stored`,
+    `test_ocr_jitter_on_a_stored_line_above_the_bottom_is_not_stored`.
+  - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
+    (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
+    in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
+  - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
+    lines "explained away" a reply said between snapshots.
+  - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
+  - An unpaired line under a verified header is never a glitch (it may sit between known
+    lines: [Bo, Cy yes, Ana okay] after [Cy, Bo, Ana okay]); only header-less lines are.
+  - Measured (`_simulate`, 1000 seeds x 25 lines): clean and 30%-dropped runs store 0
+    duplicates and no made-up text (losses 2 / 152); OCR noise alone 4 duplicate runs. Noise
+    and drops together duplicate in ~400 runs: re-tune on real XERK-2506 captures.
+  - Tests: `test_simulated_rolling_captions_store_what_was_said`,
+    `test_ocr_noise_never_duplicates_a_line` (seeded box simulation; run 1000 seeds, with
+    and without `skip`, after tuning any score), `test_a_box_showing_a_repeat_stores_each_line_once`.
+- Teams rewrites a finished entry (punctuation, fixed words, re-wrapped lines; XERK-2694), so its
+  rows align as new. `merge._revisions` offers rows the alignment calls new to the recent
+  (`_REVISE_MS`) unshown known lines after the last aligned one, block by block, by words
+  (case/punctuation stripped, `_REVISED` coverage); matches upsert those segments (same ids).
+  - Revising must reach the newest recent known line: else "okay", Bo, "okay so lets start"
+    folds Ana's new line into her old one.
+  - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
+    known "sounds good" is a repeat, not a revision (QA: the reply was lost).
+  - Aligned rows of a revised block take new words only once two frames read them alike
+    (`_Line.pending`, confirmed in `_update`); case/punctuation at once. Taking the one rewrite
+    frame stored misreads for good (XERK-2597); a word-move heuristic refused real Teams edits
+    (it drops words too) and lost the moved word. `end_ms` stays put.
+  - For `_REVISE_MS` after a rewrite, a matched row takes the first differing text two reads
+    in a row agree on; a read equal to the stored text drops what is held. Confirming whenever
+    the held text recurred stored jitter flipping back later; only the very next read lost the
+    rewrite to one noisy frame (both QA). Two identical misreads in a row are stored (accepted),
+    but on the crop's header-less top row (the only row a crop clips) a read that is the stored
+    or held text with its start cut off is ignored: a clipped static row reads alike on every
+    frame (QA). Accepted: a rewrite there dropping leading words keeps the draft row. "Top row"
+    is the crop's, not shown[0] after the `_MAX_SHOWN` cut (QA, 13+ rows). Applied to
+    every row, it refused real rewrites under a header or below another block (QA).
+  - Carried lines are never revised (`_revise` refuses them): a rewrite of their block re-emitted
+    the ended meeting's segment into the next conversation (QA). Test:
+    `test_a_rewrite_never_revises_the_ended_meetings_carried_line`.
+  - The merger re-emits the same `Segment` object it mutates: copy a field before asserting
+    it changed or didn't (a test compared an object with itself).
+  - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
+  - New lines go just above the known line shown below them (Teams adds lines to an entry
+    above another speaker's); appending them broke the next snapshot's order.
+  - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
+    draft lines stored; removing them needs a segment delete in the store.
+  - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
+    389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
+  - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
+    `test_a_rewritten_entry_keeps_the_drafts_segment_ids`, `test_a_new_entry_like_an_old_one_is_not_a_rewrite`,
+    `test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite`,
+    `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`,
+    `test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored`,
+    `test_a_one_frame_misread_of_a_rewritten_row_is_never_stored`.
+- Teams re-flows a growing entry (XERK-2715): a word inserted or fixed moves words across row
+  breaks, so row-level rules stored a stale draft beside its re-flowed copy (~7% of real lines).
+  `CaptionMerger._reflow` then upserts each block as one entry: rows replace their lines' texts
+  in order; same-speaker lines between them whose words the nearby rows hold are dropped.
+  - A dropped stored line is re-emitted with text "" (same id): the store has no delete, and
+    `utterances.sentences` skips blanks. Every reader must go through it. `segmentCount` counts them.
+  - Only a re-flow is taken (`_moved`: a word crossed a break and the rest of the row reads
+    alike); a word changed within a row is jitter for the row rules. Without the "rest reads
+    alike" check, Zoom `_simulate` noise made up text in 9 runs instead of 2.
+  - Two frames in a row must read the rows above the bottom alike (`_reflow_reads`).
+  - A skipped line is dropped only when the rows around it hold its words AND they moved there
+    (those rows gained them, or no longer read as their lines, or its words sit at their break
+    and a neighbour changed since it was last seen: the row rules may have grown it already).
+    The live bottom line doesn't count as that change: it grows every frame (QA). Holding the words alone blanked
+    a real line OCR missed on 2 identical frames next to rows sharing its words, Teams and
+    Zoom alike (QA); a per-seed Zoom A/B caught it where aggregate counts matched.
+  - A stored bottom row is confirmed on two frames too; a live one is left to the row rules.
+    Excluding it stored a misread landing on the confirming frame for good (QA).
+  - The crop's header-less top row clipped mid-word (a char suffix of its line) keeps the line.
+  - Glitch rows between placed rows pair with the lines between them (`_fill_glitches`): a
+    re-flowed row resembling its draft aligns as a misread, and its new words were lost. A run
+    at the block's bottom pairs with its speaker's unshown lines right after: an ended entry
+    re-flows with the next speaker's block below it, which aligns (the ticket's own example).
+  - Case/punctuation-only changes are not a re-flow; the draft's case stays (as before).
+  - Measured with `_simulate_teams` (200 seeds, 38k words): words stored twice 607 -> 139, lost
+    522 -> 236; with `noise=0.2`, 1978 -> 1353 and 595 -> 255. Zoom `_simulate` (1000 seeds,
+    all four modes): every seed stores exactly what main does. After tuning `_reflow`, diff
+    per seed, not totals; `_simulate_teams` is synthetic, so replay real crops when there are some.
+  - Tests: `test_simulated_teams_reflow_stores_few_words_twice`,
+    `test_a_rewrite_pulling_a_word_onto_the_next_row_is_stored_once`,
+    `test_a_word_pulled_up_blanks_its_stored_draft_row`,
+    `test_a_rewrapped_middle_row_takes_its_new_words`, `test_a_one_frame_rewrap_is_never_stored`,
+    `test_a_middle_row_missed_on_two_frames_is_kept_when_its_neighbours_share_its_words`,
+    `test_a_misread_bottom_row_on_the_confirming_frame_is_never_stored`,
+    `test_a_top_row_clipped_mid_word_keeps_its_line_during_a_reflow`,
+    `test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once`,
+    `test_a_middle_row_missed_while_the_bottom_row_grows_is_kept`,
+    `test_a_line_the_ocr_missed_between_rows_is_kept`.
+- A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
+  a panel left on screen past the end timer re-read them as a second conversation. No meeting
+  starts until a crop holds a line the carry doesn't explain.
+  - `ScreenMeetings` keeps the carry when the sweep drops a detached tracker (`_carries`,
+    capped): a client reconnecting over the break otherwise got a fresh tracker (QA).
+    A process restart still loses it.
+  - Carried lines never grow nor extend (their segments are the ended conversation's): a grown
+    carried line aligned onto it, was refused, and the continuation was lost (QA).
+  - Accepted: a new meeting whose opening line closely repeats one of the last carried lines
+    (any speaker before a roster) is stored from its next line.
+  - Tests: `test_a_panel_re_sent_after_its_meeting_ended_starts_no_new_meeting`,
+    `test_a_reconnect_over_the_break_still_starts_no_new_meeting`,
+    `test_the_last_speaker_going_on_after_the_break_is_a_new_line`.
+- Final lines wait in `MeetingTracker._unsaved` until written: the merger counts a line final
+  once, so a failed write re-derived from frames would dedup away.
