@@ -94,6 +94,10 @@ paths:
       The XERK-2717 cut did it too, masked only by the later rows failing. Neither simulation
       reaches this path; a same-speaker Teams fuzz did.
     - Not "seen on the last frame": one frame of OCR missing her block re-stored the box (QA).
+    - Accepted: OCR missing her block for over `_SAID_BETWEEN_MS` (3+ frames at 1 fps) re-stores
+      the box (main stored it once). Every looser gate QA tried also lost the scrolled-off
+      line; telling a miss from a scroll needs another signal (a row below scrolling up).
+      Test: `test_a_grown_entry_ocr_missed_for_3_s_is_stored_again_but_never_lost`.
     - Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
       `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`,
       `test_an_entry_scrolled_off_is_never_claimed_by_a_later_one`,

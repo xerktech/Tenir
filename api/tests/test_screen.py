@@ -3294,6 +3294,20 @@ def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(misse
     assert [text for _, text in stored] == ["green, so ship it", "and the notes", "ok."]
 
 
+def test_a_grown_entry_ocr_missed_for_3_s_is_stored_again_but_never_lost() -> None:
+    """Accepted trade-off (XERK-2720 QA): an entry unseen for longer than _SAID_BETWEEN_MS is
+    no longer cut out for a rewrite, so after OCR missed Ana's top block for 3 frames her grown
+    entry stores the box again. Cutting such an entry let a later row claim a short entry that
+    had scrolled off and lose it (``test_an_entry_scrolled_off_is_never_claimed_by_a_later_one``);
+    a duplicate is the lesser harm. Every line said is still stored."""
+    said = ["green.", "and the notes", "ok."]
+    frames = [(_entries(*said[:k]), 5) for k in (1, 2, 3)]
+    frames.append((_entries(*said[1:]), 3))
+    frames.append((_entries("green, so ship it", *said[1:]), 6))
+    stored, _ = _entry_run(frames)
+    assert [text for _, text in stored] == [*said, "green, so ship it", *said[1:]]
+
+
 @pytest.mark.parametrize(("seed", "most"), [(145, 30), (325, 27), (599, 31)])
 def test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run(seed: int, most: int) -> None:
     """XERK-2720: Zoom lists a speaker's lines under one header, so a line the box scrolled to
