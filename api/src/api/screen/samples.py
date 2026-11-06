@@ -92,12 +92,13 @@ def submit(
 
 
 def _run(*args) -> None:
-    global _busy
+    global _busy, _stuck_told
     try:
         save(*args)
     finally:
         with _lock:
             _busy = False
+            _stuck_told = False  # a later stall is reported too
 
 
 def _score(value: float) -> float | None:

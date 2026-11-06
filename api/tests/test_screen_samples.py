@@ -205,7 +205,15 @@ def test_sampling_stops_after_repeated_failed_writes(tmp_path: Path) -> None:
     """QA: a broken directory logged a warning on every frame for the whole meeting."""
     blocker = tmp_path / "file"
     blocker.write_text("not a dir")
-    for t in range(samples.FAIL_LIMIT):
+    assert samples.FAIL_LIMIT == 5
+    # A success in between resets the count: 4 failures, a write, 4 more keep sampling on.
+    for t in range(4):
+        assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
+    assert samples.save(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 1) is True
+    for t in range(4):
+        assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
+    assert samples.save(str(tmp_path / "ok"), 99, _header(), b"j", _RESULT, 2) is True
+    for t in range(5):
         assert samples.save(str(blocker), 99, _header(), b"j", _RESULT, t) is False
     assert samples.submit(str(tmp_path), 99, _header(), b"j", _RESULT, 1) is False
     assert samples.save(str(tmp_path), 99, _header(), b"j", _RESULT, 1) is False
@@ -214,17 +222,26 @@ def test_sampling_stops_after_repeated_failed_writes(tmp_path: Path) -> None:
 def test_a_stalled_write_is_reported_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    release = threading.Event()
-    monkeypatch.setattr(samples, "save", lambda *a: release.wait(5))
-    monkeypatch.setattr(samples, "STUCK_SECONDS", 0.0)
+    assert samples.STUCK_SECONDS == 30.0
+    monkeypatch.setattr(samples, "STUCK_SECONDS", 0.3)
+
+    def stalled() -> int:
+        return sum("stalled" in r.message for r in caplog.records)
+
     with caplog.at_level("WARNING", logger="api.screen.samples"):
-        assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, 1)
-        time.sleep(0.01)
-        for t in range(3):
-            assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, t) is False
-    release.set()
-    _wait_idle()
-    assert sum("stalled" in r.message for r in caplog.records) == 1
+        for stall in (1, 2):  # each stall in a process is reported
+            release = threading.Event()
+            monkeypatch.setattr(samples, "save", lambda *a, ev=release: ev.wait(5))
+            assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, 1)
+            # Not before STUCK_SECONDS has passed.
+            assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, 2) is False
+            assert stalled() == stall - 1
+            time.sleep(0.35)
+            for t in range(3):
+                assert samples.submit(str(tmp_path), 9, _header(), b"j", _RESULT, t) is False
+            assert stalled() == stall
+            release.set()
+            _wait_idle()
 
 
 def test_a_restart_never_reuses_a_samples_file_name(
