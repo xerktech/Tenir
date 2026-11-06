@@ -2949,6 +2949,71 @@ def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
     assert [text for _, text in stored] == [*rows[:2], "golf hotel india juliet"]
 
 
+def _entries(*rows: str) -> list[CaptionBlock]:
+    """One Teams entry per row, each under its own header (one speaker talking on)."""
+    return [blk("Ana", row) for row in rows]
+
+
+@pytest.mark.parametrize(
+    ("after", "bottom"),
+    [
+        pytest.param(
+            [(_entries("green, so ship it", "and the notes"), 6)], "and the notes", id="verbatim"
+        ),
+        # Punctuation is taken at once on a revised row; a misread waits for two reads alike.
+        pytest.param(
+            [(_entries("green, so ship it", "and the notes."), 6)], "and the notes.", id="stray-dot"
+        ),
+        pytest.param(
+            [(_entries("green, so ship it", n), 1) for n in ["and the notes", "and tne notes"] * 3],
+            "and the notes",
+            id="misread",
+        ),
+    ],
+)
+def test_a_grown_entry_above_the_speakers_next_entry_is_stored_once(
+    after: list, bottom: str
+) -> None:
+    """XERK-2720: Ana's finished entry "green." grows to "green, so ship it" above her next
+    entry. Its rewrite revises only its own entry, never the next one (however that reads):
+    the draft was cut by words across both entries and the whole box stored again."""
+    stored, _ = _entry_run(
+        [(_entries("green."), 5), (_entries("green.", "and the notes"), 5), *after]
+    )
+    assert [text for _, text in stored] == ["green, so ship it", bottom]
+
+
+def test_a_grown_entry_above_a_live_entry_is_stored_once() -> None:
+    """XERK-2720: the next entry is still growing a word a frame when the first one's rewrite
+    lands, so it re-reads no stored line exactly."""
+    frames = [
+        (_entries("green."), 5),
+        (_entries("green.", "and"), 1),
+        (_entries("green.", "and the"), 1),
+    ]
+    for n, words in enumerate(
+        ["and the release", "and the release notes", "and the release notes are"]
+    ):
+        frames.append((_entries("green, so ship it" if n else "green.", words), 1))
+    frames.append((_entries("green, so ship it", "and the release notes are out"), 6))
+    stored, _ = _entry_run(frames)
+    assert [text for _, text in stored] == ["green, so ship it", "and the release notes are out"]
+
+
+def test_a_grown_middle_entry_is_stored_once() -> None:
+    """XERK-2720: the entry above the grown one ("hello.") is its own entry too, so revising
+    it doesn't reach into the grown one's words."""
+    stored, _ = _entry_run(
+        [
+            (_entries("hello."), 5),
+            (_entries("hello.", "green."), 5),
+            (_entries("hello.", "green.", "and the notes"), 5),
+            (_entries("hello.", "green, so ship it", "and the notes"), 6),
+        ]
+    )
+    assert [text for _, text in stored] == ["hello.", "green, so ship it", "and the notes"]
+
+
 def _simulate_teams(seed: int, *, noise: float = 0.0) -> tuple[int, int, int]:
     """Roll a Teams caption panel over 8 random entries: each grows a word per snapshot and is
     wrapped as one text, while Teams adds and drops provisional periods and inserts or fixes

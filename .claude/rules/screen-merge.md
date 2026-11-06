@@ -65,6 +65,14 @@ paths:
   - The merger re-emits the same `Segment` object it mutates: copy a field before asserting
     it changed or didn't (a test compared an object with itself).
   - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
+  - A run whose draft (the speaker's consecutive lines) fails retries it cut at her next entry,
+    a line first shown under a header (`_Line.head`, XERK-2720): Teams heads each entry, and a
+    word-cover over two entries failed when the next was live, misread or re-punctuated.
+    Only a fallback: cutting first lost revisions in Zoom `_simulate` (one header per speaker
+    run, so a scrolled-up line becomes a block's first row). With it, every seed of Zoom
+    `_simulate` (4 modes) and `_simulate_teams` (noise 0 / 0.2) stores what main does.
+    Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
+    `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`.
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed

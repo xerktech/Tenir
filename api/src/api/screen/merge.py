@@ -123,6 +123,9 @@ class _Line:
     # text two reads in a row agree on (``pending``: the last such read).
     pending: str | None = None
     rewrite_until: int = 0
+    # Was shown as the first row under a header: on Teams it starts an entry, where a rewrite
+    # of the entry above may stop (``_revisions``, XERK-2720).
+    head: bool = False
 
     @property
     def final(self) -> bool:
@@ -226,6 +229,33 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
 
 
+def _claims(
+    shown: list[_Shown], rows: list[int], tail: list[_Line], draft_at: list[int]
+) -> dict[int, int] | None:
+    """The tail line each of ``rows`` revises in the draft ``draft_at`` (a prefix of the run),
+    or None when the rows don't keep ``_REVISED`` of the draft's words in order."""
+    draft = [(w, j) for j in draft_at for w in _words(tail[j].text)]
+    mine = [(w, i) for i in rows for w in _words(shown[i].text)]
+    sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
+    pairs = [
+        (mine[mb.b + k][1], draft[mb.a + k][1])
+        for mb in sm.get_matching_blocks()
+        for k in range(mb.size)
+    ]
+    # Claims are a prefix of the run: a row above them pairing with nothing is a line said
+    # before them, so they are said again ("okay", "sounds good" after "sounds good").
+    claims: dict[int, int] = {}
+    taken = -1
+    for i in rows:
+        j = next((j for r, j in pairs if r == i and j > taken), None)
+        if j is None:
+            break
+        claims[i] = taken = j
+    if not claims or len(pairs) < _REVISED * len(draft):
+        return None
+    return claims
+
+
 def _revisions(
     shown: list[_Shown],
     speakers: list[str | None],
@@ -279,24 +309,17 @@ def _revisions(
             and (end == q or cands[end] == cands[end - 1] + 1)
         ):
             end += 1
-        draft = [(w, j) for j in cands[q:end] for w in _words(tail[j].text)]
-        mine = [(w, i) for i in rows for w in _words(shown[i].text)]
-        sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
-        pairs = [
-            (mine[mb.b + k][1], draft[mb.a + k][1])
-            for mb in sm.get_matching_blocks()
-            for k in range(mb.size)
-        ]
-        # Claims are a prefix of the run: a row above them pairing with nothing is a line said
-        # before them, so they are said again ("okay", "sounds good" after "sounds good").
-        claims: dict[int, int] = {}
-        taken = -1
-        for i in rows:
-            j = next((j for r, j in pairs if r == i and j > taken), None)
-            if j is None:
-                break
-            claims[i] = taken = j
-        if not claims or len(pairs) < _REVISED * len(draft):
+        # The run's draft is the speaker's consecutive lines; failing that, those up to her next
+        # entry (XERK-2720). Teams gives each entry its own header, so a grown entry above her
+        # next one (live, misread, re-punctuated) keeps too few of both entries' words. Only a
+        # fallback: Zoom lists a speaker's lines under one header (its top row scrolls), and
+        # cutting there first lost revisions in Zoom simulations.
+        own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
+        claims = _claims(shown, rows, tail, cands[q:end])
+        if claims is None and own < end:
+            claims = _claims(shown, rows, tail, cands[q:own])
+            end = own
+        if claims is None:
             if fresh:
                 break
             continue
@@ -552,6 +575,8 @@ class CaptionMerger:
                 self._lines.insert(at_, line)
                 self.new_lines += 1
             row_line[i] = line
+            if block.has_header and (i == 0 or shown[i - 1].block != line_shown.block):
+                line.head = True
             if speaker is not None:
                 self.last_speaker = speaker
             nxt = line_shown.block + 1
