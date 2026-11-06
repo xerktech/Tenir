@@ -2939,6 +2939,96 @@ def test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once() -> N
     assert stored == [("Ana", final[0]), ("Ana", final[1]), ("Bo", "sure")]
 
 
+@pytest.mark.parametrize("below", ["Ana", "Bo", None])
+def test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once(
+    below: str | None,
+) -> None:
+    """XERK-2716: a 3-row entry re-flowing (its bottom row now unlike its draft) above the
+    same speaker's next entry stored the whole box again. Another speaker below, or nothing,
+    was already stored once."""
+    draft = ["we went over the plan and", "then the build is", "green."]
+    final = ["we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    tail = [blk(below, *nxt)] if below else []
+    stored, _ = _entry_run([([blk("Ana", *draft), *tail], 6), ([blk("Ana", *final), *tail], 6)])
+    assert stored == [("Ana", text) for text in final] + [(below, text) for text in nxt if below]
+
+
+def test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words() -> None:
+    """QA (XERK-2716): a block's top row is never paired by word growth: it has no row above
+    to place it by, so "so ship it" was lost (the rewrite path stores it)."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.")], 5),
+            ([blk("Ana", "green."), blk("Bo", "sure.")], 5),
+            ([blk("Ana", "green, so ship it"), blk("Bo", "sure.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Bo", "sure.")]
+
+
+@pytest.mark.parametrize("above", [False, True])
+def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away(above: bool) -> None:
+    """QA (XERK-2716): "yes I think so too." said between snapshots above a repeat of Ana's
+    next entry is a new line, not the stored "yes." re-flowing; also with Bo's block above it
+    (a row of another block above is not one of its entry's, or the new line is lost)."""
+    bo = [blk("Bo", "ok.")] if above else []
+    stored, _ = _entry_run(
+        [
+            ([*bo, blk("Ana", "yes.")], 5),
+            ([*bo, blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
+            ([*bo, blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
+        ]
+    )
+    # With Bo above, the whole box is stored again (as on main): a line said between
+    # snapshots under a header makes everything below it new.
+    assert ("Ana", "yes I think so too.") in stored and (above or len(stored) == 4)
+
+
+def test_a_reflow_moving_two_words_down_above_the_same_speakers_next_entry_is_stored_once() -> (
+    None
+):
+    """QA (XERK-2716): the row above the grown one gained two words, so it no longer matches
+    its draft; the grown row still pairs as a row of its entry."""
+    draft = ["so we went over the plan and then", "the build is", "green."]
+    final = ["so we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *draft), blk("Ana", *nxt)], 6), ([blk("Ana", *final), blk("Ana", *nxt)], 6)]
+    )
+    assert stored == [("Ana", text) for text in (*final, *nxt)]
+
+
+def test_an_old_row_re_read_longer_is_jitter_not_growth() -> None:
+    """QA (XERK-2716): a middle row re-read with stray glyphs long after its entry ended is
+    OCR jitter; only a recent (``_REVISE_MS``) row takes growth this way."""
+    rows = ["we went over the plan", "like", "and then it is green"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *rows)], 75), ([blk("Ana", rows[0], "like l o", rows[2])], 6)]
+    )
+    assert stored == [("Ana", text) for text in rows]
+
+
+def test_a_growing_bottom_row_never_rewrites_the_rows_above() -> None:
+    """QA (XERK-2716, `_simulate_teams` seed 125): the live bottom row growing by whole words
+    is no re-flow; taking it copied a misaligned row's text onto a draft line, stored twice."""
+    top = "pods itself can locally design deploy"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top)], 1),
+            ([blk("Ana", top, "pods.")], 1),
+            ([blk("Ana", f"{top} pods", "itself")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right.")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need right deploy")], 6),
+        ]
+    )
+    words = [w for _, text in stored for w in _words(text).split()]
+    assert words == _words(f"{top} pods itself enable right so need right deploy").split()
+
+
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
     """A stored line a block skips is a stale copy only when the rows around it hold its
     words; otherwise OCR missed it and it stays."""
