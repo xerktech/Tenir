@@ -534,6 +534,7 @@ class Settings(BaseSettings):
         "screen_line_stable_seconds",
         "screen_meeting_end_seconds",
         "screen_max_frame_bytes",
+        "screen_sample_max",
         "turma_retry_max_seconds",
         "turma_give_up_seconds",
         "ocr_timeout_seconds",
@@ -582,6 +583,11 @@ class Settings(BaseSettings):
     screen_meeting_end_seconds: float = 180.0
     # Largest accepted binary frame (header + JPEG); bigger frames are refused.
     screen_max_frame_bytes: int = 4_000_000
+    # XERK-2705: with a directory set, each frame's JPEG and OCR result is saved there (at most
+    # screen_sample_max frames per process) to re-tune the parsers on real crops. Off (empty) by
+    # default: the frames are screenshots of client meetings. Never commit what it saves.
+    screen_sample_dir: str = ""
+    screen_sample_max: int = 2000
     # Oldest Windows capture client (desktop/, XERK-2506) this server works with, as x.y.z;
     # published on GET /status. A client older than this refuses to start and tells the
     # operator to update. Empty: any version.

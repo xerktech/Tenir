@@ -41,3 +41,8 @@ paths:
   after a meeting: a pod restart clears them. Retune merge timing gates from these, not guesses.
   Tests: `test_the_gap_between_snapshots_fed_to_a_meeting_is_metered`,
   `test_a_frame_the_merger_fails_on_is_not_a_gap`.
+- Real frames for tuning come from the opt-in sampler (`samples.py`, `API_SCREEN_SAMPLE_DIR`,
+  XERK-2705), never from git. On k8x point it under the `/data/audio` volume (the only persistent
+  mount) and pull with `kubectl cp`; it saves client meeting screenshots, so set it for one
+  meeting, then unset it and delete the files. `orgSiteKey` is client input: it is slugged.
+  Tests: `test_screen_samples.py`.
