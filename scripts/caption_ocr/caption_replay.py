@@ -40,6 +40,7 @@ import json
 import random
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -48,7 +49,15 @@ from api.config import settings
 from api.persistence import InMemoryConversationStore, ScreenMeta
 from api.screen import teams, teams_pane, zoom
 from api.screen.meetings import Cadence, MeetingTracker
-from api.screen.ocr import HttpOcrClient, OcrClient, OcrLine, OcrResult, image_size, parse_result
+from api.screen.ocr import (
+    HttpOcrClient,
+    OcrClient,
+    OcrError,
+    OcrLine,
+    OcrResult,
+    image_size,
+    parse_result,
+)
 from api.screen.zoom import CaptionPane
 
 _NAME = re.compile(r"^(?P<ts>\d+)-(?P<n>\d+)-(?P<region>caption|full)$")
@@ -57,7 +66,6 @@ DUP_SHARE = 0.8  # a row is a duplicate when this share of its words is in a rec
 DUP_MIN_WORDS = 3  # shorter rows ("Yes.", "Thanks Kunal.") are stock replies, not rewrites
 DUP_WINDOW = 8  # how many earlier rows a duplicate is looked for in
 MATCH_RATIO = 0.8  # word-sequence similarity for two rows to be the same caption line
-MATCH_AHEAD = 2 * DUP_WINDOW  # rows past the last match a reference row may be found in
 
 
 @dataclass(frozen=True)
@@ -125,6 +133,7 @@ class Replay:
     meetings: int = 0
     full_frames: int = 0
     full_frames_without_pane: int = 0
+    pane_ocr_errors: int = 0
 
 
 async def replay(platform: str, frames: list[Frame], *, ocr: OcrClient | None = None) -> Replay:
@@ -156,7 +165,14 @@ async def replay(platform: str, frames: list[Frame], *, ocr: OcrClient | None = 
             out.full_frames += 1
             if platform == "teams":
                 size = (f.ocr.width, f.ocr.height)
-                pane = await locate_pane(ocr, f.jpeg, size) if ocr else find_pane(f)
+                if ocr is None:
+                    pane = find_pane(f)
+                else:
+                    try:
+                        pane = await locate_pane(ocr, f.jpeg, size)
+                    except OcrError:  # as live (ws.read_pane): this frame parses without one
+                        out.pane_ocr_errors += 1
+                        pane = None
                 out.full_frames_without_pane += pane is None
                 frame = teams.parse_full_frame(f.ocr, f.jpeg, pane=pane)
             else:
@@ -207,36 +223,89 @@ def duplicates(rows: list[Row]) -> tuple[int, int, int]:
     return dup_rows, dup_words, total
 
 
-def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
-    """Match each reference row, in order, to the most alike unused row of ``rows`` near the
-    last match, and count the drift. A row is looked for at most ``MATCH_AHEAD`` rows past the
-    last match: a search over all later rows paired a reworded line with a repeat of it far
-    ahead, and every row in between counted as lost (QA)."""
-    used: set[int] = set()
-    changed = missing = 0
-    start = 0
-    for speaker, text in reference:
+def _matches(rows: list[Row], reference: list[Row]) -> list[list[tuple[float, int]]]:
+    """Per reference row, the (ratio, j) of every row of ``rows`` reading alike. Rows share
+    words to be compared at all (an index, not every pair: a meeting has 1000+ rows)."""
+    words = [_words(t) for _, t in rows]
+    bags = [Counter(ws) for ws in words]
+    index: dict[str, set[int]] = {}
+    for j, ws in enumerate(words):
+        for w in set(ws):
+            index.setdefault(w, set()).add(j)
+    out = []
+    for _, text in reference:
         ref = _words(text)
-        best, best_j = 0.0, None
-        for j in range(start, min(len(rows), start + MATCH_AHEAD)):
-            if j in used:
+        bag = Counter(ref)
+        shared: set[int] = set()
+        for w in set(ref):
+            shared |= index.get(w, set())
+        found = []
+        for j in shared:
+            # ratio = 2 * matched / (la + lb), and matched is at most min(la, lb) and the
+            # words both hold: skip pairs either bound keeps under the bar.
+            la, lb = len(ref), len(words[j])
+            if 2 * min(la, lb) < MATCH_RATIO * (la + lb):
                 continue
-            r = SequenceMatcher(None, ref, _words(rows[j][1]), autojunk=False).ratio()
-            if r > best:
-                best, best_j = r, j
-        if best_j is None or best < MATCH_RATIO:
-            missing += 1
+            if 2 * (bag & bags[j]).total() < MATCH_RATIO * (la + lb):  # common words only
+                continue
+            r = SequenceMatcher(None, ref, words[j], autojunk=False).ratio()
+            if r >= MATCH_RATIO:
+                found.append((r, j))
+        out.append(found)
+    return out
+
+
+def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
+    """Pair reference rows with alike rows of ``rows`` and count the drift.
+
+    The pairing is the longest in-order one (a longest increasing subsequence over the alike
+    pairs), so no run of unmatched rows on either side can throw the rest out of step: a
+    greedy search paired a reworded line with its repeat far ahead (QA), and a bounded one
+    lost sync for good after 16 unmatched rows (QA). A reference row left over then takes the
+    most alike unused row within ``DUP_WINDOW`` of its neighbours' pairs: rows can store
+    slightly out of order.
+    """
+    import bisect
+
+    alike = _matches(rows, reference)
+    # LIS over j, reference rows in order; one i's candidates in descending j so at most one
+    # of them extends a chain.
+    tails: list[int] = []  # tails[k] = smallest j ending a chain of length k + 1
+    tail_at: list[tuple[int, int]] = []  # (i, j) at tails[k]
+    back: dict[tuple[int, int], tuple[int, int] | None] = {}
+    for i, found in enumerate(alike):
+        for _, j in sorted(found, key=lambda x: -x[1]):
+            k = bisect.bisect_left(tails, j)
+            back[(i, j)] = tail_at[k - 1] if k else None
+            if k == len(tails):
+                tails.append(j)
+                tail_at.append((i, j))
+            else:
+                tails[k] = j
+                tail_at[k] = (i, j)
+    pair: dict[int, int] = {}
+    node = tail_at[-1] if tail_at else None
+    while node is not None:
+        pair[node[0]] = node[1]
+        node = back[node]
+    used = set(pair.values())
+    paired = sorted(pair)
+    for i, found in enumerate(alike):
+        if i in pair or not found:
             continue
-        used.add(best_j)
-        start = max(start, best_j - DUP_WINDOW)  # rows can store slightly out of order
-        while start in used:
-            start += 1
-        changed += rows[best_j][0] != speaker
+        k = bisect.bisect_left(paired, i)
+        lo = pair[paired[k - 1]] - DUP_WINDOW if k else 0
+        hi = pair[paired[k]] + DUP_WINDOW if k < len(paired) else len(rows)
+        near = [(r, j) for r, j in found if lo <= j <= hi and j not in used]
+        if near:
+            pair[i] = max(near)[1]
+            used.add(pair[i])
+    changed = sum(rows[j][0] != reference[i][0] for i, j in pair.items())
     return {
-        "matched": len(used),
+        "matched": len(pair),
         "speaker_changed": changed,
-        "missing": missing,
-        "extra": len(rows) - len(used),
+        "missing": len(reference) - len(pair),
+        "extra": len(rows) - len(pair),
     }
 
 
@@ -246,11 +315,15 @@ def drop(frames: list[Frame], share: float, rng: random.Random) -> list[Frame]:
 
 
 def load_truth(path: Path) -> list[Row]:
-    data = json.loads(path.read_text())
+    bad = f"{path}: not a JSON list of [speaker, text] or {{speaker, text}}"
     try:
-        return [(x["speaker"], x["text"]) if isinstance(x, dict) else (x[0], x[1]) for x in data]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise SystemExit(f"{path}: not a list of [speaker, text] or {{speaker, text}}") from exc
+        data = json.loads(path.read_text())
+        rows = [(x["speaker"], x["text"]) if isinstance(x, dict) else (x[0], x[1]) for x in data]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise SystemExit(bad) from exc
+    if not all(isinstance(t, str) and (s is None or isinstance(s, str)) for s, t in rows):
+        raise SystemExit(bad)
+    return rows
 
 
 def summarize(rows: list[Row]) -> dict[str, int]:
@@ -276,6 +349,7 @@ async def run(args: argparse.Namespace) -> dict:
         "caption_frames": sum(f.region == "caption" for f in frames),
         "meetings": full.meetings,
         "full_frames_without_pane": full.full_frames_without_pane,
+        "pane_ocr_errors": full.pane_ocr_errors,
         **summarize(rows),
     }
     if args.rows:

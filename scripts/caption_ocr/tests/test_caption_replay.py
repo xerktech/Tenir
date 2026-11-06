@@ -9,6 +9,7 @@ right_speakers_and_no_duplicate_lines`` asserts the socket stores.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import io
 import json
 import random
@@ -250,12 +251,15 @@ def test_truth_in_the_fixtures_own_shape_is_read(tmp_path: Path) -> None:
         "Raman, Priya",
         "Okay, let's get started with the sprint review.",
     )
-    truth.write_text(json.dumps([{"who": "x"}]))
-    with pytest.raises(SystemExit, match="speaker, text"):
-        cr.load_truth(truth)
+    for bad in ('[{"who": "x"}]', '[["A"]]', '[["A", 5]]', '"ab"', "{not json"):
+        truth.write_text(bad)
+        with pytest.raises(SystemExit, match="speaker, text"):
+            cr.load_truth(truth)
 
 
-@pytest.mark.parametrize("args", [["--drop", "1.5"], ["--drop", "-1"], ["--runs", "0"]])
+@pytest.mark.parametrize(
+    "args", [["--drop", "1.5"], ["--drop", "1"], ["--drop", "-1"], ["--runs", "0"]]
+)
 def test_out_of_range_options_are_refused(tmp_path: Path, args: list[str]) -> None:
     with pytest.raises(SystemExit):
         cr.main([str(tmp_path), *args])
@@ -273,3 +277,58 @@ def test_the_window_can_be_given_as_the_current_directory(tmp_path: Path, monkey
     window = write_window(tmp_path, FIXTURE["frames"])
     monkeypatch.chdir(window)
     assert cr.load_window(Path("."))[0] == "teams"
+
+
+# --- compare stays in step (QA D7) ---------------------------------------------------------
+
+LINES = [
+    ("Ana" if i % 3 else "Bo", f"distinct line {i} about subject {i * 13} today") for i in range(80)
+]
+EXTRA = [("Cy", f"unrelated remark {k} on matter {k * 17} again") for k in range(20)]
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        (EXTRA[:16] + LINES, (80, 0, 16)),  # pre-roll the reference doesn't hold
+        (LINES[:40] + EXTRA[:16] + LINES[40:], (80, 0, 16)),  # an extra block mid-meeting
+        (LINES[:39] + EXTRA[:12] + LINES[40:], (79, 1, 12)),  # a hole, then a block
+        (LINES[1:2] + LINES[:1] + LINES[2:], (80, 0, 0)),  # two rows stored swapped
+    ],
+)
+def test_runs_of_unmatched_rows_never_throw_compare_out_of_step(rows, expected) -> None:
+    got = cr.compare(rows, LINES)
+    assert (got["matched"], got["missing"], got["extra"]) == expected
+
+
+def test_a_truth_labelling_only_part_of_the_meeting_matches_that_part() -> None:
+    got = cr.compare(LINES, LINES[40:60])
+    assert (got["matched"], got["missing"], got["extra"]) == (20, 0, 60)
+
+
+def test_blank_segments_of_dropped_lines_are_not_rows(tmp_path: Path, monkeypatch) -> None:
+    from api.persistence import InMemoryConversationStore
+
+    real = InMemoryConversationStore.add_segment
+
+    def add_segment(self, household, conversation_id, seg):  # noqa: ANN001
+        real(self, household, conversation_id, seg)
+        blank = dataclasses.replace(seg, segment_id=seg.segment_id + "-x", text="")
+        real(self, household, conversation_id, blank)
+
+    monkeypatch.setattr(InMemoryConversationStore, "add_segment", add_segment)
+    platform, frames = cr.load_window(write_window(tmp_path, FIXTURE["frames"]))
+    rows = asyncio.run(cr.replay(platform, frames)).rows
+    assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
+
+
+class _FailingOcr:
+    async def read(self, jpeg: bytes, *, full: bool = False, split_once: bool = False):
+        raise cr.OcrError("OCR request failed: 503")
+
+
+def test_an_ocr_error_reading_the_pane_is_counted_and_replay_goes_on(tmp_path: Path) -> None:
+    # As live (ws.read_pane): the frame parses without a pane (QA D8).
+    platform, frames = cr.load_window(_pane_window(tmp_path, heading=False))
+    got = asyncio.run(cr.replay(platform, frames, ocr=_FailingOcr()))
+    assert (got.pane_ocr_errors, got.full_frames_without_pane) == (1, 1)

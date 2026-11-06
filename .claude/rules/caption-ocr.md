@@ -38,5 +38,6 @@ paths:
 - The sampler keeps no band read of the Teams pane heading: replay uses the full frame's own
   heading line, and when OCR missed it caption lines join the roster and rows are lost (QA).
   Read `full_frames_without_pane`; non-zero → re-run with `--ocr` (real tenir-ocr).
-- `compare()` searches only `MATCH_AHEAD` rows past the last match: an unbounded best-match
-  paired a reworded line with its repeat far ahead and counted everything between as lost.
+- `compare()` pairs rows by the longest in-order alignment, never a greedy search: best-match
+  over all later rows paired a reworded line with its repeat far ahead, and a bounded window
+  lost sync for good after 16 unmatched rows (both QA, everything after counted as lost).
