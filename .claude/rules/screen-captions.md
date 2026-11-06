@@ -116,7 +116,8 @@ paths:
   - Two frames in a row must read the rows above the bottom alike (`_reflow_reads`).
   - A skipped line is dropped only when the rows around it hold its words AND they moved there
     (those rows gained them, or no longer read as their lines, or its words sit at their break
-    and a neighbour changed since it was last seen: the row rules may have grown it already). Holding the words alone blanked
+    and a neighbour changed since it was last seen: the row rules may have grown it already).
+    The live bottom line doesn't count as that change: it grows every frame (QA). Holding the words alone blanked
     a real line OCR missed on 2 identical frames next to rows sharing its words, Teams and
     Zoom alike (QA); a per-seed Zoom A/B caught it where aggregate counts matched.
   - A stored bottom row is confirmed on two frames too; a live one is left to the row rules.
@@ -139,6 +140,7 @@ paths:
     `test_a_misread_bottom_row_on_the_confirming_frame_is_never_stored`,
     `test_a_top_row_clipped_mid_word_keeps_its_line_during_a_reflow`,
     `test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once`,
+    `test_a_middle_row_missed_while_the_bottom_row_grows_is_kept`,
     `test_a_line_the_ocr_missed_between_rows_is_kept`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.

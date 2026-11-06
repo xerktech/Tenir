@@ -774,7 +774,11 @@ class CaptionMerger:
         words = _words(line.text)
         if (
             len(near_rows) == 2
-            and any(ln.changed_ms > line.seen_ms for ln in lines[k : k + 2])
+            # Not the live bottom line: it changes every frame as it grows (QA).
+            and any(
+                ln.changed_ms > line.seen_ms and (ln.final or ln is not lines[-1])
+                for ln in lines[k : k + 2]
+            )
             and _junction(words, near_rows[0], near_rows[1])
         ):
             return True

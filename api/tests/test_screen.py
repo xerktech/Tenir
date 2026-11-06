@@ -2877,6 +2877,23 @@ def test_a_middle_row_missed_on_two_frames_is_kept_when_its_neighbours_share_its
     assert stored == [("Ana", row) for row in rows] + [(b.speaker, b.lines[0]) for b in below]
 
 
+def test_a_middle_row_missed_while_the_bottom_row_grows_is_kept() -> None:
+    """QA (XERK-2715): the missed row's words sit at its neighbours' break ("...so i think" /
+    "i think so we" / "so we can ..."), and the live bottom row changes every frame as it
+    grows; that change is no sign a word moved, so the row stays, in its place, once."""
+    top, mid = "we should check it so i think", "i think so we"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top, mid, "so we can deploy")], 4),
+            ([blk("Ana", top, "so we can deploy it")], 1),
+            ([blk("Ana", top, "so we can deploy it now")], 1),
+            ([blk("Ana", top, "so we can deploy it now ok")], 1),
+            ([blk("Ana", top, mid, "so we can deploy it now ok"), blk("Bo", "ok")], 6),
+        ]
+    )
+    assert stored == [("Ana", top), ("Ana", mid), ("Ana", "so we can deploy it now ok"), ("Bo", "ok")]
+
+
 def test_a_misread_bottom_row_on_the_confirming_frame_is_never_stored() -> None:
     """QA (XERK-2715): a stored bottom row is confirmed like the rows above it, so a misread
     on the frame after the re-flow doesn't replace it; the clean frames after it do."""
