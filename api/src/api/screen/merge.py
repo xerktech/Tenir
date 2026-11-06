@@ -274,6 +274,7 @@ def _revisions(
     A block of only new rows under its own header that revises nothing is a fresh entry:
     everything below it is newer (a repeat there is said again), so revising stops."""
     last = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
+    last_seen = max((ln.seen_ms for ln in tail), default=0)
     start = (aligned[last] or 0) + 1 if last >= 0 else 0
     cands = [
         j
@@ -313,10 +314,12 @@ def _revisions(
         # entry (XERK-2720). Teams gives each entry its own header, so a grown entry above her
         # next one (live, misread, re-punctuated) keeps too few of both entries' words. Only a
         # fallback: Zoom lists a speaker's lines under one header (its top row scrolls), and
-        # cutting there first lost revisions in Zoom simulations.
+        # cutting there first lost revisions in Zoom simulations. The cut entry must still have
+        # been on the last frame: one scrolled off since is no longer on screen to rewrite, and
+        # a later entry holding its few words claimed it and lost it (QA).
         own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
         claims = _claims(shown, rows, tail, cands[q:end])
-        if claims is None and own < end:
+        if claims is None and own < end and tail[cands[q]].seen_ms == last_seen:
             claims = _claims(shown, rows, tail, cands[q:own])
             end = own
         if claims is None:

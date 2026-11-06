@@ -71,6 +71,10 @@ paths:
     Only a fallback: cutting first lost revisions in Zoom `_simulate` (one header per speaker
     run, so a scrolled-up line becomes a block's first row). With it, every seed of Zoom
     `_simulate` (4 modes) and `_simulate_teams` (noise 0 / 0.2) stores what main does.
+  - The cut entry must have been on the last frame: a short entry scrolled off since was
+    claimed by a later row holding its few words, and lost (QA). Neither simulation reaches
+    this path; QA's same-speaker Teams fuzz did. Tests: `test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run`,
+    `test_an_entry_scrolled_off_is_never_claimed_by_a_later_one`.
     Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
     `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`.
   - New lines go just above the known line shown below them (Teams adds lines to an entry

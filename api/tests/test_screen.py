@@ -3014,6 +3014,49 @@ def test_a_grown_middle_entry_is_stored_once() -> None:
     assert [text for _, text in stored] == ["hello.", "green, so ship it", "and the notes"]
 
 
+def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
+    """QA (XERK-2720): with nothing on the frame aligning, the cut-at-the-next-entry draft of a
+    short entry that has scrolled off was claimed by a later row holding its few words: the
+    entry's segment took that row's text and was lost. Only an entry still on the last frame
+    is cut out for a rewrite."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    frames = [
+        (5, ("i that do.", "that that")),
+        (10, ("i that i we do.", "that that do is.", "think we")),
+        (
+            24,
+            (
+                "i that i we do.",
+                "that should that do is we that.",
+                "think we should so i should.",
+                "we it should that the is think",
+            ),
+        ),
+    ]
+    tail = (
+        "that should that do is we that.",
+        "think we should so i should.",
+        "we it should that the is is think.",
+        "we we that",
+    )
+    frames += [(28, tail), (31, tail)]
+    final: dict[str, str] = {}
+    for t, rows in frames:
+        for seg in m.feed(_entries(*rows), t * 1000):
+            final[seg.segment_id] = seg.text
+    assert "i that do." in final.values()
+
+
+@pytest.mark.parametrize(("seed", "most"), [(145, 30), (325, 27), (599, 31)])
+def test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run(seed: int, most: int) -> None:
+    """XERK-2720: Zoom lists a speaker's lines under one header, so a line the box scrolled to
+    the block's top is marked as an entry start too. Cutting the draft there first (rather
+    than only when the whole run fails) stored up to 4 more lines on these noisy, dropped-frame
+    seeds."""
+    _, stored = _simulate(seed, noise=True, skip=0.3)
+    assert len(stored) <= most
+
+
 def _simulate_teams(seed: int, *, noise: float = 0.0) -> tuple[int, int, int]:
     """Roll a Teams caption panel over 8 random entries: each grows a word per snapshot and is
     wrapped as one text, while Teams adds and drops provisional periods and inserts or fixes
