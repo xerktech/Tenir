@@ -65,18 +65,38 @@ paths:
   - The merger re-emits the same `Segment` object it mutates: copy a field before asserting
     it changed or didn't (a test compared an object with itself).
   - A fresh header block revising nothing ends revising: [Bo, Cy yes, Ana okay] is a repeat.
-  - A run whose draft (the speaker's consecutive lines) fails retries it cut at her next entry,
-    a line first shown under a header (`_Line.head`, XERK-2720): Teams heads each entry, and a
-    word-cover over two entries failed when the next was live, misread or re-punctuated.
-    Only a fallback: cutting first lost revisions in Zoom `_simulate` (one header per speaker
-    run, so a scrolled-up line becomes a block's first row). With it, every seed of Zoom
-    `_simulate` (4 modes) and `_simulate_teams` (noise 0 / 0.2) stores what main does.
-  - The cut entry must have been on the last frame: a short entry scrolled off since was
-    claimed by a later row holding its few words, and lost (QA). Neither simulation reaches
-    this path; QA's same-speaker Teams fuzz did. Tests: `test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run`,
-    `test_an_entry_scrolled_off_is_never_claimed_by_a_later_one`.
-    Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
-    `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`.
+  - A run's draft (the speaker's consecutive unshown lines) is cut where her next block
+    re-reads one of them verbatim (XERK-2717): each Teams entry is its own block, so a one-row
+    entry growing above her next one ("green." -> "green, so ship it") was measured against
+    both and stored twice. `_align` can't pair it: a block's top row (XERK-2716, below).
+    - Cuts are tried before the full draft, longest first: a full draft passing coverage
+      swallowed a short third entry ("ok.") unclaimed, and it was stored again (QA).
+    - Only her own block cuts (exact speaker): Bo repeating her line broke a valid revision.
+    - Only a line seen within `_SAID_BETWEEN_MS` cuts: at 1 fps a new line plus a repeat of her
+      next entry can't both be said between snapshots; after dropped frames they can ("yes." /
+      "yes I think so too." stays a new line). Same frames, no gap: it is the entry growing.
+    - Measured per seed vs main (after XERK-2716): Zoom `_simulate`, `_simulate_teams` and kit
+      zf.py identical; kit x2716 tf.py "both" (200 seeds) extra words 8635 -> 7212, lost
+      5566 -> 5602 (late words now stored after the next entry; main's copies masked them).
+    - Tests: `test_an_entry_growing_above_the_same_speakers_next_entry_is_stored_once`,
+      `test_a_short_entry_after_the_same_speakers_next_one_is_stored_once`,
+      `test_bo_repeating_anas_next_entry_cuts_none_of_her_draft`,
+      `test_the_longest_cut_of_a_draft_is_tried_first`,
+      `test_a_header_less_next_block_still_cuts_the_draft`,
+      `test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away` (the gap).
+  - Failing the cuts and the full draft, the draft up to her next entry is tried last: a line
+    first shown under a header (`_Line.head`, XERK-2720). Her next entry still growing,
+    misread or re-punctuated re-reads none of her lines verbatim, so no cut fired.
+    - Only last: Zoom heads a speaker's run once (a scrolled-up row becomes a block's first
+      row), and cutting there first stored more lines on Zoom `_simulate` noise+drop seeds.
+    - Any cut (verbatim or this one) needs the cut entry on the last frame: a short entry
+      scrolled off since was claimed by a later row holding its few words, and lost (QA). On
+      main the XERK-2717 cut did it too, masked only by the later rows failing. Neither
+      simulation reaches this path; a same-speaker Teams fuzz did.
+    - Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
+      `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`,
+      `test_an_entry_scrolled_off_is_never_claimed_by_a_later_one`,
+      `test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run`.
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
@@ -113,6 +133,29 @@ paths:
     at the block's bottom pairs with its speaker's unshown lines right after: an ended entry
     re-flows with the next speaker's block below it, which aligns (the ticket's own example).
   - Case/punctuation-only changes are not a re-flow; the draft's case stays (as before).
+  - A row whose words start with its known line's ("green." -> "green, so ship it") is a
+    `_misread` of it (XERK-2716) when it isn't its block's top row: unpaired under a header it
+    cost `_UNPAIRED`, so a 3-row entry re-flowing above the same speaker's next entry aligned
+    nothing and the box was stored again. The row above needn't match (a re-wrap moves words).
+  - Never pair a block's top row that way: it may be a new line starting with an old one's words
+    ("yes." / "yes I think so too."), and `_fill_glitches` can't place a top-row glitch, so its
+    growth was lost (QA: hundreds of words in a "late growth" fuzz). A row of the block above
+    doesn't count: dropping that check lost hundreds more.
+  - `_reflow` takes such a glitch row that grew by whole words even with no word moved (else
+    "like" -> "like with the keto." was lost): a glitch row only (the live bottom row grows every
+    frame; taking it rewrote misaligned rows, `_simulate_teams` seed 125), and only for lines
+    under `_REVISE_MS` old (older ones stored OCR junk). Accepted: a stray glyph read on every
+    frame of a recent row is appended.
+  - Measured per seed vs. main: `_simulate_teams` identical; Zoom `_simulate` differs on 18/1000
+    noise+drop seeds: fewer wrong lines on all, one loses a line more (3829). QA's kit
+    (`~/.cache/qa-tenir-kit/x2716`, Teams late-growth fuzz) is better in total on every mode;
+    ~1.6% of its seeds do worse (noisy rows re-stored).
+  - Tests: `test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once`,
+    `test_a_reflow_moving_two_words_down_above_the_same_speakers_next_entry_is_stored_once`,
+    `test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words`,
+    `test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away`,
+    `test_an_old_row_re_read_longer_is_jitter_not_growth`,
+    `test_a_growing_bottom_row_never_rewrites_the_rows_above`.
   - Measured with `_simulate_teams` (200 seeds, 38k words): words stored twice 607 -> 139, lost
     522 -> 236; with `noise=0.2`, 1978 -> 1353 and 595 -> 255. Zoom `_simulate` (1000 seeds,
     all four modes): every seed stores exactly what main does. After tuning `_reflow`, diff

@@ -89,6 +89,10 @@ _REVISE_MS = 30_000
 # A re-flowed entry (XERK-2715): a line its rows skip is a stale copy when they hold this share
 # of its words where it sat (Teams may also fix one of them).
 _HELD = 0.5
+# A grown entry above the same speaker's next one (XERK-2717) cuts its draft at that next entry
+# only when it was on screen this recently: at 1 fps a new line and a repeat of her next entry
+# can't both be said between two snapshots, but after dropped frames they can (XERK-2716).
+_SAID_BETWEEN_MS = 3_000
 _WORD = re.compile(r"[\w']+")
 
 
@@ -165,11 +169,23 @@ def _score(shown: _Shown, known: _Line, *, growable: bool) -> float:
     return 0.0
 
 
-def _misread(shown: _Shown, known: _Line) -> bool:
+def _misread(shown: _Shown, known: _Line, *, in_entry: bool = False) -> bool:
+    """Whether ``shown`` misreads ``known``. ``in_entry``: ``shown`` is not its block's top row."""
     if not _same_speaker(shown.speaker, known.speaker):
         return False
     a, b = shown.norm, known.norm
-    return b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE
+    if b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE:
+        return True
+    # A finished Teams row re-flowing inside its entry: punctuation changed and words joined
+    # it ("green." -> "green, so ship it", XERK-2716). Unpaired under a header it read as a
+    # line said between snapshots and the whole box was stored again; paired, ``_reflow``
+    # takes its words. Only below another row of its block: a block's top row may be a new
+    # line starting with an old one's words ("yes." / "yes I think so too."), and a glitch
+    # there has no row above for ``_reflow`` to place it by (both lost words, QA).
+    if not in_entry:
+        return False
+    had = _words(known.text)
+    return bool(had) and _words(shown.text)[: len(had)] == had
 
 
 def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
@@ -192,7 +208,8 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
             options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
-                if _misread(shown[i - 1], tail[j - 1]):
+                in_entry = i >= 2 and shown[i - 2].block == shown[i - 1].block
+                if _misread(shown[i - 1], tail[j - 1], in_entry=in_entry):
                     options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
                 # A carried line can't grow: its segment is the ended meeting's, so the
@@ -227,33 +244,6 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
-
-
-def _claims(
-    shown: list[_Shown], rows: list[int], tail: list[_Line], draft_at: list[int]
-) -> dict[int, int] | None:
-    """The tail line each of ``rows`` revises in the draft ``draft_at`` (a prefix of the run),
-    or None when the rows don't keep ``_REVISED`` of the draft's words in order."""
-    draft = [(w, j) for j in draft_at for w in _words(tail[j].text)]
-    mine = [(w, i) for i in rows for w in _words(shown[i].text)]
-    sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
-    pairs = [
-        (mine[mb.b + k][1], draft[mb.a + k][1])
-        for mb in sm.get_matching_blocks()
-        for k in range(mb.size)
-    ]
-    # Claims are a prefix of the run: a row above them pairing with nothing is a line said
-    # before them, so they are said again ("okay", "sounds good" after "sounds good").
-    claims: dict[int, int] = {}
-    taken = -1
-    for i in rows:
-        j = next((j for r, j in pairs if r == i and j > taken), None)
-        if j is None:
-            break
-        claims[i] = taken = j
-    if not claims or len(pairs) < _REVISED * len(draft):
-        return None
-    return claims
 
 
 def _revisions(
@@ -310,27 +300,74 @@ def _revisions(
             and (end == q or cands[end] == cands[end - 1] + 1)
         ):
             end += 1
-        # The run's draft is the speaker's consecutive lines; failing that, those up to her next
-        # entry (XERK-2720). Teams gives each entry its own header, so a grown entry above her
-        # next one (live, misread, re-punctuated) keeps too few of both entries' words. Only a
-        # fallback: Zoom lists a speaker's lines under one header (its top row scrolls), and
-        # cutting there first lost revisions in Zoom simulations. The cut entry must still have
-        # been on the last frame: one scrolled off since is no longer on screen to rewrite, and
-        # a later entry holding its few words claimed it and lost it (QA).
+        # The draft is the speaker's whole run of unshown lines, cut first where the next
+        # block is hers and re-reads one of them verbatim: Teams shows each entry as its own
+        # block, so the run then holds her next entries too, and a one-row entry that grew
+        # ("green." -> "green, so ship it") covered too few of its words (XERK-2717). Cuts go
+        # first: a full draft passing coverage swallowed a short entry after the next one
+        # ("ok."), which was then stored again. Someone else repeating her line cuts nothing,
+        # and nor does a line last seen before dropped frames (``_SAID_BETWEEN_MS``).
+        # Failing all those, the draft up to her next entry, a line first shown under a header
+        # (XERK-2720): her next entry still growing, misread or re-punctuated re-reads none of
+        # her lines verbatim. Only last: Zoom heads a speaker's run once (a scrolled-up row
+        # looks like an entry start), and cutting there first lost revisions in Zoom
+        # simulations. It too needs a line seen within ``_SAID_BETWEEN_MS``.
+        nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
+        # Either cut needs the cut entry on the last frame: a short entry scrolled off since
+        # is no longer there to rewrite, and a later row holding its few words claimed it.
+        on_screen = tail[cands[q]].seen_ms == last_seen
+        cuts = [
+            k
+            for k in range(q + 1, end)
+            if on_screen
+            and nxt is not None
+            and speakers[nxt] == tail[cands[q]].speaker
+            and shown[nxt].norm == tail[cands[k]].norm
+            and ts - tail[cands[k]].seen_ms <= _SAID_BETWEEN_MS
+        ]
+        ends = [*reversed(cuts), end]
         own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
-        claims = _claims(shown, rows, tail, cands[q:end])
-        if claims is None and own < end and tail[cands[q]].seen_ms == last_seen:
-            claims = _claims(shown, rows, tail, cands[q:own])
-            end = own
-        if claims is None:
+        if own not in ends and on_screen and ts - last_seen <= _SAID_BETWEEN_MS:
+            ends.append(own)
+        found = next(
+            ((e, c) for e in ends if (c := _claims(shown, rows, tail, cands[q:e]))), None
+        )
+        if found is None:
             if fresh:
                 break
             continue
+        p, claims = found
         out.update(claims)
-        p = end
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
     return out if p == len(cands) else {}
+
+
+def _claims(
+    shown: list[_Shown], rows: list[int], tail: list[_Line], draft_lines: list[int]
+) -> dict[int, int] | None:
+    """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
+    rows keep under ``_REVISED`` of ``draft_lines``' words in order."""
+    draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
+    mine = [(w, i) for i in rows for w in _words(shown[i].text)]
+    sm = SequenceMatcher(None, [w for w, _ in draft], [w for w, _ in mine], autojunk=False)
+    pairs = [
+        (mine[mb.b + k][1], draft[mb.a + k][1])
+        for mb in sm.get_matching_blocks()
+        for k in range(mb.size)
+    ]
+    # Claims are a prefix of the run: a row above them pairing with nothing is a line said
+    # before them, so they are said again ("okay", "sounds good" after "sounds good").
+    claims: dict[int, int] = {}
+    taken = -1
+    for i in rows:
+        j = next((j for r, j in pairs if r == i and j > taken), None)
+        if j is None:
+            break
+        claims[i] = taken = j
+    if not claims or len(pairs) < _REVISED * len(draft):
+        return None
+    return claims
 
 
 def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
@@ -724,7 +761,20 @@ class CaptionMerger:
             # its words: it is a stale copy of what re-flowed onto them.
             if any(not self._held(ln, lines, row_words) for ln in between):
                 continue
-            if not between and not _moved(line_words, row_words):
+            # A glitch row that grew its line by whole words is taken too: ``_misread`` paired
+            # it ("like" -> "like with the keto."), so no other rule stores its new words. Not
+            # an aligned row: the live bottom row grows every frame, and taking it rewrote the
+            # rows above onto lines they were misaligned with (`_simulate_teams` seed 125).
+            # Only a recent line: Teams re-flows an entry seconds after it ends, and an old
+            # row re-read longer is OCR jitter ("like" -> "like l o" 70 s on, QA).
+            grew = any(
+                row_line[i] is None
+                and ts - ln.first_ms <= _REVISE_MS
+                and len(rw) > len(lw)
+                and rw[: len(lw)] == lw
+                for i, ln, rw, lw in zip(rows, lines, row_words, line_words, strict=True)
+            )
+            if not between and not grew and not _moved(line_words, row_words):
                 continue
             # The bottom row of a live entry still grows (the row rules take it); a stored one
             # is confirmed like the others, or a misread on the confirming frame would stick.

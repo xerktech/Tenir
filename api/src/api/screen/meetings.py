@@ -91,6 +91,8 @@ class MeetingTracker:
         self.active: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
+        # The ts last handed to the open meeting's merger, for the frame-gap metric (XERK-2722).
+        self._fed_ts: int | None = None
         # The stored lines of the meeting that last ended here (XERK-2615), see on_caption.
         self._ended_lines: list[_Line] = []
         self.last_caption_ms = 0
@@ -217,6 +219,13 @@ class MeetingTracker:
             merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
         segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
+        if self.merger is not None and self._fed_ts is not None:
+            # The time between snapshots the merger sees decides its dropped-frame rules (a
+            # Teams entry is revised in place only within 3 s, XERK-2717): measure it, per
+            # platform, from real meetings rather than modelling it (XERK-2722). Only after
+            # a feed that returned: a frame the merger never took is not a snapshot it saw.
+            metrics.observe(f"screen.caption_gap.{self.meta.platform}", ts - self._fed_ts)
+        self._fed_ts = ts
         if self.conversation_id is None:
             if merger.new_lines == 0:
                 return

@@ -1094,6 +1094,62 @@ def test_replayed_zoom_meeting_becomes_a_ready_conversation(screen) -> None:
     starts = [s.start_ms for s in conv.segments]
     assert starts == sorted(starts) and all(s.end_ms >= s.start_ms for s in conv.segments)
     assert metrics.snapshot()["counters"]["screen.meetings_ended"] == 1
+    # XERK-2722: every caption crop's OCR time is metered per platform; full frames aren't.
+    latency = metrics.snapshot()["latency_ms"]
+    crops = sum(f["region"] == "caption" for f in frames)
+    assert latency["screen.ocr_caption.zoom"]["count"] == crops
+    assert "screen.ocr_caption.teams" not in latency
+
+
+def test_the_gap_between_snapshots_fed_to_a_meeting_is_metered() -> None:
+    """XERK-2722: the merger's dropped-frame rules hinge on the gap between the snapshots it
+    sees, so it is measured within a meeting only, never across the break between two."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1100)
+        await t.on_caption([blk(None, "hello there friend of mine", header=False)], 4600)
+        await t.end(70_000)
+        await t.on_caption([blk(None, "a whole new meeting", header=False)], 100_000)
+        await t.on_caption([blk(None, "a whole new meeting today", header=False)], 101_000)
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"], gap["p50_ms"]) == (3, 3500, 1100)
+        # Keyed by platform: a Teams window's gaps never mix into Zoom's.
+        teams = _tracker(InMemoryConversationStore())
+        teams.meta = ScreenMeta("tesoro", "Tesoro", "teams")
+        await teams.on_caption([blk("Ana Ruiz", "hello there")], 0)
+        await teams.on_caption([blk("Ana Ruiz", "hello there friend")], 2500)
+        latency = metrics.snapshot()["latency_ms"]
+        assert latency["screen.caption_gap.teams"]["max_ms"] == 2500
+        assert latency["screen.caption_gap.zoom"]["count"] == 3
+
+    asyncio.run(run())
+
+
+def test_a_frame_the_merger_fails_on_is_not_a_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-2722: the gap is between snapshots the merger took; a feed that raised is skipped."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert t.merger is not None
+        real = t.merger.feed
+
+        def boom(*a, **k):
+            raise RuntimeError("merge bug")
+
+        monkeypatch.setattr(t.merger, "feed", boom)
+        with pytest.raises(RuntimeError):
+            await t.on_caption([blk(None, "hello there friend", header=False)], 1000)
+        monkeypatch.setattr(t.merger, "feed", real)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1500)
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"]) == (1, 1500)
+
+    asyncio.run(run())
 
 
 def test_history_api_shows_speakers_org_and_participants(screen) -> None:
@@ -1156,6 +1212,8 @@ def test_ocr_failures_are_counted_and_the_socket_stays_up(screen) -> None:
         assert json.loads(ws.receive_text())["type"] == "pong"
     assert metrics.snapshot()["counters"]["screen.ocr_errors"] == 1
     assert store.list(admin.household) == []
+    # A failed read is not latency (a timeout would read as one, XERK-2722).
+    assert "screen.ocr_caption.zoom" not in metrics.snapshot()["latency_ms"]
 
 
 def test_only_the_meeting_owners_aliases_rename_its_speakers(screen) -> None:
@@ -2755,16 +2813,20 @@ def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None
 # its stale draft, and both were stored (~7% of a real meeting's lines).
 
 
-def _entry_run(frames: list[tuple[list[CaptionBlock], int]]) -> tuple[list[tuple], dict]:
-    """Feed each frame ``count`` times, one a second; returns the stored (speaker, text) rows
-    in order (blanked ones left out) and every segment's last text by id."""
+def _entry_run(
+    frames: list[tuple[list[CaptionBlock] | None, int]],
+) -> tuple[list[tuple], dict]:
+    """Feed each frame ``count`` times, one a second (``None``: that many seconds of dropped
+    frames); returns the stored (speaker, text) rows in order (blanked ones left out) and
+    every segment's last text by id."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     final: dict[str, object] = {}
     t = 0
     for blocks, count in frames:
         for _ in range(count):
-            for seg in m.feed(blocks, t):
-                final[seg.segment_id] = seg
+            if blocks is not None:
+                for seg in m.feed(blocks, t):
+                    final[seg.segment_id] = seg
             t += 1000
     for seg in m.flush(t + 60_000):
         final[seg.segment_id] = seg
@@ -2937,6 +2999,178 @@ def test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once() -> N
         [([blk("Ana", *draft), blk("Bo", "sure")], 6), ([blk("Ana", *final), blk("Bo", "sure")], 6)]
     )
     assert stored == [("Ana", final[0]), ("Ana", final[1]), ("Bo", "sure")]
+
+
+@pytest.mark.parametrize("below", ["Ana", "Bo", None])
+def test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once(
+    below: str | None,
+) -> None:
+    """XERK-2716: a 3-row entry re-flowing (its bottom row now unlike its draft) above the
+    same speaker's next entry stored the whole box again. Another speaker below, or nothing,
+    was already stored once."""
+    draft = ["we went over the plan and", "then the build is", "green."]
+    final = ["we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    tail = [blk(below, *nxt)] if below else []
+    stored, _ = _entry_run([([blk("Ana", *draft), *tail], 6), ([blk("Ana", *final), *tail], 6)])
+    assert stored == [("Ana", text) for text in final] + [(below, text) for text in nxt if below]
+
+
+def test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words() -> None:
+    """QA (XERK-2716): a block's top row is never paired by word growth: it has no row above
+    to place it by, so "so ship it" was lost (the rewrite path stores it)."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.")], 5),
+            ([blk("Ana", "green."), blk("Bo", "sure.")], 5),
+            ([blk("Ana", "green, so ship it"), blk("Bo", "sure.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Bo", "sure.")]
+
+
+@pytest.mark.parametrize("above", [False, True])
+def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away(above: bool) -> None:
+    """QA (XERK-2716): "yes I think so too." said between snapshots above a repeat of Ana's
+    next entry is a new line, not the stored "yes." re-flowing; also with Bo's block above it
+    (a row of another block above is not one of its entry's, or the new line is lost). Both
+    lines said between snapshots needs frames dropped: one second apart, it is the stored
+    entry growing (XERK-2717)."""
+    bo = [blk("Bo", "ok.")] if above else []
+    stored, _ = _entry_run(
+        [
+            ([*bo, blk("Ana", "yes.")], 5),
+            ([*bo, blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
+            (None, 8),
+            ([*bo, blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
+        ]
+    )
+    # With Bo above, the whole box is stored again (as on main): a line said between
+    # snapshots under a header makes everything below it new.
+    assert ("Ana", "yes I think so too.") in stored and (above or len(stored) == 4)
+
+
+def test_a_reflow_moving_two_words_down_above_the_same_speakers_next_entry_is_stored_once() -> (
+    None
+):
+    """QA (XERK-2716): the row above the grown one gained two words, so it no longer matches
+    its draft; the grown row still pairs as a row of its entry."""
+    draft = ["so we went over the plan and then", "the build is", "green."]
+    final = ["so we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *draft), blk("Ana", *nxt)], 6), ([blk("Ana", *final), blk("Ana", *nxt)], 6)]
+    )
+    assert stored == [("Ana", text) for text in (*final, *nxt)]
+
+
+def test_an_old_row_re_read_longer_is_jitter_not_growth() -> None:
+    """QA (XERK-2716): a middle row re-read with stray glyphs long after its entry ended is
+    OCR jitter; only a recent (``_REVISE_MS``) row takes growth this way."""
+    rows = ["we went over the plan", "like", "and then it is green"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *rows)], 75), ([blk("Ana", rows[0], "like l o", rows[2])], 6)]
+    )
+    assert stored == [("Ana", text) for text in rows]
+
+
+def test_a_growing_bottom_row_never_rewrites_the_rows_above() -> None:
+    """QA (XERK-2716, `_simulate_teams` seed 125): the live bottom row growing by whole words
+    is no re-flow; taking it copied a misaligned row's text onto a draft line, stored twice."""
+    top = "pods itself can locally design deploy"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", top)], 1),
+            ([blk("Ana", top, "pods.")], 1),
+            ([blk("Ana", f"{top} pods", "itself")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right.")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need")], 1),
+            ([blk("Ana", f"{top} pods", "itself enable right so need right deploy")], 6),
+        ]
+    )
+    words = [w for _, text in stored for w in _words(text).split()]
+    assert words == _words(f"{top} pods itself enable right so need right deploy").split()
+
+
+@pytest.mark.parametrize(
+    ("draft", "final"),
+    [
+        (["green."], ["green, so ship it"]),
+        (
+            ["we went over the plan and", "then the build is", "green."],
+            ["we went over the plan", "and then the build is", "green, so ship it"],
+        ),
+    ],
+)
+def test_an_entry_growing_above_the_same_speakers_next_entry_is_stored_once(
+    draft: list[str], final: list[str]
+) -> None:
+    """XERK-2717: a finished entry grows while the same speaker's next entry shows below it.
+    Nothing aligns, and the speaker's unshown lines run on into that next entry, so the grown
+    rows covered too few of the draft's words and the whole box was stored again."""
+    nxt = ["and then the release notes", "for the api contract"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *draft)], 5),
+            ([blk("Ana", *draft), blk("Ana", *nxt)], 5),
+            ([blk("Ana", *final), blk("Ana", *nxt)], 6),
+        ]
+    )
+    assert stored == [("Ana", text) for text in [*final, *nxt]]
+
+
+def test_a_short_entry_after_the_same_speakers_next_one_is_stored_once() -> None:
+    """QA (XERK-2717): with a third entry of hers below, the second entry's draft ran on into
+    it, still covered enough words, and swallowed it unclaimed; "ok." was stored again."""
+    said = ["green.", "and the notes", "ok."]
+    frames = [([blk("Ana", text) for text in said[:k]], 5) for k in range(1, 4)]
+    stored, _ = _entry_run(
+        [*frames, ([blk("Ana", text) for text in ["green, so ship it", *said[1:]]], 6)]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "and the notes"), ("Ana", "ok.")]
+
+
+def test_the_longest_cut_of_a_draft_is_tried_first() -> None:
+    """QA (XERK-2717): a two-row entry whose second row reads like her next entry ("ok.")
+    grows. Cutting the draft at the first "ok." would leave its row unclaimed and store the
+    box again; the cut at her next entry's own line is tried first."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.", "ok.")], 5),
+            ([blk("Ana", "green.", "ok."), blk("Ana", "ok.")], 5),
+            ([blk("Ana", "green, so ship it", "ok. great"), blk("Ana", "ok.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "ok. great"), ("Ana", "ok.")]
+
+
+def test_a_header_less_next_block_still_cuts_the_draft() -> None:
+    """A header-less block under the grown entry (a misread header) re-reading her next line
+    cuts the draft too; requiring a header stored the box twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.")], 5),
+            ([blk("Ana", "green."), blk("Ana", "and the notes")], 5),
+            ([blk("Ana", "green, so ship it"), blk(None, "and the notes", header=False)], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "and the notes")]
+
+
+def test_bo_repeating_anas_next_entry_cuts_none_of_her_draft() -> None:
+    """Only her own next entry cuts her draft: Ana's two entries rewritten as one, with Bo
+    saying her second one word for word below it, still revise her first line in place."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "we ship.")], 5),
+            ([blk("Ana", "we ship."), blk("Ana", "today.")], 5),
+            ([blk("Ana", "we ship today."), blk("Bo", "today.")], 6),
+        ]
+    )
+    assert stored[0] == ("Ana", "we ship today."), stored
+    assert stored.count(("Ana", "we ship today.")) == 1, stored
 
 
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
