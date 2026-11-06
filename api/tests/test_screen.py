@@ -1094,6 +1094,62 @@ def test_replayed_zoom_meeting_becomes_a_ready_conversation(screen) -> None:
     starts = [s.start_ms for s in conv.segments]
     assert starts == sorted(starts) and all(s.end_ms >= s.start_ms for s in conv.segments)
     assert metrics.snapshot()["counters"]["screen.meetings_ended"] == 1
+    # XERK-2722: every caption crop's OCR time is metered per platform; full frames aren't.
+    latency = metrics.snapshot()["latency_ms"]
+    crops = sum(f["region"] == "caption" for f in frames)
+    assert latency["screen.ocr_caption.zoom"]["count"] == crops
+    assert "screen.ocr_caption.teams" not in latency
+
+
+def test_the_gap_between_snapshots_fed_to_a_meeting_is_metered() -> None:
+    """XERK-2722: the merger's dropped-frame rules hinge on the gap between the snapshots it
+    sees, so it is measured within a meeting only, never across the break between two."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1100)
+        await t.on_caption([blk(None, "hello there friend of mine", header=False)], 4600)
+        await t.end(70_000)
+        await t.on_caption([blk(None, "a whole new meeting", header=False)], 100_000)
+        await t.on_caption([blk(None, "a whole new meeting today", header=False)], 101_000)
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"], gap["p50_ms"]) == (3, 3500, 1100)
+        # Keyed by platform: a Teams window's gaps never mix into Zoom's.
+        teams = _tracker(InMemoryConversationStore())
+        teams.meta = ScreenMeta("tesoro", "Tesoro", "teams")
+        await teams.on_caption([blk("Ana Ruiz", "hello there")], 0)
+        await teams.on_caption([blk("Ana Ruiz", "hello there friend")], 2500)
+        latency = metrics.snapshot()["latency_ms"]
+        assert latency["screen.caption_gap.teams"]["max_ms"] == 2500
+        assert latency["screen.caption_gap.zoom"]["count"] == 3
+
+    asyncio.run(run())
+
+
+def test_a_frame_the_merger_fails_on_is_not_a_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XERK-2722: the gap is between snapshots the merger took; a feed that raised is skipped."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert t.merger is not None
+        real = t.merger.feed
+
+        def boom(*a, **k):
+            raise RuntimeError("merge bug")
+
+        monkeypatch.setattr(t.merger, "feed", boom)
+        with pytest.raises(RuntimeError):
+            await t.on_caption([blk(None, "hello there friend", header=False)], 1000)
+        monkeypatch.setattr(t.merger, "feed", real)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1500)
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"]) == (1, 1500)
+
+    asyncio.run(run())
 
 
 def test_history_api_shows_speakers_org_and_participants(screen) -> None:
@@ -1156,6 +1212,8 @@ def test_ocr_failures_are_counted_and_the_socket_stays_up(screen) -> None:
         assert json.loads(ws.receive_text())["type"] == "pong"
     assert metrics.snapshot()["counters"]["screen.ocr_errors"] == 1
     assert store.list(admin.household) == []
+    # A failed read is not latency (a timeout would read as one, XERK-2722).
+    assert "screen.ocr_caption.zoom" not in metrics.snapshot()["latency_ms"]
 
 
 def test_only_the_meeting_owners_aliases_rename_its_speakers(screen) -> None:

@@ -34,3 +34,10 @@ paths:
 - Meeting titles come from the transcript (`topic.py`, at delivery), never the window's top band:
   on a Horizon window that band is the remote-desktop toolbar. Don't reintroduce `frame.title`
   storage. Tests: `test_screen_topic.py`, `test_an_untitled_meeting_is_titled_by_topic_once_before_delivery`.
+- Frame timing is metered, not modelled (XERK-2722): admin `GET /metrics` `latency_ms` has
+  `screen.caption_gap.<platform>` (ts gap between snapshots fed to one meeting's merger) and
+  `screen.ocr_caption.<platform>` (caption-crop OCR time, successes only). Percentiles cover the
+  last 256 samples process-wide (all windows, ~4 min of one meeting); read them during or right
+  after a meeting: a pod restart clears them. Retune merge timing gates from these, not guesses.
+  Tests: `test_the_gap_between_snapshots_fed_to_a_meeting_is_metered`,
+  `test_a_frame_the_merger_fails_on_is_not_a_gap`.
