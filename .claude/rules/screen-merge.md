@@ -126,6 +126,12 @@ paths:
       `test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame`.
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
+    - The store orders by start, so such a line also takes the known line's start and that line
+      and the ones after it move down a ms each until there is room (`_place_above`, XERK-2729);
+      moved stored segments are re-emitted (upsert). First-seen time stored a wrapped row after
+      the next entry. `first_ms` stays real time (it gates `_REVISE_MS` and friends).
+      Tests: `test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry`,
+      `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`.
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
     draft lines stored; removing them needs a segment delete in the store.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
