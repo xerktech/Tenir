@@ -1830,7 +1830,10 @@ def _simulate(
         shown.append((speaker, phrase))
         t += 1000
     out += m.flush(t + 10_000)
-    return said, [(s.speaker, s.text) for s in out]
+    # Each stored segment once, as last written: an upsert re-emits a segment (same id) the
+    # store keeps one row of (XERK-2721).
+    once = {s.segment_id: s for s in out}
+    return said, [(s.speaker, s.text) for s in once.values()]
 
 
 def _only_said(said: list, stored: list) -> bool:
@@ -2770,6 +2773,243 @@ def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -
     assert glitched not in texts and "yes so so enable should like we" in texts, stored
     assert texts[-2:] == ["cluster not need pods it, the how", "right in overlay."], stored
 
+def _entries(*texts: str) -> list[CaptionBlock]:
+    """A Teams panel of one speaker's entries, each under its own header."""
+    return [blk("Ana", t) for t in texts]
+
+
+def test_a_middle_entry_finishing_after_the_next_began_is_stored() -> None:
+    """XERK-2721: Teams adds words to an entry above a newer one; the row rules let a row
+    above the bottom keep only its text (OCR jitter), so "are done" was lost."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    for t in range(5):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
+    draft = {s.text: s.segment_id for s in out}
+    stored = {s.segment_id: s.text for s in out}
+    for t in range(5, 10):
+        for s in m.feed(_entries("green.", "and the notes are done", "for the api"), t * 1000):
+            stored[s.segment_id] = s.text
+    for s in m.flush(20_000):
+        stored[s.segment_id] = s.text
+    assert list(stored.values()) == ["green.", "and the notes are done", "for the api"]
+    assert stored[draft["and the notes"]] == "and the notes are done"  # same segment
+
+
+def test_a_reworded_top_entry_keeping_its_words_is_stored() -> None:
+    """XERK-2721: a rewrite inserting words into the top entry ("red now not") was dropped
+    as a glitch above the aligned rows."""
+    stored = _teams_entry(
+        _entries("the build is green.", "thanks."),
+        _entries("the build is red now not green", "thanks."),
+    )
+    assert stored == [("Ana", "the build is red now not green"), ("Ana", "thanks.")]
+
+
+def test_a_one_frame_growth_of_a_stored_entry_is_never_stored() -> None:
+    """Words added to a stored row the alignment can't match are taken only once two frames
+    in a row read them: one misread frame never sticks."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    for t in range(5):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
+    out += m.feed(_entries("green.", "and the notes are done", "for the api"), 5000)
+    for t in range(6, 10):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
+def test_ocr_jitter_adding_and_garbling_words_on_a_stored_entry_is_not_stored() -> None:
+    """Only whole words added to every word the row had are taken: a read that also garbles
+    one ("tne") is jitter, however many frames it lasts."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    for t in range(5):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
+    for t in range(5, 10):
+        out += m.feed(_entries("green.", "and tne notes are", "for the api"), t * 1000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
+def test_a_word_inserted_mid_entry_on_a_matched_stored_row_is_stored() -> None:
+    """A read close enough to align as a match (not a misread) takes inserted words too."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    for rows, frames in [
+        (("green.", "we ship the build on friday", "for the api"), range(5)),
+        (("green.", "we ship the new build on friday", "for the api"), range(5, 10)),
+    ]:
+        for t in frames:
+            for s in m.feed(_entries(*rows), t * 1000):
+                stored[s.segment_id] = s.text
+    for s in m.flush(20_000):
+        stored[s.segment_id] = s.text
+    assert list(stored.values()) == ["green.", "we ship the new build on friday", "for the api"]
+
+
+@pytest.mark.parametrize(
+    "jitter",
+    [
+        "and the i notes",  # a stray glyph read as a one-letter word
+        "and notes the are done",  # words out of order
+    ],
+)
+def test_ocr_jitter_adding_a_word_on_every_frame_is_not_stored(jitter: str) -> None:
+    """QA (XERK-2721): static pixels repeat a misread on every frame, so two frames agreeing
+    don't make it speech. Only whole words (not a stray glyph), each kept word in order."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    for t in range(5):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
+    for t in range(5, 10):
+        out += m.feed(_entries("green.", jitter, "for the api"), t * 1000)
+    out += m.flush(20_000)
+    assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
+@pytest.mark.parametrize(
+    ("draft", "final", "kept"),
+    [
+        # Taken by ``_reflow`` once growth waits for it.
+        (
+            ["the it build design the did pods again", "deploy"],
+            ["the it second build design the did will", "pods again deploy"],
+            ["the it second build design the did will", "pods again deploy"],
+        ),
+        # A word inserted beside the moved one ("it"): ``_reflow`` gives up, the draft stays.
+        (
+            ["asking test so second contract can cluster", "we same process need so build process",
+             "contract me me"],
+            ["did asking test so same second contract", "can cluster we same process need so build",
+             "process it contract me me"],
+            ["asking test so second contract can cluster", "we same process need so build process",
+             "contract me me"],
+        ),
+    ],
+)
+def test_a_rewrite_re_flowing_words_onto_the_next_row_is_not_taken_as_its_growth(
+    draft: list[str], final: list[str], kept: list[str]
+) -> None:
+    """QA (XERK-2721): an inserted word pushes a row's last words onto the next, which then
+    "keeps its words and adds some". Taking that row alone stored the moved words twice and
+    lost the rest of the rewrite: growth is taken only while the block's other rows read
+    as their lines."""
+    stored = _teams_entry(
+        [blk("Ana", *draft), blk("Cy", "check the design")],
+        [blk("Ana", *final), blk("Cy", "check the design")],
+    )
+    assert stored == [*(("Ana", t) for t in kept), ("Cy", "check the design")]
+
+
+def test_an_entry_growing_twice_keeps_a_doubled_word() -> None:
+    """QA (XERK-2721): the first growth is taken, so the second is a growth of it; refusing
+    a doubled word as jitter lost "it it works", which main stored."""
+    stored = _teams_entry(
+        _entries("we will", "ok"), _entries("we will ship it it works", "ok"),
+        before=[_entries("we will", "ok"), _entries("we will ship", "ok")],
+    )
+    assert stored == [("Ana", "we will ship it it works"), ("Ana", "ok")]
+
+
+def test_a_word_moving_between_two_of_a_speakers_entries_is_not_growth() -> None:
+    """QA (XERK-2721): "today" re-flowing from one entry onto the next of the same speaker
+    made the lower one "keep its words and add some"; it was stored twice. Growth waits
+    while the speaker's rows next to it changed."""
+    draft = _entries("we ship the build today", "on friday", "ok then")
+    stored = _teams_entry(draft, _entries("we ship the build", "today on friday", "ok then"))
+    assert stored == [("Ana", "we ship the build today"), ("Ana", "on friday"), ("Ana", "ok then")]
+
+
+@pytest.mark.parametrize("shown_for", [1, 2, 5])
+def test_a_word_moved_between_entries_stays_refused_once_its_entry_scrolls_off(
+    shown_for: int,
+) -> None:
+    """QA (XERK-2721): growth only waited while the changed entry above was shown; once it
+    scrolled off, "today on friday" was taken and "today" stored twice."""
+    draft = [*_entries("we ship the build today", "on friday"), blk("Bo", "ok then")]
+    moved = [*_entries("we ship the build", "today on friday"), blk("Bo", "ok then")]
+    scrolled = [*_entries("today on friday"), blk("Bo", "ok then"), blk("Bo", "sure")]
+    stored, _ = _entry_run([(draft, 5), (moved, shown_for), (scrolled, 6)])
+    assert stored == [
+        ("Ana", "we ship the build today"),
+        ("Ana", "on friday"),
+        ("Bo", "ok then"),
+        ("Bo", "sure"),
+    ]
+
+
+def test_one_letter_words_inside_a_growth_are_kept() -> None:
+    """QA (XERK-2721): only a run of added words with no word of 2+ chars is a stray glyph;
+    refusing every one-letter word lost "and a fix", which main stored."""
+    stored, _ = _entry_run(
+        [
+            (_entries("we need", "ok"), 4),
+            (_entries("we need tests", "ok"), 3),
+            (_entries("we need tests and a fix", "ok"), 6),
+        ]
+    )
+    assert stored == [("Ana", "we need tests and a fix"), ("Ana", "ok")]
+
+
+def test_another_speakers_jittered_row_does_not_hold_back_a_growth() -> None:
+    """Only the speaker's own neighbouring entries can hold words that re-flowed onto hers."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "i think"), blk("Bo", "ok then")], 5),
+            ([blk("Ana", "i think that is fine"), blk("Bo", "ok tnen")], 8),
+        ]
+    )
+    assert stored == [("Ana", "i think that is fine"), ("Bo", "ok then")]
+
+
+def test_a_word_inserted_as_the_live_entry_gains_a_row_is_stored() -> None:
+    """QA (XERK-2721): the speaker went on, so the entry gained a bottom row with no stored
+    line yet on the frame after the insertion. Counting that new row as a changed neighbour
+    refused the insertion for good."""
+    rows = ["push process again push cluster locally", "enable fix build push"]
+    grown = "push process again it push cluster locally"
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *rows)], 5),
+            ([blk("Ana", grown, rows[1])], 1),
+            ([blk("Ana", grown, rows[1], "locally")], 1),
+            ([blk("Ana", grown, rows[1], "locally then")], 6),
+        ]
+    )
+    assert stored == [("Ana", grown), ("Ana", rows[1]), ("Ana", "locally then")]
+
+
+def test_a_carried_entry_gaining_words_is_not_revised() -> None:
+    """A carried line's segment belongs to the ended meeting (XERK-2615): words added to it
+    on the next meeting's panel never re-emit it."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    old = set()
+    for t in range(5):
+        old |= {s.segment_id for s in m1.feed(_entries("green.", "and the notes", "for the api"), t * 1000)}
+    old |= {s.segment_id for s in m1.flush(5000)}
+    m2 = CaptionMerger(start_ms=6000, stable_ms=3000, carried=m1.recent())
+    emitted = []
+    for t in range(6, 12):
+        emitted += m2.feed(_entries("green.", "and the notes are done", "for the api"), t * 1000)
+    emitted += m2.flush(20_000)
+    assert not {s.segment_id for s in emitted} & old
+
+
+def test_an_old_entry_gaining_words_is_not_revised() -> None:
+    """Teams rewrites an entry seconds after it ends: past ``_REVISE_MS`` a stored row keeps
+    its text."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out: list = []
+    for t in range(0, 40_000, 1000):
+        out += m.feed(_entries("green.", "and the notes", "for the api"), t)
+    for t in range(40_000, 45_000, 1000):
+        out += m.feed(_entries("green.", "and the notes are done", "for the api"), t)
+    out += m.flush(60_000)
+    assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
 
 @pytest.mark.parametrize(
     "top", ["Yes, the pods need enable should we.", "Yes the pods need enable should we now"]
@@ -3443,7 +3683,8 @@ def test_a_grown_entry_ocr_missed_for_3_s_is_stored_again_but_never_lost() -> No
     assert [text for _, text in stored] == [*said, "green, so ship it", *said[1:]]
 
 
-@pytest.mark.parametrize(("seed", "most"), [(145, 30), (325, 27), (599, 31)])
+# Caps count each stored segment once (``_simulate``, XERK-2721): main stores 25, 27, 31.
+@pytest.mark.parametrize(("seed", "most"), [(145, 25), (325, 27), (599, 31)])
 def test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run(seed: int, most: int) -> None:
     """XERK-2720: Zoom lists a speaker's lines under one header, so a line the box scrolled to
     the block's top is marked as an entry start too. Cutting the draft there first (rather

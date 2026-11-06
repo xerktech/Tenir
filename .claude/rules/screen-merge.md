@@ -197,6 +197,45 @@ paths:
     `test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once`,
     `test_a_middle_row_missed_while_the_bottom_row_grows_is_kept`,
     `test_a_line_the_ocr_missed_between_rows_is_kept`.
+- Teams adds words to a stored entry above the bottom (finishing it after the next began, or
+  rewording it; XERK-2721). Rows there keep their text and aligned as misreads, so it was lost.
+  `CaptionMerger._grow` takes a recent (`_REVISE_MS`) stored line's read that keeps all its
+  words in order and adds whole ones (`_inserted`), once two frames in a row agree.
+  - A run of added words with no 2+ char word ("x", "l") is jitter: static pixels repeat a
+    misread on every frame, so two frames agreeing isn't enough (QA). Doubled words and "a"
+    inside a longer run are kept: refusing them lost a second growth main stored (QA).
+    Accepted: a word OCR doubles on every frame ("the the") is stored.
+  - Applied after `_reflow` (`_apply_grows`), and only while the row's block's other rows and
+    the speaker's rows right above/below read as their lines: else it is a re-flow or rewrite
+    (within a block or across her entries), and taking the row alone stored the moved words
+    twice (QA). Checking only for the moved words missed a word inserted beside them.
+  - A read refused so is refused for good (`_Line.grow_refused`), from its first frame: only
+    waiting let it land once the changed entry scrolled off (QA). Accepted: if that entry is
+    OCR-missed on exactly the frames the word moves, nothing shows the re-flow.
+  - A row with no known line (the live entry's new bottom row, a glitch) counts as unchanged:
+    counting it refused real insertions for good (QA: Teams-sim words lost 143 -> 185).
+  - Accepted: a rewrite with fewer words ("green done now." -> "green.") keeps the draft.
+  - Pre-existing, kept: a matched stored line growing by whole words within `_EXTEND_MS`
+    extends on one frame (any line, not only the newest); waiting delayed a line finalized
+    by the next block and broke `test_extended_line_never_ends_before_it_starts`.
+  - Measured vs main (53baab2): `_simulate_teams` (200 seeds) words lost 236 -> 143 (stored
+    twice 139 -> 140); `noise=0.2` lost 255 -> 176 (1353 -> 1355). Zoom `_simulate` (1000
+    seeds): clean, noise, drops identical per seed; noise + drops 494 -> 439 runs with a
+    duplicate (single runs can do worse). QA's multi-row re-flow fuzz: no seed stores a word
+    twice that main didn't. `_simulate` returns each segment once: an upsert re-emits it.
+  - Tests: `test_a_middle_entry_finishing_after_the_next_began_is_stored`,
+    `test_a_reworded_top_entry_keeping_its_words_is_stored`,
+    `test_a_word_inserted_mid_entry_on_a_matched_stored_row_is_stored`,
+    `test_a_one_frame_growth_of_a_stored_entry_is_never_stored`,
+    `test_ocr_jitter_adding_a_word_on_every_frame_is_not_stored`,
+    `test_a_rewrite_re_flowing_words_onto_the_next_row_is_not_taken_as_its_growth`,
+    `test_an_entry_growing_twice_keeps_a_doubled_word`,
+    `test_a_word_moving_between_two_of_a_speakers_entries_is_not_growth`,
+    `test_a_word_moved_between_entries_stays_refused_once_its_entry_scrolls_off`,
+    `test_one_letter_words_inside_a_growth_are_kept`,
+    `test_a_word_inserted_as_the_live_entry_gains_a_row_is_stored`,
+    `test_another_speakers_jittered_row_does_not_hold_back_a_growth`,
+    `test_a_carried_entry_gaining_words_is_not_revised`, `test_an_old_entry_gaining_words_is_not_revised`.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
   a panel left on screen past the end timer re-read them as a second conversation. No meeting
   starts until a crop holds a line the carry doesn't explain.

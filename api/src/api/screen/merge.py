@@ -127,6 +127,9 @@ class _Line:
     # text two reads in a row agree on (``pending``: the last such read).
     pending: str | None = None
     rewrite_until: int = 0
+    # A read with words added that came with its neighbours changing (``_apply_grows``): a
+    # re-flow, never taken as growth, even once those neighbours scroll off (QA).
+    grow_refused: str | None = None
     # Was shown as the first row under a header: on Teams it starts an entry, where a rewrite
     # of the entry above may stop (``_revisions``, XERK-2720).
     head: bool = False
@@ -236,7 +239,8 @@ def _align(
 
     Monotone alignment: shown[i] -> tail[j] pairs never cross. Leading tail lines (scrolled
     off) are free to skip; shown lines past the last aligned one are new; a shown line left
-    unaligned above it is a glitch."""
+    unaligned above it is a glitch. ``misreads`` (when given) gets each glitch the alignment
+    paired with a known line: shown index -> tail index."""
     n, m = len(shown), len(tail)
     neg = float("-inf")
     # best[i][j]: best score with shown[:i] and tail[:j] consumed.
@@ -295,6 +299,33 @@ def _align(
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
+
+
+def _inserted(was: list[str], now: list[str]) -> bool:
+    """Whether ``now`` keeps every word of ``was``, in order, and adds whole words that read
+    as speech: Teams finishing or rewording an entry (XERK-2721). OCR jitter garbles or
+    splits words, so it loses one of ``was``'s; a stray glyph read as a word ("x", "l"), a
+    run of added words with no word of 2+ chars, is jitter too: static pixels repeat that
+    misread on every frame (QA). A doubled word, or "a"/"i" inside a longer run ("and a
+    fix"), is kept: refusing them lost growth main stored (QA)."""
+    if not was or len(now) <= len(was):
+        return False
+    added: list[int] = []
+    k = 0
+    for n, w in enumerate(now):
+        if k < len(was) and w == was[k]:
+            k += 1
+        else:
+            added.append(n)
+    if k < len(was):
+        return False
+    runs: list[list[str]] = []
+    for n in added:
+        if runs and n - 1 in added:
+            runs[-1].append(now[n])
+        else:
+            runs.append([now[n]])
+    return all(any(len(w) > 1 for w in run) for run in runs)
 
 
 def _revisions(
@@ -523,6 +554,11 @@ class CaptionMerger:
         self._misreads: dict[int, int] = {}
         # This and the last feed's grown-over-twin reads, keyed by line id (``feed``).
         self._grown_reads: dict[int, str] = {}
+        # Each stored line's last read with words added (``_grow``), this frame's, and this
+        # frame's candidates for ``_apply_grows``.
+        self._grow_seen: dict[int, str] = {}
+        self._grow_now: dict[int, str] = {}
+        self._grows: list[tuple[_Line, _Shown, bool]] = []
 
     def rename(self, old: str, new: str) -> None:
         """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
@@ -578,13 +614,13 @@ class CaptionMerger:
 
     def _match(
         self, blocks: list[CaptionBlock], ts: int
-    ) -> tuple[list[_Shown], list[_Line], list[int | None], dict[int, int]]:
+    ) -> tuple[list[_Shown], list[_Line], list[int | None], dict[int, int], dict[int, int]]:
         shown = _shown(blocks)
         tail = self._tail(ts)
         self._misreads = {}
         aligned = _align(shown, tail, self._misreads)
         revised = _revisions(shown, self._speakers(blocks, shown, aligned, tail), aligned, tail, ts)
-        return shown, tail, aligned, revised
+        return shown, tail, aligned, revised, self._misreads
 
     def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
         """Whether a line of this snapshot re-reads a recent known line (it aligns to one).
@@ -592,12 +628,20 @@ class CaptionMerger:
         A header-less Teams crop mid-meeting is a long entry whose header scrolled off, and it
         still shows lines the last snapshot did; one sharing none is other text in the band
         (a slide, XERK-2614)."""
-        _, _, aligned, revised = self._match(blocks, ts)
+        _, _, aligned, revised, _ = self._match(blocks, ts)
         return bool(revised) or any(a is not None for a in aligned)
 
     def feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         """Fold one caption snapshot in; returns segments to store (new or extended)."""
-        shown, tail, aligned, revised = self._match(blocks, ts)
+        shown, tail, aligned, revised, misreads = self._match(blocks, ts)
+        self._grow_now = {}
+        self._grows = []
+        # The known line each row re-reads, revises or misreads, for ``_apply_grows``.
+        row_known = [
+            tail[a] if a is not None else tail[revised[k]] if k in revised else
+            tail[misreads[k]] if k in misreads else None
+            for k, a in enumerate(aligned)
+        ]
         # Whether shown[0] is the crop's top row: _shown keeps only the bottom _MAX_SHOWN.
         uncut = len(shown) == sum(1 for b in blocks for text in b.lines if _norm(text))
         last_aligned = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
@@ -674,6 +718,9 @@ class CaptionMerger:
                         line.seen_ms = ts
                         self._revise(line, line_shown, ts, out)
                         row_line[i] = line
+                elif i in misreads:
+                    # Or Teams added words to the entry it misreads (``_grow``, XERK-2721).
+                    self._grow(tail[misreads[i]], line_shown, ts)
                 continue  # an OCR glitch above known lines: never a new line
             else:
                 # New lines keep the order they appeared in: each at least a millisecond
@@ -703,6 +750,7 @@ class CaptionMerger:
             out,
             clippable_top=bool(shown) and uncut and not blocks[shown[0].block].has_header,
         )
+        self._apply_grows(shown, row_known, ts, out)
         for line in to_finalize:
             if not line.final and any(ln is line for ln in self._lines):
                 seg = self._finalize(line)
@@ -711,6 +759,7 @@ class CaptionMerger:
             if not line.final and ts - line.changed_ms >= self.stable_ms:
                 seg = self._finalize(line)
                 out[seg.segment_id] = seg
+        self._grow_seen = self._grow_now
         del self._lines[:-_KEEP]
         # Stored in the order they were said, whichever rule finalized them.
         return sorted(out.values(), key=lambda seg: seg.start_ms)
@@ -767,6 +816,70 @@ class CaptionMerger:
             seg.text = shown.text
             seg.end_ms = self._rel(max(ts, line.first_ms))
             out[seg.segment_id] = seg
+        else:
+            self._grow(line, shown, ts)
+
+    def _grow(self, line: _Line, shown: _Shown, ts: int) -> None:
+        """A recent stored line re-read with whole words added (XERK-2721): Teams finished a
+        middle entry ("and the notes" -> "...are done") or reworded one ("the build is
+        green." -> "...red now not green"). Rows above the bottom otherwise keep their text
+        (OCR jitter), so these were lost. Taken once two frames in a row read it alike: one
+        misread frame is never stored. A rewrite dropping words still keeps the draft.
+        Confirmed reads are applied after ``_reflow`` (``_apply_grows``)."""
+        # The speaker matches (a misread pairing and a match both require it), and
+        # ``_revise`` refuses a carried line (the ended meeting's segment, XERK-2615).
+        if not line.final or ts - line.first_ms > _REVISE_MS:
+            return
+        if shown.norm == line.grow_refused or not _inserted(_words(line.text), _words(shown.text)):
+            return
+        if any(ln is not line and _exact(shown, ln) for ln in self._lines[-_TAIL:]):
+            return  # it re-reads another known line: growing this one copied that (XERK-2719)
+        self._grow_now[id(line)] = shown.norm
+        self._grows.append((line, shown, self._grow_seen.get(id(line)) == shown.norm))
+
+    def _apply_grows(
+        self, shown: list[_Shown], row_known: list[_Line | None], ts: int, out: dict[str, Segment]
+    ) -> None:
+        """Take the confirmed ``_grow`` reads ``_reflow`` left alone, of a row whose block's
+        other rows, and the same speaker's rows right above and below it, still read as their
+        lines. When they changed too the entry re-flowed or was rewritten (``_reflow``,
+        ``_revisions``): taking the row alone stored words that moved onto it twice and lost
+        the rest of the rewrite (QA: within a block, with a word inserted beside the moved
+        ones, and across two of the speaker's entries). Such a read is refused for good, on
+        its first frame: applied once the changed row scrolled off, it stored the word twice
+        again (QA). Live lines read as their lines here: the row rules took this frame's
+        text already."""
+
+        def steady(k: int) -> bool:
+            # A row with no known line is new this frame (the live entry gained a row as the
+            # speaker went on) or a glitch: neither moved words off a line. Counting it as a
+            # change refused real insertions for good (QA, ``grow_refused``).
+            known = row_known[k]
+            return known is None or known.norm == shown[k].norm
+
+        for line, row, confirmed in self._grows:
+            if not any(ln is line for ln in self._lines):
+                continue  # ``_reflow`` dropped the line
+            i = next(k for k, r in enumerate(shown) if r is row)
+            near = [
+                k
+                for k in range(len(shown))
+                if k != i
+                and (
+                    shown[k].block == row.block
+                    or (
+                        abs(k - i) == 1
+                        and _same_speaker(
+                            (row_known[k].speaker if row_known[k] else None) or shown[k].speaker,
+                            line.speaker,
+                        )
+                    )
+                )
+            ]
+            if not all(steady(k) for k in near):
+                line.grow_refused = row.norm
+            elif confirmed:
+                self._revise(line, row, ts, out)
 
     def _reflow(
         self,
