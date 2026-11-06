@@ -2932,6 +2932,57 @@ def test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth()
     assert stored == [("Ana", "we ship the build today"), ("Ana", "on friday"), ("Ana", "ok then")]
 
 
+@pytest.mark.parametrize(
+    ("draft", "moved"),
+    [
+        # The moved word lands mid-row: no edge word of the growing row changed.
+        (["we ship it today", "and test it", "on friday"], ["we ship it", "and today test it", "on friday"]),
+        # It lands two rows down, past a row that reads as its line.
+        (["we ship it today", "and test it", "on friday"], ["we ship it", "and test it", "on today friday"]),
+        # Reworded as it moved, landing mid-row (QA).
+        (["we ship it today", "and test it", "on friday"], ["we ship it", "and tomorrow test it", "on friday"]),
+    ],
+)
+def test_a_word_moved_within_an_entry_is_not_growth(draft: list[str], moved: list[str]) -> None:
+    """QA (XERK-2728): a neighbour blocks growth when it lost the word the row gained, or when
+    its edge word facing the row changed. Each shape here stored the moved word twice."""
+    stored = _teams_entry([blk("Ana", *draft), blk("Ana", "ok then")],
+                          [blk("Ana", *moved), blk("Ana", "ok then")])
+    assert stored == [*(("Ana", t) for t in draft), ("Ana", "ok then")]
+
+
+def test_words_moved_down_from_a_row_off_the_crop_are_not_growth() -> None:
+    """QA (XERK-2728): the crop's header-less top row gained words at its start from the row
+    above it, which has scrolled off: no neighbour shows the move, so it was stored twice."""
+    rows = ["go do design the will", "enable second what can", "design again again process",
+            "task change so"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Bo", *rows)], 5),
+            ([blk(None, *rows[2:], header=False), blk("Bo", "do again it change")], 5),
+            ([blk(None, "again process task change so.", header=False),
+              blk("Bo", "Do again, it change.")], 6),
+        ]
+    )
+    assert ("Bo", "again process task change so.") not in stored
+    assert ("Bo", "task change so") in stored
+
+
+def test_an_entry_merging_its_rows_into_its_last_is_not_growth() -> None:
+    """QA (XERK-2728): an entry rewritten from two rows to one makes its old second row the
+    block's top row with the first row's words before it; taking that as growth of the second
+    row stored them twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "Right."), blk("Bo", "go the so did api there me me me", "will can change"),
+              blk("Bo", "or itself logs that process")], 5),
+            ([blk("Ana", "Right."), blk("Bo", "Go the did api there me will can change."),
+              blk("Bo", "Or itself logs, that process")], 6),
+        ]
+    )
+    assert ("Bo", "Go the did api there me will can change.") not in stored
+
+
 @pytest.mark.parametrize("shown_for", [1, 2, 5])
 def test_a_word_moved_between_entries_stays_refused_once_its_entry_scrolls_off(
     shown_for: int,
@@ -2974,13 +3025,15 @@ def test_another_speakers_jittered_row_does_not_hold_back_a_growth() -> None:
     assert stored == [("Ana", "i think that is fine"), ("Bo", "ok then")]
 
 
-def test_a_two_letter_word_inserted_mid_entry_is_stored() -> None:
-    """XERK-2728: only a vowel-less two-letter token is a stray glyph pair; "is" is speech."""
+@pytest.mark.parametrize("word", ["is", "PM", "Dr", "vs", "mm"])
+def test_a_two_letter_word_inserted_mid_entry_is_stored(word: str) -> None:
+    """XERK-2728: only a thin stroke read twice ("ll") is a stray glyph pair. Two-letter words,
+    abbreviations and fillers without a vowel are speech (QA)."""
     stored, _ = _entry_run(
         [(_entries("green.", "the build green", "ok"), 5),
-         (_entries("green.", "the build is green", "ok"), 6)]
+         (_entries("green.", f"the build {word} green", "ok"), 6)]
     )
-    assert stored == [("Ana", "green."), ("Ana", "the build is green"), ("Ana", "ok")]
+    assert stored == [("Ana", "green."), ("Ana", f"the build {word} green"), ("Ana", "ok")]
 
 
 @pytest.mark.parametrize(

@@ -307,7 +307,7 @@ def _inserted(was: list[str], now: list[str]) -> bool:
     as speech: Teams finishing or rewording an entry (XERK-2721). OCR jitter garbles or
     splits words, so it loses one of ``was``'s; a stray glyph read as a word ("x", "l"), a
     run of added words with no word of 2+ chars, is jitter too: static pixels repeat that
-    misread on every frame (QA), as is a 2-char one with no vowel ("ll", ``_spoken``). A
+    misread on every frame (QA), as is a doubled thin stroke ("ll", ``_spoken``). A
     doubled word, or "a"/"i" inside a longer run ("and a fix"), is kept: refusing them lost growth main stored (QA)."""
     if not was or len(now) <= len(was):
         return False
@@ -331,13 +331,11 @@ def _inserted(was: list[str], now: list[str]) -> bool:
 
 def _spoken(word: str) -> bool:
     """Whether an added word can be speech rather than a stray glyph OCR reads as a word: one
-    letter is a glyph ("x", "l"), and so are two ASCII consonants ("ll", "rn"; XERK-2728).
-    English two-letter words all hold a vowel or "y" ("is", "my"); digits are kept ("10")."""
-    if len(word) > 2:
-        return True
+    letter is a glyph ("x", "l"), and so is a thin stroke read twice ("ll", "ii"; XERK-2728).
+    Other two-letter tokens are kept: "PM", "Dr", "vs", "mm" are speech (QA)."""
     if len(word) < 2:
         return False
-    return not (word.isascii() and word.isalpha() and not any(c in "aeiouy" for c in word))
+    return not (len(word) == 2 and word[0] == word[1] and word[0] in "iljtfr")
 
 
 def _revisions(
@@ -762,7 +760,8 @@ class CaptionMerger:
             out,
             clippable_top=bool(shown) and uncut and not blocks[shown[0].block].has_header,
         )
-        self._apply_grows(shown, row_known, ts, out)
+        top_open = bool(shown) and not blocks[shown[0].block].has_header
+        self._apply_grows(shown, row_known, ts, out, top_open=top_open)
         for line in to_finalize:
             if not line.final and any(ln is line for ln in self._lines):
                 seg = self._finalize(line)
@@ -850,7 +849,13 @@ class CaptionMerger:
         self._grows.append((line, shown, self._grow_seen.get(id(line)) == shown.norm))
 
     def _apply_grows(
-        self, shown: list[_Shown], row_known: list[_Line | None], ts: int, out: dict[str, Segment]
+        self,
+        shown: list[_Shown],
+        row_known: list[_Line | None],
+        ts: int,
+        out: dict[str, Segment],
+        *,
+        top_open: bool,
     ) -> None:
         """Take the confirmed ``_grow`` reads ``_reflow`` left alone, of a row whose block's
         other rows, and the same speaker's rows right above and below it, still read as their
@@ -877,12 +882,22 @@ class CaptionMerger:
             if (Counter(kw) - Counter(sw)) & (Counter(now) - Counter(was)):
                 return False
             # Or a word crossed the break between them: the neighbour's edge word facing this
-            # row changed while this row gained a word on that side. A row misaligned onto
-            # the wrong line can't show the moved word itself (``_simulate_teams`` seed 61).
+            # row changed. A row misaligned onto the wrong line (``_simulate_teams`` seed 61)
+            # or a moved word reworded ("today" -> "tomorrow", QA) never shows the word itself.
             if abs(k - i) != 1:
                 return True
             edge = -1 if k < i else 0  # the neighbour's side facing this row
-            return kw[edge:][:1] == sw[edge:][:1] or now[-1 - edge :][:1] == was[-1 - edge :][:1]
+            return kw[edge:][:1] == sw[edge:][:1]
+
+        def source_hidden(i: int) -> bool:
+            # The entry's row above isn't on screen (the crop's header-less top row) or has no
+            # known line. Words that re-flowed down onto this row's start came off a row no
+            # neighbour check can see: a re-flow (QA: stored twice). A block's top row is not
+            # checked: refusing a one-row entry rewritten from two rows (its line not the
+            # entry's first) left the row unpaired and the box was stored again (fz seed 176).
+            if i == 0:
+                return top_open
+            return shown[i - 1].block == shown[i].block and row_known[i - 1] is None
 
         for line, row, confirmed in self._grows:
             if not any(ln is line for ln in self._lines):
@@ -904,7 +919,9 @@ class CaptionMerger:
                     )
                 )
             ]
-            if not all(steady(k, i, was, now) for k in near):
+            if (now[:1] != was[:1] and source_hidden(i)) or not all(
+                steady(k, i, was, now) for k in near
+            ):
                 line.grow_refused = row.norm
             elif confirmed:
                 self._revise(line, row, ts, out)

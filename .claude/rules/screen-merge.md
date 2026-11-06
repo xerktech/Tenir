@@ -205,8 +205,9 @@ paths:
     misread on every frame, so two frames agreeing isn't enough (QA). Doubled words and "a"
     inside a longer run are kept: refusing them lost a second growth main stored (QA).
     Accepted: a word OCR doubles on every frame ("the the") is stored.
-  - Two ASCII consonants ("ll", "rn") are a stray glyph pair too (`_spoken`, XERK-2728): every
-    English 2-letter word holds a vowel or "y". Digits and non-ASCII letters are kept.
+  - A thin stroke read twice ("ll", "ii") is a stray glyph pair too (`_spoken`, XERK-2728).
+    Never widen it to vowel-less pairs: "PM", "Dr", "vs", "mm" are speech (QA). Test:
+    `test_a_two_letter_word_inserted_mid_entry_is_stored`.
   - Applied after `_reflow` (`_apply_grows`), and only while the row's block's other rows and
     the speaker's rows right above/below read as their lines: else it is a re-flow or rewrite
     (within a block or across her entries), and taking the row alone stored the moved words
@@ -216,16 +217,30 @@ paths:
     when both entries grew in one frame, or the neighbour was jittered on one frame, misread
     on every frame ("on fridav") or re-punctuated. Test:
     `test_a_neighbour_changing_without_losing_the_added_words_does_not_refuse_a_growth`.
-    - An adjacent neighbour whose edge word facing the row changed, while the row gained a
-      word on that side, counts too: a misaligned or reworded row never shows the moved word
-      itself (`_simulate_teams` seed 61 stored it twice). Test:
-      `test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth`.
-    - Measured per seed vs main (c19408d): Zoom `_simulate` (1000 seeds, 4 modes) identical;
-      `_simulate_teams` (200) lost 143 -> 104, stored twice 140 -> 140; `noise=0.2` lost
-      176 -> 131, twice 1355 -> 1345. Kit x2716 tf.py: lost falls on every mode; ~18/2400
-      seeds score a word or two more "extra", each traced to a real growth main lost that
-      the scorer's word alignment misplaces (seeds 89, 124, 51), or a row garbled by noise
-      that main's block re-flow happened to rewrite a frame later (late/0.2/8 seed 75).
+    - An adjacent neighbour whose edge word facing the row changed counts too, wherever the
+      row gains: a misaligned or reworded row never shows the moved word itself
+      (`_simulate_teams` seed 61; QA "today" -> "tomorrow" landing mid-row). So a jittered
+      facing edge word still refuses, as on main. Tests:
+      `test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth`,
+      `test_a_word_moved_within_an_entry_is_not_growth` (the multiset check's only pin).
+    - A gain at the row's start is refused when the entry's row above can't be seen: the
+      crop's header-less top row, or a row under one with no known line. The source row's
+      loss is off screen, so the neighbour check passed and it was stored twice (QA). Test:
+      `test_words_moved_down_from_a_row_off_the_crop_are_not_growth`.
+    - Not a block's top row whose line wasn't its entry's first (rows merged into it): that
+      refusal left the row unpaired and re-stored the box (QA fz seed 176). Accepted: such a
+      merge with steady neighbours is taken as growth, its first row's words stored twice, as
+      on main (XERK-2734: needs a rewrite claiming both lines). Shape pinned when a neighbour
+      also lost words: `test_an_entry_merging_its_rows_into_its_last_is_not_growth`.
+    - Measured per seed vs main (c19408d): Zoom `_simulate` (1000 seeds, 4 modes), kit zf.py
+      and fz.py zoom identical; `_simulate_teams` (200) lost 143 -> 106, stored twice 140 ->
+      140; `noise=0.2` lost 176 -> 143, twice 1355 -> 1344. Kit x2701 fz.py teams (200 x 12):
+      extra falls or holds on every mode, lost never rises; one seed worse (190, the
+      XERK-2734 merge, +6). Kit x2716 tf.py: lost falls on every mode; ~18/2400 seeds score a
+      word or two more "extra", each traced to a real growth main lost that its word
+      alignment misplaces (seeds 89, 124, 51), or a noise-garbled row main's block re-flow
+      happened to rewrite a frame later (late/0.2/8 seed 75). fz "extra" up is real
+      duplication; tf "extra" up was mostly the scorer (QA).
   - A read refused so is refused for good (`_Line.grow_refused`), from its first frame: only
     waiting let it land once the changed entry scrolled off (QA). Accepted: if that entry is
     OCR-missed on exactly the frames the word moves, nothing shows the re-flow.
