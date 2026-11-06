@@ -291,6 +291,7 @@ async def screen_ws(ws: WebSocket) -> None:
         # the client without its region.
         teams_full = header.platform is Platform.teams and header.region.value == "full"
         pane_task = asyncio.create_task(read_pane()) if teams_full else None
+        started = time.perf_counter()
         try:
             result = await ocr.read(
                 jpeg,
@@ -309,6 +310,14 @@ async def screen_ws(ws: WebSocket) -> None:
                 if pane_read and not closing.is_set():
                     await tell_pane(header.orgSiteKey, pane)
             return
+        if header.region.value != "full":
+            # A caption crop's OCR time (all its requests) bounds the gap between the snapshots
+            # the merger sees, one crop per window at a time (XERK-2722). Failures aren't timed:
+            # a timeout would read as latency.
+            metrics.observe(
+                f"screen.ocr_caption.{header.platform.value}",
+                (time.perf_counter() - started) * 1000,
+            )
         pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
