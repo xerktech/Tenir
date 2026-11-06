@@ -318,20 +318,15 @@ async def screen_ws(ws: WebSocket) -> None:
                 f"screen.ocr_caption.{header.platform.value}",
                 (time.perf_counter() - started) * 1000,
             )
-        if settings.screen_sample_dir:
-            # Real crops to re-tune the parsers on (XERK-2705), off by default.
-            await asyncio.to_thread(
-                samples.save,
-                settings.screen_sample_dir,
-                settings.screen_sample_max,
-                header,
-                jpeg,
-                result,
-                ts,
-            )
         pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
+        if settings.screen_sample_dir:
+            # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
+            # forget on the sampler's own thread: a stalled volume never holds up this frame.
+            samples.submit(
+                settings.screen_sample_dir, settings.screen_sample_max, header, jpeg, result, ts
+            )
         reattached = (tracker := tracker_for(header)).notify is not send
         tracker.notify = send
         try:

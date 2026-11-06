@@ -3,31 +3,85 @@
 The parsers' pixel thresholds (Zoom's dim name line, its avatar circle) were tuned on synthetic
 crops only; real crops from the capture client are needed to re-measure them. With
 ``API_SCREEN_SAMPLE_DIR`` set, each frame's JPEG and its OCR result are written there, up to
-``API_SCREEN_SAMPLE_MAX`` frames per process. Off (empty) by default: the frames are screenshots
-of client meetings, so turn it on for one meeting, copy the files off, then turn it off and
-delete them. Never commit them (the repo is public).
+``API_SCREEN_SAMPLE_MAX`` frames (and ``MAX_BYTES``) per process. Off (empty) by default: the
+frames are screenshots of client meetings, so turn it on for one meeting, copy the files off,
+then turn it off and delete them. Never commit them (the repo is public).
+
+Writes run on one dedicated thread and a frame never waits for them: a stalled volume must not
+stall a meeting's lane nor tie up the shared executor that ws auth and audio writes use (QA).
+While a write is in flight, later frames are skipped, not queued.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from api.contract import ScreenFrameHeader
+from api.metrics import metrics
 from api.screen.ocr import OcrResult
 
 log = logging.getLogger(__name__)
 
+# Bytes written per process, whatever the frame cap: 2000 4 MB full frames would be 8 GB on a
+# volume the audio shares.
+MAX_BYTES = 1_000_000_000
+
 _lock = threading.Lock()
+_busy = False
 _saved = 0
+_bytes = 0
+_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screen-sample")
 
 
 def _slug(value: str) -> str:
-    # orgSiteKey comes from the client: never let it pick a path.
-    return re.sub(r"[^A-Za-z0-9_-]", "_", value)[:64] or "_"
+    # orgSiteKey comes from the client: never let it pick a path. The hash keeps keys that
+    # slug alike ("a/b", "a\\b") in separate directories.
+    tag = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return f"{re.sub(r'[^A-Za-z0-9_-]', '_', value)[:48]}-{tag}"
+
+
+def submit(
+    root: str, limit: int, header: ScreenFrameHeader, jpeg: bytes, result: OcrResult, ts: int
+) -> bool:
+    """Queue one frame for ``save`` on the sampler thread; never blocks, never raises.
+
+    Returns whether it was queued: not while the previous write is still running, nor once the
+    caps are reached.
+    """
+    global _busy
+    with _lock:
+        if _busy or _saved >= limit or _bytes >= MAX_BYTES:
+            metrics.incr("screen.samples_skipped")
+            return False
+        _busy = True
+    try:
+        _pool.submit(_run, root, limit, header, jpeg, result, ts)
+    except RuntimeError:  # the pool was shut down (process exit)
+        with _lock:
+            _busy = False
+        return False
+    return True
+
+
+def _run(*args) -> None:
+    global _busy
+    try:
+        save(*args)
+    finally:
+        with _lock:
+            _busy = False
+
+
+def _score(value: float) -> float | None:
+    # A NaN score would be written as bare NaN, which strict JSON parsers refuse (QA).
+    return value if math.isfinite(value) else None
 
 
 def save(
@@ -35,15 +89,14 @@ def save(
 ) -> bool:
     """Write one frame and its OCR as ``<root>/<platform>-<org>/<ts>-<n>-<region>.{jpg,json}``.
 
-    Returns whether it was written. Stops for good (this process) after ``limit`` frames, so a
-    sampler left on can't fill the volume. Never raises: sampling must not break a meeting.
+    Returns whether both were written. Only a frame written counts toward ``limit``; a failed
+    write leaves no half pair behind. Never raises: sampling must not break a meeting.
     """
-    global _saved
+    global _saved, _bytes
     with _lock:
-        if _saved >= limit:
+        if _saved >= limit or _bytes >= MAX_BYTES:
             return False
-        _saved += 1
-        n = _saved
+        n = _saved + 1
     region = header.region.value
     stem = f"{ts}-{n:05d}-{region}"
     meta = {
@@ -53,25 +106,38 @@ def save(
         "ts": ts,
         "width": result.width,
         "height": result.height,
-        "lines": [{"text": ln.text, "box": list(ln.box), "score": ln.score} for ln in result.lines],
+        "lines": [
+            {"text": ln.text, "box": list(ln.box), "score": _score(ln.score)} for ln in result.lines
+        ],
     }
+    d = Path(root) / f"{header.platform.value}-{_slug(header.orgSiteKey)}"
+    paths = (d / f"{stem}.jpg", d / f"{stem}.json")
     try:
-        d = Path(root) / f"{_slug(header.platform.value)}-{_slug(header.orgSiteKey)}"
         d.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (d / f"{stem}.jpg").write_bytes(jpeg)
-        (d / f"{stem}.json").write_text(json.dumps(meta), encoding="utf-8")
-    except OSError as exc:
+        paths[0].write_bytes(jpeg)
+        paths[1].write_text(json.dumps(meta, allow_nan=False), encoding="utf-8")
+    except (OSError, ValueError) as exc:
         log.warning("screen sample not saved: %s", exc)
+        for p in paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
         return False
-    if n == limit:
-        log.info("screen sampling stopped: %d frames saved under %s", limit, root)
+    with _lock:
+        _saved += 1
+        _bytes += len(jpeg)
+        stopped = _saved >= limit or _bytes >= MAX_BYTES
+    if stopped:
+        log.info("screen sampling stopped: %d frames saved under %s", _saved, root)
     return True
 
 
 def _reset_for_tests() -> None:
-    global _saved
+    global _saved, _bytes, _busy
     with _lock:
-        _saved = 0
+        _saved = _bytes = 0
+        _busy = False
 
 
-__all__ = ["save"]
+__all__ = ["MAX_BYTES", "save", "submit"]
