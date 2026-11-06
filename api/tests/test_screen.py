@@ -2755,16 +2755,20 @@ def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None
 # its stale draft, and both were stored (~7% of a real meeting's lines).
 
 
-def _entry_run(frames: list[tuple[list[CaptionBlock], int]]) -> tuple[list[tuple], dict]:
-    """Feed each frame ``count`` times, one a second; returns the stored (speaker, text) rows
-    in order (blanked ones left out) and every segment's last text by id."""
+def _entry_run(
+    frames: list[tuple[list[CaptionBlock] | None, int]],
+) -> tuple[list[tuple], dict]:
+    """Feed each frame ``count`` times, one a second (``None``: that many seconds of dropped
+    frames); returns the stored (speaker, text) rows in order (blanked ones left out) and
+    every segment's last text by id."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     final: dict[str, object] = {}
     t = 0
     for blocks, count in frames:
         for _ in range(count):
-            for seg in m.feed(blocks, t):
-                final[seg.segment_id] = seg
+            if blocks is not None:
+                for seg in m.feed(blocks, t):
+                    final[seg.segment_id] = seg
             t += 1000
     for seg in m.flush(t + 60_000):
         final[seg.segment_id] = seg
@@ -2971,12 +2975,15 @@ def test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words() ->
 def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away(above: bool) -> None:
     """QA (XERK-2716): "yes I think so too." said between snapshots above a repeat of Ana's
     next entry is a new line, not the stored "yes." re-flowing; also with Bo's block above it
-    (a row of another block above is not one of its entry's, or the new line is lost)."""
+    (a row of another block above is not one of its entry's, or the new line is lost). Both
+    lines said between snapshots needs frames dropped: one second apart, it is the stored
+    entry growing (XERK-2717)."""
     bo = [blk("Bo", "ok.")] if above else []
     stored, _ = _entry_run(
         [
             ([*bo, blk("Ana", "yes.")], 5),
             ([*bo, blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
+            (None, 8),
             ([*bo, blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
         ]
     )
@@ -3027,6 +3034,85 @@ def test_a_growing_bottom_row_never_rewrites_the_rows_above() -> None:
     )
     words = [w for _, text in stored for w in _words(text).split()]
     assert words == _words(f"{top} pods itself enable right so need right deploy").split()
+
+
+@pytest.mark.parametrize(
+    ("draft", "final"),
+    [
+        (["green."], ["green, so ship it"]),
+        (
+            ["we went over the plan and", "then the build is", "green."],
+            ["we went over the plan", "and then the build is", "green, so ship it"],
+        ),
+    ],
+)
+def test_an_entry_growing_above_the_same_speakers_next_entry_is_stored_once(
+    draft: list[str], final: list[str]
+) -> None:
+    """XERK-2717: a finished entry grows while the same speaker's next entry shows below it.
+    Nothing aligns, and the speaker's unshown lines run on into that next entry, so the grown
+    rows covered too few of the draft's words and the whole box was stored again."""
+    nxt = ["and then the release notes", "for the api contract"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *draft)], 5),
+            ([blk("Ana", *draft), blk("Ana", *nxt)], 5),
+            ([blk("Ana", *final), blk("Ana", *nxt)], 6),
+        ]
+    )
+    assert stored == [("Ana", text) for text in [*final, *nxt]]
+
+
+def test_a_short_entry_after_the_same_speakers_next_one_is_stored_once() -> None:
+    """QA (XERK-2717): with a third entry of hers below, the second entry's draft ran on into
+    it, still covered enough words, and swallowed it unclaimed; "ok." was stored again."""
+    said = ["green.", "and the notes", "ok."]
+    frames = [([blk("Ana", text) for text in said[:k]], 5) for k in range(1, 4)]
+    stored, _ = _entry_run(
+        [*frames, ([blk("Ana", text) for text in ["green, so ship it", *said[1:]]], 6)]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "and the notes"), ("Ana", "ok.")]
+
+
+def test_the_longest_cut_of_a_draft_is_tried_first() -> None:
+    """QA (XERK-2717): a two-row entry whose second row reads like her next entry ("ok.")
+    grows. Cutting the draft at the first "ok." would leave its row unclaimed and store the
+    box again; the cut at her next entry's own line is tried first."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.", "ok.")], 5),
+            ([blk("Ana", "green.", "ok."), blk("Ana", "ok.")], 5),
+            ([blk("Ana", "green, so ship it", "ok. great"), blk("Ana", "ok.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "ok. great"), ("Ana", "ok.")]
+
+
+def test_a_header_less_next_block_still_cuts_the_draft() -> None:
+    """A header-less block under the grown entry (a misread header) re-reading her next line
+    cuts the draft too; requiring a header stored the box twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.")], 5),
+            ([blk("Ana", "green."), blk("Ana", "and the notes")], 5),
+            ([blk("Ana", "green, so ship it"), blk(None, "and the notes", header=False)], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Ana", "and the notes")]
+
+
+def test_bo_repeating_anas_next_entry_cuts_none_of_her_draft() -> None:
+    """Only her own next entry cuts her draft: Ana's two entries rewritten as one, with Bo
+    saying her second one word for word below it, still revise her first line in place."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "we ship.")], 5),
+            ([blk("Ana", "we ship."), blk("Ana", "today.")], 5),
+            ([blk("Ana", "we ship today."), blk("Bo", "today.")], 6),
+        ]
+    )
+    assert stored[0] == ("Ana", "we ship today."), stored
+    assert stored.count(("Ana", "we ship today.")) == 1, stored
 
 
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
