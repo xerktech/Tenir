@@ -139,7 +139,8 @@ paths:
     "like" -> "like with the keto." was lost), only for lines under `_REVISE_MS` old: older ones
     stored OCR junk. Accepted: a stray glyph read on every frame of a recent row is appended.
   - Measured per seed vs. main: `_simulate_teams` identical; Zoom `_simulate` differs on 18/1000
-    noise+drop seeds, none worse. QA's kit (`~/.cache/qa-tenir-kit/x2716`, Teams late-growth
+    noise+drop seeds: fewer wrong lines on all; one loses
+    a line more (seed 3829: 1 lost, 5 fewer wrong). QA's kit (`~/.cache/qa-tenir-kit/x2716`, Teams late-growth
     fuzz) is better in total on every mode; ~2% of its seeds lose a few words more.
   - Tests: `test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once`,
     `test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words`,
