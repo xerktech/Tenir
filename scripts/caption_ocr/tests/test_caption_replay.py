@@ -445,3 +445,20 @@ def test_a_row_stored_far_out_of_order_is_lost_and_extra() -> None:
     late = ("Ana", "a special line said once at the start")
     got = cr.compare(LINES + [late], [late, *LINES])
     assert (got["matched"], got["missing"], got["extra"]) == (80, 1, 1)
+
+
+def test_equally_long_chains_keep_the_own_speaker_pairs_across_prefix_ranges() -> None:
+    # Two 3-pair chains: A, B, C in place, or C's late copies of all three. The prefix query
+    # must compare speaker matches too, or it keeps whichever range it visits first (QA M50).
+    reference = [("A", "alpha one"), ("B", "bravo two"), ("C", "charlie three")]
+    rows = [
+        ("A", "alpha one"),
+        ("B", "bravo two"),
+        ("D", "filler words here"),
+        ("D", "more filler words"),
+        ("C", "alpha one"),
+        ("C", "bravo two"),
+        ("C", "charlie three"),
+    ]
+    got = cr.compare(rows, reference)
+    assert (got["matched"], got["speaker_changed"]) == (3, 0)
