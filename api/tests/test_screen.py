@@ -1941,6 +1941,17 @@ def test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow() -> None:
     assert budget.left > -merge_mod._WORK_BURST
 
 
+def test_a_pair_ruled_out_by_the_cheap_bounds_still_pays_its_setup() -> None:
+    """QA: rows unlike every known line skip the quadratic ratio, but setting up and
+    bounding 12 x 20 pairs a frame still cost ~25 ms; unpaid, they were never refused."""
+    from api.screen.merge import MergeBudget
+
+    budget = MergeBudget()
+    left = budget.left
+    assert budget.ratio("abc", "xyz", 0.5) == 0.0
+    assert budget.left == left - 6
+
+
 def test_crafted_rows_cost_more_work_than_real_ones_of_their_length() -> None:
     from api.screen.merge import _work
 

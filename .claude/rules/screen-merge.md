@@ -65,8 +65,8 @@ paths:
     - The memo (full ratio per pair, LRU) is exact; FIFO eviction thrashed on a dense box.
       Never share it across users: one would flush another's.
     - Sized for a dense 12 x 160-char English box, OCR noise on 60% of rows, at the 1 fps
-      meeting cadence (~490k units a frame): 0 drops at 1-2 fps. Half the rate dropped
-      frames. One user's 8 crafted windows: ~0.2-0.3 s CPU a second (was ~8). Raising
+      meeting cadence (~490k units a frame): 0 drops at 1 fps; at 2 fps only up to ~30%
+      noise (60% drops half). Half the rate dropped frames at 1 fps. One user's 8 crafted windows: ~0.2-0.3 s CPU a second (was ~8). Raising
       `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
     - Accepted: several users' device tokens together can still fill the pool.
     - Accepted: one window's clock (up to +60 s) stalls the refill for the user's others.
