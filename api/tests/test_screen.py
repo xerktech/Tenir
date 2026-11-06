@@ -1878,12 +1878,102 @@ def test_a_crafted_huge_caption_snapshot_is_bounded() -> None:
     lines and each line's length, so one frame can't stall the server."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     rows = [f"line {i} " + "word " * 100 for i in range(200)]
-    started = time.monotonic()
     m.feed([blk("Ana", *rows)], 0)
     m.feed([blk("Ana", *rows)], 1000)
-    assert time.monotonic() - started < 2.0
     out = m.flush(5000)
     assert len(out) == 12 and all(len(s.text) <= 160 for s in out)
+
+
+def _crafted_rows(rng) -> list[str]:
+    # Low-entropy rows defeat difflib's cheap bounds: ~1.5 s per frame unbudgeted.
+    return [" ".join(rng.choice("ab") for _ in range(80)) for _ in range(12)]
+
+
+def test_crafted_caption_frames_spend_at_most_the_mergers_cpu_budget() -> None:
+    """XERK-2730: 12 rows of 160 crafted chars cost ~1.5 s CPU a frame, and one socket feeds
+    8 windows into a 2-thread pool. A merger now spends its burst, then ~0.1 s per second.
+    Thread CPU, not wall time: other load on the machine doesn't count."""
+    import random
+
+    from api.screen import merge as merge_mod
+    from api.screen.merge import OverBudget
+
+    rng = random.Random(1)
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    dropped = 0
+    started = time.thread_time()
+    for t in range(30):
+        try:
+            m.feed([blk("Ana", *_crafted_rows(rng))], t * 1000)
+        except OverBudget:
+            dropped += 1
+    spent = time.thread_time() - started
+    # Burst + refill, plus one frame's overrun (the unchecked work after the alignment).
+    assert spent < merge_mod._CPU_BURST + 30 * merge_mod._CPU_PER_S + 1.0
+    assert dropped > 20
+
+
+def test_a_frame_over_budget_mid_alignment_changes_nothing(monkeypatch) -> None:
+    """A frame cut short leaves the merger as it was: the next one merges as if it never came."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import OverBudget
+
+    def fed(m: CaptionMerger) -> list[tuple[str | None, str]]:
+        return [(ln.speaker, ln.text) for ln in m._lines]
+
+    clean, cut = (CaptionMerger(start_ms=0, stable_ms=3000) for _ in range(2))
+    for m in (clean, cut):
+        m.feed([blk("Ana", "can you hear me", "yes I can hear you")], 0)
+    before = fed(cut)
+    clock = iter(range(10**6))  # each read of the CPU clock: one more second spent
+    monkeypatch.setattr(merge_mod.time, "thread_time", lambda: float(next(clock)))
+    with pytest.raises(OverBudget):
+        cut.feed([blk("Ana", "can you hear me", "yes I can hear you now")], 1000)
+    monkeypatch.undo()
+    assert fed(cut) == before
+    with pytest.raises(OverBudget):  # the frame's CPU was charged: the bucket is empty
+        cut.feed([blk("Ana", "yes I can hear you now")], 1000)
+    cut._budget.left = merge_mod._CPU_BURST  # refilled, without waiting out the lines
+    later = [blk("Ana", "can you hear me", "yes I can hear you now", "good")]
+    assert [s.text for s in cut.feed(later, 2000)] == [s.text for s in clean.feed(later, 2000)]
+    assert fed(cut) == fed(clean)
+
+
+def test_the_similarity_memo_is_bounded() -> None:
+    from api.screen import merge as merge_mod
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    for t in range(40):
+        m.feed([blk("Ana", *(f"line {t} {k} said here" for k in range(12)))], t * 1000)
+    assert 0 < len(m._budget.memo) <= merge_mod._MEMO
+
+
+def test_a_caption_frame_over_budget_is_dropped_and_counted(monkeypatch) -> None:
+    """The tracker drops a frame the merger refused, meters it, and still meters merge CPU;
+    a dropped frame is no snapshot gap (XERK-2722)."""
+    from api.screen.merge import OverBudget
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert t.merger is not None
+        real = t.merger.feed
+
+        def refuse(*a, **k):
+            raise OverBudget
+
+        monkeypatch.setattr(t.merger, "feed", refuse)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1000)
+        monkeypatch.setattr(t.merger, "feed", real)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1500)
+        snap = metrics.snapshot()
+        assert snap["counters"]["screen.caption_over_budget.zoom"] == 1
+        assert snap["latency_ms"]["screen.merge_cpu.zoom"]["count"] == 3
+        gap = snap["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"]) == (1, 1500)
+
+    asyncio.run(run())
 
 
 def test_ocr_results_and_rosters_are_bounded() -> None:

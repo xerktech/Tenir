@@ -48,6 +48,23 @@ paths:
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
+  - The caps alone still let 12 low-entropy rows ("a b a b") cost difflib ~1.5 s per frame on
+    the shared 2-thread `CPU_POOL` (XERK-2730); real frames cost ms. Each merger has a CPU
+    bucket (`_Budget`: `_CPU_BURST`, refilled `_CPU_PER_S` per second of snapshot `ts`,
+    thread time). A frame finding it empty or running it dry in `_match` raises `OverBudget`
+    before any mutation; `on_caption` drops it (`screen.caption_over_budget.<platform>`).
+    - Only `_match` may abort: work after it mutates the merger, so it runs on and is charged
+      to the next frames. Never add `check()` there.
+    - Similarities are memoised per merger (`_Budget.memo`, full ratio, any floor reuses it):
+      exact, and a box re-shows most pairs, so dense legit frames stay under the rate. Never
+      share the memo across mergers: one socket flushing it would slow every meeting.
+    - Measured: crafted frames 1.3 s -> 0.10 s CPU per second per window; a 12 x 160-char
+      English box rolling a row a second, 0 drops (38 ms/s). Sims: max feed 14 -> 8 ms, results
+      per seed identical. Retune from `screen.merge_cpu.<platform>` on real meetings.
+    - Accepted: one socket's 8 windows can still take ~0.8 core of the pool.
+    - Tests: `test_crafted_caption_frames_spend_at_most_the_mergers_cpu_budget`,
+      `test_a_frame_over_budget_mid_alignment_changes_nothing`,
+      `test_a_caption_frame_over_budget_is_dropped_and_counted`.
   - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
     lines "explained away" a reply said between snapshots.
   - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.

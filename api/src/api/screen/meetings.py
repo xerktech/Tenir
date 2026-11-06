@@ -21,7 +21,7 @@ from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen import turma
-from api.screen.merge import CaptionMerger, _Line
+from api.screen.merge import CaptionMerger, OverBudget, _Line
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
 log = logging.getLogger("api.screen")
@@ -178,6 +178,15 @@ class MeetingTracker:
             )
 
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
+        try:
+            await self._on_caption(blocks, ts)
+        except OverBudget:
+            # The merger's CPU bucket ran dry (XERK-2730): a crafted frame costs difflib
+            # seconds on the shared CPU_POOL. Dropped like a frame latest-frame-wins skipped;
+            # the merger is unchanged and the next snapshot re-reads the box.
+            metrics.incr(f"screen.caption_over_budget.{self.meta.platform}")
+
+    async def _on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
         loop = asyncio.get_running_loop()
@@ -218,7 +227,11 @@ class MeetingTracker:
             # else starts no meeting. Otherwise they were re-stored as a second conversation.
             merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
-        segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
+        try:
+            segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
+        finally:
+            # Merge CPU per snapshot, to retune merge.py's budget from real meetings.
+            metrics.observe(f"screen.merge_cpu.{self.meta.platform}", merger.last_cpu_ms)
         if self.merger is not None and self._fed_ts is not None:
             # The time between snapshots the merger sees decides its dropped-frame rules (a
             # Teams entry is revised in place only within 3 s, XERK-2717): measure it, per
