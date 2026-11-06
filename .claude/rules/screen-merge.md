@@ -131,7 +131,8 @@ paths:
       moved stored segments are re-emitted (upsert). First-seen time stored a wrapped row after
       the next entry. `first_ms` stays real time (it gates `_REVISE_MS` and friends).
       Tests: `test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry`,
-      `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`.
+      `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`,
+      `test_making_room_never_moves_or_re_emits_a_carried_line` (carried lines are skipped).
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
     draft lines stored; removing them needs a segment delete in the store.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops

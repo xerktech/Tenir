@@ -4108,3 +4108,26 @@ def test_lines_after_a_wrapped_row_keep_unique_increasing_starts() -> None:
         "we ship the build", "on friday", "ok", "sure", "fine", "agreed",
     ]
     assert len({start for start, _ in rows}) == len(rows)
+
+
+def test_making_room_never_moves_or_re_emits_a_carried_line() -> None:
+    """XERK-2729 (QA): carried lines sit at the front of the known lines, so the feed path never
+    has one after the place a line is made room at. Should it, the ended meeting's segment keeps
+    its start and is not re-emitted into this conversation."""
+    from api.screen.merge import _Line
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([blk("Ana", "we ship"), blk("Bo", "ok")], 0)
+    old = Segment(segment_id="old", text="earlier", start_ms=5000, end_ms=5000, lang="en")
+    carried = _Line("Cy", "earlier", "earlier", 2, 2, 0, segment=old, carried=True)
+    m._lines.append(carried)  # after Bo's line, which the new line goes above
+    for ln in m._lines:
+        if not ln.carried:
+            m._finalize(ln)
+    out: dict = {}
+    new = _Line("Ana", "on friday", "on friday", 1000, 1000, 1000)
+    m._place_above(new, 1, out)
+    assert "old" not in out and old.start_ms == 5000
+    bo = m._lines[1]
+    assert new.order_ms == 1 and bo.order_ms == 2  # the live line still moves down
+    assert set(out) == {bo.segment.segment_id}
