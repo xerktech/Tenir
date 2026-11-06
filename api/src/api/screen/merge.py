@@ -28,6 +28,12 @@ re-wrapped, so its rows no longer align line by line and would all look new. Row
 alignment calls new are first offered to the recent known lines it left unshown: a block whose
 words revise a run of the same speaker's lines (``_revisions``) updates those lines' segments
 in place (same ids, so the store upserts them) instead of adding new ones.
+
+Teams also **re-flows** an entry as it grows (XERK-2715): a word inserted or fixed moves words
+across its row breaks, so rows gain leading words and land as new lines beside stale drafts.
+After the rows are placed, each block is upserted as one entry (``_reflow``): when a word
+crossed a break, its rows replace the texts of the lines they landed on, in order, and lines
+left between them whose words the rows now hold are dropped (stored ones re-emitted blank).
 """
 
 from __future__ import annotations
@@ -80,6 +86,9 @@ _NEW = -0.1
 # first seen this recently can be revised: Teams rewrites an entry seconds after it ends.
 _REVISED = 0.6
 _REVISE_MS = 30_000
+# A re-flowed entry (XERK-2715): a line its rows skip is a stale copy when they hold this share
+# of its words where it sat (Teams may also fix one of them).
+_HELD = 0.5
 _WORD = re.compile(r"[\w']+")
 
 
@@ -298,6 +307,41 @@ def _revisions(
     return out if p == len(cands) else {}
 
 
+def _alike(a: list[str], b: list[str]) -> bool:
+    """Whether two rows' words mostly agree, in order (Teams may fix a word as it re-flows)."""
+    if not a or not b:
+        return a == b
+    return SequenceMatcher(None, a, b, autojunk=False).ratio() >= _REVISED
+
+
+def _moved(was: list[list[str]], now: list[list[str]]) -> bool:
+    """Whether a word crossed a row break (Teams re-flowed the entry). A word changed within
+    a row (OCR jitter) moves no break.
+
+    Either a changed row now starts with the word that ended the row above it, or ends with
+    the one that started the row below (the moved word may still be on its old row too, when
+    that row is the stale draft); or the rows' words, matched against the lines' in order,
+    put a break between two words the lines kept together (or the reverse)."""
+    for k in range(min(len(was), len(now)) - 1):
+        a, b, c, d = was[k], was[k + 1], now[k], now[k + 1]
+        # Down: row k lost its last word to the start of row k+1, and otherwise reads as before.
+        if a and c and d and a[-1] == d[0] and c[-1] != a[-1] and _alike(c, a[:-1]):
+            return True
+        # Up: row k gained the word that started row k+1, which no longer starts it.
+        if b and c and d and b[0] == c[-1] and d[0] != b[0] and _alike(c[:-1], a):
+            return True
+    a = [w for ws in was for w in ws]
+    b = [w for ws in now for w in ws]
+    breaks_a = {sum(map(len, was[: k + 1])) for k in range(len(was) - 1)}
+    breaks_b = {sum(map(len, now[: k + 1])) for k in range(len(now) - 1)}
+    for mb in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
+        # Inside a run of words both sides hold in order, the breaks must sit alike.
+        for k in range(1, mb.size):
+            if (mb.a + k in breaks_a) != (mb.b + k in breaks_b):
+                return True
+    return False
+
+
 def _shown(blocks: list[CaptionBlock]) -> list[_Shown]:
     return [
         _Shown(b.speaker if b.has_header else None, text[:_MAX_CHARS], _norm(text[:_MAX_CHARS]), bi)
@@ -340,6 +384,9 @@ class CaptionMerger:
         self._next_first = 0
         # Lines this merger has seen for the first time (carried ones excluded).
         self.new_lines = 0
+        # Each block's last re-flowed read, keyed by its lines (``_reflow``): a re-flow is
+        # taken when two frames in a row read it alike.
+        self._reflow_reads: dict[tuple[int, ...], tuple[str, ...]] = {}
 
     def rename(self, old: str, new: str) -> None:
         """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
@@ -427,6 +474,8 @@ class CaptionMerger:
         revised_blocks = {shown[i].block for i in revised}
         for i, j in revised.items():
             known_at[i] = tail[j]
+        # The line each shown row ends on (None: an OCR glitch, skipped), for ``_reflow``.
+        row_line: list[_Line | None] = [None] * len(shown)
         for i, (line_shown, at) in enumerate(zip(shown, aligned, strict=True)):
             block = blocks[line_shown.block]
             if block.has_header:
@@ -462,6 +511,7 @@ class CaptionMerger:
                         # Only the crop's top row, with no header above it, can be cut off.
                         clippable=i == 0 and uncut and not blocks[line_shown.block].has_header,
                     )
+                row_line[i] = line
             elif i in revised:
                 line = tail[revised[i]]
                 line.seen_ms = ts
@@ -469,6 +519,7 @@ class CaptionMerger:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
                 self._revise(line, line_shown, ts, out)
+                row_line[i] = line
             elif i < last_aligned:
                 continue  # an OCR glitch above known lines: never a new line
             else:
@@ -483,13 +534,21 @@ class CaptionMerger:
                     at_ = next(k for k in range(len(self._lines)) if self._lines[k] is below)
                 self._lines.insert(at_, line)
                 self.new_lines += 1
+            row_line[i] = line
             if speaker is not None:
                 self.last_speaker = speaker
             nxt = line_shown.block + 1
             if nxt < len(blocks) and blocks[nxt].has_header and not line.final:
                 to_finalize.append(line)
+        self._reflow(
+            shown,
+            row_line,
+            ts,
+            out,
+            clippable_top=bool(shown) and uncut and not blocks[shown[0].block].has_header,
+        )
         for line in to_finalize:
-            if not line.final:
+            if not line.final and any(ln is line for ln in self._lines):
                 seg = self._finalize(line)
                 out[seg.segment_id] = seg
         for line in self._lines:
@@ -552,6 +611,134 @@ class CaptionMerger:
             seg.text = shown.text
             seg.end_ms = self._rel(max(ts, line.first_ms))
             out[seg.segment_id] = seg
+
+    def _reflow(
+        self,
+        shown: list[_Shown],
+        row_line: list[_Line | None],
+        ts: int,
+        out: dict[str, Segment],
+        *,
+        clippable_top: bool,
+    ) -> None:
+        """Upsert each block as one entry (XERK-2715): Teams re-flows a growing entry, so words
+        move between its rows ("then I will" joins the next row's start, "the." becomes "the
+        APl contract" and pushes words down). Row by row, a row that gained leading words
+        isn't a growth and lands as a new line beside its stale draft. When a block's rows
+        moved words across their row breaks, its rows replace the texts of the lines they
+        landed on, in order, and the speaker's recent lines left between them whose words the
+        block now holds are dropped (a stored one is blanked: readers skip empty segments).
+
+        Only a re-flow is taken: a word changed within a row with no word crossing a break is
+        OCR jitter, left to the row rules. Two frames in a row must read the block's rows
+        above its bottom alike (the bottom one is still growing), so one misread frame is
+        never stored."""
+        reads: dict[tuple[int, ...], tuple[str, ...]] = {}
+        groups: list[list[int]] = []
+        for i, line_shown in enumerate(shown):
+            if groups and shown[groups[-1][0]].block == line_shown.block:
+                groups[-1].append(i)
+            else:
+                groups.append([i])
+        for rows in groups:
+            found = self._fill_glitches([row_line[i] for i in rows])
+            if found is None:
+                continue  # a glitch row the lines can't place: the rows can't be mapped
+            lines = found
+            speaker = lines[0].speaker
+            if any(ln.carried or ln.speaker != speaker for ln in lines):
+                continue
+            pos = [self._index(ln) for ln in lines]
+            if pos != sorted(set(pos)):
+                continue
+            between = [
+                ln
+                for k, ln in enumerate(self._lines[pos[0] : pos[-1] + 1])
+                if k + pos[0] not in pos
+            ]
+            if any(
+                ln.carried or ln.speaker != speaker or ts - ln.first_ms > _REVISE_MS
+                for ln in between
+            ):
+                continue  # another speaker's line (or an old one) between: not one entry
+            texts = [shown[i].text for i in rows]
+            row_words = [_words(t) for t in texts]
+            line_words = [_words(ln.text) for ln in lines]
+            if (
+                clippable_top
+                and rows[0] == 0
+                and len(row_words[0]) < len(line_words[0])
+                and line_words[0][-len(row_words[0]) :] == row_words[0]
+            ):
+                # The crop cut the top row's start off: keep the line's text.
+                texts[0], row_words[0] = lines[0].text, line_words[0]
+            # A line the block skips is an OCR miss unless the rows around where it sat hold
+            # its words: it is a stale copy of what re-flowed onto them.
+            if any(not self._held(ln, lines, row_words) for ln in between):
+                continue
+            if not between and not _moved(line_words, row_words):
+                continue
+            key = tuple(id(ln) for ln in lines[:-1])
+            read = tuple(_norm(t) for t in texts[:-1])
+            reads[key] = read
+            if self._reflow_reads.get(key) != read:
+                continue
+            for ln, text in zip(lines, texts, strict=True):
+                ln.pending, ln.rewrite_until = None, 0
+                if _norm(text) == ln.norm:
+                    continue
+                ln.text, ln.norm = text, _norm(text)
+                if ln.segment is None:
+                    ln.changed_ms = ts
+                else:
+                    # end_ms stays when it was said, as for a rewrite (_revise).
+                    ln.segment.text = text
+                    out[ln.segment.segment_id] = ln.segment
+            for ln in between:
+                self._lines.remove(ln)
+                if ln.segment is not None:
+                    ln.segment.text = ""
+                    out[ln.segment.segment_id] = ln.segment
+        self._reflow_reads = reads
+
+    def _fill_glitches(self, found: list[_Line | None]) -> list[_Line] | None:
+        """``found`` with each run of glitch rows (None) between two placed rows paired, in
+        order, with the known lines between those two: the alignment took a re-flowed row
+        that still resembles its draft for a misread of it. None when a run has no such lines
+        to pair with, one for one (at the block's top or bottom, or a count that differs)."""
+        out: list[_Line] = []
+        k = 0
+        while k < len(found):
+            ln = found[k]
+            if ln is not None:
+                out.append(ln)
+                k += 1
+                continue
+            end = k
+            while end < len(found) and found[end] is None:
+                end += 1
+            above, below = (found[k - 1] if k else None), (found[end] if end < len(found) else None)
+            if above is None or below is None:
+                return None
+            gap = self._lines[self._index(above) + 1 : self._index(below)]
+            if len(gap) != end - k:
+                return None
+            out += gap
+            k = end
+        return out
+
+    def _held(self, line: _Line, lines: list[_Line], row_words: list[list[str]]) -> bool:
+        """Whether the rows next to ``line`` (those of the lines just above and below it) hold
+        ``_HELD`` of its words, in order."""
+        at = self._index(line)
+        k = max(n for n, ln in enumerate(lines) if self._index(ln) < at)
+        near = [w for ws in row_words[k : k + 2] for w in ws]
+        words = _words(line.text)
+        sm = SequenceMatcher(None, words, near, autojunk=False)
+        return sum(b.size for b in sm.get_matching_blocks()) >= _HELD * len(words)
+
+    def _index(self, line: _Line) -> int:
+        return next(k for k in range(len(self._lines) - 1, -1, -1) if self._lines[k] is line)
 
     def _revise(self, line: _Line, shown: _Shown, ts: int, out: dict[str, Segment]) -> None:
         """A rewritten entry's row replaces the known line it revises, stored or not."""

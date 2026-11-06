@@ -104,6 +104,29 @@ paths:
     `test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it`,
     `test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored`,
     `test_a_one_frame_misread_of_a_rewritten_row_is_never_stored`.
+- Teams re-flows a growing entry (XERK-2715): a word inserted or fixed moves words across row
+  breaks, so row-level rules stored a stale draft beside its re-flowed copy (~7% of real lines).
+  `CaptionMerger._reflow` then upserts each block as one entry: rows replace their lines' texts
+  in order; same-speaker lines between them whose words the nearby rows hold are dropped.
+  - A dropped stored line is re-emitted with text "" (same id): the store has no delete, and
+    `utterances.sentences` skips blanks. Every reader must go through it. `segmentCount` counts them.
+  - Only a re-flow is taken (`_moved`: a word crossed a break and the rest of the row reads
+    alike); a word changed within a row is jitter for the row rules. Without the "rest reads
+    alike" check, Zoom `_simulate` noise made up text in 9 runs instead of 2.
+  - Two frames in a row must read the rows above the bottom alike (`_reflow_reads`).
+  - A skipped line whose words the rows around it don't hold is an OCR miss and stays.
+  - Glitch rows between placed rows pair with the lines between them (`_fill_glitches`): a
+    re-flowed row resembling its draft aligns as a misread, and its new words were lost.
+  - Case/punctuation-only changes are not a re-flow; the draft's case stays (as before).
+  - Measured with `_simulate_teams` (200 seeds, 38k words): words stored twice 607 -> 119, lost
+    522 -> 235; with `noise=0.2`, 1978 -> 1322 and 595 -> 252. Zoom `_simulate` (1000 seeds,
+    all four modes) unchanged: noise + skip 222 -> 221 dup runs, 112 made-up. Re-run both
+    after tuning `_reflow`; `_simulate_teams` is synthetic, so replay real crops when there are some.
+  - Tests: `test_simulated_teams_reflow_stores_few_words_twice`,
+    `test_a_rewrite_pulling_a_word_onto_the_next_row_is_stored_once`,
+    `test_a_word_pulled_up_blanks_its_stored_draft_row`,
+    `test_a_rewrapped_middle_row_takes_its_new_words`, `test_a_one_frame_rewrap_is_never_stored`,
+    `test_a_line_the_ocr_missed_between_rows_is_kept`.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
