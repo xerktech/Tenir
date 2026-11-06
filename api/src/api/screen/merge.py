@@ -166,7 +166,13 @@ def _misread(shown: _Shown, known: _Line) -> bool:
     if not _same_speaker(shown.speaker, known.speaker):
         return False
     a, b = shown.norm, known.norm
-    return b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE
+    if b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE:
+        return True
+    # A finished Teams row re-flowing: punctuation changed and words joined it ("green." ->
+    # "green, so ship it", XERK-2716). Unpaired under a header it read as a line said between
+    # snapshots and the whole box was stored again; paired, ``_reflow`` takes its words.
+    had = _words(known.text)
+    return bool(had) and _words(shown.text)[: len(had)] == had
 
 
 def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
@@ -696,7 +702,13 @@ class CaptionMerger:
             # its words: it is a stale copy of what re-flowed onto them.
             if any(not self._held(ln, lines, row_words) for ln in between):
                 continue
-            if not between and not _moved(line_words, row_words):
+            # A glitch row that grew its line by whole words is taken too: ``_misread`` paired
+            # it ("like" -> "like with the keto."), so no other rule stores its new words.
+            grew = any(
+                row_line[i] is None and len(rw) > len(lw) and rw[: len(lw)] == lw
+                for i, rw, lw in zip(rows, row_words, line_words, strict=True)
+            )
+            if not between and not grew and not _moved(line_words, row_words):
                 continue
             # The bottom row of a live entry still grows (the row rules take it); a stored one
             # is confirmed like the others, or a misread on the confirming frame would stick.

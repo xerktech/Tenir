@@ -2939,6 +2939,21 @@ def test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once() -> N
     assert stored == [("Ana", final[0]), ("Ana", final[1]), ("Bo", "sure")]
 
 
+@pytest.mark.parametrize("below", ["Ana", "Bo", None])
+def test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once(
+    below: str | None,
+) -> None:
+    """XERK-2716: a 3-row entry re-flowing (its bottom row now unlike its draft) above the
+    same speaker's next entry stored the whole box again. Another speaker below, or nothing,
+    was already stored once."""
+    draft = ["we went over the plan and", "then the build is", "green."]
+    final = ["we went over the plan", "and then the build is", "green, so ship it"]
+    nxt = ["and then the release notes", "for the api contract"]
+    tail = [blk(below, *nxt)] if below else []
+    stored, _ = _entry_run([([blk("Ana", *draft), *tail], 6), ([blk("Ana", *final), *tail], 6)])
+    assert stored == [("Ana", text) for text in final] + [(below, text) for text in nxt if below]
+
+
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
     """A stored line a block skips is a stale copy only when the rows around it hold its
     words; otherwise OCR missed it and it stays."""

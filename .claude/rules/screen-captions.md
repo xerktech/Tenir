@@ -128,6 +128,13 @@ paths:
     at the block's bottom pairs with its speaker's unshown lines right after: an ended entry
     re-flows with the next speaker's block below it, which aligns (the ticket's own example).
   - Case/punctuation-only changes are not a re-flow; the draft's case stays (as before).
+  - A row whose words start with its known line's ("green." -> "green, so ship it") is a
+    `_misread` of it (XERK-2716): unpaired under a header it cost `_UNPAIRED`, so a 3-row entry
+    re-flowing above the same speaker's next entry aligned nothing and the box was stored again.
+    `_reflow` then takes such a glitch row that grew by whole words even with no word moved:
+    else plain growth ("like" -> "like with the keto.") was lost. Measured per seed vs. main:
+    `_simulate_teams` identical; Zoom `_simulate` differs on 18/1000 noise+drop seeds, none worse.
+    Test: `test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once`.
   - Measured with `_simulate_teams` (200 seeds, 38k words): words stored twice 607 -> 139, lost
     522 -> 236; with `noise=0.2`, 1978 -> 1353 and 595 -> 255. Zoom `_simulate` (1000 seeds,
     all four modes): every seed stores exactly what main does. After tuning `_reflow`, diff
