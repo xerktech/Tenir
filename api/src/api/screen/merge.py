@@ -127,6 +127,9 @@ class _Line:
     # text two reads in a row agree on (``pending``: the last such read).
     pending: str | None = None
     rewrite_until: int = 0
+    # Was shown as the first row under a header: on Teams it starts an entry, where a rewrite
+    # of the entry above may stop (``_revisions``, XERK-2720).
+    head: bool = False
 
     @property
     def final(self) -> bool:
@@ -303,16 +306,30 @@ def _revisions(
         # first: a full draft passing coverage swallowed a short entry after the next one
         # ("ok."), which was then stored again. Someone else repeating her line cuts nothing,
         # and nor does a line last seen before dropped frames (``_SAID_BETWEEN_MS``).
+        # Failing all those, the draft up to her next entry, a line first shown under a header
+        # (XERK-2720): her next entry still growing, misread or re-punctuated re-reads none of
+        # her lines verbatim. Only last: Zoom heads a speaker's run once (a scrolled-up row
+        # looks like an entry start), and cutting there first lost revisions in Zoom
+        # simulations.
         nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
+        # Either cut needs the cut entry itself seen within ``_SAID_BETWEEN_MS``: a short entry
+        # scrolled off is no longer there to rewrite, and a later row holding its few words
+        # claimed it (QA). Not "on the last frame": one frame of OCR missing her block then
+        # stored the grown entry twice again (QA).
+        recent = ts - tail[cands[q]].seen_ms <= _SAID_BETWEEN_MS
         cuts = [
             k
             for k in range(q + 1, end)
-            if nxt is not None
+            if recent
+            and nxt is not None
             and speakers[nxt] == tail[cands[q]].speaker
             and shown[nxt].norm == tail[cands[k]].norm
             and ts - tail[cands[k]].seen_ms <= _SAID_BETWEEN_MS
         ]
         ends = [*reversed(cuts), end]
+        own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
+        if own not in ends and recent:
+            ends.append(own)
         found = next(
             ((e, c) for e in ends if (c := _claims(shown, rows, tail, cands[q:e]))), None
         )
@@ -599,6 +616,8 @@ class CaptionMerger:
                 self._lines.insert(at_, line)
                 self.new_lines += 1
             row_line[i] = line
+            if block.has_header and (i == 0 or shown[i - 1].block != line_shown.block):
+                line.head = True
             if speaker is not None:
                 self.last_speaker = speaker
             nxt = line_shown.block + 1
