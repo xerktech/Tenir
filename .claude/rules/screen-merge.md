@@ -89,14 +89,16 @@ paths:
     misread or re-punctuated re-reads none of her lines verbatim, so no cut fired.
     - Only last: Zoom heads a speaker's run once (a scrolled-up row becomes a block's first
       row), and cutting there first stored more lines on Zoom `_simulate` noise+drop seeds.
-    - Any cut (verbatim or this one) needs the cut entry on the last frame: a short entry
-      scrolled off since was claimed by a later row holding its few words, and lost (QA). On
-      main the XERK-2717 cut did it too, masked only by the later rows failing. Neither
-      simulation reaches this path; a same-speaker Teams fuzz did.
+    - Any cut (verbatim or this one) needs the cut entry seen within `_SAID_BETWEEN_MS`: a
+      short entry scrolled off was claimed by a later row holding its few words, and lost (QA).
+      The XERK-2717 cut did it too, masked only by the later rows failing. Neither simulation
+      reaches this path; a same-speaker Teams fuzz did.
+    - Not "seen on the last frame": one frame of OCR missing her block re-stored the box (QA).
     - Tests: `test_a_grown_entry_above_the_speakers_next_entry_is_stored_once`,
       `test_a_grown_entry_above_a_live_entry_is_stored_once`, `test_a_grown_middle_entry_is_stored_once`,
       `test_an_entry_scrolled_off_is_never_claimed_by_a_later_one`,
-      `test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run`.
+      `test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run`,
+      `test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame`.
   - New lines go just above the known line shown below them (Teams adds lines to an entry
     above another speaker's); appending them broke the next snapshot's order.
   - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed

@@ -3281,6 +3281,19 @@ def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
     assert "i that do." in final.values()
 
 
+@pytest.mark.parametrize("missed", [0, 1])
+def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(missed: int) -> None:
+    """QA (XERK-2720): one frame of OCR missing one of Ana's blocks just before her entry grows
+    must not stop the draft being cut at her next entry. Requiring the cut entry on the very
+    last frame stored the whole box again."""
+    said = ["green.", "and the notes", "ok."]
+    frames = [(_entries(*said[:k]), 5) for k in (1, 2, 3)]
+    frames.append((_entries(*[t for n, t in enumerate(said) if n != missed]), 1))
+    frames.append((_entries("green, so ship it", *said[1:]), 6))
+    stored, _ = _entry_run(frames)
+    assert [text for _, text in stored] == ["green, so ship it", "and the notes", "ok."]
+
+
 @pytest.mark.parametrize(("seed", "most"), [(145, 30), (325, 27), (599, 31)])
 def test_a_zoom_speakers_scrolled_lines_are_revised_as_one_run(seed: int, most: int) -> None:
     """XERK-2720: Zoom lists a speaker's lines under one header, so a line the box scrolled to

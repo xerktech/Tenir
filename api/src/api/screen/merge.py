@@ -264,7 +264,6 @@ def _revisions(
     A block of only new rows under its own header that revises nothing is a fresh entry:
     everything below it is newer (a repeat there is said again), so revising stops."""
     last = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
-    last_seen = max((ln.seen_ms for ln in tail), default=0)
     start = (aligned[last] or 0) + 1 if last >= 0 else 0
     cands = [
         j
@@ -311,15 +310,17 @@ def _revisions(
         # (XERK-2720): her next entry still growing, misread or re-punctuated re-reads none of
         # her lines verbatim. Only last: Zoom heads a speaker's run once (a scrolled-up row
         # looks like an entry start), and cutting there first lost revisions in Zoom
-        # simulations. It too needs a line seen within ``_SAID_BETWEEN_MS``.
+        # simulations.
         nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
-        # Either cut needs the cut entry on the last frame: a short entry scrolled off since
-        # is no longer there to rewrite, and a later row holding its few words claimed it.
-        on_screen = tail[cands[q]].seen_ms == last_seen
+        # Either cut needs the cut entry itself seen within ``_SAID_BETWEEN_MS``: a short entry
+        # scrolled off is no longer there to rewrite, and a later row holding its few words
+        # claimed it (QA). Not "on the last frame": one frame of OCR missing her block then
+        # stored the grown entry twice again (QA).
+        recent = ts - tail[cands[q]].seen_ms <= _SAID_BETWEEN_MS
         cuts = [
             k
             for k in range(q + 1, end)
-            if on_screen
+            if recent
             and nxt is not None
             and speakers[nxt] == tail[cands[q]].speaker
             and shown[nxt].norm == tail[cands[k]].norm
@@ -327,7 +328,7 @@ def _revisions(
         ]
         ends = [*reversed(cuts), end]
         own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
-        if own not in ends and on_screen and ts - last_seen <= _SAID_BETWEEN_MS:
+        if own not in ends and recent:
             ends.append(own)
         found = next(
             ((e, c) for e in ends if (c := _claims(shown, rows, tail, cands[q:e]))), None
