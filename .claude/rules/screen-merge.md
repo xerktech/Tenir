@@ -58,16 +58,21 @@ paths:
     - One bucket per user (`ScreenMeetings.put`, two windows' worth), never per merger: after
       a meeting ends every frame gets a fresh merger, which had a full burst each (QA).
     - A refusal keeps what is left: emptying it refused a costly real frame on every retry.
-    - Only `_match` may charge: work after it mutates the merger, so it runs on unmetered.
+    - Only `_match` may refuse (`charge`): work after it mutates the merger, so `_reflow`,
+      `_moved`, `_held` `spend` into debt and `start` refuses frames until it is repaid.
+      Unmetered, a crafted box re-sent unchanged cost 0 units and ~130 ms a frame (QA).
+    - Every difflib call in merge.py is paid for; a new one must `charge` or `spend` too.
     - The memo (full ratio per pair, LRU) is exact; FIFO eviction thrashed on a dense box.
       Never share it across users: one would flush another's.
     - Sized for a dense 12 x 160-char English box, OCR noise on 60% of rows, at the 1 fps
       meeting cadence (~490k units a frame): 0 drops at 1-2 fps. Half the rate dropped
-      frames. One user's 8 crafted windows: ~0.3-0.6 s CPU a second (was ~8). Raising
+      frames. One user's 8 crafted windows: ~0.2-0.3 s CPU a second (was ~8). Raising
       `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
     - Accepted: several users' device tokens together can still fill the pool.
+    - Accepted: one window's clock (up to +60 s) stalls the refill for the user's others.
     - Tests: `test_crafted_caption_frames_spend_at_most_the_windows_work_budget`,
       `test_a_frame_over_budget_mid_alignment_changes_nothing`,
+      `test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow`,
       `test_frames_after_a_meeting_ended_spend_the_windows_budget`,
       `test_a_users_windows_share_one_work_budget`,
       `test_a_caption_frame_over_budget_is_dropped_and_counted`.

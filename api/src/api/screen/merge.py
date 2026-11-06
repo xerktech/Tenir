@@ -106,7 +106,7 @@ _WORD = re.compile(r"[\w']+")
 # rows needs ~490k a frame (peaks 1.05M) at the 1 fps meeting cadence; a crafted one ~8M.
 # Per window, and a user's bucket holds two (``ScreenMeetings``): at 600k that box dropped
 # frames (each refusal wastes the work it did), and the merger re-stores lines across dropped
-# frames. Measured: one user's 8 crafted windows spend ~0.3-0.6 s CPU a second (was ~8).
+# frames. Measured: one user's 8 crafted windows spend ~0.2-0.3 s CPU a second (was ~8).
 # A frame finding the bucket short is dropped before the merger changes anything.
 _WORK_PER_S = 1_000_000
 _WORK_BURST = 4_000_000
@@ -132,8 +132,9 @@ class MergeBudget:
 
     Held by the window's tracker (its user's, via ``ScreenMeetings``), never a merger: after a
     meeting ends every frame gets a fresh merger, and a bucket per merger refilled on each
-    (QA). Only ``_match`` charges it, before the work it pays for, so a refused frame has
-    changed nothing. Counted, not timed: thread CPU time grows on a busy node."""
+    (QA). Only ``_match`` refuses (``charge``, before the work it pays for), so a refused frame
+    has changed nothing; later work ``spend``s into debt. Counted, not timed: thread CPU time
+    grows on a busy node."""
 
     def __init__(self, windows: int = 1) -> None:
         # ``windows``: how many windows' worth of work it refills and holds (a user's bucket).
@@ -151,6 +152,8 @@ class MergeBudget:
         if self.ts is not None:
             self.left = min(self.burst, self.left + self.rate * max(0, ts - self.ts) // 1000)
         self.ts = ts if self.ts is None else max(ts, self.ts)
+        if self.left < 0:  # in debt for work the last frames did after ``_match``
+            raise OverBudget
 
     def charge(self, a: Sequence[Hashable], b: Sequence[Hashable]) -> None:
         """Pay for comparing ``a`` and ``b``, or raise ``OverBudget``. A refused frame keeps
@@ -161,6 +164,13 @@ class MergeBudget:
             raise OverBudget
         self.left -= cost
 
+    def spend(self, a: Sequence[Hashable], b: Sequence[Hashable]) -> None:
+        """Pay for comparing ``a`` and ``b`` where a frame can't be refused (after ``_match``,
+        the merger is changing): the bucket may go into debt, and ``start`` refuses frames
+        until it is refilled. Unmetered, a crafted box re-sent unchanged cost 0 units and
+        ~130 ms of ``_reflow`` a frame (QA)."""
+        self.left -= _work(a, b)
+
     def ratio(self, a: str, b: str, floor: float) -> float:
         """Similarity of two lines; 0.0 when it is certainly below ``floor`` (difflib's cheap
         upper bounds rule most pairs out without the quadratic comparison). The full ratio is
@@ -170,6 +180,8 @@ class MergeBudget:
             self.memo[(a, b)] = r  # most recently used last: eviction takes the oldest use
             return r
         sm = SequenceMatcher(None, a, b, autojunk=False)
+        # Setting up and bounding a pair is linear, but 12 x 20 pairs a frame add up (QA).
+        self.left -= len(a) + len(b)
         if sm.real_quick_ratio() < floor or sm.quick_ratio() < floor:
             return 0.0
         self.charge(a, b)
@@ -548,20 +560,22 @@ def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
     return up + down >= _HELD * len(words)
 
 
-def _share(words: list[str], within: list[str]) -> bool:
+def _share(words: list[str], within: list[str], budget: MergeBudget) -> bool:
     """Whether ``within`` holds ``_HELD`` of ``words``, in order."""
+    budget.spend(words, within)
     sm = SequenceMatcher(None, words, within, autojunk=False)
     return sum(b.size for b in sm.get_matching_blocks()) >= _HELD * len(words)
 
 
-def _alike(a: list[str], b: list[str]) -> bool:
+def _alike(a: list[str], b: list[str], budget: MergeBudget) -> bool:
     """Whether two rows' words mostly agree, in order (Teams may fix a word as it re-flows)."""
     if not a or not b:
         return a == b
+    budget.spend(a, b)
     return SequenceMatcher(None, a, b, autojunk=False).ratio() >= _REVISED
 
 
-def _moved(was: list[list[str]], now: list[list[str]]) -> bool:
+def _moved(was: list[list[str]], now: list[list[str]], budget: MergeBudget) -> bool:
     """Whether a word crossed a row break (Teams re-flowed the entry). A word changed within
     a row (OCR jitter) moves no break.
 
@@ -572,15 +586,16 @@ def _moved(was: list[list[str]], now: list[list[str]]) -> bool:
     for k in range(min(len(was), len(now)) - 1):
         a, b, c, d = was[k], was[k + 1], now[k], now[k + 1]
         # Down: row k lost its last word to the start of row k+1, and otherwise reads as before.
-        if a and c and d and a[-1] == d[0] and c[-1] != a[-1] and _alike(c, a[:-1]):
+        if a and c and d and a[-1] == d[0] and c[-1] != a[-1] and _alike(c, a[:-1], budget):
             return True
         # Up: row k gained the word that started row k+1, which no longer starts it.
-        if b and c and d and b[0] == c[-1] and d[0] != b[0] and _alike(c[:-1], a):
+        if b and c and d and b[0] == c[-1] and d[0] != b[0] and _alike(c[:-1], a, budget):
             return True
     a = [w for ws in was for w in ws]
     b = [w for ws in now for w in ws]
     breaks_a = {sum(map(len, was[: k + 1])) for k in range(len(was) - 1)}
     breaks_b = {sum(map(len, now[: k + 1])) for k in range(len(now) - 1)}
+    budget.spend(a, b)
     for mb in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
         # Inside a run of words both sides hold in order, the breaks must sit alike.
         for k in range(1, mb.size):
@@ -1072,7 +1087,7 @@ class CaptionMerger:
                 and rw[: len(lw)] == lw
                 for i, ln, rw, lw in zip(rows, lines, row_words, line_words, strict=True)
             )
-            if not between and not grew and not _moved(line_words, row_words):
+            if not between and not grew and not _moved(line_words, row_words, self._budget):
                 continue
             # The bottom row of a live entry still grows (the row rules take it); a stored one
             # is confirmed like the others, or a misread on the confirming frame would stick.
@@ -1158,14 +1173,15 @@ class CaptionMerger:
         ):
             return True
         near = [w for ws in near_rows for w in ws]
-        if not _share(words, near):
+        if not _share(words, near, self._budget):
             return False
         if near_rows != near_lines:
             return True
         had = [w for ws in near_lines for w in ws]
+        self._budget.spend(had, near)
         sm = SequenceMatcher(None, had, near, autojunk=False)
         kept = {mb.b + n for mb in sm.get_matching_blocks() for n in range(mb.size)}
-        return _share(words, [w for n, w in enumerate(near) if n not in kept])
+        return _share(words, [w for n, w in enumerate(near) if n not in kept], self._budget)
 
     def _index(self, line: _Line) -> int:
         return next(k for k in range(len(self._lines) - 1, -1, -1) if self._lines[k] is line)

@@ -1920,6 +1920,27 @@ def test_crafted_caption_frames_spend_at_most_the_windows_work_budget() -> None:
     assert dropped >= 25
 
 
+def test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow() -> None:
+    """QA: exact re-reads cost the alignment nothing, but ``_reflow`` compared the box's word
+    lists (12 x 80 one-letter words) unmetered, ~130 ms a frame, never refused. Work after
+    ``_match`` now puts the bucket in debt, and the next frames are refused until refilled."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    budget = MergeBudget()
+    m = CaptionMerger(start_ms=0, stable_ms=3000, budget=budget)
+    rows = [" ".join("a" * 80) for _ in range(12)]
+    refused = 0
+    for t in range(40):
+        try:
+            m.feed([blk("Ana", *rows)], t * 200)
+        except OverBudget:
+            refused += 1
+    assert refused > 20
+    # Spent at most the burst, the refill and one frame's debt.
+    assert budget.left > -merge_mod._WORK_BURST
+
+
 def test_crafted_rows_cost_more_work_than_real_ones_of_their_length() -> None:
     from api.screen.merge import _work
 
