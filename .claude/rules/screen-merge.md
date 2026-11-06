@@ -27,6 +27,10 @@ paths:
     - A row aligned as a misread that grew its line by whole words, while a row below reads
       that line's later twin, revises the line (`_grew_over_twin`, in `feed`). Refusing the
       misread instead left the row unpairable and re-stored the whole box (QA).
+      - Like `_reflow`'s grew-glitch rule: two frames in a row must read it alike, and only a
+        line first seen within `_REVISE_MS` (one frame of "like l o" was stored, QA).
+      - Never when the row reads another known line exactly: it is that line, paired with
+        one it starts with, and revising made a second copy (QA fuzz seeds 183, 161).
     - Both twin guards skip carried lines (as twin or as earlier copy): carried shapes keep
       main's behaviour. Refusing the misread for a carried line moved its growth onto the new
       twin and stored a carried neighbour again (QA). Tests:

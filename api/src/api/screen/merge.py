@@ -219,7 +219,10 @@ def _grew_over_twin(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> b
         return False
     had, now = _words(known.text), _words(shown[i - 1].text)
     return (
-        len(now) > len(had)
+        # A row re-reading another known line exactly is that line, misread-paired with the
+        # one it starts with; revising made a second copy of it (QA, fuzz seeds 183, 161).
+        not any(_exact(shown[i - 1], ln) for ln in tail if ln is not known)
+        and len(now) > len(had)
         and now[: len(had)] == had
         and any(ln.norm == known.norm for ln in tail[k + 1 :])
         and any(_exact(s, known) for s in shown[i:])
@@ -518,6 +521,8 @@ class CaptionMerger:
         self._reflow_reads: dict[tuple[int, ...], tuple[str, ...]] = {}
         # The last ``_match``'s rows aligned as misreads: shown row -> the tail line it misreads.
         self._misreads: dict[int, int] = {}
+        # This and the last feed's grown-over-twin reads, keyed by line id (``feed``).
+        self._grown_reads: dict[int, str] = {}
 
     def rename(self, old: str, new: str) -> None:
         """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
@@ -608,6 +613,7 @@ class CaptionMerger:
             known_at[i] = tail[j]
         # The line each shown row ends on (None: an OCR glitch, skipped), for ``_reflow``.
         row_line: list[_Line | None] = [None] * len(shown)
+        grown_reads: dict[int, str] = {}
         for i, (line_shown, at) in enumerate(zip(shown, aligned, strict=True)):
             block = blocks[line_shown.block]
             if block.has_header:
@@ -654,11 +660,20 @@ class CaptionMerger:
                 row_line[i] = line
             elif i < last_aligned:
                 k = self._misreads.get(i)
-                if k is not None and _grew_over_twin(shown, i + 1, tail, k):
-                    # Not a glitch: its line grew above a same-text entry (XERK-2719).
-                    tail[k].seen_ms = ts
-                    self._revise(tail[k], line_shown, ts, out)
-                    row_line[i] = tail[k]
+                if (
+                    k is not None
+                    and ts - tail[k].first_ms <= _REVISE_MS
+                    and _grew_over_twin(shown, i + 1, tail, k)
+                ):
+                    # Not a glitch: its line grew above a same-text entry (XERK-2719). Taken
+                    # once two frames in a row read it alike, and only for a recent line (as
+                    # ``_reflow``): one frame's stray OCR token ("like l o") was stored (QA).
+                    line = tail[k]
+                    grown_reads[id(line)] = line_shown.norm
+                    if self._grown_reads.get(id(line)) == line_shown.norm:
+                        line.seen_ms = ts
+                        self._revise(line, line_shown, ts, out)
+                        row_line[i] = line
                 continue  # an OCR glitch above known lines: never a new line
             else:
                 # New lines keep the order they appeared in: each at least a millisecond
@@ -680,6 +695,7 @@ class CaptionMerger:
             nxt = line_shown.block + 1
             if nxt < len(blocks) and blocks[nxt].has_header and not line.final:
                 to_finalize.append(line)
+        self._grown_reads = grown_reads
         self._reflow(
             shown,
             row_line,

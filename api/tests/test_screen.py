@@ -2603,6 +2603,20 @@ def test_a_grown_entry_above_a_same_text_entry_is_stored_once(case: str) -> None
     assert [text for _, text in sorted(stored.values())] == said
 
 
+@pytest.mark.parametrize("gap", [0, 70])
+def test_one_frame_of_a_stray_token_over_a_twin_row_is_not_stored(gap: int) -> None:
+    """QA (XERK-2719): a grown twin row is taken only once two frames in a row read it alike
+    (as ``_reflow``'s rule): one frame of "like l o" over "like" was stored for good."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    clean = [blk("Ana", "so we said", "like", "like")]
+    frames = [clean] * (5 + gap) + [[blk("Ana", "so we said", "like l o", "like")]] + [clean] * 6
+    out = []
+    for t, blocks in enumerate(frames):
+        out += m.feed(blocks, t * 1000)
+    out += m.flush(len(frames) * 1000 + 10_000)
+    assert "like l o" not in {s.text for s in out}
+
+
 def test_a_carried_line_growing_above_its_twin_is_stored_as_new() -> None:
     """QA (XERK-2719): the ended meeting's "notes" grows above a "notes" said since. It can't
     be revised (its segment is the ended meeting's), so its growth is a new line, not lost."""
