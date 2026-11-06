@@ -49,21 +49,27 @@ paths:
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
   - The caps alone still let 12 low-entropy rows ("a b a b") cost difflib ~1.5 s per frame on
-    the shared 2-thread `CPU_POOL` (XERK-2730); real frames cost ms. Each merger has a CPU
-    bucket (`_Budget`: `_CPU_BURST`, refilled `_CPU_PER_S` per second of snapshot `ts`,
-    thread time). A frame finding it empty or running it dry in `_match` raises `OverBudget`
-    before any mutation; `on_caption` drops it (`screen.caption_over_budget.<platform>`).
-    - Only `_match` may abort: work after it mutates the merger, so it runs on and is charged
-      to the next frames. Never add `check()` there.
-    - Similarities are memoised per merger (`_Budget.memo`, full ratio, any floor reuses it):
-      exact, and a box re-shows most pairs, so dense legit frames stay under the rate. Never
-      share the memo across mergers: one socket flushing it would slow every meeting.
-    - Measured: crafted frames 1.3 s -> 0.10 s CPU per second per window; a 12 x 160-char
-      English box rolling a row a second, 0 drops (38 ms/s). Sims: max feed 14 -> 8 ms, results
-      per seed identical. Retune from `screen.merge_cpu.<platform>` on real meetings.
-    - Accepted: one socket's 8 windows can still take ~0.8 core of the pool.
-    - Tests: `test_crafted_caption_frames_spend_at_most_the_mergers_cpu_budget`,
+    the shared 2-thread `CPU_POOL` (XERK-2730). `_match` charges each difflib comparison to a
+    work bucket (`MergeBudget`, refilled per second of snapshot `ts`); a frame it can't pay
+    for raises `OverBudget` before any mutation, and `on_caption` drops it
+    (`screen.caption_over_budget.<platform>`), holding no meeting open.
+    - Work is counted (`_work`: first longest-match pass + len*len/4), never timed: thread CPU
+      doubles on a busy node, dropped real frames, and dropped frames re-store lines (QA).
+    - One bucket per user (`ScreenMeetings.put`, two windows' worth), never per merger: after
+      a meeting ends every frame gets a fresh merger, which had a full burst each (QA).
+    - A refusal keeps what is left: emptying it refused a costly real frame on every retry.
+    - Only `_match` may charge: work after it mutates the merger, so it runs on unmetered.
+    - The memo (full ratio per pair, LRU) is exact; FIFO eviction thrashed on a dense box.
+      Never share it across users: one would flush another's.
+    - Sized for a dense 12 x 160-char English box, OCR noise on 60% of rows, at the 1 fps
+      meeting cadence (~490k units a frame): 0 drops at 1-2 fps. Half the rate dropped
+      frames. One user's 8 crafted windows: ~0.3-0.6 s CPU a second (was ~8). Raising
+      `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
+    - Accepted: several users' device tokens together can still fill the pool.
+    - Tests: `test_crafted_caption_frames_spend_at_most_the_windows_work_budget`,
       `test_a_frame_over_budget_mid_alignment_changes_nothing`,
+      `test_frames_after_a_meeting_ended_spend_the_windows_budget`,
+      `test_a_users_windows_share_one_work_budget`,
       `test_a_caption_frame_over_budget_is_dropped_and_counted`.
   - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
     lines "explained away" a reply said between snapshots.
