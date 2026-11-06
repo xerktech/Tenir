@@ -133,10 +133,17 @@ class _Line:
     # Was shown as the first row under a header: on Teams it starts an entry, where a rewrite
     # of the entry above may stop (``_revisions``, XERK-2720).
     head: bool = False
+    # Where the store orders it (its segment's start), when not ``first_ms``: a line Teams adds
+    # to an entry above a known line is ordered just above it (``_place_above``, XERK-2729).
+    store_ms: int | None = None
 
     @property
     def final(self) -> bool:
         return self.segment is not None
+
+    @property
+    def order_ms(self) -> int:
+        return self.first_ms if self.store_ms is None else self.store_ms
 
 
 @dataclass
@@ -582,8 +589,8 @@ class CaptionMerger:
         line.segment = Segment(
             segment_id=uuid.uuid4().hex,
             text=line.text,
-            start_ms=self._rel(line.first_ms),
-            end_ms=self._rel(max(line.changed_ms, line.first_ms)),
+            start_ms=self._rel(line.order_ms),
+            end_ms=self._rel(max(line.changed_ms, line.first_ms, line.order_ms)),
             lang="en",
             speaker=line.speaker,
         )
@@ -732,6 +739,8 @@ class CaptionMerger:
                 at_ = len(self._lines)
                 if below is not None:
                     at_ = next(k for k in range(len(self._lines)) if self._lines[k] is below)
+                    if not below.carried:  # the ended meeting's segment keeps its start
+                        self._place_above(line, at_, out)
                 self._lines.insert(at_, line)
                 self.new_lines += 1
             row_line[i] = line
@@ -763,6 +772,25 @@ class CaptionMerger:
         del self._lines[:-_KEEP]
         # Stored in the order they were said, whichever rule finalized them.
         return sorted(out.values(), key=lambda seg: seg.start_ms)
+
+    def _place_above(self, line: _Line, at: int, out: dict[str, Segment]) -> None:
+        """Order ``line`` in the store just above ``self._lines[at]`` (XERK-2729): a row Teams
+        wraps onto an entry above a later one was first seen after it, so ordering by first-seen
+        time stored it below. It takes that line's start; it and the lines after it move down
+        one ms each until there is room, and stored ones are re-emitted (the upsert moves
+        them). Starts stay unique: Postgres orders ties randomly."""
+        prev = line.store_ms = self._lines[at].order_ms
+        for ln in self._lines[at:]:
+            if ln.carried:
+                continue  # the ended meeting's segment is never re-emitted (XERK-2615)
+            if ln.order_ms > prev:
+                break
+            prev = ln.store_ms = prev + 1
+            if ln.segment is not None:
+                ln.segment.start_ms = self._rel(prev)
+                ln.segment.end_ms = max(ln.segment.end_ms, ln.segment.start_ms)
+                out[ln.segment.segment_id] = ln.segment
+        self._next_first = max(self._next_first, prev + 1)
 
     def _update(
         self,

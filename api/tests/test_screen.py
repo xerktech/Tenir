@@ -4045,3 +4045,89 @@ def test_a_dim_row_that_is_no_display_name_stays_text(grey: str) -> None:
     ocr, jpeg = panel_crop(("Ana Lopez", True), ("we shipped it", False), (grey, True))
     blocks = parse_caption_crop(ocr, _roster("Ana Lopez"), live=True, jpeg=jpeg)
     assert [b.lines for b in blocks] == [["we shipped it", grey]]
+
+
+WRAPPED_ROWS = {
+    # Ana's entry grows and wraps onto a second row above Bo's entry.
+    "above_next_speaker": (
+        [[blk("Ana", "we ship"), blk("Bo", "ok")]] * 4
+        + [[blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok")]] * 5,
+        [("Ana", "we ship the build"), ("Ana", "on friday"), ("Bo", "ok")],
+    ),
+    # ...and above her own identical next entry (XERK-2719's twin).
+    "above_same_text_twin": (
+        [[blk("Ana", "notes"), blk("Ana", "notes")]] * 4
+        + [[blk("Ana", "notes, ship", "it"), blk("Ana", "notes")]] * 5,
+        [("Ana", "notes, ship"), ("Ana", "it"), ("Ana", "notes")],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", WRAPPED_ROWS)
+def test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry(case: str) -> None:
+    """XERK-2729: a row Teams wraps onto an entry above a later one was first seen after it,
+    so its start (first-seen time) stored it after that entry. It is ordered just above the
+    entry below it, which moves down a millisecond (same segment, upserted)."""
+    frames, said = WRAPPED_ROWS[case]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    for t, blocks in enumerate(frames):
+        for seg in m.feed(blocks, t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+            assert seg.end_ms >= seg.start_ms
+    for seg in m.flush(len(frames) * 1000 + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    rows = sorted(stored.values())
+    assert [(sp, text) for _, sp, text in rows] == said
+    assert len({start for start, _, _ in rows}) == len(rows)  # no ties
+
+
+def test_lines_after_a_wrapped_row_keep_unique_increasing_starts() -> None:
+    """XERK-2729: lines first seen in one snapshot are a millisecond apart, so making room
+    above one moves every line after it down; a line said later still sorts last."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str]] = {}
+    frames = [[blk("Ana", "we ship"), blk("Bo", "ok"), blk("Cy", "sure"), blk("Di", "fine")]] * 4
+    frames += [
+        [blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok"), blk("Cy", "sure"),
+         blk("Di", "fine")]
+    ] * 5
+    frames += [
+        [blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok"), blk("Cy", "sure"),
+         blk("Di", "fine"), blk("Ed", "agreed")]
+    ] * 5
+    for t, blocks in enumerate(frames):
+        for seg in m.feed(blocks, t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.text)
+            assert seg.end_ms >= seg.start_ms  # a moved line's end moves with it
+    for seg in m.flush(30_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.text)
+        assert seg.end_ms >= seg.start_ms
+    rows = sorted(stored.values())
+    assert [text for _, text in rows] == [
+        "we ship the build", "on friday", "ok", "sure", "fine", "agreed",
+    ]
+    assert len({start for start, _ in rows}) == len(rows)
+
+
+def test_making_room_never_moves_or_re_emits_a_carried_line() -> None:
+    """XERK-2729 (QA): carried lines sit at the front of the known lines, so the feed path never
+    has one after the place a line is made room at. Should it, the ended meeting's segment keeps
+    its start and is not re-emitted into this conversation."""
+    from api.screen.merge import _Line
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([blk("Ana", "we ship"), blk("Bo", "ok")], 0)
+    old = Segment(segment_id="old", text="earlier", start_ms=5000, end_ms=5000, lang="en")
+    carried = _Line("Cy", "earlier", "earlier", 2, 2, 0, segment=old, carried=True)
+    m._lines.append(carried)  # after Bo's line, which the new line goes above
+    for ln in m._lines:
+        if not ln.carried:
+            m._finalize(ln)
+    out: dict = {}
+    new = _Line("Ana", "on friday", "on friday", 1000, 1000, 1000)
+    m._place_above(new, 1, out)
+    assert "old" not in out and old.start_ms == 5000
+    bo = m._lines[1]
+    assert new.order_ms == 1 and bo.order_ms == 2  # the live line still moves down
+    assert set(out) == {bo.segment.segment_id}
