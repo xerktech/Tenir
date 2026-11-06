@@ -123,17 +123,11 @@ def device_token(user, ttl_seconds: int = 3600) -> str:
     """A screen device token for ``user`` backed by a live device_tokens row (XERK-2594)."""
     from api.auth import Principal, get_user_store, issue_token
 
-    row = get_user_store().create_device_token(
-        user.user_id, name="test PC", ttl_seconds=ttl_seconds
-    )
+    row = get_user_store().create_device_token(user.user_id, name="test PC", ttl_seconds=ttl_seconds)
     return issue_token(
         Principal(
-            user.user_id,
-            user.household,
-            user.role,
-            user.username,
-            scope="screen",
-            token_id=row.token_id,
+            user.user_id, user.household, user.role, user.username,
+            scope="screen", token_id=row.token_id,
         ),
         secret=settings.auth_secret,
         ttl_seconds=ttl_seconds,
@@ -1383,10 +1377,7 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
 
     monkeypatch.setattr(screen_ws, "cadence", gone)
     with TestClient(app) as client:
-        with (
-            pytest.raises(RuntimeError),
-            client.websocket_connect(f"/ws/screen?token={token}") as ws,
-        ):
+        with pytest.raises(RuntimeError), client.websocket_connect(f"/ws/screen?token={token}") as ws:
             ws.receive_text()
         assert screen_ws._revokers.get(admin.user_id) is None
         # A leaked timer would fire after exp and count an expiry for a dead socket.
@@ -1408,10 +1399,7 @@ def test_a_delete_racing_the_handshake_closes_the_screen_socket(
             assert json.loads(ws.receive_text())["type"] == "screen.cadence"
             with pytest.raises(WebSocketDisconnect) as closed:
                 ws.receive_text()
-            assert (closed.value.code, closed.value.reason) == (
-                1008,
-                "account removed or device token revoked",
-            )
+            assert (closed.value.code, closed.value.reason) == (1008, "account removed or device token revoked")
     assert screen_ws._revokers.get(admin.user_id) is None
 
 
@@ -2014,18 +2002,12 @@ def test_a_full_frame_is_in_a_meeting_only_when_the_toolbar_shows() -> None:
     )
     assert not parse_full_frame(desktop).in_meeting
     # Two toolbar words alone (e.g. a chat line mentioning "Chat" and "Share") aren't enough.
-    two = OcrResult(
-        1280, 720, (line("Chat", 100, 680, 150, 700), line("Share", 300, 680, 360, 700))
-    )
+    two = OcrResult(1280, 720, (line("Chat", 100, 680, 150, 700), line("Share", 300, 680, 360, 700)))
     assert not parse_full_frame(two).in_meeting
     # Toolbar words higher up the window (a slide listing them) don't count.
     high = OcrResult(
-        1280,
-        720,
-        tuple(
-            line(b, 100 + 200 * i, 300, 180 + 200 * i, 320)
-            for i, b in enumerate(("Mute", "Stop Video", "Participants", "Leave"))
-        ),
+        1280, 720, tuple(line(b, 100 + 200 * i, 300, 180 + 200 * i, 320) for i, b in enumerate(
+            ("Mute", "Stop Video", "Participants", "Leave")))
     )
     assert not parse_full_frame(high).in_meeting
 
@@ -2106,9 +2088,7 @@ def test_a_captions_off_notice_reaches_the_capture_client(screen, monkeypatch) -
     from api.main import app
 
     with TestClient(app) as client:
-        with client.websocket_connect(
-            "/ws/screen", headers={"Authorization": f"Bearer {token}"}
-        ) as ws:
+        with client.websocket_connect("/ws/screen", headers={"Authorization": f"Bearer {token}"}) as ws:
             assert json.loads(ws.receive_text())["type"] == "screen.cadence"
             now = int(time.time() * 1000)
             ws.send_bytes(envelope(header(now, "full"), frame))
@@ -2303,7 +2283,6 @@ def test_dim_rows_reads_no_pixels_it_cannot_trust() -> None:
     """The brightness read gives up (None: the sentence rule decides) on a JPEG of another
     size than OCR read, a crop with no caption-text row to compare against, and a box with a
     non-finite coordinate (it raised and dropped the frame, QA D2)."""
-
     def dim_rows(jpeg: bytes, ocr: OcrResult) -> set[int] | None:
         groups = zoom.row_groups(ocr.lines)
         return zoom._dim_rows(zoom._grey_pixels(jpeg, ocr, groups), groups)
@@ -2523,12 +2502,7 @@ def test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it() -> None:
     """QA (XERK-2694): a header-less entry whose rewrite moves "how" up onto a row the
     alignment still matches; that row takes the final text, so no word is lost."""
     draft = [
-        blk(
-            None,
-            "yes so so enable should like we",
-            "the cluster not need pods it the",
-            header=False,
-        ),
+        blk(None, "yes so so enable should like we", "the cluster not need pods it the", header=False),
         blk(None, "how right right in overlay", header=False),
     ]
     draft = [blk(None, *draft[0].lines, *draft[1].lines, header=False)]
@@ -2559,16 +2533,8 @@ def test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored(misread_top:
     rewrap moved words across its line break. A misread on the one frame the rewrite is seen
     must not overwrite the stored line (XERK-2597); later clean frames can't repair it."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
-    draft = [
-        "yes so so enable should like we",
-        "the cluster not need pods it the",
-        "how right right in overlay",
-    ]
-    final = [
-        "Yes so so enable should like we",
-        "cluster not need pods it, the how",
-        "right in overlay.",
-    ]
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
     frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, misread_top, *final[1:], header=False)]]
@@ -2596,16 +2562,8 @@ def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -
     frames read them alike, so a misread on the rewrite frame is never stored, while the
     rewrite's own changes still land."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
-    draft = [
-        "yes so so enable should like we",
-        "the cluster not need pods it the",
-        "how right right in overlay",
-    ]
-    final = [
-        "Yes so so enable should like we",
-        "cluster not need pods it, the how",
-        "right in overlay.",
-    ]
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
     frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, glitched, *final[1:], header=False)]]
@@ -2629,17 +2587,10 @@ def test_a_rewrite_never_revises_the_ended_meetings_carried_line(top: str) -> No
     m1 = CaptionMerger(start_ms=0, stable_ms=3000)
     old = set()
     for t in range(5):
-        old |= {
-            s.segment_id
-            for s in m1.feed([blk("Ana", "yes the pods need enable should we")], t * 1000)
-        }
+        old |= {s.segment_id for s in m1.feed([blk("Ana", "yes the pods need enable should we")], t * 1000)}
     old |= {s.segment_id for s in m1.flush(5000)}
     m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
-    draft = [
-        "yes the pods need enable should we",
-        "the cluster not need pods it the",
-        "how right right in overlay",
-    ]
+    draft = ["yes the pods need enable should we", "the cluster not need pods it the", "how right right in overlay"]
     final = [top, "cluster not need pods it, the how", "right in overlay."]
     emitted = []
     for k, rows in enumerate([draft] * 6 + [final] * 5):
@@ -2652,11 +2603,7 @@ def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:
     """QA (XERK-2694): a rewrite's new words on a matched row must be read on the next frame
     too; a clean read in between drops them, so jitter flipping back later is never stored."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
-    draft = [
-        "yes the pods need enable should we",
-        "the cluster is up now",
-        "how right right in overlay",
-    ]
+    draft = ["yes the pods need enable should we", "the cluster is up now", "how right right in overlay"]
     final = ["Yes the pods need enable should we", "the cluster is up now,", "right in overlay."]
     misread = "Yes pods need enable should we"
     stored: dict[str, str] = {}
@@ -2685,16 +2632,8 @@ def test_one_noisy_frame_after_a_rewrite_only_delays_it(noisy: str) -> None:
     """QA (XERK-2694): a noisy read right after the rewrite frame must not lose the rewrite
     when every later frame reads it cleanly."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
-    draft = [
-        "yes so so enable should like we",
-        "the cluster not need pods it the",
-        "how right right in overlay",
-    ]
-    final = [
-        "Yes so enable should like we the",
-        "cluster not need pods it, the how",
-        "right in overlay.",
-    ]
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
+    final = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
     frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, *final, header=False)]]
@@ -2712,11 +2651,7 @@ def _rewrite_run(frames: list[list[str]]) -> tuple[dict[str, str], list[list[str
     """Feed the rewrap fixture's draft, then ``frames`` (rows of one header-less block, one
     frame a second); returns the stored texts and each frame's emitted texts."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
-    draft = [
-        "yes so so enable should like we",
-        "the cluster not need pods it the",
-        "how right right in overlay",
-    ]
+    draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
     stored: dict[str, str] = {}
     emitted: list[list[str]] = []
     feed = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
@@ -2729,11 +2664,7 @@ def _rewrite_run(frames: list[list[str]]) -> tuple[dict[str, str], list[list[str
     return stored, emitted[10:]
 
 
-_REWRAP_FINAL = [
-    "Yes so enable should like we the",
-    "cluster not need pods it, the how",
-    "right in overlay.",
-]
+_REWRAP_FINAL = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
 
 
 def test_a_clipped_top_row_read_alike_after_a_rewrite_is_not_stored() -> None:
@@ -2766,22 +2697,14 @@ def test_a_case_or_punctuation_rewrite_of_a_matched_row_is_taken_at_once() -> No
     assert "Yes, so so enable should like we." in emitted[0], emitted
 
 
-_REWRAP_DRAFT = [
-    "yes so so enable should like we",
-    "the cluster not need pods it the",
-    "how right right in overlay",
-]
+_REWRAP_DRAFT = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
 
 
 @pytest.mark.parametrize("where", ["under its header", "below another block"])
 def test_a_rewrite_dropping_leading_words_is_taken_where_no_crop_cuts(where: str) -> None:
     """QA (XERK-2694): only the crop's header-less top row can be cut off; elsewhere a row
     that lost its leading words is Teams' rewrite (fillers dropped) and is taken."""
-    final = [
-        "so so enable should like we",
-        "the cluster not need pods it, the how",
-        "right in overlay.",
-    ]
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
 
     def frame(rows: list[str]) -> list[CaptionBlock]:
         if where == "under its header":
@@ -2809,11 +2732,7 @@ def test_only_the_crops_own_top_row_counts_as_clippable_on_a_long_crop() -> None
     """QA (XERK-2694): a crop over ``_MAX_SHOWN`` rows is cut to its bottom ones; the first
     row kept is not the crop's top row, so its leading-word rewrite is taken."""
     middle = [f"ravi middle line number {k} words" for k in range(8)]
-    final = [
-        "so so enable should like we",
-        "the cluster not need pods it, the how",
-        "right in overlay.",
-    ]
+    final = ["so so enable should like we", "the cluster not need pods it, the how", "right in overlay."]
 
     def frame(row1: str, rows: list[str]) -> list[CaptionBlock]:
         return [blk(None, "tail of ravi row zero", row1, *middle, *rows, header=False)]
