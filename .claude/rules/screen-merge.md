@@ -230,8 +230,8 @@ paths:
     - Not a block's top row whose line wasn't its entry's first (rows merged into it): that
       refusal left the row unpaired and re-stored the box (QA fz seed 176). Accepted: such a
       merge with steady neighbours is taken as growth, its first row's words stored twice, as
-      on main (XERK-2734: needs a rewrite claiming both lines). Shape pinned when a neighbour
-      also lost words: `test_an_entry_merging_its_rows_into_its_last_is_not_growth`.
+      on main (XERK-2734: needs a rewrite claiming both lines). QA's hand repro is still
+      refused (`test_an_entry_merging_its_rows_into_its_last_is_not_growth`); fz seed 190 isn't.
     - Measured per seed vs main (c19408d): Zoom `_simulate` (1000 seeds, 4 modes), kit zf.py
       and fz.py zoom identical; `_simulate_teams` (200) lost 143 -> 106, stored twice 140 ->
       140; `noise=0.2` lost 176 -> 143, twice 1355 -> 1344. Kit x2701 fz.py teams (200 x 12):
