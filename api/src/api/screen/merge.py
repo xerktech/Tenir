@@ -307,6 +307,23 @@ def _revisions(
     return out if p == len(cands) else {}
 
 
+def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
+    """Whether ``_HELD`` of ``words`` now sit at the break between two rows: its first words
+    end the row above and its last words start the row below (a re-flow moved them out)."""
+    up = max((k for k in range(1, len(words) + 1) if above[-k:] == words[:k]), default=0)
+    down = max(
+        (k for k in range(1, len(words) - up + 1) if below[:k] == words[len(words) - k :]),
+        default=0,
+    )
+    return up + down >= _HELD * len(words)
+
+
+def _share(words: list[str], within: list[str]) -> bool:
+    """Whether ``within`` holds ``_HELD`` of ``words``, in order."""
+    sm = SequenceMatcher(None, words, within, autojunk=False)
+    return sum(b.size for b in sm.get_matching_blocks()) >= _HELD * len(words)
+
+
 def _alike(a: list[str], b: list[str]) -> bool:
     """Whether two rows' words mostly agree, in order (Teams may fix a word as it re-flows)."""
     if not a or not b:
@@ -641,7 +658,7 @@ class CaptionMerger:
             else:
                 groups.append([i])
         for rows in groups:
-            found = self._fill_glitches([row_line[i] for i in rows])
+            found = self._fill_glitches([row_line[i] for i in rows], ts)
             if found is None:
                 continue  # a glitch row the lines can't place: the rows can't be mapped
             lines = found
@@ -667,10 +684,13 @@ class CaptionMerger:
             if (
                 clippable_top
                 and rows[0] == 0
-                and len(row_words[0]) < len(line_words[0])
-                and line_words[0][-len(row_words[0]) :] == row_words[0]
+                and len(shown[0].norm) < len(lines[0].norm)
+                and (
+                    lines[0].norm.endswith(shown[0].norm)
+                    or line_words[0][-len(row_words[0]) :] == row_words[0]
+                )
             ):
-                # The crop cut the top row's start off: keep the line's text.
+                # The crop cut the top row's start off (mid-word too): keep the line's text.
                 texts[0], row_words[0] = lines[0].text, line_words[0]
             # A line the block skips is an OCR miss unless the rows around where it sat hold
             # its words: it is a stale copy of what re-flowed onto them.
@@ -678,8 +698,11 @@ class CaptionMerger:
                 continue
             if not between and not _moved(line_words, row_words):
                 continue
-            key = tuple(id(ln) for ln in lines[:-1])
-            read = tuple(_norm(t) for t in texts[:-1])
+            # The bottom row of a live entry still grows (the row rules take it); a stored one
+            # is confirmed like the others, or a misread on the confirming frame would stick.
+            confirm = len(texts) if lines[-1].final else len(texts) - 1
+            key = tuple(id(ln) for ln in lines[:confirm])
+            read = tuple(_norm(t) for t in texts[:confirm])
             reads[key] = read
             if self._reflow_reads.get(key) != read:
                 continue
@@ -701,11 +724,13 @@ class CaptionMerger:
                     out[ln.segment.segment_id] = ln.segment
         self._reflow_reads = reads
 
-    def _fill_glitches(self, found: list[_Line | None]) -> list[_Line] | None:
+    def _fill_glitches(self, found: list[_Line | None], ts: int) -> list[_Line] | None:
         """``found`` with each run of glitch rows (None) between two placed rows paired, in
         order, with the known lines between those two: the alignment took a re-flowed row
-        that still resembles its draft for a misread of it. None when a run has no such lines
-        to pair with, one for one (at the block's top or bottom, or a count that differs)."""
+        that still resembles its draft for a misread of it. A run at the block's bottom pairs
+        with the lines right after the last placed one, when they are its speaker's and no row
+        re-read them (the entry ended; another speaker's block below it aligned). None when a
+        run has no such lines to pair with, one for one."""
         out: list[_Line] = []
         k = 0
         while k < len(found):
@@ -718,9 +743,15 @@ class CaptionMerger:
             while end < len(found) and found[end] is None:
                 end += 1
             above, below = (found[k - 1] if k else None), (found[end] if end < len(found) else None)
-            if above is None or below is None:
+            if above is None:
                 return None
-            gap = self._lines[self._index(above) + 1 : self._index(below)]
+            at = self._index(above) + 1
+            if below is None:
+                gap = self._lines[at : at + end - k]
+                if any(ln.speaker != above.speaker or ln.seen_ms == ts for ln in gap):
+                    return None
+            else:
+                gap = self._lines[at : self._index(below)]
             if len(gap) != end - k:
                 return None
             out += gap
@@ -728,14 +759,34 @@ class CaptionMerger:
         return out
 
     def _held(self, line: _Line, lines: list[_Line], row_words: list[list[str]]) -> bool:
-        """Whether the rows next to ``line`` (those of the lines just above and below it) hold
-        ``_HELD`` of its words, in order."""
+        """Whether ``line`` is a stale copy of words that re-flowed onto the rows next to it
+        (those of the lines just above and below it): they hold ``_HELD`` of its words, in
+        order, and the words moved there: those rows gained them, or one of them no longer
+        reads as its line. Rows reading exactly as their lines did mean OCR missed the row
+        between, however alike the lines are ("i think that" / "i think that"), unless its
+        words sit right at their break (``_junction``) and one of those lines changed since
+        this one was last shown: the row rules may already have grown the line above with
+        them ("...to" + "staging")."""
         at = self._index(line)
         k = max(n for n, ln in enumerate(lines) if self._index(ln) < at)
-        near = [w for ws in row_words[k : k + 2] for w in ws]
+        near_rows = row_words[k : k + 2]
+        near_lines = [_words(ln.text) for ln in lines[k : k + 2]]
         words = _words(line.text)
-        sm = SequenceMatcher(None, words, near, autojunk=False)
-        return sum(b.size for b in sm.get_matching_blocks()) >= _HELD * len(words)
+        if (
+            len(near_rows) == 2
+            and any(ln.changed_ms > line.seen_ms for ln in lines[k : k + 2])
+            and _junction(words, near_rows[0], near_rows[1])
+        ):
+            return True
+        near = [w for ws in near_rows for w in ws]
+        if not _share(words, near):
+            return False
+        if near_rows != near_lines:
+            return True
+        had = [w for ws in near_lines for w in ws]
+        sm = SequenceMatcher(None, had, near, autojunk=False)
+        kept = {mb.b + n for mb in sm.get_matching_blocks() for n in range(mb.size)}
+        return _share(words, [w for n, w in enumerate(near) if n not in kept])
 
     def _index(self, line: _Line) -> int:
         return next(k for k in range(len(self._lines) - 1, -1, -1) if self._lines[k] is line)
