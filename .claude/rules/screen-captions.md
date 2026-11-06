@@ -143,7 +143,8 @@ paths:
     frame of a recent row is appended.
   - Measured per seed vs. main: `_simulate_teams` identical; Zoom `_simulate` differs on 18/1000
     noise+drop seeds: fewer wrong lines on all, one loses a line more (3829). QA's kit
-    (`~/.cache/qa-tenir-kit/x2716`, Teams late-growth fuzz) is better in total on every mode.
+    (`~/.cache/qa-tenir-kit/x2716`, Teams late-growth fuzz) is better in total on every mode;
+    ~1.6% of its seeds do worse (noisy rows re-stored).
   - Tests: `test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored_once`,
     `test_a_reflow_moving_two_words_down_above_the_same_speakers_next_entry_is_stored_once`,
     `test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words`,
