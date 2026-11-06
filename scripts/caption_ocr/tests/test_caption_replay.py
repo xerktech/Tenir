@@ -53,7 +53,7 @@ def test_replaying_the_teams_fixture_stores_what_the_socket_stores(
 ) -> None:
     platform, frames = cr.load_window(write_window(tmp_path, FIXTURE["frames"], sized=sized))
     assert platform == "teams" and len(frames) == len(FIXTURE["frames"])
-    rows = asyncio.run(cr.replay(platform, frames))
+    rows = asyncio.run(cr.replay(platform, frames)).rows
     assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
 
 
@@ -81,6 +81,20 @@ def test_a_rewritten_entry_stored_twice_counts_as_a_duplicate() -> None:
     assert cr.duplicates(rows) == (1, 4, 13)
 
 
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [("Kunal", "Yes, I can see it."), ("Priya", "Yes.")],  # stock reply (QA D3)
+        [("Ana", "Okay, I think we should ship it."), ("Bo", "I think we should.")],
+        [("Ana", "Is it going out today or is it next week?"), ("Ana", "Is it today?")],
+        [("Ana", "No."), ("Ana", "No, no, no.")],
+        [("Ana", "okay so let's start"), ("Bo", "Okay, so let's start.")],  # another speaker
+    ],
+)
+def test_short_or_other_speakers_rows_are_not_duplicates(rows: list) -> None:
+    assert cr.duplicates(rows)[0] == 0
+
+
 def test_a_repeat_beyond_the_window_is_not_a_duplicate() -> None:
     rows = [("Ana", "thanks everyone")] + [("Bo", f"line {i}") for i in range(cr.DUP_WINDOW)]
     assert cr.duplicates(rows + [("Ana", "thanks everyone")])[0] == 0
@@ -95,6 +109,34 @@ def test_compare_counts_a_speaker_change_and_lost_and_added_rows() -> None:
         "missing": 1,
         "extra": 1,
     }
+
+
+def test_a_reworded_row_repeated_far_ahead_does_not_cascade() -> None:
+    # QA D2: the best match over all later rows paired row 0 with its exact repeat at row 21,
+    # and the 20 rows between counted as lost and added.
+    reference = [("Ana", "okay let's get started with the sprint review")]
+    reference += [("Bo", f"item number {i} is done") for i in range(20)]
+    reference += [("Ana", "okay let's get started with the sprint review now")]
+    rows = [("Ana", reference[-1][1]), *reference[1:-1], reference[-1]]
+    assert cr.compare(rows, reference) == {
+        "matched": 22,
+        "speaker_changed": 0,
+        "missing": 0,
+        "extra": 0,
+    }
+
+
+def test_compare_on_stock_phrases_with_drops_stays_in_step() -> None:
+    rng = random.Random(7)
+    reference = [
+        ("Ana", "thank you") if i % 25 == 0 else ("Bo", f"line {i} about topic {i * 7}")
+        for i in range(300)
+    ]
+    rows = [r for r in reference if rng.random() >= 0.1]
+    lost = len(reference) - len(rows)
+    rows[3] = (rows[3][0], rows[3][1] + " all")  # one reworded row
+    got = cr.compare(rows, reference)
+    assert got["missing"] <= lost + 1 and got["extra"] <= 1
 
 
 def test_drop_keeps_every_full_frame_and_is_seeded(tmp_path: Path) -> None:
@@ -113,7 +155,8 @@ def test_main_reports_drops_and_truth_as_json(tmp_path: Path, capsys) -> None:
     assert cr.main(argv) == 0
     report = json.loads(capsys.readouterr().out)
     n = len(FIXTURE["expected"]["lines"])
-    assert report["rows"] == n and report["duplicate_rows"] == 1  # "Thanks Kunal." said twice
+    assert report["rows"] == n and report["duplicate_rows"] == 0  # "Thanks Kunal." x2: stock
+    assert report["meetings"] == 1 and report["full_frames_without_pane"] == 1  # blank jpegs
     assert report["vs_truth"] == {"matched": n, "speaker_changed": 0, "missing": 0, "extra": 0}
     assert len(report["drop"]["runs"]) == 3
     assert set(report["drop"]["total"]) >= {"speaker_changed", "missing", "extra"}
@@ -123,5 +166,110 @@ def test_main_prints_a_readable_report(tmp_path: Path, capsys) -> None:
     window = write_window(tmp_path, FIXTURE["frames"])
     assert cr.main([str(window), "--rows", "--drop", "0.2", "--runs", "1"]) == 0
     out = capsys.readouterr().out
-    assert "duplicate_rows: 1" in out and "  Kunal Shah: Yes, I can see it." in out
+    assert "duplicate_rows: 0" in out and "  Kunal Shah: Yes, I can see it." in out
     assert out.count("drop 20% x1") == 1
+
+
+def test_a_gap_past_the_deployments_end_timer_ends_the_meeting(tmp_path: Path, monkeypatch) -> None:
+    # The fixture's meeting, then again 100 s on: one meeting under the default 180 s end
+    # timer, two under a deployment's 60 s (API_SCREEN_MEETING_END_SECONDS, QA D6).
+    again = [dict(f, t=f["t"] + 100_000) for f in FIXTURE["frames"]]
+    _, frames = cr.load_window(write_window(tmp_path, FIXTURE["frames"] + again))
+    assert asyncio.run(cr.replay("teams", frames)).meetings == 1
+    monkeypatch.setattr(cr.settings, "screen_meeting_end_seconds", 60.0)
+    assert asyncio.run(cr.replay("teams", frames)).meetings == 2
+
+
+# --- the Teams caption pane (QA D1) --------------------------------------------------------
+
+sys.path.insert(0, str(_FIXTURE.parents[2]))
+import test_screen_teams_pane as tp  # noqa: E402
+
+HEADING_LINE = {"text": "Live Captions", "box": [1524, 308, 1650, 330]}
+
+
+def _pane_window(root: Path, *, heading: bool) -> Path:
+    """A rendered Teams window whose pane holds "Sounds Good", then caption crops of it."""
+    window = root / "teams-pane-0123abcd"
+    window.mkdir()
+    full = [
+        {"text": "Kunal Shah", "box": [400, 600, 520, 620]},
+        {"text": "Priya Raman", "box": [800, 600, 930, 620]},
+        {"text": "Sounds Good", "box": [1564, 452, 1700, 472]},  # a caption row in the pane
+    ]
+    (window / f"{BASE}-0-full.jpg").write_bytes(tp.render())
+    data = {"width": tp.W, "height": tp.H, "lines": full + ([HEADING_LINE] if heading else [])}
+    (window / f"{BASE}-0-full.json").write_text(json.dumps(data))
+    crop = [
+        {"text": "Kunal Shah", "box": [56, 4, 150, 20]},
+        {"text": "Can you hear me now?", "box": [56, 26, 240, 46]},
+        {"text": "Priya Raman", "box": [56, 60, 160, 76]},
+        {"text": "Sounds Good", "box": [56, 82, 170, 102]},
+    ]
+    for n in range(1, 7):
+        stem = f"{BASE + 1000 * n}-{n}-caption"
+        (window / f"{stem}.jpg").write_bytes(_jpeg(760, 200))
+        (window / f"{stem}.json").write_text(json.dumps({"lines": crop}))
+    return window
+
+
+STORED = [("Kunal Shah", "Can you hear me now?"), ("Priya Raman", "Sounds Good")]
+
+
+def test_the_pane_is_found_from_the_full_frames_own_heading(tmp_path: Path) -> None:
+    platform, frames = cr.load_window(_pane_window(tmp_path, heading=True))
+    assert cr.find_pane(frames[0]) is not None
+    got = asyncio.run(cr.replay(platform, frames))
+    assert (got.rows, got.full_frames_without_pane) == (STORED, 0)
+
+
+class _BandOcr:
+    """tenir-ocr reading each candidate strip: the heading where the render drew it."""
+
+    async def read(self, jpeg: bytes, *, full: bool = False, split_once: bool = False):
+        return tp.heading()
+
+
+def test_a_heading_the_full_ocr_missed_is_counted_and_read_with_ocr(tmp_path: Path) -> None:
+    # Live reads the strip above the divider: the pane is found and "Sounds Good" stays a
+    # caption. Without that read the replay loses it, and says so.
+    platform, frames = cr.load_window(_pane_window(tmp_path, heading=False))
+    without = asyncio.run(cr.replay(platform, frames))
+    assert without.full_frames_without_pane == 1 and without.rows != STORED
+    with_ocr = asyncio.run(cr.replay(platform, frames, ocr=_BandOcr()))
+    assert (with_ocr.rows, with_ocr.full_frames_without_pane) == (STORED, 0)
+
+
+# --- bad input (QA D5) ---------------------------------------------------------------------
+
+
+def test_truth_in_the_fixtures_own_shape_is_read(tmp_path: Path) -> None:
+    truth = tmp_path / "truth.json"
+    truth.write_text(json.dumps(FIXTURE["expected"]["lines"]))
+    assert cr.load_truth(truth)[0] == (
+        "Raman, Priya",
+        "Okay, let's get started with the sprint review.",
+    )
+    truth.write_text(json.dumps([{"who": "x"}]))
+    with pytest.raises(SystemExit, match="speaker, text"):
+        cr.load_truth(truth)
+
+
+@pytest.mark.parametrize("args", [["--drop", "1.5"], ["--drop", "-1"], ["--runs", "0"]])
+def test_out_of_range_options_are_refused(tmp_path: Path, args: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        cr.main([str(tmp_path), *args])
+
+
+def test_a_malformed_ocr_read_names_its_file(tmp_path: Path) -> None:
+    window = write_window(tmp_path, FIXTURE["frames"][:2])
+    bad = next(window.glob("*-1-caption.json"))
+    bad.write_text("{not json")
+    with pytest.raises(SystemExit, match=bad.name):
+        cr.load_window(window)
+
+
+def test_the_window_can_be_given_as_the_current_directory(tmp_path: Path, monkeypatch) -> None:
+    window = write_window(tmp_path, FIXTURE["frames"])
+    monkeypatch.chdir(window)
+    assert cr.load_window(Path("."))[0] == "teams"

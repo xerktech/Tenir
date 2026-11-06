@@ -26,6 +26,7 @@ on:
       - 'api/src/api/screen/**'
       - 'api/src/api/persistence/**'
       - 'api/tests/fixtures/screen/teams_meeting.json'
+      - 'api/tests/test_screen*.py'  # its pane test renders with test_screen_teams_pane
       - '.github/workflows/scripts.yml'
 
 concurrency:

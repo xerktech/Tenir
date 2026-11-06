@@ -2,29 +2,34 @@
 
 The screen sampler (``API_SCREEN_SAMPLE_DIR``, XERK-2705) keeps a window's frames as
 ``<dir>/<platform>-<slug>-<hash>/<ts>-<n>-<region>.jpg`` plus a ``.json`` of the OCR read the
-API made of it. This replays one such window, in ``ts`` order, through the production
-``MeetingTracker`` (parser, ``CaptionMerger``, meeting start/end) into an in-memory store, with
-no OCR service: the saved reads are reused. Run it from ``api/`` (``pip install -e .``)::
+API made of it. This replays one such window, in ``(ts, n)`` order, through the production
+``MeetingTracker`` (parser, ``CaptionMerger``, meeting start/end, the deployment's
+``API_SCREEN_*`` timings) into an in-memory store. Run it from ``api/`` (``pip install -e .``)::
 
     python ../scripts/caption_ocr/caption_replay.py <dir>/teams-<slug>-<hash>
     python ../scripts/caption_ocr/caption_replay.py <window> --drop 0.3 --runs 20 --rows
     python ../scripts/caption_ocr/caption_replay.py <window> --truth truth.json --json
+    python ../scripts/caption_ocr/caption_replay.py <window> --ocr http://localhost:8080
 
 It reports (XERK-2731):
 
-- ``duplicate_rows`` / ``duplicate_words``: a stored row whose words are mostly another
-  recent row's (a rewritten entry stored twice). Real frames only: synthetic panes and stored
-  exports can't show these. A line really said twice close together counts too, so read the
-  rows (``--rows``) before tuning on the number.
+- ``duplicate_rows`` / ``duplicate_words``: a row of 3+ words whose speaker said nearly the
+  same words in a recent row (a rewritten entry stored twice). Real frames only: synthetic
+  panes and stored exports can't show these. A sentence really said twice counts too, so read
+  the rows (``--rows``) before tuning on the number.
 - With ``--drop P``: each run drops that share of the caption crops (seeded) and is compared
   with the full replay. ``speaker_changed`` counts rows stored under another speaker than the
   full replay gave them (a header-less continuation after a scroll taking the previous
   speaker), ``missing``/``extra`` rows it lost or added (look-alike entries merged or split).
-- With ``--truth`` (a JSON list of ``[speaker, text]``, the meeting's own transcript or a
-  hand labelling): the same comparison against it, for absolute rates.
+- With ``--truth`` (a JSON list of ``[speaker, text]`` or ``{"speaker", "text"}``: the
+  meeting's own transcript or a hand labelling): the same comparison against it.
 
-Replay differs from live in one way: the Teams caption pane is found from the full frame's own
-OCR (its heading line) instead of a second OCR read of the strip above the divider.
+The OCR reads are reused, with one gap: live, a Teams full frame's caption pane is confirmed by a
+second OCR read of the strip above its divider (``ws.locate_pane``), which the sampler doesn't
+keep. By default the full frame's own OCR stands in for it; when that missed the "Live Captions"
+heading, the pane is lost, caption lines can join the roster and rows the live path stored are
+lost (``full_frames_without_pane`` counts such frames). ``--ocr`` re-reads the strips with a
+tenir-ocr service (``kubectl port-forward``), exactly as live.
 """
 
 from __future__ import annotations
@@ -39,17 +44,20 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from api.config import settings
 from api.persistence import InMemoryConversationStore, ScreenMeta
 from api.screen import teams, teams_pane, zoom
 from api.screen.meetings import Cadence, MeetingTracker
-from api.screen.ocr import OcrLine, OcrResult, image_size, parse_result
+from api.screen.ocr import HttpOcrClient, OcrClient, OcrLine, OcrResult, image_size, parse_result
 from api.screen.zoom import CaptionPane
 
 _NAME = re.compile(r"^(?P<ts>\d+)-(?P<n>\d+)-(?P<region>caption|full)$")
 _PARSERS = {"teams": teams, "zoom": zoom}
 DUP_SHARE = 0.8  # a row is a duplicate when this share of its words is in a recent row
+DUP_MIN_WORDS = 3  # shorter rows ("Yes.", "Thanks Kunal.") are stock replies, not rewrites
 DUP_WINDOW = 8  # how many earlier rows a duplicate is looked for in
 MATCH_RATIO = 0.8  # word-sequence similarity for two rows to be the same caption line
+MATCH_AHEAD = 2 * DUP_WINDOW  # rows past the last match a reference row may be found in
 
 
 @dataclass(frozen=True)
@@ -75,9 +83,10 @@ def load_ocr(data: dict, jpeg: bytes) -> OcrResult:
 
 def load_window(path: Path) -> tuple[str, list[Frame]]:
     """The platform (from the directory name) and the window's frames in replay order."""
+    path = path.resolve()
     platform = path.name.split("-", 1)[0]
     if platform not in _PARSERS:
-        raise SystemExit(f"{path.name}: not a <platform>-<slug>-<hash> sampler directory")
+        raise SystemExit(f"{path}: not a <platform>-<slug>-<hash> sampler directory")
     frames = []
     for jpg in path.glob("*.jpg"):
         m = _NAME.match(jpg.stem)
@@ -85,15 +94,11 @@ def load_window(path: Path) -> tuple[str, list[Frame]]:
         if m is None or not meta.exists():
             continue
         jpeg = jpg.read_bytes()
-        frames.append(
-            Frame(
-                int(m["ts"]),
-                int(m["n"]),
-                m["region"],
-                jpeg,
-                load_ocr(json.loads(meta.read_text()), jpeg),
-            )
-        )
+        try:
+            ocr = load_ocr(json.loads(meta.read_text()), jpeg)
+        except Exception as exc:  # one bad file names itself rather than a bare traceback
+            raise SystemExit(f"{meta}: unreadable OCR read: {exc!r}") from exc
+        frames.append(Frame(int(m["ts"]), int(m["n"]), m["region"], jpeg, ocr))
     frames.sort(key=lambda f: (f.ts, f.n))
     return platform, frames
 
@@ -114,8 +119,18 @@ def find_pane(frame: Frame) -> CaptionPane | None:
     return None
 
 
-async def replay(platform: str, frames: list[Frame], *, end_ms: int = 180_000) -> list[Row]:
+@dataclass
+class Replay:
+    rows: list[Row]
+    meetings: int = 0
+    full_frames: int = 0
+    full_frames_without_pane: int = 0
+
+
+async def replay(platform: str, frames: list[Frame], *, ocr: OcrClient | None = None) -> Replay:
     """Feed ``frames`` through a fresh tracker; the rows every meeting stored, in order."""
+    from api.screen.ws import locate_pane  # ws builds the app's OCR client lazily
+
     store = InMemoryConversationStore()
     tracker = MeetingTracker(
         "replay",
@@ -124,20 +139,26 @@ async def replay(platform: str, frames: list[Frame], *, end_ms: int = 180_000) -
         store=store,
         account_exists=lambda _: True,
         cadence=Cadence(0.2, 1.0, 10.0),
-        stable_ms=3000,
-        end_ms=end_ms,
+        stable_ms=int(settings.screen_line_stable_seconds * 1000),
+        end_ms=int(settings.screen_meeting_end_seconds * 1000),
     )
     parser = _PARSERS[platform]
+    out = Replay([])
     ended: list[str] = []
     last = 0
     for f in frames:
+        # Live, the sweeper ends an idle meeting every few seconds: before this frame, here.
         if tracker.expired(f.ts) and (cid := await tracker.end(f.ts)):
             ended.append(cid)
         ts = tracker.clock(f.ts)
         last = ts
         if f.region == "full":
+            out.full_frames += 1
             if platform == "teams":
-                frame = teams.parse_full_frame(f.ocr, f.jpeg, pane=find_pane(f))
+                size = (f.ocr.width, f.ocr.height)
+                pane = await locate_pane(ocr, f.jpeg, size) if ocr else find_pane(f)
+                out.full_frames_without_pane += pane is None
+                frame = teams.parse_full_frame(f.ocr, f.jpeg, pane=pane)
             else:
                 frame = parser.parse_full_frame(f.ocr, f.jpeg)
             await tracker.on_full(frame, ts)
@@ -153,12 +174,13 @@ async def replay(platform: str, frames: list[Frame], *, end_ms: int = 180_000) -
             await tracker.on_caption(blocks, ts)
     if cid := await tracker.end(last):
         ended.append(cid)
-    rows: list[Row] = []
+    out.meetings = len(ended)
     for cid in ended:
         conv = store.get("replay", cid)
         assert conv is not None
-        rows += [(s.speaker, s.text) for s in sorted(conv.segments, key=lambda s: s.start_ms)]
-    return rows
+        segs = sorted(conv.segments, key=lambda s: s.start_ms)
+        out.rows += [(s.speaker, s.text) for s in segs if s.text]  # "" = a dropped line
+    return out
 
 
 def _words(text: str) -> list[str]:
@@ -166,16 +188,19 @@ def _words(text: str) -> list[str]:
 
 
 def duplicates(rows: list[Row]) -> tuple[int, int, int]:
-    """(duplicate rows, their words, all words): rows mostly repeating a recent row."""
+    """(duplicate rows, their words, all words): rows mostly repeating the same speaker's
+    recent row of a similar length."""
     dup_rows = dup_words = total = 0
-    for i, (_, text) in enumerate(rows):
+    for i, (speaker, text) in enumerate(rows):
         words = _words(text)
         total += len(words)
-        if not words:
+        if len(words) < DUP_MIN_WORDS:
             continue
-        for _, earlier in rows[max(0, i - DUP_WINDOW) : i]:
-            seen = set(_words(earlier))
-            if sum(w in seen for w in words) >= DUP_SHARE * len(words):
+        for who, earlier in rows[max(0, i - DUP_WINDOW) : i]:
+            seen = _words(earlier)
+            if who != speaker or not 0.5 <= len(words) / len(seen or [""]) <= 2:
+                continue
+            if sum(w in set(seen) for w in words) >= DUP_SHARE * len(words):
                 dup_rows += 1
                 dup_words += len(words)
                 break
@@ -183,14 +208,17 @@ def duplicates(rows: list[Row]) -> tuple[int, int, int]:
 
 
 def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
-    """Match each reference row to a row of ``rows`` (in order, by words) and count the drift."""
+    """Match each reference row, in order, to the most alike unused row of ``rows`` near the
+    last match, and count the drift. A row is looked for at most ``MATCH_AHEAD`` rows past the
+    last match: a search over all later rows paired a reworded line with a repeat of it far
+    ahead, and every row in between counted as lost (QA)."""
     used: set[int] = set()
     changed = missing = 0
     start = 0
     for speaker, text in reference:
         ref = _words(text)
         best, best_j = 0.0, None
-        for j in range(start, len(rows)):
+        for j in range(start, min(len(rows), start + MATCH_AHEAD)):
             if j in used:
                 continue
             r = SequenceMatcher(None, ref, _words(rows[j][1]), autojunk=False).ratio()
@@ -200,7 +228,9 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
             missing += 1
             continue
         used.add(best_j)
-        start = max(0, best_j - DUP_WINDOW)  # rows can store slightly out of order
+        start = max(start, best_j - DUP_WINDOW)  # rows can store slightly out of order
+        while start in used:
+            start += 1
         changed += rows[best_j][0] != speaker
     return {
         "matched": len(used),
@@ -213,6 +243,14 @@ def compare(rows: list[Row], reference: list[Row]) -> dict[str, int]:
 def drop(frames: list[Frame], share: float, rng: random.Random) -> list[Frame]:
     """``frames`` without ``share`` of the caption crops (full frames are kept)."""
     return [f for f in frames if f.region == "full" or rng.random() >= share]
+
+
+def load_truth(path: Path) -> list[Row]:
+    data = json.loads(path.read_text())
+    try:
+        return [(x["speaker"], x["text"]) if isinstance(x, dict) else (x[0], x[1]) for x in data]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise SystemExit(f"{path}: not a list of [speaker, text] or {{speaker, text}}") from exc
 
 
 def summarize(rows: list[Row]) -> dict[str, int]:
@@ -229,39 +267,59 @@ async def run(args: argparse.Namespace) -> dict:
     platform, frames = load_window(Path(args.window))
     if not frames:
         raise SystemExit(f"{args.window}: no <ts>-<n>-<region>.jpg/.json frame pairs")
-    rows = await replay(platform, frames)
+    ocr = HttpOcrClient(args.ocr, timeout=settings.ocr_timeout_seconds) if args.ocr else None
+    full = await replay(platform, frames, ocr=ocr)
+    rows = full.rows
     report: dict = {
         "platform": platform,
         "frames": len(frames),
         "caption_frames": sum(f.region == "caption" for f in frames),
+        "meetings": full.meetings,
+        "full_frames_without_pane": full.full_frames_without_pane,
         **summarize(rows),
     }
     if args.rows:
         report["stored"] = rows
     if args.truth:
-        truth = [(s, t) for s, t in json.loads(Path(args.truth).read_text())]
-        report["vs_truth"] = compare(rows, truth)
+        report["vs_truth"] = compare(rows, load_truth(Path(args.truth)))
     if args.drop:
         rng = random.Random(args.seed)
         runs = []
         for _ in range(args.runs):
-            dropped = await replay(platform, drop(frames, args.drop, rng))
+            dropped = (await replay(platform, drop(frames, args.drop, rng), ocr=ocr)).rows
             runs.append({**summarize(dropped), **compare(dropped, rows)})
-        report["drop"] = {"share": args.drop, "seed": args.seed, "runs": runs}
-        report["drop"]["total"] = {
-            k: sum(r[k] for r in runs)
-            for k in ("rows", "duplicate_rows", "matched", "speaker_changed", "missing", "extra")
+        keys = ("rows", "duplicate_rows", "matched", "speaker_changed", "missing", "extra")
+        report["drop"] = {
+            "share": args.drop,
+            "seed": args.seed,
+            "runs": runs,
+            "total": {k: sum(r[k] for r in runs) for k in keys},
         }
     return report
+
+
+def _share(text: str) -> float:
+    value = float(text)
+    if not 0 <= value < 1:
+        raise argparse.ArgumentTypeError("a share in [0, 1)")
+    return value
+
+
+def _positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("at least 1")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("window", help="one sampler window directory: <platform>-<slug>-<hash>")
-    ap.add_argument("--drop", type=float, default=0.0, help="share of caption crops to drop")
-    ap.add_argument("--runs", type=int, default=10, help="dropped-frame runs (with --drop)")
+    ap.add_argument("--drop", type=_share, default=0.0, help="share of caption crops to drop")
+    ap.add_argument("--runs", type=_positive, default=10, help="dropped-frame runs (with --drop)")
     ap.add_argument("--seed", type=int, default=2731)
     ap.add_argument("--truth", help="JSON list of [speaker, text] to score against")
+    ap.add_argument("--ocr", help="tenir-ocr URL to re-read Teams pane headings as live does")
     ap.add_argument("--rows", action="store_true", help="include the stored rows")
     ap.add_argument("--json", action="store_true", help="print one JSON object")
     args = ap.parse_args(argv)

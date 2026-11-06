@@ -35,4 +35,8 @@ paths:
 - `caption_replay.py` (XERK-2731) replays sampler windows through the live `MeetingTracker`, never
   a re-implementation: its numbers decide merge tuning. Its test must keep matching the socket
   path's stored lines (`test_replaying_the_teams_fixture_stores_what_the_socket_stores`).
-- Replay finds the Teams pane from the full frame's own heading line, not a second band read.
+- The sampler keeps no band read of the Teams pane heading: replay uses the full frame's own
+  heading line, and when OCR missed it caption lines join the roster and rows are lost (QA).
+  Read `full_frames_without_pane`; non-zero → re-run with `--ocr` (real tenir-ocr).
+- `compare()` searches only `MATCH_AHEAD` rows past the last match: an unbounded best-match
+  paired a reworded line with its repeat far ahead and counted everything between as lost.
