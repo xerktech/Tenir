@@ -2954,6 +2954,42 @@ def test_a_finished_entry_reflowing_above_the_same_speakers_next_entry_is_stored
     assert stored == [("Ana", text) for text in final] + [(below, text) for text in nxt if below]
 
 
+def test_a_one_row_entry_growing_above_the_next_speaker_keeps_its_new_words() -> None:
+    """QA (XERK-2716): a block's top row is never paired by word growth: it has no row above
+    to place it by, so "so ship it" was lost (the rewrite path stores it)."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "green.")], 5),
+            ([blk("Ana", "green."), blk("Bo", "sure.")], 5),
+            ([blk("Ana", "green, so ship it"), blk("Bo", "sure.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "green, so ship it"), ("Bo", "sure.")]
+
+
+def test_a_new_line_starting_with_an_old_ones_words_is_not_explained_away() -> None:
+    """QA (XERK-2716): "yes I think so too." said between snapshots above a repeat of Ana's
+    next entry is a new line, not the stored "yes." re-flowing."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "yes.")], 5),
+            ([blk("Ana", "yes."), blk("Ana", "we ship friday.")], 5),
+            ([blk("Ana", "yes I think so too."), blk("Ana", "we ship friday.")], 6),
+        ]
+    )
+    assert ("Ana", "yes I think so too.") in stored and len(stored) == 4
+
+
+def test_an_old_row_re_read_longer_is_jitter_not_growth() -> None:
+    """QA (XERK-2716): a middle row re-read with stray glyphs long after its entry ended is
+    OCR jitter; only a recent (``_REVISE_MS``) row takes growth this way."""
+    rows = ["we went over the plan", "like", "and then it is green"]
+    stored, _ = _entry_run(
+        [([blk("Ana", *rows)], 75), ([blk("Ana", rows[0], "like l o", rows[2])], 6)]
+    )
+    assert stored == [("Ana", text) for text in rows]
+
+
 def test_a_line_the_ocr_missed_between_rows_is_kept() -> None:
     """A stored line a block skips is a stale copy only when the rows around it hold its
     words; otherwise OCR missed it and it stays."""

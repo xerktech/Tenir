@@ -162,15 +162,22 @@ def _score(shown: _Shown, known: _Line, *, growable: bool) -> float:
     return 0.0
 
 
-def _misread(shown: _Shown, known: _Line) -> bool:
+def _misread(shown: _Shown, known: _Line, *, in_entry: bool = False) -> bool:
+    """Whether ``shown`` misreads ``known``. ``in_entry``: the row right above ``shown``, in
+    its block, matched the known line right above ``known``."""
     if not _same_speaker(shown.speaker, known.speaker):
         return False
     a, b = shown.norm, known.norm
     if b.startswith(a[: max(1, len(a) - 1)]) or _ratio(a, b, _MISREAD_LIKE) >= _MISREAD_LIKE:
         return True
-    # A finished Teams row re-flowing: punctuation changed and words joined it ("green." ->
-    # "green, so ship it", XERK-2716). Unpaired under a header it read as a line said between
-    # snapshots and the whole box was stored again; paired, ``_reflow`` takes its words.
+    # A finished Teams row re-flowing inside its entry: punctuation changed and words joined
+    # it ("green." -> "green, so ship it", XERK-2716). Unpaired under a header it read as a
+    # line said between snapshots and the whole box was stored again; paired, ``_reflow``
+    # takes its words. Only under a matched row of its own entry: a block's top row may be a
+    # new line starting with an old one's words ("yes." / "yes I think so too."), and a
+    # glitch there has no row above for ``_reflow`` to place it by (both lost words, QA).
+    if not (in_entry and known.final):
+        return False
     had = _words(known.text)
     return bool(had) and _words(shown.text)[: len(had)] == had
 
@@ -195,7 +202,13 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
             options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
-                if _misread(shown[i - 1], tail[j - 1]):
+                in_entry = (
+                    i >= 2
+                    and j >= 2
+                    and shown[i - 2].block == shown[i - 1].block
+                    and move[i - 1][j - 1] == "match"
+                )
+                if _misread(shown[i - 1], tail[j - 1], in_entry=in_entry):
                     options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
                 # A carried line can't grow: its segment is the ended meeting's, so the
@@ -704,9 +717,14 @@ class CaptionMerger:
                 continue
             # A glitch row that grew its line by whole words is taken too: ``_misread`` paired
             # it ("like" -> "like with the keto."), so no other rule stores its new words.
+            # Only a recent line: Teams re-flows an entry seconds after it ends, and an old
+            # row re-read longer is OCR jitter ("like" -> "like l o" 70 s on, QA).
             grew = any(
-                row_line[i] is None and len(rw) > len(lw) and rw[: len(lw)] == lw
-                for i, rw, lw in zip(rows, row_words, line_words, strict=True)
+                row_line[i] is None
+                and ts - ln.first_ms <= _REVISE_MS
+                and len(rw) > len(lw)
+                and rw[: len(lw)] == lw
+                for i, ln, rw, lw in zip(rows, lines, row_words, line_words, strict=True)
             )
             if not between and not grew and not _moved(line_words, row_words):
                 continue
