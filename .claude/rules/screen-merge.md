@@ -18,6 +18,23 @@ paths:
     under a verified header above a match costs more than "new": it is a line said between
     two snapshots (dropped frames). Without that, [okay] then [Bo sure, okay] lost two lines.
   - Only the bottom line may change text; a line above it keeps its text (OCR jitter).
+  - A row only resembling a known line never pairs with it when rows below read that text
+    exactly more often than later known lines hold it, and an earlier known line holds it
+    (`_reread_below`, XERK-2719): [okay, ship it][okay.] over stored okay./okay. paired the
+    grown row with the newest "okay." and stored the row below anew on every frame.
+    - Both conditions are needed (QA): without the count, the live bottom twin growing stored
+      a third copy; without the earlier copy, a garbled top row over a repeat was stored.
+    - A row aligned as a misread that grew its line by whole words, while a row below reads
+      that line's later twin, revises the line (`_grew_over_twin`, in `feed`). Refusing the
+      misread instead left the row unpairable and re-stored the whole box (QA).
+    - Both twin guards skip carried lines (as twin or as earlier copy): carried shapes keep
+      main's behaviour. Refusing the misread for a carried line moved its growth onto the new
+      twin and stored a carried neighbour again (QA). Tests:
+      `test_a_carried_line_growing_above_its_twin_is_stored_as_new`,
+      `test_a_carried_twin_growing_never_re_stores_a_carried_line`.
+    - The unpaired grown row is then revised by `_revisions` via XERK-2717's draft cut (its
+      twin below cuts the draft). Without that cut, the run's later entries diluted coverage.
+    - Test: `test_a_grown_entry_above_a_same_text_entry_is_stored_once`.
   - A stored line extends only on whole-word growth, so the ASR finishing its last word after
     it was stored ("deploy" -> "deployment failed") loses the rest of that line. Accepted
     (XERK-2597): three char-growth rules each traded it for stray OCR chars stored ("yesl",

@@ -188,7 +188,47 @@ def _misread(shown: _Shown, known: _Line, *, in_entry: bool = False) -> bool:
     return bool(had) and _words(shown.text)[: len(had)] == had
 
 
-def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
+def _exact(shown: _Shown, known: _Line) -> bool:
+    return shown.norm == known.norm and _same_speaker(shown.speaker, known.speaker)
+
+
+def _reread_below(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> bool:
+    """Whether rows from ``shown[i]`` on read ``tail[k]``'s text exactly more often than the
+    known lines after it hold it (so one of them re-reads ``tail[k]`` itself), and an earlier
+    known line holds it too (one ``shown[i - 1]`` may have grown from). Without the count,
+    the live bottom twin growing ([notes][notes the think]) stored a third "notes"; without
+    the earlier copy, a garbled top row over a repeat said since was stored (both QA)."""
+    known = tail[k]
+    if known.carried:  # the ended meeting's line keeps main's behaviour
+        return False
+    below = sum(1 for s in shown[i:] if _exact(s, known))
+    after = sum(1 for ln in tail[k + 1 :] if ln.norm == known.norm)
+    return below > after and any(
+        ln.norm == known.norm and ln.speaker == known.speaker and not ln.carried
+        for ln in tail[:k]
+    )
+
+
+def _grew_over_twin(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> bool:
+    """Whether ``shown[i - 1]``, aligned as a misread of ``tail[k]``, is it grown by whole
+    words while a row below reads a later same-text known line (XERK-2719): ["notes the
+    think"]["notes"] over stored notes/notes. ``feed`` revises ``tail[k]`` with it; refusing
+    the misread instead left the row nothing to pair with, and the box was stored again."""
+    known = tail[k]
+    if known.carried:
+        return False
+    had, now = _words(known.text), _words(shown[i - 1].text)
+    return (
+        len(now) > len(had)
+        and now[: len(had)] == had
+        and any(ln.norm == known.norm for ln in tail[k + 1 :])
+        and any(_exact(s, known) for s in shown[i:])
+    )
+
+
+def _align(
+    shown: list[_Shown], tail: list[_Line], misreads: dict[int, int] | None = None
+) -> list[int | None]:
     """For each shown line, the index into ``tail`` it re-reads, or None (new or a glitch).
 
     Monotone alignment: shown[i] -> tail[j] pairs never cross. Leading tail lines (scrolled
@@ -216,6 +256,12 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
                 # speaker going on after the break is a new line, not lost in the old one.
                 growable = not known.carried and (not known.final or j == m)
                 s = _score(shown[i - 1], known, growable=growable)
+                if 0 < s < _MATCH and _reread_below(shown, i, tail, j - 1):
+                    # A row below is the re-read of this line, and an earlier copy of it is
+                    # what this row grew from (XERK-2719): Teams grew an entry above a
+                    # same-text one ("okay." -> "okay, ship it" over "okay."). Pairing the
+                    # grown row with the newest "okay." stored the row below on every frame.
+                    s = 0.0
                 if s > 0:
                     options.append((best[i - 1][j - 1] + s, "match"))
             best[i][j], move[i][j] = max(options)
@@ -234,6 +280,8 @@ def _align(shown: list[_Shown], tail: list[_Line]) -> list[int | None]:
             out[i - 1] = j - 1
             i, j = i - 1, j - 1
         elif step == "misread":
+            if misreads is not None:
+                misreads[i - 1] = j - 1
             i, j = i - 1, j - 1
         elif step == "skip_known":
             j -= 1
@@ -468,6 +516,8 @@ class CaptionMerger:
         # Each block's last re-flowed read, keyed by its lines (``_reflow``): a re-flow is
         # taken when two frames in a row read it alike.
         self._reflow_reads: dict[tuple[int, ...], tuple[str, ...]] = {}
+        # The last ``_match``'s rows aligned as misreads: shown row -> the tail line it misreads.
+        self._misreads: dict[int, int] = {}
 
     def rename(self, old: str, new: str) -> None:
         """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
@@ -526,7 +576,8 @@ class CaptionMerger:
     ) -> tuple[list[_Shown], list[_Line], list[int | None], dict[int, int]]:
         shown = _shown(blocks)
         tail = self._tail(ts)
-        aligned = _align(shown, tail)
+        self._misreads = {}
+        aligned = _align(shown, tail, self._misreads)
         revised = _revisions(shown, self._speakers(blocks, shown, aligned, tail), aligned, tail, ts)
         return shown, tail, aligned, revised
 
@@ -602,6 +653,12 @@ class CaptionMerger:
                 self._revise(line, line_shown, ts, out)
                 row_line[i] = line
             elif i < last_aligned:
+                k = self._misreads.get(i)
+                if k is not None and _grew_over_twin(shown, i + 1, tail, k):
+                    # Not a glitch: its line grew above a same-text entry (XERK-2719).
+                    tail[k].seen_ms = ts
+                    self._revise(tail[k], line_shown, ts, out)
+                    row_line[i] = tail[k]
                 continue  # an OCR glitch above known lines: never a new line
             else:
                 # New lines keep the order they appeared in: each at least a millisecond
