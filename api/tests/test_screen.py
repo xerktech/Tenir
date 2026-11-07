@@ -3504,6 +3504,19 @@ def test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked() -
     assert "" not in by_id.values()
 
 
+def test_the_next_entry_read_into_the_block_during_a_re_lay_is_never_blanked() -> None:
+    """Teams missed her next entry's avatar, so its name and row joined the draft's block,
+    and then OCR missed it on the re-lay frame. The rewrite's words pair with that entry, not
+    the typo'd draft row above it ("to tst first"): blanking stops at the row it didn't take,
+    so the entry stays stored (QA, XERK-2739)."""
+    a = blk("Bo", "we deploy it", "to tst first")
+    joined = blk("Bo", "we deploy it", "to tst first", "Bo", "to test first")
+    b = blk("Bo", "to test first")
+    r = blk("Bo", "We deploy it to test first.")
+    stored, _ = _entry_run([([a], 4), ([joined], 2), ([r], 1), ([r, b], 6)])
+    assert ("Bo", "to test first") in stored
+
+
 def test_a_refused_rewrite_blanks_nothing() -> None:
     """A rewrite leaving a newer known line unshown is refused (a new line like an old one):
     no draft row it seemed to take is blanked."""

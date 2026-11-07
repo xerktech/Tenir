@@ -544,8 +544,9 @@ def _claims(
     Also the draft lines after the first claimed one that no row claims but whose words
     (``_REVISED`` of them) the rows took: Teams re-laid the entry onto fewer rows ("so we
     need to" / "check the cluster" -> "So we need to check the cluster."), so they are stale
-    copies (XERK-2739). Lines whose words the rows dropped (stutters) stay, and so does every
-    line from her next entry's first one on (``_Line.head``)."""
+    copies (XERK-2739). Only an unbroken run of such lines is taken: one the rows didn't take
+    (a stutter dropped, a typo fixed) and every line after it stay, as does every line from her
+    next entry's first one on (``_Line.head``)."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -577,8 +578,14 @@ def _claims(
             # them again (a draft typo fixed, "to tst first" / "to test first"), and with its
             # block OCR-missed this frame it was blanked and lost for good (QA).
             break
-        if j not in claims.values() and taken_words[j] >= _REVISED * len(_words(tail[j].text)):
-            took.append(j)
+        if j in claims.values():
+            continue
+        if taken_words[j] < _REVISED * len(_words(tail[j].text)):
+            # A row the rewrite didn't take (a typo it fixed, a stutter it dropped): the rows'
+            # words further down may be her next entry saying them again, read into this
+            # block when Teams missed its avatar, so nothing past here is a stale copy (QA).
+            break
+        took.append(j)
     return claims, took
 
 

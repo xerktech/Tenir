@@ -169,6 +169,9 @@ paths:
     - Never a line from her next entry on (`_Line.head`): it may repeat the words the rewrite fixed
       ("to tst first" / "to test first"); OCR missing its block on the re-lay frame blanked it
       for good (QA). Accepted: Zoom heads scrolled rows too, so fewer Zoom stale copies go.
+    - Only an unbroken run below the claims: a draft row the rewrite didn't take (a fixed typo)
+      stops it. With her next entry's avatar missed, its row joined the block un-headed, paired
+      with the rewrite instead of the typo row, and was blanked for good (QA).
     - Only the accepted revision blanks (`p == len(cands)`), and only lines `_REVISED` taken.
     - Accepted: a draft line the rewrite dropped (a stutter) stays stored.
     - Measured per seed vs main: Zoom `_simulate` (4000 runs) identical; `_simulate_teams` 2/400
@@ -176,6 +179,7 @@ paths:
     - Tests: `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
       `test_a_row_a_rewrite_dropped_is_kept`,
       `test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked`,
+      `test_the_next_entry_read_into_the_block_during_a_re_lay_is_never_blanked`,
       `test_a_refused_rewrite_blanks_nothing`, `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
     389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
