@@ -166,18 +166,18 @@ paths:
     (`_REVISED` of them) its rows took, after the first claimed one (`_claims`, XERK-2739):
     "so we need to" / "check the cluster" -> one row claimed only the first; the rest stored twice.
     - Only unshown draft lines are candidates, so a real next row still on screen is never blanked.
-    - Never a line from her next entry on (`_Line.head`): it may repeat the words the rewrite fixed
-      ("to tst first" / "to test first"); OCR missing its block on the re-lay frame blanked it
-      for good (QA). Accepted: Zoom heads scrolled rows too, so fewer Zoom stale copies go.
     - Only an unbroken run below the claims: a draft row the rewrite didn't take (a fixed typo)
-      stops it. With her next entry's avatar missed, its row joined the block un-headed, paired
-      with the rewrite instead of the typo row, and was blanked for good (QA).
+      stops it. Her next entry repeating the fixed words ("to tst first" / "to test first"),
+      OCR-missed on the re-lay frame, paired with the rewrite instead and was blanked for good
+      (QA), whether in its own block or read into this one (avatar missed, so a `_Line.head`
+      stop missed it; that stop then guarded nothing more and was dropped).
     - Only the accepted revision blanks (`p == len(cands)`), and only lines `_REVISED` taken.
     - Accepted: a draft line the rewrite dropped (a stutter) stays stored.
     - Measured per seed vs main: Zoom `_simulate` (4000 runs) identical; `_simulate_teams` 2/400
       seeds differ, each storing fewer words twice and losing none.
     - Tests: `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
       `test_a_row_a_rewrite_dropped_is_kept`,
+      `test_a_re_lay_onto_fewer_rows_blanks_rows_below_a_second_claimed_row`,
       `test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked`,
       `test_the_next_entry_read_into_the_block_during_a_re_lay_is_never_blanked`,
       `test_a_refused_rewrite_blanks_nothing`, `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.

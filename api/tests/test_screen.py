@@ -3539,6 +3539,17 @@ def test_a_draft_row_the_rewrite_took_one_word_of_is_kept() -> None:
     assert list(by_id.values()).count("") == 1
 
 
+def test_a_re_lay_onto_fewer_rows_blanks_rows_below_a_second_claimed_row() -> None:
+    """Four draft rows re-laid onto two: both new rows claim a draft row, and the unclaimed
+    rows taken around and below them are blanked too, not just those before the second."""
+    draft = ["so we need", "to check the", "cluster and", "deploy it now"]
+    final = ["So we need to check the", "cluster and deploy it now."]
+    cy = blk("Cy", "Okay.")
+    relaid = blk("Bo", *final)
+    stored, _ = _entry_run([([blk("Bo", *draft)], 4), ([relaid], 6), ([relaid, cy], 4)])
+    assert stored == [("Bo", final[0]), ("Bo", final[1]), ("Cy", "Okay.")]
+
+
 def test_a_row_a_rewrite_dropped_is_kept() -> None:
     """A row whose words the shorter rewrite left out (a stutter Teams dropped, or speech the
     re-laid row lacks) is no stale copy: it stays stored."""

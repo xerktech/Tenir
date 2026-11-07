@@ -545,8 +545,8 @@ def _claims(
     (``_REVISED`` of them) the rows took: Teams re-laid the entry onto fewer rows ("so we
     need to" / "check the cluster" -> "So we need to check the cluster."), so they are stale
     copies (XERK-2739). Only an unbroken run of such lines is taken: one the rows didn't take
-    (a stutter dropped, a typo fixed) and every line after it stay, as does every line from her
-    next entry's first one on (``_Line.head``)."""
+    (a stutter dropped, a typo fixed) and every line after it stay: her next entry may repeat
+    the fixed words ("to tst first" / "to test first"), and pairs with the rewrite instead."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -573,17 +573,13 @@ def _claims(
     for j in draft_lines:
         if j <= first:
             continue
-        if tail[j].head:
-            # Her next entry starts here: its words matching the rewrite's are her saying
-            # them again (a draft typo fixed, "to tst first" / "to test first"), and with its
-            # block OCR-missed this frame it was blanked and lost for good (QA).
-            break
         if j in claims.values():
             continue
         if taken_words[j] < _REVISED * len(_words(tail[j].text)):
             # A row the rewrite didn't take (a typo it fixed, a stutter it dropped): the rows'
-            # words further down may be her next entry saying them again, read into this
-            # block when Teams missed its avatar, so nothing past here is a stale copy (QA).
+            # words further down may be her next entry saying them again (its own block, or
+            # read into this one when Teams missed its avatar), OCR-missed this frame. Blanked,
+            # it was lost for good, so nothing past here is a stale copy (QA).
             break
         took.append(j)
     return claims, took
