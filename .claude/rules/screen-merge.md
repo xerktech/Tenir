@@ -215,6 +215,41 @@ paths:
   - A row with no known line (the live entry's new bottom row, a glitch) counts as unchanged:
     counting it refused real insertions for good (QA: Teams-sim words lost 143 -> 185).
   - Accepted: a rewrite with fewer words ("green done now." -> "green.") keeps the draft.
+  - A growth whose leading added words are the entry's rows above it is a re-wrap onto fewer
+    rows (XERK-2734): `_merged_above` hands the row all of them, the entry's first line takes the
+    text (its id and start, the last row's end_ms) and the rest are blanked. Growing the line
+    alone kept the rows above stored twice.
+    - Only the first row under the entry's header: a header-less top row may have lost the rows
+      above off the crop, and a re-flow there blanked the head row's other words (QA).
+    - The rows claimed are the ones Teams showed right above it in its block (`_Line.above`).
+      Walking the speaker's lines up to a `head` instead ran past an entry first seen with its
+      header cut off and overwrote her previous entry (QA).
+      Links come only from rows reading exactly as their lines: a header-cut top row aligned
+      as a clipped re-read of the previous entry linked the two (QA).
+    - The walk also stops at a line that headed its entry: links are never cleared, and one
+      frame of OCR missing her next entry's header linked it to her previous one, which a later
+      merge blanked (QA).
+    - Not `head` for the grown line either: a merged row aligned to the second line makes it a
+      head on the rewrite's first frame, and no merge fired after it.
+    - The rows' words, aligned once and in order against the lead, must hold `_REVISED` of each
+      row's distinct words (stutters/fillers dropped). One shared word ("enable") blanked three
+      rows (kit fz.py: 13 words lost); pooled over the rows, or counted anywhere in the lead,
+      her previous entry linked in by a header never read was blanked on words the new entry
+      merely shared with it (QA kit x2734 af4.py).
+    - And the lead must start with the entry's first word: a previous entry holding 60% of it
+      by chance ("right we check" / "We check it now...") passed and was blanked (QA). Accepted:
+      a merge that drops a leading filler ("um so we" -> "So we") keeps the draft, as main.
+    - Refusing the growth instead (XERK-2728) left the row unpaired and re-stored the box.
+    - Accepted, as `_reflow`: the old layout coming back after the merge confirmed re-stores a
+      blanked row as new, after the next speaker (QA flicker fuzz; Teams doesn't revert).
+    - Not handled: a merged row pairing with the entry's first line (XERK-2739).
+    - Measured vs main (bf25140), per seed: `_simulate`, `_simulate_teams`, kit tf.py identical;
+      kit x2701 fz.py Teams fewer extra words on 4 seeds, none worse; QA kit x2734 af*.py no
+      seed loses a said word (af2 counts a dropped filler, or a one-frame entry main's copies
+      masked, as lost: 3 seeds); af merge kind 46/300 seeds fewer extra words.
+    - Tests: `test_an_entry_rewritten_from_two_rows_into_one_is_stored_once`,
+      `test_a_merged_row_aligned_to_the_entrys_second_row_still_merges_it`,
+      `test_a_growth_in_front_of_an_entrys_row_blanks_no_row_it_did_not_merge`.
   - Pre-existing, kept: a matched stored line growing by whole words within `_EXTEND_MS`
     extends on one frame (any line, not only the newest); waiting delayed a line finalized
     by the next block and broke `test_extended_line_never_ends_before_it_starts`.
