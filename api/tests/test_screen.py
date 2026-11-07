@@ -2819,6 +2819,12 @@ SAME_TEXT_ENTRIES = {
         + [["sure is", "it think", "sure"]] * 6,
         ["sure is", "it think", "sure"],
     ),
+    # XERK-2727: the twin below misread ("0kay."): the live twin takes the misread (as any live
+    # bottom row), and the grown row above still revises its line.
+    "twin_misread": (
+        [["okay.", "okay."]] * 4 + [["okay, ship it", "0kay."]] * 5,
+        ["okay, ship it", "0kay."],
+    ),
     # ...and a garbled top row over a repeat said since is not stored.
     "garbled_top": (
         [["yes."]] * 5 + [["~es.", "yes."]] + [["yes.", "yes."]] * 5,
@@ -2918,6 +2924,138 @@ def test_a_carried_twin_growing_never_re_stores_a_carried_line() -> None:
         )
     out += m2.flush(90_000)
     assert "sure" not in {s.text for s in out}
+
+
+def _stored(m: CaptionMerger, frames: list, t0: int = 0) -> list[tuple[str | None, str]]:
+    """Feed one frame a second from ``t0``, flush, and return (speaker, text) in start order."""
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    for k, blocks in enumerate(frames):
+        for seg in m.feed(blocks, t0 + k * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    for seg in m.flush(t0 + len(frames) * 1000 + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    return [(sp, text) for _, sp, text in sorted(stored.values())]
+
+
+def test_a_same_speaker_entry_inserted_above_another_speakers_is_stored_once() -> None:
+    """XERK-2727: Teams shows Ana's new entry between her stored one and Bo's. Unpaired under
+    a header it cost ``_UNPAIRED``, so Bo's "fine" below aligned nothing and was stored again."""
+    frames = (
+        [[blk("Ana", "okay so")]]
+        + [[blk("Ana", "okay so"), blk("Bo", "fine")]] * 3
+        + [[blk("Ana", "okay so"), blk("Ana", "okay so lets go"), blk("Bo", "fine")]] * 4
+    )
+    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
+        ("Ana", "okay so"),
+        ("Bo", "fine"),
+        ("Ana", "okay so lets go"),
+    ]
+
+
+def test_a_stored_block_read_under_another_header_is_stored_again() -> None:
+    """Accepted (XERK-2727): Teams re-attributing a stored entry looks exactly like someone
+    else repeating it, followed by a repeat of the reply after it. Matching it across
+    speakers lost both real lines (QA), so the re-attributed block is stored again."""
+    frames = [[blk("Bob", "we ship today"), blk("Cy", "ok")]] * 4 + [
+        [blk("Ana", "we ship today"), blk("Cy", "ok")]
+    ] * 4
+    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
+        ("Bob", "we ship today"),
+        ("Cy", "ok"),
+        ("Ana", "we ship today"),
+        ("Cy", "ok"),
+    ]
+
+
+@pytest.mark.parametrize("case", ["reread_row_not_inserted", "misread_twin_not_reread_below"])
+def test_qa_fuzz_panels_store_what_main_did(case: str) -> None:
+    """QA fuzz dumps (XERK-2727, synthetic) that this change first stored worse than main:
+    - reread_row_not_inserted: a row re-reading a stored line was taken as a new entry
+      inserted after its start (``_inserted_entry``); the line was stored twice and the word
+      wrapped below it lost.
+    - misread_twin_not_reread_below: ``_reread_below`` counted a one-char-misread known line
+      as a twin and re-stored a 4-line box.
+    ``stored`` is what main (bf25140) stores; frames are one a second, null = dropped."""
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent / "fixtures" / "screen" / "merge_fuzz.json"
+    data = json.loads(path.read_text())[case]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    for k, frame in enumerate(data["frames"]):
+        if frame is None:
+            continue
+        blocks = [CaptionBlock(sp, head, list(rows)) for sp, head, rows in frame]
+        for seg in m.feed(blocks, k * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    for seg in m.flush(len(data["frames"]) * 1000 + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    assert [[sp, text] for _, sp, text in sorted(stored.values()) if text] == data["stored"]
+
+
+def test_another_speaker_repeating_a_line_and_its_reply_stores_both() -> None:
+    """QA (XERK-2727): Cy repeats Ana's line word for word and Bo his "ok" after it. A
+    cross-speaker match took them for a re-attributed block and lost both."""
+    frames = [[blk("Ana", "we ship it today"), blk("Bo", "ok")]] * 4 + [
+        [blk("Cy", "we ship it today"), blk("Bo", "ok")]
+    ] * 4
+    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
+        ("Ana", "we ship it today"),
+        ("Bo", "ok"),
+        ("Cy", "we ship it today"),
+        ("Bo", "ok"),
+    ]
+
+
+def test_an_entry_grown_below_its_twin_is_not_an_inserted_entry() -> None:
+    """QA (XERK-2727): two "yes" entries, the second growing above a live one. The first
+    "yes" row aligns to the second "yes" (leading lines skip free), and the grown row was
+    taken as a new entry inserted after it: a third "yes" was stored, the growth after."""
+    bo = blk("Bo", "yes we can do that")
+    frames = (
+        [[bo, blk("Cy", "yes")]] * 2
+        + [[bo, blk("Cy", "yes"), blk("Cy", "yes")]] * 4
+        + [[bo, blk("Cy", "yes"), blk("Cy", "yes"), blk("Cy", "yes we can")]] * 2
+        + [[bo, blk("Cy", "yes"), blk("Cy", "yes maybe"), blk("Cy", "yes we can do")]]
+        + [[bo, blk("Cy", "yes"), blk("Cy", "yes maybe please"), blk("Cy", "yes we can do that")]]
+        * 6
+    )
+    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
+        ("Bo", "yes we can do that"),
+        ("Cy", "yes"),
+        ("Cy", "yes maybe please"),
+        ("Cy", "yes we can do that"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("okay.", "0kay.", True),  # one char of one word misread
+        ("okay.", "Okay!", True),  # case and punctuation aside
+        ("ship it today", "ship it monday", False),  # another word
+        ("okay ship", "0kay shlp", False),  # two words misread: more than a twin
+        # QA: same word count, ratio >= 0.75, different lines (re-stored a 7-line box).
+        ("let me check the logs maybe too", "let me check the logs too again", False),
+        ("okay", "okay so", False),  # grown by a word
+    ],
+)
+def test_only_a_one_char_misread_is_a_twin(a: str, b: str, same: bool) -> None:
+    from api.screen.merge import _norm, _same_text
+
+    assert _same_text(_norm(a), _norm(b)) is same
+
+
+def test_a_carried_entry_grown_above_a_carried_line_stores_only_the_growth() -> None:
+    """XERK-2727: a panel left on screen re-read with the ended meeting's "green." grown. The
+    growth is a new line (carried lines never grow); "and the notes" below is the carried one,
+    not stored again (``_revisions`` skips carried lines, so it aligned as new)."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    _stored(m1, [[blk("Ana", "green."), blk("Ana", "and the notes")]] * 5)
+    m2 = CaptionMerger(start_ms=70_000, stable_ms=3000, carried=m1.recent())
+    frames = [[blk("Ana", "green, so ship it"), blk("Ana", "and the notes")]] * 7
+    assert _stored(m2, frames, 70_000) == [("Ana", "green, so ship it")]
 
 
 def test_a_new_line_sharing_a_word_with_the_last_is_not_a_rewrite() -> None:
