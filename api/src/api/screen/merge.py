@@ -423,8 +423,8 @@ def _inserted(was: list[str], now: list[str]) -> bool:
     as speech: Teams finishing or rewording an entry (XERK-2721). OCR jitter garbles or
     splits words, so it loses one of ``was``'s; a stray glyph read as a word ("x", "l"), a
     run of added words with no word of 2+ chars, is jitter too: static pixels repeat that
-    misread on every frame (QA). A doubled word, or "a"/"i" inside a longer run ("and a
-    fix"), is kept: refusing them lost growth main stored (QA)."""
+    misread on every frame (QA), as is a doubled thin stroke ("ll", ``_spoken``). A
+    doubled word, or "a"/"i" inside a longer run ("and a fix"), is kept: refusing them lost growth main stored (QA)."""
     if not was or len(now) <= len(was):
         return False
     added: list[int] = []
@@ -442,7 +442,16 @@ def _inserted(was: list[str], now: list[str]) -> bool:
             runs[-1].append(now[n])
         else:
             runs.append([now[n]])
-    return all(any(len(w) > 1 for w in run) for run in runs)
+    return all(any(_spoken(w) for w in run) for run in runs)
+
+
+def _spoken(word: str) -> bool:
+    """Whether an added word can be speech rather than a stray glyph OCR reads as a word: one
+    letter is a glyph ("x", "l"), and so is a thin stroke read twice ("ll", "ii"; XERK-2728).
+    Other two-letter tokens are kept: "PM", "Dr", "vs", "mm" are speech (QA)."""
+    if len(word) < 2:
+        return False
+    return not (len(word) == 2 and word[0] == word[1] and word[0] in "iljtfr")
 
 
 def _revisions(
@@ -953,7 +962,8 @@ class CaptionMerger:
             out,
             clippable_top=bool(shown) and uncut and not blocks[shown[0].block].has_header,
         )
-        self._apply_grows(shown, row_known, ts, out)
+        top_open = bool(shown) and not blocks[shown[0].block].has_header
+        self._apply_grows(shown, row_known, ts, out, top_open=top_open)
         for line in to_finalize:
             if not line.final and any(ln is line for ln in self._lines):
                 seg = self._finalize(line)
@@ -1074,7 +1084,13 @@ class CaptionMerger:
         self._grows.append((line, shown, self._grow_seen.get(id(line)) == shown.norm))
 
     def _apply_grows(
-        self, shown: list[_Shown], row_known: list[_Line | None], ts: int, out: dict[str, Segment]
+        self,
+        shown: list[_Shown],
+        row_known: list[_Line | None],
+        ts: int,
+        out: dict[str, Segment],
+        *,
+        top_open: bool,
     ) -> None:
         """Take the confirmed ``_grow`` reads ``_reflow`` left alone, of a row whose block's
         other rows, and the same speaker's rows right above and below it, still read as their
@@ -1086,17 +1102,35 @@ class CaptionMerger:
         again (QA). Live lines read as their lines here: the row rules took this frame's
         text already."""
 
-        def steady(k: int) -> bool:
+        def steady(k: int, i: int, was: list[str], now: list[str]) -> bool:
             # A row with no known line is new this frame (the live entry gained a row as the
             # speaker went on) or a glitch: neither moved words off a line. Counting it as a
             # change refused real insertions for good (QA, ``grow_refused``).
             known = row_known[k]
-            return known is None or known.norm == shown[k].norm
+            if known is None:
+                return True
+            # Words re-flow onto the growing row only off a row that lost them, so only a
+            # neighbour missing a word this row adds is a change (XERK-2728). Any change used
+            # to count: a neighbour growing too, re-punctuated, or one OCR-jittered frame
+            # ("on fridav") refused a real growth for good.
+            kw, sw = _words(known.text), _words(shown[k].text)
+            if (Counter(kw) - Counter(sw)) & (Counter(now) - Counter(was)):
+                return False
+            # Or a word crossed the break between them: the neighbour's edge word facing this
+            # row changed while this row gained a word on that side. A row misaligned onto
+            # the wrong line can't show the moved word itself (``_simulate_teams`` seed 61).
+            # Not on a facing edge change alone: one jittered frame of it ("tben") then
+            # refused a real insertion for good, losing words in every fuzz (QA).
+            if abs(k - i) != 1:
+                return True
+            edge = -1 if k < i else 0  # the neighbour's side facing this row
+            return kw[edge:][:1] == sw[edge:][:1] or now[-1 - edge :][:1] == was[-1 - edge :][:1]
 
         for line, row, confirmed in self._grows:
             if not any(ln is line for ln in self._lines):
                 continue  # ``_reflow`` dropped the line
             i = next(k for k, r in enumerate(shown) if r is row)
+            was, now = _words(line.text), _words(row.text)
             near = [
                 k
                 for k in range(len(shown))
@@ -1112,7 +1146,19 @@ class CaptionMerger:
                     )
                 )
             ]
-            if not all(steady(k) for k in near):
+            # The entry's row above is off screen (the crop's header-less top row) or has no
+            # known line: words that re-flowed down onto this row's start came off a row no
+            # neighbour check can see (QA: stored twice). Accepted: a real word Teams adds at
+            # the crop top row's start is lost. Not a block's top row whose line wasn't its
+            # entry's first: refusing that left a merged two-row entry unpaired and the box
+            # was stored again (fz seed 176, XERK-2734).
+            if i == 0:
+                hidden_above = top_open
+            else:
+                hidden_above = shown[i - 1].block == row.block and row_known[i - 1] is None
+            if (hidden_above and now[:1] != was[:1]) or not all(
+                steady(k, i, was, now) for k in near
+            ):
                 line.grow_refused = row.norm
             elif confirmed:
                 self._revise(line, row, ts, out)
