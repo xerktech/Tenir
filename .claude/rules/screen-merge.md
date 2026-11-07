@@ -107,12 +107,9 @@ paths:
     - Tests: `test_a_same_speaker_entry_inserted_above_another_speakers_is_stored_once`,
       `test_a_carried_entry_grown_above_a_carried_line_stores_only_the_growth`,
       `test_an_entry_grown_below_its_twin_is_not_an_inserted_entry`.
-  - Accepted (XERK-2727): a stored block re-read under another speaker's header (Teams
-    re-attributing it) is stored again. It looks exactly like someone repeating the line and
-    the reply after it: matching across speakers, even verbatim 3+ words, lost both (QA).
-    Telling them apart needs another signal. Tests:
-    `test_a_stored_block_read_under_another_header_is_stored_again`,
-    `test_another_speaker_repeating_a_line_and_its_reply_stores_both`.
+  - A stored block re-read under another speaker's header (Teams re-attributing it) never
+    pairs here: matching across speakers, even verbatim 3+ words, lost a real repeat and its
+    reply (XERK-2727 QA). `_reheaded` re-labels it on its own signal (XERK-2736, below).
   - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
   - An unpaired line under a verified header is never a glitch (it may sit between known
     lines: [Bo, Cy yes, Ana okay] after [Cy, Bo, Ana okay]); only header-less lines are.
@@ -417,5 +414,35 @@ paths:
   - Tests: `test_a_panel_re_sent_after_its_meeting_ended_starts_no_new_meeting`,
     `test_a_reconnect_over_the_break_still_starts_no_new_meeting`,
     `test_the_last_speaker_going_on_after_the_break_is_a_new_line`.
+- A snapshot reading the last one's rows exactly under other header names re-labels those
+  lines (`CaptionMerger._reheaded`, XERK-2736): Teams re-attributed an entry, or OCR read
+  another name. A misread needs the same speaker, so the block was stored again.
+  - Only within `_REHEAD_MS` (1.5 s) of the last frame: after one dropped frame [Ana X][Bo ok]
+    -> [Cy X][Bo ok] may be Cy repeating X and Bo his reply. A 3 s window lost both (QA), as
+    did matching X across speakers by text alone (XERK-2727 QA).
+  - Each guard lost real lines without it (QA, fuzz): a row must keep its name (an anchor: a
+    one-row panel or a goodbye round said again in full turned over); the names must not read
+    as the last frame's scrolled up ([Bo X][Ana X] -> [Ana X][Ana X]); each re-named entry
+    needs `_REHEAD_WORDS` (3)+ words over its rows (a short reply is said whole between frames).
+    Never a line with a twin (the speaker's other recent line of its text): the alignment may have
+    folded a repeat into it, and re-labelling it lost the repeat (QA fuzz seed 936).
+  - New names wait for the next frame to agree (`_pending`). If it doesn't, `feed` merges the
+    held frame then it, as main would have; a held frame merging nothing lost its line (QA). Names
+    flipping back drop the held frame (a one-frame misread).
+    Other names again replace it: Bob -> Bib (misread) -> Ana ends on Ana, not three copies.
+  - Accepted: a short entry re-attributed is stored again; so is one re-attributed with no
+    anchor, with a scroll, or after a dropped frame. Carried lines keep their speaker (XERK-2615).
+    The 1 fps [Ana X][Bo ok] -> [Cy X][Bo ok] (both said again within a second) is re-labelled.
+  - Tests: `test_an_entry_re_attributed_to_another_speaker_is_stored_once_under_the_new_name`,
+    `test_another_speaker_repeating_a_line_and_its_reply_after_dropped_frames_stores_both`,
+    `test_a_cross_speaker_repeat_on_a_one_row_panel_keeps_every_line`,
+    `test_a_long_line_said_again_as_the_panel_scrolls_is_kept` (scroll guard),
+    `test_a_name_misread_on_one_frame_before_a_scroll_re_labels_nothing` (agreement),
+    `test_a_held_frame_s_repeat_is_stored_when_the_panel_moves_on`,
+    `test_an_entry_with_a_same_text_twin_is_never_re_attributed`,
+    `test_names_read_on_one_frame_each_re_label_nothing` (names must agree).
+  - Measured vs main: `_simulate` (4 x 1000 seeds) and `_simulate_teams` (200 seeds, noise 0/0.2)
+    identical per seed; QA's cross-speaker fuzz (1500 seeds, re-labels in 30%) loses nothing more,
+    stores fewer extras; a short-reply fuzz (18k runs, 1-3 row panels) identical.
 - Final lines wait in `MeetingTracker._unsaved` until written: the merger counts a line final
   once, so a failed write re-derived from frames would dedup away.

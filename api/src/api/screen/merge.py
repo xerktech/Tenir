@@ -99,6 +99,12 @@ _SAID_BETWEEN_MS = 3_000
 # A new entry Teams shows between two known ones (XERK-2727): costs more than a misread, so a
 # row that is one keeps that pairing (and ``_grew_over_twin``).
 _INSERTED = -1.5
+# A frame re-reading the last one's rows under other header names re-attributes them
+# (XERK-2736) only this soon after it (one frame at 1 fps, with jitter: after a dropped frame
+# the rows may be said again), and only for an entry of this many words (a reply that short
+# is said whole between two frames).
+_REHEAD_MS = 1_500
+_REHEAD_WORDS = 3
 _WORD = re.compile(r"[\w']+")
 # Alignment work a window may spend (XERK-2730): a token bucket refilled by snapshot time.
 # Crafted rows (12 x 160 chars of "a b a b") cost difflib ~1.5 s CPU per frame on the shared
@@ -802,6 +808,26 @@ def _moved(was: list[list[str]], now: list[list[str]], budget: MergeBudget) -> b
     return False
 
 
+@dataclass
+class _Frame:
+    """The last snapshot ``feed`` folded in: its time, each row's text and header speaker,
+    and the known line each row ended on (None: a glitch)."""
+
+    ts: int
+    norms: list[str]
+    speakers: list[str | None]
+    lines: list[_Line | None]
+
+
+@dataclass
+class _Held:
+    """A frame re-reading the last one's rows under other names, not merged yet."""
+
+    blocks: list[CaptionBlock]
+    ts: int
+    speakers: tuple[str | None, ...]
+
+
 def _shown(blocks: list[CaptionBlock]) -> list[_Shown]:
     return [
         _Shown(b.speaker if b.has_header else None, text[:_MAX_CHARS], _norm(text[:_MAX_CHARS]), bi)
@@ -873,6 +899,10 @@ class CaptionMerger:
         self._budget = budget or MergeBudget()
         # The CPU the last ``feed`` or ``knows_any`` spent, refused or not (ms, for metrics).
         self.last_cpu_ms = 0.0
+        # The last snapshot merged, and a frame re-reading its rows under other header names
+        # held for the next frame to agree (``_reheaded``, XERK-2736).
+        self._last: _Frame | None = None
+        self._pending: _Held | None = None
 
     def rename(self, old: str, new: str) -> None:
         """Re-label the known lines of ``old`` as ``new``: the roster replaced a cut-off
@@ -966,6 +996,32 @@ class CaptionMerger:
             self.last_cpu_ms = 1000 * (time.thread_time() - started)
 
     def _feed(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
+        held, self._pending = self._pending, None
+        reheaded = self._reheaded(blocks, ts, held)
+        if reheaded is not None:
+            return reheaded
+        if held is None or self._rereads_last(blocks):
+            # No frame held, or it misread names this one reads as before: drop it.
+            return self._merge(blocks, ts)
+        # The held frame was no re-attribution after all: merge it, then this one.
+        out = {seg.segment_id: seg for seg in self._merge(held.blocks, held.ts)}
+        try:
+            out.update((seg.segment_id, seg) for seg in self._merge(blocks, ts))
+        except OverBudget:
+            # This frame is refused as any over-budget one is, but the held frame's lines
+            # were merged: return them, or they would never be stored.
+            pass
+        return sorted(out.values(), key=lambda seg: seg.start_ms)
+
+    def _rereads_last(self, blocks: list[CaptionBlock]) -> bool:
+        """Whether ``blocks`` read the last merged frame's rows and names exactly."""
+        shown = _shown(blocks)
+        return self._last is not None and (
+            [s.norm for s in shown] == self._last.norms
+            and [s.speaker for s in shown] == self._last.speakers
+        )
+
+    def _merge(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         shown, tail, aligned, revised, misreads = self._match(blocks, ts)
         self._grow_now = {}
         self._grows = []
@@ -1102,14 +1158,100 @@ class CaptionMerger:
             if not line.final and any(ln is line for ln in self._lines):
                 seg = self._finalize(line)
                 out[seg.segment_id] = seg
+        self._grow_seen = self._grow_now
+        self._last = _Frame(ts, [s.norm for s in shown], [s.speaker for s in shown], row_line)
+        return self._settle(ts, out)
+
+    def _settle(self, ts: int, out: dict[str, Segment]) -> list[Segment]:
+        """Finalize lines unchanged for ``stable_ms``; ``out``, in the order said."""
         for line in self._lines:
             if not line.final and ts - line.changed_ms >= self.stable_ms:
                 seg = self._finalize(line)
                 out[seg.segment_id] = seg
-        self._grow_seen = self._grow_now
         del self._lines[:-_KEEP]
         # Stored in the order they were said, whichever rule finalized them.
         return sorted(out.values(), key=lambda seg: seg.start_ms)
+
+    def _reheaded(
+        self, blocks: list[CaptionBlock], ts: int, held: _Held | None
+    ) -> list[Segment] | None:
+        """Re-attribute the last snapshot's lines when this one is the same rows under other
+        header names (XERK-2736): Teams re-attributed an entry, or OCR read another name. A
+        misread needs the same speaker, so the rows aligned as new and the block was stored
+        again. None when this is not such a frame (``feed`` merges it as usual).
+
+        Nothing new can have been said only with no time for it: within ``_REHEAD_MS`` of the
+        last snapshot. [Ana X][Bo ok] -> [Cy X][Bo ok] after a dropped frame is Cy repeating X
+        and Bo his reply; matching X across speakers there lost both lines (XERK-2727 QA).
+
+        The rows must also show the panel didn't turn over or scroll: a row keeps its name (an
+        anchor: a one-row panel or a goodbye round re-said in full lost lines without it, QA),
+        the names don't read as the last ones scrolled up ([Bo thanks][Ana thanks] -> [Ana
+        thanks][Ana thanks] is Ana thanking again), and each re-named entry holds
+        ``_REHEAD_WORDS`` words (a short reply is said whole between frames).
+
+        The new names are taken once the next frame agrees (two frames in a row read them), so
+        a one-frame misread name changes nothing. The frame between merges nothing (``held``).
+        The next frame reading the same rows under yet other names replaces it (its rows are
+        the last frame's, so nothing is lost); a frame showing other rows makes ``feed`` merge
+        it after all, then that frame, so no line it showed is lost."""
+        last, shown = self._last, _shown(blocks)
+        speakers = tuple(s.speaker for s in shown)
+        if (
+            last is None
+            # Each frame within _REHEAD_MS of the one before: the held one, else the last.
+            or ts - (last.ts if held is None else held.ts) > _REHEAD_MS
+            or [s.norm for s in shown] != last.norms
+            or any(
+                list(speakers[: len(speakers) - k]) == last.speakers[k:]
+                for k in range(1, len(speakers))
+            )
+        ):
+            return None
+        moved = [i for i, sp in enumerate(speakers) if sp != last.speakers[i]]
+        block_words: dict[int, int] = {}
+        for row in shown:
+            block_words[row.block] = block_words.get(row.block, 0) + len(_words(row.text))
+        lines = [last.lines[i] for i in moved]
+        if (
+            not moved
+            or not any(sp is not None and i not in moved for i, sp in enumerate(speakers))
+            or any(
+                speakers[i] is None
+                or block_words[shown[i].block] < _REHEAD_WORDS
+                or line is None
+                or line.carried  # the ended meeting's segment keeps its speaker (XERK-2615)
+                or line.speaker is None
+                or line.speaker != last.speakers[i]
+                # A twin (the speaker's other recent line of that text): which entry the row
+                # is was a guess, and re-labelling the wrong one lost a line (QA fuzz 936).
+                or any(
+                    ln is not line and ln.norm == line.norm and ln.speaker == line.speaker
+                    for ln in self._lines[-_TAIL:]
+                )
+                for i, line in zip(moved, lines, strict=True)
+            )
+        ):
+            return None
+        out: dict[str, Segment] = {}
+        if held is None or held.speakers != speakers:
+            # Wait for the next frame to agree. A held frame read under other names again is
+            # replaced: its rows are the last frame's, so dropping it loses nothing, and Bob ->
+            # Bib (a misread) -> Ana settles on Ana instead of storing all three.
+            self._pending = _Held(blocks, ts, speakers)
+            return self._settle(ts, out)
+        for i, line in zip(moved, lines, strict=True):
+            assert line is not None
+            if self._lines and line is self._lines[-1] and self.last_speaker == line.speaker:
+                self.last_speaker = speakers[i]
+            line.speaker = speakers[i]
+            line.seen_ms = ts
+            if line.segment is not None:
+                line.segment.speaker = speakers[i]
+                out[line.segment.segment_id] = line.segment
+        last.ts = ts
+        last.speakers = list(speakers)
+        return self._settle(ts, out)
 
     def _place_above(self, line: _Line, at: int, out: dict[str, Segment]) -> None:
         """Order ``line`` in the store just above ``self._lines[at]`` (XERK-2729): a row Teams
