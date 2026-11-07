@@ -1128,6 +1128,27 @@ def test_the_gap_between_snapshots_fed_to_a_meeting_is_metered() -> None:
     asyncio.run(run())
 
 
+def test_a_clock_held_flat_meters_no_zero_gaps() -> None:
+    """XERK-2701: a client clock running ahead makes ``clock`` hold ts flat, and each frame
+    then pushed a 0 ms gap into the shared percentiles."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        # Frames stamped behind the last one (400, 700): the tracker's clock holds them at 1000.
+        for ts, text in (
+            (0, "hello there"),
+            (1000, "hello there friend"),
+            (400, "hello there friend of"),
+            (700, "hello there friend of mine"),
+        ):
+            await t.on_caption([blk(None, text, header=False)], t.clock(ts))
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["p50_ms"]) == (1, 1000)
+
+    asyncio.run(run())
+
+
 def test_a_frame_the_merger_fails_on_is_not_a_gap(monkeypatch: pytest.MonkeyPatch) -> None:
     """XERK-2722: the gap is between snapshots the merger took; a feed that raised is skipped."""
 
@@ -1428,7 +1449,9 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
     from api.main import app
 
     _, _, _, admin = screen
-    token = device_token(admin, ttl_seconds=1)
+    # Not 1 s: ``exp`` is whole seconds, so a 1 s token could expire during the handshake
+    # itself under load, a real expiry before cleanup that flaked this test (XERK-2701).
+    token = device_token(admin, ttl_seconds=3)
 
     def gone() -> Cadence:
         raise RuntimeError("client went away")
@@ -1439,7 +1462,7 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
             ws.receive_text()
         assert screen_ws._revokers.get(admin.user_id) is None
         # A leaked timer would fire after exp and count an expiry for a dead socket.
-        time.sleep(2.1)
+        time.sleep(3.1)
     assert "screen.token_expired" not in metrics.snapshot()["counters"]
 
 
@@ -1878,12 +1901,226 @@ def test_a_crafted_huge_caption_snapshot_is_bounded() -> None:
     lines and each line's length, so one frame can't stall the server."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     rows = [f"line {i} " + "word " * 100 for i in range(200)]
-    started = time.monotonic()
     m.feed([blk("Ana", *rows)], 0)
     m.feed([blk("Ana", *rows)], 1000)
-    assert time.monotonic() - started < 2.0
     out = m.flush(5000)
     assert len(out) == 12 and all(len(s.text) <= 160 for s in out)
+
+
+def _crafted_rows(rng) -> list[str]:
+    # Low-entropy rows defeat difflib's cheap bounds: ~1.5 s per frame unbudgeted.
+    return [" ".join(rng.choice("ab") for _ in range(80)) for _ in range(12)]
+
+
+def test_crafted_caption_frames_spend_at_most_the_windows_work_budget() -> None:
+    """XERK-2730: 12 rows of 160 crafted chars cost ~1.5 s CPU a frame, and one socket feeds
+    8 windows into a 2-thread pool. A window now spends its burst, then its rate. Work is
+    counted, not timed, so this holds on a loaded machine."""
+    import random
+
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    rng = random.Random(1)
+    budget = MergeBudget()
+    spent = 0
+    real_charge = budget.charge
+
+    def charge(a, b) -> None:
+        nonlocal spent
+        real_charge(a, b)
+        spent += merge_mod._work(a, b)
+
+    budget.charge = charge  # type: ignore[method-assign]
+    m = CaptionMerger(start_ms=0, stable_ms=3000, budget=budget)
+    dropped = 0
+    for t in range(30):
+        try:
+            m.feed([blk("Ana", *_crafted_rows(rng))], t * 1000)
+        except OverBudget:
+            dropped += 1
+    assert spent <= merge_mod._WORK_BURST + 29 * merge_mod._WORK_PER_S
+    assert dropped >= 25
+
+
+def test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow() -> None:
+    """QA: exact re-reads cost the alignment nothing, but ``_reflow`` compared the box's word
+    lists (12 x 80 one-letter words) unmetered, ~130 ms a frame, never refused. Work after
+    ``_match`` now puts the bucket in debt, and the next frames are refused until refilled."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    budget = MergeBudget()
+    m = CaptionMerger(start_ms=0, stable_ms=3000, budget=budget)
+    rows = [" ".join("a" * 80) for _ in range(12)]
+    refused = 0
+    for t in range(40):
+        try:
+            m.feed([blk("Ana", *rows)], t * 200)
+        except OverBudget:
+            refused += 1
+    assert refused > 20
+    # Spent at most the burst, the refill and one frame's debt.
+    assert budget.left > -merge_mod._WORK_BURST
+
+
+def test_a_pair_ruled_out_by_the_cheap_bounds_still_pays_its_setup() -> None:
+    """QA: rows unlike every known line skip the quadratic ratio, but setting up and
+    bounding 12 x 20 pairs a frame still cost ~25 ms; unpaid, they were never refused."""
+    from api.screen.merge import MergeBudget
+
+    budget = MergeBudget()
+    left = budget.left
+    assert budget.ratio("abc", "xyz", 0.5) == 0.0
+    assert budget.left == left - 6
+
+
+def test_crafted_rows_cost_more_work_than_real_ones_of_their_length() -> None:
+    from api.screen.merge import _work
+
+    crafted = "a b " * 40
+    real = "so we need to check the cluster before the deploy goes out and then push the code to"
+    real = (real + " " + real)[:160]
+    assert _work(crafted, crafted) > 1.5 * _work(real, real)
+
+
+def test_a_frame_over_budget_mid_alignment_changes_nothing() -> None:
+    """A frame refused leaves the merger as it was: the next one merges as if it never came."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import OverBudget
+
+    def fed(m: CaptionMerger) -> list[tuple[str | None, str]]:
+        return [(ln.speaker, ln.text) for ln in m._lines]
+
+    clean, cut = (CaptionMerger(start_ms=0, stable_ms=3000) for _ in range(2))
+    for m in (clean, cut):
+        m.feed([blk("Ana", "can you hear me", "yes I can hear you")], 0)
+    before = fed(cut)
+    cut._budget.left = 1  # less than any comparison costs; the same ts refills nothing
+    with pytest.raises(OverBudget):  # a misread top row needs comparing
+        cut.feed([blk("Ana", "can yu hear me", "yes I can hear you now")], 0)
+    assert fed(cut) == before
+    cut._budget.left = merge_mod._WORK_BURST
+    later = [blk("Ana", "can you hear me", "yes I can hear you now", "good")]
+    assert [s.text for s in cut.feed(later, 2000)] == [s.text for s in clean.feed(later, 2000)]
+    assert fed(cut) == fed(clean)
+
+
+def test_a_rewrite_check_over_budget_is_refused() -> None:
+    """``_revisions`` compares words too (``_claims``): it is charged like the alignment."""
+    from api.screen.merge import MergeBudget, OverBudget, _claims, _shown
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([blk("Ana", "okay so let's start")], 0)
+    shown = _shown([blk("Ana", "Okay, so let's start.")])
+    budget = MergeBudget()
+    assert _claims(shown, [0], m._lines, [0], budget) == {0: 0}
+    budget.left = 1
+    with pytest.raises(OverBudget):
+        _claims(shown, [0], m._lines, [0], budget)
+
+
+def test_a_refused_frame_keeps_what_is_left_so_a_costly_real_frame_passes_later() -> None:
+    """Emptying the bucket on a refusal let a frame needing more than one second's refill
+    be refused on every retry (QA: a dense noisy box)."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    budget = MergeBudget()
+    budget.start(0)
+    budget.left = 10
+    with pytest.raises(OverBudget):
+        budget.charge("a" * 20, "a" * 20)
+    assert budget.left == 10
+    budget.start(1000)
+    assert budget.left == 10 + merge_mod._WORK_PER_S
+    budget.charge("a" * 20, "a" * 20)
+
+
+def test_the_similarity_memo_is_bounded() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    for t in range(40):
+        m.feed([blk("Ana", *(f"line {t} {k} said here" for k in range(12)))], t * 1000)
+    assert 0 < len(m._budget.memo) <= m._budget.memo_cap
+
+
+def test_a_caption_frame_over_budget_is_dropped_and_counted(monkeypatch) -> None:
+    """The tracker drops a frame the merger refused, meters it, and still meters merge CPU;
+    a dropped frame is no snapshot gap (XERK-2722) and holds no meeting open."""
+    from api.screen.merge import OverBudget
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert t.merger is not None
+        real = t.merger.feed
+
+        def refuse(*a, **k):
+            raise OverBudget
+
+        monkeypatch.setattr(t.merger, "feed", refuse)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1000)
+        assert t.last_caption_ms == 0
+        monkeypatch.setattr(t.merger, "feed", real)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1500)
+        assert t.last_caption_ms == 1500
+        snap = metrics.snapshot()
+        assert snap["counters"]["screen.caption_over_budget.zoom"] == 1
+        assert snap["latency_ms"]["screen.merge_cpu.zoom"]["count"] == 3
+        gap = snap["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"]) == (1, 1500)
+
+    asyncio.run(run())
+
+
+def test_frames_after_a_meeting_ended_spend_the_windows_budget() -> None:
+    """QA: after a meeting ends each frame gets a fresh merger; a bucket per merger had a full
+    burst on every frame, so crafted frames re-reading the ended lines were never refused."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk("Ana", "can you hear me", "yes I can hear you")], 0)
+        await t.end(70_000)
+        assert t.merger is None and t._ended_lines
+        t.budget.start(70_000)
+        t.budget.left = 1
+        # A misread of the ended lines needs comparing: refused, no meeting started.
+        await t.on_caption([blk("Ana", "can you hear me", "yes I can hear yuo")], 70_000)
+        assert metrics.snapshot()["counters"]["screen.caption_over_budget.zoom"] == 1
+        assert t.conversation_id is None
+
+    asyncio.run(run())
+
+
+def test_a_users_windows_share_one_work_budget() -> None:
+    """One device token feeds up to MAX_WINDOWS windows per socket, over many sockets: the
+    bucket is per user, so more windows buy no more of the shared CPU pool."""
+    from api.screen.meetings import ScreenMeetings
+    from api.screen.merge import MergeBudget
+
+    reg = ScreenMeetings()
+    store = InMemoryConversationStore()
+
+    def put(user: str, org: str) -> MeetingTracker:
+        t = MeetingTracker(
+            "default",
+            user,
+            ScreenMeta(org, org, "zoom"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        return reg.put(("default", user, org), t)
+
+    a, b, other = put("user-1", "a"), put("user-1", "b"), put("user-2", "a")
+    assert a.budget is b.budget and a.budget is not other.budget
+    assert a.budget.rate == 2 * MergeBudget().rate  # room for two of the user's meetings
+    reg._drop(("default", "user-1", "a"), a)
+    assert put("user-1", "a").budget is b.budget  # a reconnect gets no fresh burst
 
 
 def test_ocr_results_and_rosters_are_bounded() -> None:
@@ -2818,6 +3055,154 @@ def test_a_one_frame_growth_of_a_stored_entry_is_never_stored() -> None:
         out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
     out += m.flush(20_000)
     assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
+def _replay(frames: list[list[CaptionBlock]]) -> list[tuple[str | None, str]]:
+    """Feed one snapshot a second; the (speaker, text) rows stored, as last written, blank
+    ones (dropped lines) left out."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, Segment] = {}
+    for t, frame in enumerate(frames, 1):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg
+    for seg in m.flush((len(frames) + 2) * 1000):
+        stored[seg.segment_id] = seg
+    return [(s.speaker, s.text) for s in sorted(stored.values(), key=lambda s: s.start_ms) if s.text]
+
+
+def test_one_frame_of_a_stray_glyph_on_a_matched_stored_entry_is_never_stored() -> None:
+    """XERK-2701: a stored row above the bottom re-read once with a stray glyph ("notes l"
+    matches "and the notes" closely) was extended on that single frame and kept it."""
+    panel = _entries("green.", "and the notes", "for the api")
+    stray = _entries("green.", "and the notes l", "for the api")
+    assert _replay([panel] * 5 + [stray] + [panel] * 4) == [
+        ("Ana", "green."),
+        ("Ana", "and the notes"),
+        ("Ana", "for the api"),
+    ]
+
+
+def test_a_word_re_flowing_up_from_the_next_row_is_not_stored_twice() -> None:
+    """XERK-2701: Teams re-flows "today" up from the row below; the one-frame extension took
+    it onto the row above while the row below kept it, so it was stored twice."""
+    before = _entries("we ship the build", "today on friday")
+    after = _entries("we ship the build today", "on friday")
+    words = " ".join(text for _, text in _replay([before] * 5 + [after] * 5)).split()
+    assert words.count("today") == 1
+
+
+def test_a_rewrite_with_fewer_rows_than_its_draft_drops_the_folded_row() -> None:
+    """XERK-2694 accepted it, XERK-2701 fixes it: a rewrite joining the draft's rows into one
+    left the second draft row stored beside the final. It is re-emitted blank (no delete)."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke")]
+    final = [blk("Ana", "We did it in test first so nothing broke.")]
+    assert _replay([draft] * 4 + [final] * 5) == [
+        ("Ana", "We did it in test first so nothing broke.")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("frames", "want"),
+    [
+        # Zoom: the next speaker finalized "and so do" mid-sentence, then "I" landed.
+        (
+            [[blk("Ana", "and so do")]] * 5
+            + [[blk("Ana", "and so do I")]] * 5
+            + [[blk("Ana", "and so do I"), blk("Bo", "great")]] * 5,
+            "and so do I",
+        ),
+        # Teams: Bo's entry below finalized it; Teams then finished it with a 1-char word.
+        (
+            [[blk("Ana", "the meeting is in room")]] * 2
+            + [[blk("Ana", "the meeting is in room"), blk("Bo", "thanks.")]] * 4
+            + [[blk("Ana", "The meeting is in room 5."), blk("Bo", "thanks.")]] * 5,
+            "The meeting is in room 5.",
+        ),
+    ],
+)
+def test_a_speakers_newest_line_still_takes_a_one_char_last_word(frames, want) -> None:
+    """XERK-2701 QA: refusing 1-char growth on one frame lost "I" / "5" for good, since
+    ``_inserted`` refuses it on every frame. Only a line she has said on from refuses it."""
+    assert ("Ana", want) in _replay(frames)
+
+
+_FOLD_DRAFT = [blk("Ana", "we did it in test first so", "nothing broke")]
+_FOLD_FINAL = [blk("Ana", "We did it in test first so nothing broke.")]
+
+
+@pytest.mark.parametrize("frames", [1, 2, 3])
+def test_a_garbled_rewrite_frame_is_not_kept_by_the_fold(frames: int) -> None:
+    """XERK-2701 QA: dropping the folded draft row on the rewrite frame left the next correct
+    read aligned onto the garbled line; holding the drop a frame moved that to a misread read
+    twice. Once the row is dropped, the claiming line takes two later reads that agree."""
+    garbled = [blk("Ana", "We did it in tcst flrst so nothing broke.")]
+    stored = _replay([_FOLD_DRAFT] * 4 + [garbled] * frames + [_FOLD_FINAL] * 5)
+    assert all("tcst" not in text for _, text in stored)
+    assert ("Ana", "We did it in test first so nothing broke.") in stored
+
+
+def test_a_jittered_read_right_after_a_fold_is_never_stored() -> None:
+    """One jittered re-read ("nothinq") of the claiming line on the frame the fold is taken
+    is never stored: the rewritten-row window needs two reads that agree."""
+    jitter = [blk("Ana", "We did it in test first so nothinq broke.")]
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL, jitter] + [_FOLD_FINAL] * 5)
+    assert stored == [("Ana", "We did it in test first so nothing broke.")]
+
+
+def test_a_fold_is_taken_over_a_frame_showing_only_another_speaker() -> None:
+    """The next frame missing Ana's block (only Cy shows) still takes the fold: the rewrite
+    seen again after it is stored once. Holding the drop until the claiming line is seen
+    again kept the duplicate here (QA, accepted trade-off: a draft re-shown after such a
+    frame, a reverted rewrite, is stored again out of order)."""
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL, [blk("Cy", "ok")]] + [_FOLD_FINAL] * 5)
+    assert [t for sp, t in stored if sp == "Ana"] == ["We did it in test first so nothing broke."]
+
+
+def test_two_like_misreads_long_after_a_fold_are_not_taken() -> None:
+    """The window a fold opens closes after ``_REVISE_MS``: two identical misreads of the
+    line read later are jitter, not a rewrite."""
+    jitter = [blk("Ana", "We did it in test first so nothinq broke.")]
+    frames = [_FOLD_DRAFT] * 4 + [_FOLD_FINAL] * 34 + [jitter] * 2 + [_FOLD_FINAL] * 5
+    assert _replay(frames) == [("Ana", "We did it in test first so nothing broke.")]
+
+
+def test_a_draft_row_shown_again_is_never_folded() -> None:
+    """A draft row on screen the frame after the rewrite is real, not a stale copy."""
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL] + [_FOLD_DRAFT] * 6)
+    assert ("Ana", "nothing broke") in stored
+
+
+def test_no_draft_row_is_folded_when_the_rewrite_revises_nothing() -> None:
+    """A fold counts only with the revision it belongs to: here Bo's unshown "ok" voids it
+    (the box shows the newest lines), so Ana's "nothing broke" must stay stored."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke")]
+    stored = _replay(
+        [draft] * 4
+        + [[*draft, blk("Bo", "ok")]] * 4
+        + [[blk("Ana", "We did it in test first so nothing broke.")]] * 3
+        + [[blk("Ana", "We did it in test first so nothing broke."), blk("Bo", "ok")]] * 3
+    )
+    assert ("Ana", "nothing broke") in stored
+
+
+def test_growth_matching_another_speakers_unchanged_row_below_is_taken() -> None:
+    """Only words the row below no longer starts with moved up: Bo's "today we test" still
+    reads as before, so Ana's "today" is her own growth, kept as on main."""
+    stored = _replay(
+        [[blk("Ana", "we ship the build")]] * 4
+        + [[blk("Ana", "we ship the build"), blk("Bo", "today we test")]] * 4
+        + [[blk("Ana", "we ship the build today"), blk("Bo", "today we test")]]
+        + [[blk("Bo", "today we test"), blk("Cy", "fine")]] * 4
+    )
+    assert ("Ana", "we ship the build today") in stored
+
+
+def test_a_rewrite_keeps_a_draft_row_whose_words_it_does_not_hold() -> None:
+    """Only a draft row every word of which the rewrite's rows hold is folded away."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke at all")]
+    final = [blk("Ana", "We did it in test first so nothing.")]
+    stored = _replay([draft] * 4 + [final] * 5)
+    assert ("Ana", "nothing broke at all") in stored
 
 
 def test_ocr_jitter_adding_and_garbling_words_on_a_stored_entry_is_not_stored() -> None:
@@ -4205,3 +4590,89 @@ def test_a_dim_row_that_is_no_display_name_stays_text(grey: str) -> None:
     ocr, jpeg = panel_crop(("Ana Lopez", True), ("we shipped it", False), (grey, True))
     blocks = parse_caption_crop(ocr, _roster("Ana Lopez"), live=True, jpeg=jpeg)
     assert [b.lines for b in blocks] == [["we shipped it", grey]]
+
+
+WRAPPED_ROWS = {
+    # Ana's entry grows and wraps onto a second row above Bo's entry.
+    "above_next_speaker": (
+        [[blk("Ana", "we ship"), blk("Bo", "ok")]] * 4
+        + [[blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok")]] * 5,
+        [("Ana", "we ship the build"), ("Ana", "on friday"), ("Bo", "ok")],
+    ),
+    # ...and above her own identical next entry (XERK-2719's twin).
+    "above_same_text_twin": (
+        [[blk("Ana", "notes"), blk("Ana", "notes")]] * 4
+        + [[blk("Ana", "notes, ship", "it"), blk("Ana", "notes")]] * 5,
+        [("Ana", "notes, ship"), ("Ana", "it"), ("Ana", "notes")],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", WRAPPED_ROWS)
+def test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry(case: str) -> None:
+    """XERK-2729: a row Teams wraps onto an entry above a later one was first seen after it,
+    so its start (first-seen time) stored it after that entry. It is ordered just above the
+    entry below it, which moves down a millisecond (same segment, upserted)."""
+    frames, said = WRAPPED_ROWS[case]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    for t, blocks in enumerate(frames):
+        for seg in m.feed(blocks, t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+            assert seg.end_ms >= seg.start_ms
+    for seg in m.flush(len(frames) * 1000 + 10_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    rows = sorted(stored.values())
+    assert [(sp, text) for _, sp, text in rows] == said
+    assert len({start for start, _, _ in rows}) == len(rows)  # no ties
+
+
+def test_lines_after_a_wrapped_row_keep_unique_increasing_starts() -> None:
+    """XERK-2729: lines first seen in one snapshot are a millisecond apart, so making room
+    above one moves every line after it down; a line said later still sorts last."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str]] = {}
+    frames = [[blk("Ana", "we ship"), blk("Bo", "ok"), blk("Cy", "sure"), blk("Di", "fine")]] * 4
+    frames += [
+        [blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok"), blk("Cy", "sure"),
+         blk("Di", "fine")]
+    ] * 5
+    frames += [
+        [blk("Ana", "we ship the build", "on friday"), blk("Bo", "ok"), blk("Cy", "sure"),
+         blk("Di", "fine"), blk("Ed", "agreed")]
+    ] * 5
+    for t, blocks in enumerate(frames):
+        for seg in m.feed(blocks, t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.text)
+            assert seg.end_ms >= seg.start_ms  # a moved line's end moves with it
+    for seg in m.flush(30_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.text)
+        assert seg.end_ms >= seg.start_ms
+    rows = sorted(stored.values())
+    assert [text for _, text in rows] == [
+        "we ship the build", "on friday", "ok", "sure", "fine", "agreed",
+    ]
+    assert len({start for start, _ in rows}) == len(rows)
+
+
+def test_making_room_never_moves_or_re_emits_a_carried_line() -> None:
+    """XERK-2729 (QA): carried lines sit at the front of the known lines, so the feed path never
+    has one after the place a line is made room at. Should it, the ended meeting's segment keeps
+    its start and is not re-emitted into this conversation."""
+    from api.screen.merge import _Line
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([blk("Ana", "we ship"), blk("Bo", "ok")], 0)
+    old = Segment(segment_id="old", text="earlier", start_ms=5000, end_ms=5000, lang="en")
+    carried = _Line("Cy", "earlier", "earlier", 2, 2, 0, segment=old, carried=True)
+    m._lines.append(carried)  # after Bo's line, which the new line goes above
+    for ln in m._lines:
+        if not ln.carried:
+            m._finalize(ln)
+    out: dict = {}
+    new = _Line("Ana", "on friday", "on friday", 1000, 1000, 1000)
+    m._place_above(new, 1, out)
+    assert "old" not in out and old.start_ms == 5000
+    bo = m._lines[1]
+    assert new.order_ms == 1 and bo.order_ms == 2  # the live line still moves down
+    assert set(out) == {bo.segment.segment_id}

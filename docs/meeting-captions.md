@@ -186,6 +186,14 @@ newest frame waits for OCR; a newer one replaces it (`screen.frames_dropped`).
 window's meeting starts it sends that window `API_SCREEN_MEETING_FPS` (1), and the idle rate
 again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (30).
 
+**Sampling real frames.** `API_SCREEN_SAMPLE_DIR` (empty: off) saves every frame the socket
+reads, as `<dir>/<platform>-<org>-<hash>/<ts>-<run>-<n>-<region>.jpg` plus a `.json` with its
+OCR lines, up to `API_SCREEN_SAMPLE_MAX` (2000) frames and 1 GB per process, on its own thread
+(a frame never waits for a write; frames arriving mid-write are skipped). It stops after 5
+failed writes in a row and warns once if a write stalls. It exists to re-tune the parsers' pixel
+thresholds on real crops (XERK-2705). The files are screenshots of client meetings: turn it on
+for one meeting, copy them off, delete them and turn it off. Never commit them.
+
 **Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a
 `screen`-scoped token for the caller (`API_AUTH_DEVICE_TOKEN_TTL_SECONDS`, 365 days). It opens
 only `/ws/screen`, is refused on every other route, never slides, and dies with the user.
