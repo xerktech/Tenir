@@ -2945,10 +2945,11 @@ def test_a_same_speaker_entry_inserted_above_another_speakers_is_stored_once() -
         + [[blk("Ana", "okay so"), blk("Bo", "fine")]] * 3
         + [[blk("Ana", "okay so"), blk("Ana", "okay so lets go"), blk("Bo", "fine")]] * 4
     )
+    # In on-screen order: the new entry is stored above Bo's (``_Line.order_ms``).
     assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
         ("Ana", "okay so"),
-        ("Bo", "fine"),
         ("Ana", "okay so lets go"),
+        ("Bo", "fine"),
     ]
 
 
@@ -2975,7 +2976,7 @@ def test_qa_fuzz_panels_store_what_main_did(case: str) -> None:
       wrapped below it lost.
     - misread_twin_not_reread_below: ``_reread_below`` counted a one-char-misread known line
       as a twin and re-stored a 4-line box.
-    ``stored`` is what main (bf25140) stores; frames are one a second, null = dropped."""
+    ``stored`` is what main (64b94a3) stores; frames are one a second, null = dropped."""
     import json
     from pathlib import Path
 
