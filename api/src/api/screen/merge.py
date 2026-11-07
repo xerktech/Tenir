@@ -285,6 +285,26 @@ def _misread(shown: _Shown, known: _Line, budget: MergeBudget, *, in_entry: bool
     return bool(had) and _words(shown.text)[: len(had)] == had
 
 
+def _moved_up(
+    line: _Line, shown: _Shown, below: tuple[_Shown, _Line | None] | None, *, said_on: bool
+) -> bool:
+    """Whether the words ``shown`` adds to ``line`` are no growth to take on one frame: only
+    one-char tokens on a line the speaker has said on from (``said_on``: a stray glyph on a
+    finished entry, "notes l"), or the leading words of the known line below that its row no
+    longer starts with (Teams re-flowed them up across the row break). Her newest line still
+    takes "I", "B" or "5": it was finalized by the next speaker mid-sentence ("so do I"), and
+    ``_inserted`` refuses 1-char growth on every frame, so refusing it here lost it (QA)."""
+    added = _words(shown.text)[len(_words(line.text)) :]
+    if not added:
+        return True
+    if all(len(w) == 1 for w in added):
+        return said_on
+    if below is None or below[1] is None:
+        return False
+    row, known = _words(below[0].text), _words(below[1].text)
+    return known[: len(added)] == added and row[: len(added)] != added
+
+
 def _exact(shown: _Shown, known: _Line) -> bool:
     return shown.norm == known.norm and _same_speaker(shown.speaker, known.speaker)
 
@@ -432,8 +452,10 @@ def _revisions(
     tail: list[_Line],
     ts: int,
     budget: MergeBudget,
+    merged: list[tuple[int, tuple[int, ...]]] | None = None,
 ) -> dict[int, int]:
     """For new shown rows that revise known lines, the index into ``tail`` each one rewrites.
+    ``merged`` (when given) gets the draft lines a rewrite folded into its rows (``_claims``).
 
     New rows are those below the last aligned one. Each block's run of them is compared, by
     words, with the next run of the same speaker's recent lines after the last aligned known
@@ -457,6 +479,7 @@ def _revisions(
         else:
             runs.append([i])
     out: dict[int, int] = {}
+    folds: list[tuple[int, tuple[int, ...]]] = []
     p = 0  # cands before p are taken (or skipped over by an earlier revision)
     for rows in runs:
         first = rows[0]
@@ -510,18 +533,26 @@ def _revisions(
         own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
         if own not in ends and recent:
             ends.append(own)
-        found = next(
-            ((e, c) for e in ends if (c := _claims(shown, rows, tail, cands[q:e], budget))), None
-        )
+        found = None
+        for e in ends:
+            folded: list[tuple[int, tuple[int, ...]]] = []
+            if c := _claims(shown, rows, tail, cands[q:e], budget, folded):
+                found = (e, c)
+                break
         if found is None:
             if fresh:
                 break
             continue
         p, claims = found
         out.update(claims)
+        folds += folded
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
-    return out if p == len(cands) else {}
+    if p != len(cands):
+        return {}
+    if merged is not None:
+        merged += folds
+    return out
 
 
 def _claims(
@@ -530,9 +561,15 @@ def _claims(
     tail: list[_Line],
     draft_lines: list[int],
     budget: MergeBudget,
+    folded: list[tuple[int, tuple[int, ...]]] | None = None,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
-    rows keep under ``_REVISED`` of ``draft_lines``' words in order."""
+    rows keep under ``_REVISED`` of ``draft_lines``' words in order.
+
+    ``folded`` (when given) gets the draft lines no row claims but whose every word a claiming
+    row holds, between two claimed lines or after the last, each with the claimed lines: a
+    rewrite with fewer rows than its draft ("we did it in test first so" / "nothing broke" ->
+    one row) folded them into the rows, and kept they were stored twice (XERK-2701)."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -553,6 +590,20 @@ def _claims(
         claims[i] = taken = j
     if not claims or len(pairs) < _REVISED * len(draft):
         return None
+    if folded is not None:
+        # Draft word positions that pair with a word of a row that claimed a line.
+        paired = {
+            mb.a + k
+            for mb in sm.get_matching_blocks()
+            for k in range(mb.size)
+            if mine[mb.b + k][1] in claims
+        }
+        first = min(claims.values())
+        claimed = tuple(claims.values())
+        for j in draft_lines:
+            at = {n for n, (_, line) in enumerate(draft) if line == j}
+            if j > first and j not in claims.values() and at and at <= paired:
+                folded.append((j, claimed))
     return claims
 
 
@@ -663,6 +714,11 @@ class CaptionMerger:
         self._reflow_reads: dict[tuple[int, ...], tuple[str, ...]] = {}
         # The last ``_match``'s rows aligned as misreads: shown row -> the tail line it misreads.
         self._misreads: dict[int, int] = {}
+        # The last ``_match``'s draft lines a rewrite folded into its rows (tail index, the
+        # lines the rows claimed), and the last feed's folds (folded line, claiming lines),
+        # taken on the next frame if it still doesn't show the folded line (``feed``).
+        self._folded: list[tuple[int, tuple[int, ...]]] = []
+        self._fold_held: list[tuple[_Line, list[_Line]]] = []
         # This and the last feed's grown-over-twin reads, keyed by line id (``feed``).
         self._grown_reads: dict[int, str] = {}
         # Each stored line's last read with words added (``_grow``), this frame's, and this
@@ -737,7 +793,8 @@ class CaptionMerger:
         self._misreads = {}
         aligned = _align(shown, tail, self._budget, self._misreads)
         speakers = self._speakers(blocks, shown, aligned, tail)
-        revised = _revisions(shown, speakers, aligned, tail, ts, self._budget)
+        self._folded = []
+        revised = _revisions(shown, speakers, aligned, tail, ts, self._budget, self._folded)
         return shown, tail, aligned, revised, self._misreads
 
     def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
@@ -825,6 +882,7 @@ class CaptionMerger:
                         bottom=i == len(shown) - 1,
                         # Only the crop's top row, with no header above it, can be cut off.
                         clippable=i == 0 and uncut and not blocks[line_shown.block].has_header,
+                        below=(shown[i + 1], known_at[i + 1]) if i + 1 < len(shown) else None,
                     )
                 row_line[i] = line
             elif i in revised:
@@ -878,6 +936,16 @@ class CaptionMerger:
             if nxt < len(blocks) and blocks[nxt].has_header and not line.final:
                 to_finalize.append(line)
         self._grown_reads = grown_reads
+        # A fold is taken a frame late, once that frame doesn't show the draft line either: a
+        # draft row shown again is real. On the drop the claiming lines open the rewritten-row
+        # window: with the draft row gone, later reads align onto them and keep their text,
+        # so a misread rewrite frame was stored for good, where main went on revising (QA).
+        for line, claimers in self._fold_held:
+            if line.seen_ms != ts and any(ln is line for ln in self._lines):
+                self._drop(line, out)
+                for c in claimers:
+                    c.rewrite_until = ts + _REVISE_MS
+        self._fold_held = [(tail[j], [tail[k] for k in claimed]) for j, claimed in self._folded]
         self._reflow(
             shown,
             row_line,
@@ -927,7 +995,9 @@ class CaptionMerger:
         *,
         bottom: bool,
         clippable: bool = False,
+        below: tuple[_Shown, _Line | None] | None = None,
     ) -> None:
+        """``below``: the next shown row and the known line it re-reads (if any)."""
         if ts <= line.rewrite_until:
             # A rewritten row: a read equal to the stored text drops what was held (jitter
             # flipping back later must not confirm it); a differing read is taken when the
@@ -963,9 +1033,21 @@ class CaptionMerger:
         # sentence that merely starts the same way doesn't get here: a longer line only
         # aligns to the newest line, or to an older one it closely resembles. A re-read that
         # differs otherwise (jitter, a cut-off top line) is ignored.
+        # Growth that is only stray glyphs ("notes" -> "notes l"), or the words the row below
+        # just lost (a re-flow moving "today" up from "today on friday"), is not taken on one
+        # frame: both were stored for good (XERK-2701). ``_grow`` and ``_reflow`` judge them.
+        # Any other growth extends at once: with dropped frames, Zoom completes a line on the
+        # one frame it shows it, and waiting lost those last words (``_simulate`` noise+drops).
         seg = line.segment
         assert seg is not None
-        if grew and ts - line.changed_ms <= _EXTEND_MS:
+        said_on = any(
+            _same_speaker(ln.speaker, line.speaker) for ln in self._lines[self._index(line) + 1 :]
+        )
+        if (
+            grew
+            and ts - line.changed_ms <= _EXTEND_MS
+            and not _moved_up(line, shown, below, said_on=said_on)
+        ):
             line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             seg.text = shown.text
             seg.end_ms = self._rel(max(ts, line.first_ms))
@@ -1137,11 +1219,16 @@ class CaptionMerger:
                     ln.segment.text = text
                     out[ln.segment.segment_id] = ln.segment
             for ln in between:
-                self._lines.remove(ln)
-                if ln.segment is not None:
-                    ln.segment.text = ""
-                    out[ln.segment.segment_id] = ln.segment
+                self._drop(ln, out)
         self._reflow_reads = reads
+
+    def _drop(self, line: _Line, out: dict[str, Segment]) -> None:
+        """Forget a stale known line; a stored one is re-emitted blank (the store has no
+        delete, and readers skip empty segments)."""
+        self._lines.remove(line)
+        if line.segment is not None:
+            line.segment.text = ""
+            out[line.segment.segment_id] = line.segment
 
     def _fill_glitches(self, found: list[_Line | None], ts: int) -> list[_Line] | None:
         """``found`` with each run of glitch rows (None) between two placed rows paired, in

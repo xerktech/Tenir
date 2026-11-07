@@ -240,7 +240,9 @@ class MeetingTracker:
         if not stale:
             self.last_caption_ms = ts
         self._caption_seen_ms = ts
-        if self.merger is not None and self._fed_ts is not None:
+        # A zero gap is no gap: ``clock`` holds ts flat while a client's clock runs ahead of
+        # the last frame, and those zeros filled the shared percentiles (XERK-2701).
+        if self.merger is not None and self._fed_ts is not None and ts > self._fed_ts:
             # The time between snapshots the merger sees decides its dropped-frame rules (a
             # Teams entry is revised in place only within 3 s, XERK-2717): measure it, per
             # platform, from real meetings rather than modelling it (XERK-2722). Only after

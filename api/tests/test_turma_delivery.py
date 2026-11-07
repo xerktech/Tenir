@@ -538,7 +538,11 @@ def test_a_still_wrong_token_fails_the_requeued_meetings_again(clock) -> None:
     store.set_delivery("default", "c1", "failed", "hub answered 401: unauthorized")
     hub = Hub(httpx.Response(401, json={"error": "unauthorized"}))
     d = _delivery(store, hub, clock)
-    _run_loop_until(d, lambda: len(hub.requests) >= 1)
+    # Wait for the failure to be recorded, not just the request: the hub sees the request
+    # before the loop writes "failed", and stopping in between flaked under load (XERK-2701).
+    _run_loop_until(
+        d, lambda: hub.requests and store.get("default", "c1").delivery_state == "failed"
+    )
     assert store.get("default", "c1").delivery_state == "failed"
     assert len(hub.requests) == 1  # once per boot, not a hot loop
 
