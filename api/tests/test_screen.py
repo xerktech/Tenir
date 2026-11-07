@@ -2968,7 +2968,10 @@ def test_a_stored_block_read_under_another_header_is_stored_again() -> None:
     ]
 
 
-@pytest.mark.parametrize("case", ["reread_row_not_inserted", "misread_twin_not_reread_below"])
+@pytest.mark.parametrize(
+    "case",
+    ["reread_row_not_inserted", "misread_twin_not_reread_below", "earlier_misread_copy_is_no_twin"],
+)
 def test_qa_fuzz_panels_store_what_main_did(case: str) -> None:
     """QA fuzz dumps (XERK-2727, synthetic) that this change first stored worse than main:
     - reread_row_not_inserted: a row re-reading a stored line was taken as a new entry
@@ -2976,6 +2979,8 @@ def test_qa_fuzz_panels_store_what_main_did(case: str) -> None:
       wrapped below it lost.
     - misread_twin_not_reread_below: ``_reread_below`` counted a one-char-misread known line
       as a twin and re-stored a 4-line box.
+    - earlier_misread_copy_is_no_twin: the same, for ``_reread_below``'s earlier copy (a
+      misread one let a garbled row pair as a re-read); stored 26 extra words, main 18.
     ``stored`` is what main (64b94a3) stores; frames are one a second, null = dropped."""
     import json
     from pathlib import Path
