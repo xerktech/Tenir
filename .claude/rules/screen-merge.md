@@ -309,8 +309,27 @@ paths:
     OCR-missed on exactly the frames the word moves, nothing shows the re-flow.
   - A row with no known line (the live entry's new bottom row, a glitch) counts as unchanged:
     counting it refused real insertions for good (QA: Teams-sim words lost 143 -> 185).
-  - Accepted: a rewrite with fewer words ("green done now." -> "green.") keeps the draft, so
-    an entry gaining a word on one frame and dropping another later keeps the dropped one.
+  - A read dropping words is taken only beside an added word (`_edited`, XERK-2732): Teams
+    rewording ("build on friday" -> "new build friday"). Two frames agree, as for insertions.
+    - A read that only drops words is never taken: a deterministic OCR miss repeats on every
+      frame, so no frame count tells it from Teams (QA: a 6-frame hold stored 6-30-frame misses,
+      "we do not ship it" -> "we do ship it"). Accepted: Teams dropping a word alone keeps
+      it (gaining a word on one frame and dropping another later keeps the dropped one).
+    - It must keep half the words and the row's first and last (the crop clips a row's ends
+      alike on every frame), and add nothing resembling a dropped word ("should" -> "sh uld"),
+      by span or word by word (a garble beside a miss folds into one span: "ship the" -> "th").
+      Accepted: a reword inflecting a word it keeps ("to test it" -> "tested it") keeps the draft.
+    - Insertion-only reads go through `_inserted` first (greedy subsequence): difflib alone
+      misaligned repeated words and refused insertions main took (QA).
+    - Measured per seed vs daf7ffb, words extra/lost: Zoom `_simulate` identical;
+      `_simulate_teams` 140/143 -> 140/132 (noise 0.2: 1355/176 -> 1328/168), no seed worse.
+      QA's drop fuzz 735/423 -> 634/321; with 6-20-frame OCR misses 866/577 -> 781/494.
+      Holding drops 3 or 6 frames lost more words than 2 on every fuzz. Re-tune on real
+      captures (`samples.py`).
+    - Tests: `test_a_rewrite_inserting_and_dropping_a_word_is_stored`,
+      `test_a_one_frame_rewrite_dropping_a_word_is_never_stored`,
+      `test_a_word_dropped_alone_is_never_taken`,
+      `test_a_lasting_misread_dropping_words_keeps_the_stored_entry`.
   - A matched stored line growing by whole words within `_EXTEND_MS` extends on one frame
     (any line), unless the added words are the leading words the row below just lost, or are
     all 1-char on a line the speaker has said on from (`_moved_up`, XERK-2701): those were
