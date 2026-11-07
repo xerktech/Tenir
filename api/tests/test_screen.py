@@ -1878,12 +1878,226 @@ def test_a_crafted_huge_caption_snapshot_is_bounded() -> None:
     lines and each line's length, so one frame can't stall the server."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     rows = [f"line {i} " + "word " * 100 for i in range(200)]
-    started = time.monotonic()
     m.feed([blk("Ana", *rows)], 0)
     m.feed([blk("Ana", *rows)], 1000)
-    assert time.monotonic() - started < 2.0
     out = m.flush(5000)
     assert len(out) == 12 and all(len(s.text) <= 160 for s in out)
+
+
+def _crafted_rows(rng) -> list[str]:
+    # Low-entropy rows defeat difflib's cheap bounds: ~1.5 s per frame unbudgeted.
+    return [" ".join(rng.choice("ab") for _ in range(80)) for _ in range(12)]
+
+
+def test_crafted_caption_frames_spend_at_most_the_windows_work_budget() -> None:
+    """XERK-2730: 12 rows of 160 crafted chars cost ~1.5 s CPU a frame, and one socket feeds
+    8 windows into a 2-thread pool. A window now spends its burst, then its rate. Work is
+    counted, not timed, so this holds on a loaded machine."""
+    import random
+
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    rng = random.Random(1)
+    budget = MergeBudget()
+    spent = 0
+    real_charge = budget.charge
+
+    def charge(a, b) -> None:
+        nonlocal spent
+        real_charge(a, b)
+        spent += merge_mod._work(a, b)
+
+    budget.charge = charge  # type: ignore[method-assign]
+    m = CaptionMerger(start_ms=0, stable_ms=3000, budget=budget)
+    dropped = 0
+    for t in range(30):
+        try:
+            m.feed([blk("Ana", *_crafted_rows(rng))], t * 1000)
+        except OverBudget:
+            dropped += 1
+    assert spent <= merge_mod._WORK_BURST + 29 * merge_mod._WORK_PER_S
+    assert dropped >= 25
+
+
+def test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow() -> None:
+    """QA: exact re-reads cost the alignment nothing, but ``_reflow`` compared the box's word
+    lists (12 x 80 one-letter words) unmetered, ~130 ms a frame, never refused. Work after
+    ``_match`` now puts the bucket in debt, and the next frames are refused until refilled."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    budget = MergeBudget()
+    m = CaptionMerger(start_ms=0, stable_ms=3000, budget=budget)
+    rows = [" ".join("a" * 80) for _ in range(12)]
+    refused = 0
+    for t in range(40):
+        try:
+            m.feed([blk("Ana", *rows)], t * 200)
+        except OverBudget:
+            refused += 1
+    assert refused > 20
+    # Spent at most the burst, the refill and one frame's debt.
+    assert budget.left > -merge_mod._WORK_BURST
+
+
+def test_a_pair_ruled_out_by_the_cheap_bounds_still_pays_its_setup() -> None:
+    """QA: rows unlike every known line skip the quadratic ratio, but setting up and
+    bounding 12 x 20 pairs a frame still cost ~25 ms; unpaid, they were never refused."""
+    from api.screen.merge import MergeBudget
+
+    budget = MergeBudget()
+    left = budget.left
+    assert budget.ratio("abc", "xyz", 0.5) == 0.0
+    assert budget.left == left - 6
+
+
+def test_crafted_rows_cost_more_work_than_real_ones_of_their_length() -> None:
+    from api.screen.merge import _work
+
+    crafted = "a b " * 40
+    real = "so we need to check the cluster before the deploy goes out and then push the code to"
+    real = (real + " " + real)[:160]
+    assert _work(crafted, crafted) > 1.5 * _work(real, real)
+
+
+def test_a_frame_over_budget_mid_alignment_changes_nothing() -> None:
+    """A frame refused leaves the merger as it was: the next one merges as if it never came."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import OverBudget
+
+    def fed(m: CaptionMerger) -> list[tuple[str | None, str]]:
+        return [(ln.speaker, ln.text) for ln in m._lines]
+
+    clean, cut = (CaptionMerger(start_ms=0, stable_ms=3000) for _ in range(2))
+    for m in (clean, cut):
+        m.feed([blk("Ana", "can you hear me", "yes I can hear you")], 0)
+    before = fed(cut)
+    cut._budget.left = 1  # less than any comparison costs; the same ts refills nothing
+    with pytest.raises(OverBudget):  # a misread top row needs comparing
+        cut.feed([blk("Ana", "can yu hear me", "yes I can hear you now")], 0)
+    assert fed(cut) == before
+    cut._budget.left = merge_mod._WORK_BURST
+    later = [blk("Ana", "can you hear me", "yes I can hear you now", "good")]
+    assert [s.text for s in cut.feed(later, 2000)] == [s.text for s in clean.feed(later, 2000)]
+    assert fed(cut) == fed(clean)
+
+
+def test_a_rewrite_check_over_budget_is_refused() -> None:
+    """``_revisions`` compares words too (``_claims``): it is charged like the alignment."""
+    from api.screen.merge import MergeBudget, OverBudget, _claims, _shown
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    m.feed([blk("Ana", "okay so let's start")], 0)
+    shown = _shown([blk("Ana", "Okay, so let's start.")])
+    budget = MergeBudget()
+    assert _claims(shown, [0], m._lines, [0], budget) == {0: 0}
+    budget.left = 1
+    with pytest.raises(OverBudget):
+        _claims(shown, [0], m._lines, [0], budget)
+
+
+def test_a_refused_frame_keeps_what_is_left_so_a_costly_real_frame_passes_later() -> None:
+    """Emptying the bucket on a refusal let a frame needing more than one second's refill
+    be refused on every retry (QA: a dense noisy box)."""
+    from api.screen import merge as merge_mod
+    from api.screen.merge import MergeBudget, OverBudget
+
+    budget = MergeBudget()
+    budget.start(0)
+    budget.left = 10
+    with pytest.raises(OverBudget):
+        budget.charge("a" * 20, "a" * 20)
+    assert budget.left == 10
+    budget.start(1000)
+    assert budget.left == 10 + merge_mod._WORK_PER_S
+    budget.charge("a" * 20, "a" * 20)
+
+
+def test_the_similarity_memo_is_bounded() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    for t in range(40):
+        m.feed([blk("Ana", *(f"line {t} {k} said here" for k in range(12)))], t * 1000)
+    assert 0 < len(m._budget.memo) <= m._budget.memo_cap
+
+
+def test_a_caption_frame_over_budget_is_dropped_and_counted(monkeypatch) -> None:
+    """The tracker drops a frame the merger refused, meters it, and still meters merge CPU;
+    a dropped frame is no snapshot gap (XERK-2722) and holds no meeting open."""
+    from api.screen.merge import OverBudget
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk(None, "hello there", header=False)], 0)
+        assert t.merger is not None
+        real = t.merger.feed
+
+        def refuse(*a, **k):
+            raise OverBudget
+
+        monkeypatch.setattr(t.merger, "feed", refuse)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1000)
+        assert t.last_caption_ms == 0
+        monkeypatch.setattr(t.merger, "feed", real)
+        await t.on_caption([blk(None, "hello there friend", header=False)], 1500)
+        assert t.last_caption_ms == 1500
+        snap = metrics.snapshot()
+        assert snap["counters"]["screen.caption_over_budget.zoom"] == 1
+        assert snap["latency_ms"]["screen.merge_cpu.zoom"]["count"] == 3
+        gap = snap["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["max_ms"]) == (1, 1500)
+
+    asyncio.run(run())
+
+
+def test_frames_after_a_meeting_ended_spend_the_windows_budget() -> None:
+    """QA: after a meeting ends each frame gets a fresh merger; a bucket per merger had a full
+    burst on every frame, so crafted frames re-reading the ended lines were never refused."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        await t.on_caption([blk("Ana", "can you hear me", "yes I can hear you")], 0)
+        await t.end(70_000)
+        assert t.merger is None and t._ended_lines
+        t.budget.start(70_000)
+        t.budget.left = 1
+        # A misread of the ended lines needs comparing: refused, no meeting started.
+        await t.on_caption([blk("Ana", "can you hear me", "yes I can hear yuo")], 70_000)
+        assert metrics.snapshot()["counters"]["screen.caption_over_budget.zoom"] == 1
+        assert t.conversation_id is None
+
+    asyncio.run(run())
+
+
+def test_a_users_windows_share_one_work_budget() -> None:
+    """One device token feeds up to MAX_WINDOWS windows per socket, over many sockets: the
+    bucket is per user, so more windows buy no more of the shared CPU pool."""
+    from api.screen.meetings import ScreenMeetings
+    from api.screen.merge import MergeBudget
+
+    reg = ScreenMeetings()
+    store = InMemoryConversationStore()
+
+    def put(user: str, org: str) -> MeetingTracker:
+        t = MeetingTracker(
+            "default",
+            user,
+            ScreenMeta(org, org, "zoom"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        return reg.put(("default", user, org), t)
+
+    a, b, other = put("user-1", "a"), put("user-1", "b"), put("user-2", "a")
+    assert a.budget is b.budget and a.budget is not other.budget
+    assert a.budget.rate == 2 * MergeBudget().rate  # room for two of the user's meetings
+    reg._drop(("default", "user-1", "a"), a)
+    assert put("user-1", "a").budget is b.budget  # a reconnect gets no fresh burst
 
 
 def test_ocr_results_and_rosters_are_bounded() -> None:

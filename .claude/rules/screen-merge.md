@@ -48,6 +48,35 @@ paths:
   - OCR text is attacker-controlled (device token): results, roster and snapshots are capped
     (`ocr.MAX_LINES`, `zoom._MAX_ROSTER`, `merge._MAX_SHOWN/_MAX_CHARS`) and parse + merge run
     in `to_thread`. On the loop, one crafted frame stalled every socket ~8 s.
+  - The caps alone still let 12 low-entropy rows ("a b a b") cost difflib ~1.5 s per frame on
+    the shared 2-thread `CPU_POOL` (XERK-2730). `_match` charges each difflib comparison to a
+    work bucket (`MergeBudget`, refilled per second of snapshot `ts`); a frame it can't pay
+    for raises `OverBudget` before any mutation, and `on_caption` drops it
+    (`screen.caption_over_budget.<platform>`), holding no meeting open.
+    - Work is counted (`_work`: first longest-match pass + len*len/4), never timed: thread CPU
+      doubles on a busy node, dropped real frames, and dropped frames re-store lines (QA).
+    - One bucket per user (`ScreenMeetings.put`, two windows' worth), never per merger: after
+      a meeting ends every frame gets a fresh merger, which had a full burst each (QA).
+    - A refusal keeps what is left: emptying it refused a costly real frame on every retry.
+    - Only `_match` may refuse (`charge`): work after it mutates the merger, so `_reflow`,
+      `_moved`, `_held` `spend` into debt and `start` refuses frames until it is repaid.
+      Unmetered, a crafted box re-sent unchanged cost 0 units and ~130 ms a frame (QA).
+    - Every difflib call in merge.py is paid for; a new one must `charge` or `spend` too.
+    - The memo (full ratio per pair, LRU) is exact; FIFO eviction thrashed on a dense box.
+      Never share it across users: one would flush another's.
+    - Sized for a dense 12 x 160-char English box, OCR noise on 60% of rows, at the 1 fps
+      meeting cadence (~490k units a frame): 0 drops at 1 fps; at 2 fps only up to ~30%
+      noise (60% drops half). Half the rate dropped frames at 1 fps. One user's 8 crafted
+      windows: ~0.2-0.3 s CPU a second (was ~8). Raising
+      `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
+    - Accepted: several users' device tokens together can still fill the pool.
+    - Accepted: one window's clock (up to +60 s) stalls the refill for the user's others.
+    - Tests: `test_crafted_caption_frames_spend_at_most_the_windows_work_budget`,
+      `test_a_frame_over_budget_mid_alignment_changes_nothing`,
+      `test_a_crafted_box_re_sent_unchanged_pays_for_its_reflow`,
+      `test_frames_after_a_meeting_ended_spend_the_windows_budget`,
+      `test_a_users_windows_share_one_work_budget`,
+      `test_a_caption_frame_over_budget_is_dropped_and_counted`.
   - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
     lines "explained away" a reply said between snapshots.
   - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
