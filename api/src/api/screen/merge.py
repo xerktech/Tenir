@@ -882,22 +882,15 @@ class CaptionMerger:
             if (Counter(kw) - Counter(sw)) & (Counter(now) - Counter(was)):
                 return False
             # Or a word crossed the break between them: the neighbour's edge word facing this
-            # row changed. A row misaligned onto the wrong line (``_simulate_teams`` seed 61)
-            # or a moved word reworded ("today" -> "tomorrow", QA) never shows the word itself.
+            # row changed while this row gained a word on that side. A row misaligned onto
+            # the wrong line can't show the moved word itself (``_simulate_teams`` seed 61).
+            # Not on a facing edge change alone: one jittered frame of it ("tben") then
+            # refused a real insertion for good, losing words in every fuzz (QA).
             if abs(k - i) != 1:
                 return True
             edge = -1 if k < i else 0  # the neighbour's side facing this row
-            return kw[edge:][:1] == sw[edge:][:1]
+            return kw[edge:][:1] == sw[edge:][:1] or now[-1 - edge :][:1] == was[-1 - edge :][:1]
 
-        def source_hidden(i: int) -> bool:
-            # The entry's row above isn't on screen (the crop's header-less top row) or has no
-            # known line. Words that re-flowed down onto this row's start came off a row no
-            # neighbour check can see: a re-flow (QA: stored twice). A block's top row is not
-            # checked: refusing a one-row entry rewritten from two rows (its line not the
-            # entry's first) left the row unpaired and the box was stored again (fz seed 176).
-            if i == 0:
-                return top_open
-            return shown[i - 1].block == shown[i].block and row_known[i - 1] is None
 
         for line, row, confirmed in self._grows:
             if not any(ln is line for ln in self._lines):
@@ -919,7 +912,17 @@ class CaptionMerger:
                     )
                 )
             ]
-            if (now[:1] != was[:1] and source_hidden(i)) or not all(
+            # The entry's row above is off screen (the crop's header-less top row) or has no
+            # known line: words that re-flowed down onto this row's start came off a row no
+            # neighbour check can see (QA: stored twice). Accepted: a real word Teams adds at
+            # the crop top row's start is lost. Not a block's top row whose line wasn't its
+            # entry's first: refusing that left a merged two-row entry unpaired and the box
+            # was stored again (fz seed 176, XERK-2734).
+            if i == 0:
+                hidden_above = top_open
+            else:
+                hidden_above = shown[i - 1].block == row.block and row_known[i - 1] is None
+            if (hidden_above and now[:1] != was[:1]) or not all(
                 steady(k, i, was, now) for k in near
             ):
                 line.grow_refused = row.norm

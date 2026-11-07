@@ -2939,16 +2939,43 @@ def test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth()
         (["we ship it today", "and test it", "on friday"], ["we ship it", "and today test it", "on friday"]),
         # It lands two rows down, past a row that reads as its line.
         (["we ship it today", "and test it", "on friday"], ["we ship it", "and test it", "on today friday"]),
-        # Reworded as it moved, landing mid-row (QA).
-        (["we ship it today", "and test it", "on friday"], ["we ship it", "and tomorrow test it", "on friday"]),
     ],
 )
 def test_a_word_moved_within_an_entry_is_not_growth(draft: list[str], moved: list[str]) -> None:
-    """QA (XERK-2728): a neighbour blocks growth when it lost the word the row gained, or when
-    its edge word facing the row changed. Each shape here stored the moved word twice."""
+    """QA (XERK-2728): a neighbour blocks growth when it lost the word the row gained. Each
+    shape here stored the moved word twice. Accepted: a word reworded as it moves and landing
+    mid-row ("today" -> "and tomorrow test it") is taken; refusing on the neighbour's changed
+    edge word alone lost real insertions to one jittered frame."""
     stored = _teams_entry([blk("Ana", *draft), blk("Ana", "ok then")],
                           [blk("Ana", *moved), blk("Ana", "ok then")])
     assert stored == [*(("Ana", t) for t in draft), ("Ana", "ok then")]
+
+
+def test_a_word_inserted_mid_row_on_the_crops_top_row_is_stored() -> None:
+    """XERK-2728: only a gain at the start of the crop's header-less top row may have come off
+    the row above it; a word inserted mid-row is growth."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", "hello all", "ship the build"), blk("Bo", "ok")], 5),
+            ([blk(None, "ship the build", header=False), blk("Bo", "ok"), blk("Bo", "sure")], 5),
+            ([blk(None, "ship the new build", header=False), blk("Bo", "ok"), blk("Bo", "sure")], 6),
+        ]
+    )
+    assert ("Ana", "ship the new build") in stored
+
+
+@pytest.mark.parametrize("edge", ["tben we test it", "then we test it"])
+def test_one_jittered_frame_of_a_neighbours_facing_word_does_not_refuse_a_growth(edge: str) -> None:
+    """QA (XERK-2728): one OCR frame misreading the word of the entry below that faces the
+    growing one ("tben") refused a real mid-entry insertion for good."""
+    stored, _ = _entry_run(
+        [
+            (_entries("we ship the build", "then we test it"), 5),
+            (_entries("we ship the new build", edge), 1),
+            (_entries("we ship the new build", "then we test it"), 6),
+        ]
+    )
+    assert stored == [("Ana", "we ship the new build"), ("Ana", "then we test it")]
 
 
 def test_words_moved_down_from_a_row_off_the_crop_are_not_growth() -> None:
@@ -2966,6 +2993,26 @@ def test_words_moved_down_from_a_row_off_the_crop_are_not_growth() -> None:
     )
     assert ("Bo", "again process task change so.") not in stored
     assert ("Bo", "task change so") in stored
+
+
+def test_a_word_moved_off_a_row_rewritten_past_recognition_is_not_growth() -> None:
+    """QA fz seed 103 (XERK-2728): the row above was rewritten so far it reads as no known
+    line, and the word it lost ("deploy") moved onto this row's start. No neighbour check can
+    see that loss, so taking the growth stored "deploy" twice (main did too)."""
+    cy = blk("Cy", "Locally, it, locally same contract change", "we deploy it we it the build?")
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, str] = {}
+    for ts, top in [
+        (0, ["check we like deploy deploy repeat repeat", "repeat fix"]),
+        (1000, ["Me build contract again the check we,", "deploy repeat fix."]),
+        (1500, ["Me build contract again the check we,", "deploy repeat fix."]),
+    ]:
+        for seg in m.feed([blk(None, *top, header=False), cy], ts):
+            stored[seg.segment_id] = seg.text
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = seg.text
+    assert "repeat fix" in stored.values()
+    assert "deploy repeat fix." not in stored.values()
 
 
 def test_an_entry_merging_its_rows_into_its_last_is_not_growth() -> None:

@@ -217,24 +217,31 @@ paths:
     when both entries grew in one frame, or the neighbour was jittered on one frame, misread
     on every frame ("on fridav") or re-punctuated. Test:
     `test_a_neighbour_changing_without_losing_the_added_words_does_not_refuse_a_growth`.
-    - An adjacent neighbour whose edge word facing the row changed counts too, wherever the
-      row gains: a misaligned or reworded row never shows the moved word itself
-      (`_simulate_teams` seed 61; QA "today" -> "tomorrow" landing mid-row). So a jittered
-      facing edge word still refuses, as on main. Tests:
+    - An adjacent neighbour whose edge word facing the row changed counts too, but only when
+      the row gained a word on that side: a misaligned or reworded row never shows the moved
+      word itself (`_simulate_teams` seed 61). Tests:
       `test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth`,
       `test_a_word_moved_within_an_entry_is_not_growth` (the multiset check's only pin).
-    - A gain at the row's start is refused when the entry's row above can't be seen: the
-      crop's header-less top row, or a row under one with no known line. The source row's
-      loss is off screen, so the neighbour check passed and it was stored twice (QA). Test:
-      `test_words_moved_down_from_a_row_off_the_crop_are_not_growth`.
+      - Never on the facing edge change alone: one jittered frame of it ("tben") refused a
+        real insertion for good and lost words in all three fuzzers (QA). Accepted: a word
+        reworded as it moves and landing mid-row ("and tomorrow test it") is taken. Test:
+        `test_one_jittered_frame_of_a_neighbours_facing_word_does_not_refuse_a_growth`.
+    - A gain at the row's start is refused when the entry's row above is off screen (the
+      crop's header-less top row) or reads as no known line (rewritten past recognition):
+      the neighbour check can't see the loss, and the moved words were stored twice (QA).
+      Accepted: a real word Teams adds at the crop top row's start is lost. A mid-row
+      insertion there is kept. Tests:
+      `test_words_moved_down_from_a_row_off_the_crop_are_not_growth`,
+      `test_a_word_moved_off_a_row_rewritten_past_recognition_is_not_growth` (fz seed 103),
+      `test_a_word_inserted_mid_row_on_the_crops_top_row_is_stored`.
     - Not a block's top row whose line wasn't its entry's first (rows merged into it): that
       refusal left the row unpaired and re-stored the box (QA fz seed 176). Accepted: such a
       merge with steady neighbours is taken as growth, its first row's words stored twice, as
       on main (XERK-2734: needs a rewrite claiming both lines). QA's hand repro is still
       refused (`test_an_entry_merging_its_rows_into_its_last_is_not_growth`); fz seed 190 isn't.
     - Measured per seed vs main (c19408d): Zoom `_simulate` (1000 seeds, 4 modes), kit zf.py
-      and fz.py zoom identical; `_simulate_teams` (200) lost 143 -> 106, stored twice 140 ->
-      140; `noise=0.2` lost 176 -> 143, twice 1355 -> 1344. Kit x2701 fz.py teams (200 x 12):
+      and fz.py zoom identical; `_simulate_teams` (200) lost 143 -> 104, stored twice 140 ->
+      140; `noise=0.2` lost 176 -> 131, twice 1355 -> 1345. Kit x2701 fz.py teams (200 x 12):
       extra falls or holds on every mode, lost never rises; one seed worse (190, the
       XERK-2734 merge, +6). Kit x2716 tf.py: lost falls on every mode; ~18/2400 seeds score a
       word or two more "extra", each traced to a real growth main lost that its word
