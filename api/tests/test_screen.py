@@ -1991,7 +1991,7 @@ def test_a_rewrite_check_over_budget_is_refused() -> None:
     m.feed([blk("Ana", "okay so let's start")], 0)
     shown = _shown([blk("Ana", "Okay, so let's start.")])
     budget = MergeBudget()
-    assert _claims(shown, [0], m._lines, [0], budget) == {0: 0}
+    assert _claims(shown, [0], m._lines, [0], budget) == ({0: 0}, [])
     budget.left = 1
     with pytest.raises(OverBudget):
         _claims(shown, [0], m._lines, [0], budget)
@@ -3470,6 +3470,36 @@ def test_a_word_pulled_up_blanks_its_stored_draft_row() -> None:
         for k, v in by_id.items()
     ]
     assert all(seg.text for seg in sentences(segs))
+
+
+@pytest.mark.parametrize(
+    ("draft", "final"),
+    [
+        (
+            ["so we need to", "check the cluster", "and deploy it"],
+            "So we need to check the cluster and deploy it.",
+        ),
+        (["we ship the build", "on friday"], "We will ship the build on friday."),
+    ],
+)
+def test_an_entry_re_laid_onto_one_row_blanks_its_later_rows(draft: list, final: str) -> None:
+    """XERK-2739: Teams re-lays a finished entry onto one row starting with its first row's
+    words. The rewrite claimed only the first row; the rows below kept their words, stored
+    twice. They are now blanked (same ids)."""
+    cy = blk("Cy", "Okay.")
+    stored, by_id = _entry_run([([blk("Bo", *draft), cy], 5), ([blk("Bo", final), cy], 6)])
+    assert stored == [("Bo", final), ("Cy", "Okay.")]
+    assert list(by_id.values()).count("") == len(draft) - 1
+
+
+def test_a_row_a_rewrite_dropped_is_kept() -> None:
+    """A row whose words the shorter rewrite left out (a stutter Teams dropped, or speech the
+    re-laid row lacks) is no stale copy: it stays stored."""
+    cy = blk("Cy", "Okay.")
+    draft = ["so we need to", "check the cluster", "um um um uh"]
+    final = "So we need to check the cluster."
+    stored, _ = _entry_run([([blk("Bo", *draft), cy], 5), ([blk("Bo", final), cy], 6)])
+    assert stored == [("Bo", final), ("Bo", "um um um uh"), ("Cy", "Okay.")]
 
 
 @pytest.mark.parametrize(

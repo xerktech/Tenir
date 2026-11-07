@@ -432,8 +432,10 @@ def _revisions(
     tail: list[_Line],
     ts: int,
     budget: MergeBudget,
+    merged: list[int],
 ) -> dict[int, int]:
     """For new shown rows that revise known lines, the index into ``tail`` each one rewrites.
+    ``merged`` gets the draft lines no row claims whose words the rows took (``_claims``).
 
     New rows are those below the last aligned one. Each block's run of them is compared, by
     words, with the next run of the same speaker's recent lines after the last aligned known
@@ -457,6 +459,7 @@ def _revisions(
         else:
             runs.append([i])
     out: dict[int, int] = {}
+    absorbed: list[int] = []
     p = 0  # cands before p are taken (or skipped over by an earlier revision)
     for rows in runs:
         first = rows[0]
@@ -517,11 +520,15 @@ def _revisions(
             if fresh:
                 break
             continue
-        p, claims = found
+        p, (claims, took) = found
         out.update(claims)
+        absorbed += took
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
-    return out if p == len(cands) else {}
+    if p != len(cands):
+        return {}
+    merged += absorbed
+    return out
 
 
 def _claims(
@@ -530,9 +537,14 @@ def _claims(
     tail: list[_Line],
     draft_lines: list[int],
     budget: MergeBudget,
-) -> dict[int, int] | None:
+) -> tuple[dict[int, int], list[int]] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
-    rows keep under ``_REVISED`` of ``draft_lines``' words in order."""
+    rows keep under ``_REVISED`` of ``draft_lines``' words in order.
+
+    Also the draft lines after the first claimed one that no row claims but whose words
+    (``_REVISED`` of them) the rows took: Teams re-laid the entry onto fewer rows ("so we
+    need to" / "check the cluster" -> "So we need to check the cluster."), so they are stale
+    copies (XERK-2739). Lines whose words the rows dropped (stutters) stay."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -553,7 +565,16 @@ def _claims(
         claims[i] = taken = j
     if not claims or len(pairs) < _REVISED * len(draft):
         return None
-    return claims
+    first = min(claims.values())
+    taken_words = Counter(j for _, j in pairs)
+    took = [
+        j
+        for j in draft_lines
+        if j > first
+        and j not in claims.values()
+        and taken_words[j] >= _REVISED * len(_words(tail[j].text))
+    ]
+    return claims, took
 
 
 def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
@@ -663,6 +684,8 @@ class CaptionMerger:
         self._reflow_reads: dict[tuple[int, ...], tuple[str, ...]] = {}
         # The last ``_match``'s rows aligned as misreads: shown row -> the tail line it misreads.
         self._misreads: dict[int, int] = {}
+        # Draft lines a revision's rows took the words of but no row claims (``_claims``).
+        self._merged: list[int] = []
         # This and the last feed's grown-over-twin reads, keyed by line id (``feed``).
         self._grown_reads: dict[int, str] = {}
         # Each stored line's last read with words added (``_grow``), this frame's, and this
@@ -737,7 +760,10 @@ class CaptionMerger:
         self._misreads = {}
         aligned = _align(shown, tail, self._budget, self._misreads)
         speakers = self._speakers(blocks, shown, aligned, tail)
-        revised = _revisions(shown, speakers, aligned, tail, ts, self._budget)
+        self._merged = []
+        revised = _revisions(
+            shown, speakers, aligned, tail, ts, self._budget, self._merged
+        )
         return shown, tail, aligned, revised, self._misreads
 
     def knows_any(self, blocks: list[CaptionBlock], ts: int) -> bool:
@@ -878,6 +904,16 @@ class CaptionMerger:
             if nxt < len(blocks) and blocks[nxt].has_header and not line.final:
                 to_finalize.append(line)
         self._grown_reads = grown_reads
+        for j in self._merged:
+            # A stale row of an entry Teams re-laid onto fewer rows (XERK-2739): blanked, as
+            # ``_reflow`` drops a line (the store has no delete; readers skip blanks).
+            line = tail[j]
+            if line.carried or any(ln is line for ln in row_known):
+                continue
+            self._lines.remove(line)
+            if line.segment is not None:
+                line.segment.text = ""
+                out[line.segment.segment_id] = line.segment
         self._reflow(
             shown,
             row_line,

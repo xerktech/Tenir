@@ -162,8 +162,15 @@ paths:
       Tests: `test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry`,
       `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`,
       `test_making_room_never_moves_or_re_emits_a_carried_line` (carried lines are skipped).
-  - Accepted: a rewrite with fewer rows than the draft (stutters dropped) leaves the unclaimed
-    draft lines stored; removing them needs a segment delete in the store.
+  - A rewrite onto fewer rows than the draft blanks the draft lines no row claims whose words
+    (`_REVISED` of them) its rows took, after the first claimed one (`_claims`, XERK-2739):
+    "so we need to" / "check the cluster" -> one row claimed only the first; the rest stored twice.
+    - Only unshown draft lines are candidates, so a real next row still on screen is never blanked.
+    - Accepted: a draft line the rewrite dropped (a stutter) stays stored.
+    - Measured per seed vs main: Zoom `_simulate` differs on 1/4000 runs (a stale copy gone);
+      `_simulate_teams` 3/400 seeds, each storing fewer words twice.
+    - Tests: `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
+      `test_a_row_a_rewrite_dropped_is_kept`.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
     389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
   - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
