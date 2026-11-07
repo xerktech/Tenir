@@ -232,6 +232,9 @@ class _Line:
     # Where the store orders it (its segment's start), when not ``first_ms``: a line Teams adds
     # to an entry above a known line is ordered just above it (``_place_above``, XERK-2729).
     store_ms: int | None = None
+    # The line last shown right above it in its block (``_merged_above``, XERK-2734): the
+    # entry's rows, as Teams showed them, not merely the speaker's lines above it.
+    above: _Line | None = None
 
     @property
     def final(self) -> bool:
@@ -1148,6 +1151,16 @@ class CaptionMerger:
             row_line[i] = line
             if block.has_header and (i == 0 or shown[i - 1].block != line_shown.block):
                 line.head = True
+            elif (
+                i
+                and shown[i - 1].block == line_shown.block
+                and (up := row_line[i - 1]) is not None
+                and up.norm == shown[i - 1].norm
+                and line.norm == line_shown.norm
+            ):
+                # Only rows reading as their lines: a header-cut top row aligned to her previous
+                # entry ("we can ship" as a clipped "yes we can") linked the entries (QA).
+                line.above = up
             if speaker is not None:
                 self.last_speaker = speaker
             nxt = line_shown.block + 1
@@ -1458,7 +1471,101 @@ class CaptionMerger:
             ):
                 line.grow_refused = row.norm
             elif confirmed:
-                self._revise(line, row, ts, out)
+                # Only the first row under the entry's header can be its rows merged: a
+                # header-less top row may have lost the rows above off the crop (QA: a re-flow
+                # there blanked the head row's other words).
+                heads = row.speaker is not None and (i == 0 or shown[i - 1].block != row.block)
+                above = self._merged_above(line, row, row_known, ts) if heads else []
+                if not above:
+                    self._revise(line, row, ts, out)
+                    continue
+                # Teams merged the entry's rows into this one (XERK-2734): its first line takes
+                # the text, the others are dropped (a stored one blanked, as ``_reflow``).
+                # Growing this line alone kept the rows above stored beside it.
+                first = above[0]
+                self._revise(first, row, ts, out)
+                ends = [ln.segment.end_ms for ln in [*above, line] if ln.segment is not None]
+                if first.segment is not None and ends:
+                    # The merged entry ends when its last row was said, not its first.
+                    first.segment.end_ms = max(ends)
+                    out[first.segment.segment_id] = first.segment
+                for ln in [*above[1:], line]:
+                    self._lines.remove(ln)
+                    if ln.segment is not None:
+                        ln.segment.text = ""
+                        out[ln.segment.segment_id] = ln.segment
+
+    def _merged_above(
+        self, line: _Line, row: _Shown, row_known: list[_Line | None], ts: int
+    ) -> list[_Line]:
+        """The lines of ``line``'s entry above it that ``row``, read as ``line`` with words
+        added, absorbed (XERK-2734): Teams re-wrapped the entry onto fewer rows, so the row's
+        leading added words are the earlier rows' ("so or what like so so so like itself" /
+        "cluster logs build" -> "So or what itself cluster logs build.", fillers dropped).
+        Those lines are the rows Teams showed right above it in its block (``_Line.above``), up
+        to the first it showed or one that headed the entry. Each is the speaker's, recent,
+        shown on no row of this frame and right above the next in the known lines; and the
+        leading words hold ``_REVISED`` of each one's distinct words. Empty when ``line``
+        starts its entry or any of that fails; the caller also needs ``row`` to be the first
+        row under the header. The speaker, age, carried, shown-row and adjacency checks are
+        defensive: no shape seen so far reaches them past the others (``_grow`` already bounds
+        ``line``'s age)."""
+        # Following the shown rows, not the speaker's lines: an entry first seen with its header
+        # cut off by the crop has no head, and the walk ran on into her previous entry and
+        # overwrote it (QA).
+        run: list[_Line] = []
+        cur = line
+        while True:
+            ln = cur.above
+            if (
+                ln is None
+                or ln.carried
+                or ln.speaker != line.speaker
+                or ts - ln.first_ms > _REVISE_MS
+                or any(k is ln for k in row_known)
+                or not any(x is ln for x in self._lines)
+                or (at := self._index(cur)) == 0
+                or self._lines[at - 1] is not ln
+            ):
+                return []
+            run.insert(0, ln)
+            # A line that headed its entry ends it, whatever its link: one frame of OCR missing
+            # her next entry's header put its rows in the block above, linking the entries for
+            # good, and a later merge blanked her previous entry (QA).
+            if ln.above is None or ln.head:
+                break
+            cur = ln
+        # The row's words before the latest place ``line``'s words start, in order.
+        was, now = _words(line.text), _words(row.text)
+        k, start = len(was), len(now)
+        while k and start:
+            start -= 1
+            if now[start] == was[k - 1]:
+                k -= 1
+        lead = now[:start] if not k else []
+        # They cover each row, in order: the rows' words aligned once against the lead hold
+        # ``_REVISED`` of each row's distinct words, since a rewrite drops stutters and fillers
+        # ("so so so like"). Every blanked row's words then live on where it sat. One shared
+        # word ("enable") claimed three rows; pooled over the rows, her previous entry linked in
+        # by an unread header was blanked on the new entry's words (both QA). Aligning in order
+        # rather than counting anywhere in the lead is defensive since the start check below:
+        # the fuzz stores the same either way.
+        draft = [(w, n) for n, ln in enumerate(run) for w in _words(ln.text)]
+        sm = SequenceMatcher(None, [w for w, _ in draft], lead, autojunk=False)
+        blocks = [b for b in sm.get_matching_blocks() if b.size]
+        # And the merged row starts where the entry did: after a header OCR never read, her
+        # previous entry holding 60% of the row's words by chance ("right we check" / "We check
+        # it now...") passed coverage and was blanked (QA). Teams dropping a leading filler
+        # ("um so we" -> "So we") then keeps the draft, as main does.
+        if not blocks or blocks[0].a or blocks[0].b:
+            return []
+        hit = {draft[b.a + k] for b in blocks for k in range(b.size)}
+        for n, ln in enumerate(run):
+            distinct = set(_words(ln.text))
+            covered = {w for w, m in hit if m == n}
+            if not distinct or len(covered) < _REVISED * len(distinct):
+                return []
+        return run
 
     def _reflow(
         self,

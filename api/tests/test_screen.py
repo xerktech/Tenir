@@ -3637,6 +3637,158 @@ def test_a_word_inserted_as_the_live_entry_gains_a_row_is_stored() -> None:
     assert stored == [("Ana", grown), ("Ana", rows[1]), ("Ana", "locally then")]
 
 
+def test_an_entry_rewritten_from_two_rows_into_one_is_stored_once() -> None:
+    """XERK-2734: Teams merged the entry's rows (fillers dropped). The row keeps the old second
+    row's words with words added in front, so it grew that line, and the first row's line
+    stayed stored beside it: its words were stored twice. The row now claims both lines: the
+    entry's first keeps its segment (and start) with the new text and the end of the last,
+    the other is blanked."""
+    draft = ["so or what like so so so like itself", "cluster logs build"]
+    final = "So or what itself cluster logs build."
+    cy = blk("Cy", "Okay.")
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    segs: dict[str, Segment] = {}
+    first: dict[str, tuple[int, int]] = {}  # each segment's first emitted (start, end)
+    t = 0
+    for blocks, count in [([blk("Bo", draft[0]), cy], 3), ([blk("Bo", *draft), cy], 5)] + [
+        ([blk("Bo", final), cy], 6)
+    ]:
+        for _ in range(count):
+            for seg in m.feed(blocks, t):
+                segs[seg.segment_id] = seg
+                first.setdefault(seg.text, (seg.start_ms, seg.end_ms))
+            t += 1000
+    texts = sorted(seg.text for seg in segs.values())
+    assert texts == ["", "Okay.", final]
+    merged = next(seg for seg in segs.values() if seg.text == final)
+    assert merged.start_ms == first[draft[0]][0]
+    assert merged.end_ms == first[draft[1]][1]
+
+
+_CY = blk("Cy", "Okay.")
+
+
+@pytest.mark.parametrize(
+    "between",
+    [[], [([_CY], 1)], [([blk("Bo", "we should ship", "the build on friday"), _CY], 1)]],
+    ids=["none", "cy-only", "draft"],
+)
+def test_a_merged_row_aligned_to_the_entrys_second_row_still_merges_it(
+    between: list[tuple[list[CaptionBlock] | None, int]],
+) -> None:
+    """XERK-2734: a merged row close to the second row's text aligns to it (not a misread),
+    which marks that line as heading the entry on the rewrite's first frame. The merge follows
+    the rows shown above it (``_Line.above``), not heads, so it still fires on the confirming
+    frame, and after a frame that interrupts the rewrite (QA)."""
+    final = ([blk("Bo", "We ship the build on friday."), _CY], 1)
+    stored, _ = _entry_run(
+        [([blk("Bo", "we should ship", "the build on friday"), _CY], 5), final, *between,
+         (final[0], 6)]
+    )
+    assert stored == [("Bo", "We ship the build on friday."), ("Cy", "Okay.")]
+
+
+@pytest.mark.parametrize(
+    ("frames", "kept"),
+    [
+        # Words said anew in front of the second row: its growth, not the rows merged.
+        (
+            [([blk("Bo", "we should ship the build", "on friday"), _CY], 5),
+             ([blk("Bo", "we should ship the build", "and maybe not on friday"), _CY], 6)],
+            "we should ship the build",
+        ),
+        # The head row scrolled off the crop's top, then a re-flow moved its last words down
+        # onto the header-less top row: not a merge, its first words stay (QA).
+        (
+            [([blk("Bo", "we should ship the build", "on friday"), _CY], 5),
+             ([blk(None, "on friday", header=False), _CY, blk("Dy", "fine")], 3),
+             ([blk(None, "ship the build on friday", header=False), _CY, blk("Dy", "fine")], 6)],
+            "we should ship the build",
+        ),
+        # The rows above are still shown: they weren't merged away (QA).
+        (
+            [([blk("Bo", "we should ship the build", "on friday"), _CY], 5),
+             ([blk("Bo", "we should ship the build", "ship the build on friday"), _CY], 6)],
+            "we should ship the build",
+        ),
+        # One shared word in front covers too few of the rows' words (kit fz.py lost 13).
+        (
+            [([blk("Bo", "we should check the cluster logs", "on friday"), _CY], 5),
+             ([blk("Bo", "check on friday"), _CY], 6)],
+            "we should check the cluster logs",
+        ),
+        # The speaker's previous entry, off screen, is not part of this one.
+        (
+            [([blk("Bo", "the cluster"), blk("Bo", "so like the cluster", "logs build"), _CY], 5),
+             ([blk("Bo", "So the cluster logs build."), _CY], 6)],
+            "the cluster",
+        ),
+        # Her next entry first seen with its header cut off, then shown under it as one row:
+        # its first line never headed anything, so the walk must not run on into "yes we can"
+        # and overwrite it (QA).
+        (
+            [([blk("Bo", "yes we can")], 4),
+             ([blk(None, "we can ship", "it on friday", header=False), _CY], 5),
+             ([blk("Bo", "We can ship it on friday."), _CY], 6)],
+            "yes we can",
+        ),
+        # OCR missed her next entry's header for one frame: its rows joined the block above,
+        # linking it to her previous entry, which the merge then blanked (QA). Also after the
+        # entry is shown under its own header again.
+        (
+            [([blk("Bo", "sure thing"), blk("Bo", "we need to check", "the cluster"), _CY], 4),
+             ([blk("Bo", "sure thing", "we need to check", "the cluster"), _CY], 1),
+             ([blk("Bo", "We need to check the cluster."), _CY], 6)],
+            "sure thing",
+        ),
+        (
+            [([blk("Bo", "sure thing"), blk("Bo", "we need to check", "the cluster"), _CY], 4),
+             ([blk("Bo", "sure thing", "we need to check", "the cluster"), _CY], 1),
+             ([blk("Bo", "sure thing"), blk("Bo", "we need to check", "the cluster"), _CY], 10),
+             ([blk("Bo", "We need to check the cluster."), _CY], 6)],
+            "sure thing",
+        ),
+        # Her next entry never seen under its own header before the merge: the link to her
+        # previous entry stays, and only per-row coverage keeps it from being blanked (QA).
+        (
+            [([blk("Bo", "sure thing"), _CY], 4),
+             ([blk("Bo", "sure thing", "we need to check", "the cluster"), _CY], 1),
+             ([blk("Bo", "We need to check the cluster."), _CY], 6)],
+            "sure thing",
+        ),
+        # The same, with the merged row holding most of her previous entry's words but not
+        # starting with them: the row must start where the entry did (QA).
+        (
+            [([blk("Bo", "right we check"), _CY], 4),
+             ([blk("Bo", "right we check", "it now", "the cluster"), _CY], 1),
+             ([blk("Bo", "We check it now the cluster."), _CY], 6)],
+            "right we check",
+        ),
+        # Her previous entry's one word is in the merged row, but not where that entry sat:
+        # the rows are aligned against it in order, not looked up anywhere in it (QA af4.py).
+        (
+            [([blk("Bo", "we")], 4),
+             ([blk("Bo", "we", "then ship we then um", "enable same then")], 1),
+             ([blk("Bo", "we", "then ship we then um", "enable same then"), _CY], 1),
+             ([blk("Bo", "then ship we then enable same then."), _CY], 6)],
+            "we",
+        ),
+    ],
+    ids=[
+        "new-words", "clipped-top", "rows-shown", "one-word", "previous-entry", "header-cut",
+        "header-missed", "header-missed-then-shown", "header-never-read", "first-word-dropped",
+        "words-elsewhere",
+    ],
+)
+def test_a_growth_in_front_of_an_entrys_row_blanks_no_row_it_did_not_merge(
+    frames: list[tuple[list[CaptionBlock] | None, int]], kept: str
+) -> None:
+    """XERK-2734's merge blanks the rows above only when the row is the entry's first under its
+    header and its leading words are theirs; otherwise those rows' words stay stored."""
+    stored, _ = _entry_run(frames)
+    assert ("Bo", kept) in stored
+
+
 def test_a_carried_entry_gaining_words_is_not_revised() -> None:
     """A carried line's segment belongs to the ended meeting (XERK-2615): words added to it
     on the next meeting's panel never re-emit it."""
