@@ -701,7 +701,7 @@ def _revisions(
         found = None
         for e in ends:
             folded: list[tuple[int, tuple[int, ...]]] = []
-            if c := _claims(shown, rows, tail, cands[q:e], budget, folded):
+            if c := _claims(shown, rows, tail, cands[q:e], budget, folded, lead=fresh and recent):
                 found = (e, c)
                 break
         if found is None:
@@ -730,6 +730,8 @@ def _claims(
     draft_lines: list[int],
     budget: MergeBudget,
     folded: list[tuple[int, tuple[int, ...]]] | None = None,
+    *,
+    lead: bool = False,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
     rows keep under ``_REVISED`` of ``draft_lines``' words in order.
@@ -749,14 +751,28 @@ def _claims(
     ]
     # Claims are a prefix of the run: a row above them pairing with nothing is a line said
     # before them, so they are said again ("okay", "sounds good" after "sounds good").
+    # ``lead``: the run starts its block under a header and its draft was on the last frames.
+    # Then rows above the first claim may be words Teams added to the entry's start ("check
+    # the cluster" -> "so we need to" / "check the cluster", XERK-2746): at 1 fps a line and
+    # a repeat of the one below it can't both be said between two frames. They stay new rows,
+    # placed above the line the first claiming row revises.
+    skip = 0
+    if lead:
+        while skip < len(rows) and not any(r == rows[skip] for r, _ in pairs):
+            skip += 1
+        if skip == len(rows):
+            skip = 0
     claims: dict[int, int] = {}
     taken = -1
-    for i in rows:
+    for i in rows[skip:]:
         j = next((j for r, j in pairs if r == i and j > taken), None)
         if j is None:
             break
         claims[i] = taken = j
-    if not claims or len(pairs) < _REVISED * len(draft):
+    # A stutter ("so so so") counts once: Teams drops repeats when it re-lays an entry, and
+    # counting each copy failed coverage, so the whole box was stored again (XERK-2746).
+    said = sum(1 for n, (w, _) in enumerate(draft) if not n or draft[n - 1][0] != w)
+    if not claims or len(pairs) < _REVISED * said:
         return None
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
@@ -1059,6 +1075,9 @@ class CaptionMerger:
         out: dict[str, Segment] = {}
         to_finalize: list[_Line] = []
         speaker = self.last_speaker
+        # The bottom row's known line as it read before this frame, for ``_merged_below``.
+        bottom_at = aligned[-1] if aligned else None
+        bottom_was = tail[bottom_at].text if bottom_at is not None else ""
         # The known line each row re-reads or revises. A new line goes just above the known
         # line shown below it, so known lines keep on-screen order: Teams adds lines to an
         # entry above another speaker's (that entry went on). Otherwise it goes at the end.
@@ -1176,6 +1195,8 @@ class CaptionMerger:
                 self._drop(line, out)
                 for c in claimers:
                     c.rewrite_until = ts + _REVISE_MS
+        if bottom_at is not None:
+            self._folded += self._merged_below(shown[-1], tail, bottom_at, bottom_was)
         self._fold_held = [(tail[j], [tail[k] for k in claimed]) for j, claimed in self._folded]
         self._reflow(
             shown,
@@ -1671,6 +1692,46 @@ class CaptionMerger:
             for ln in between:
                 self._drop(ln, out)
         self._reflow_reads = reads
+
+    def _merged_below(
+        self, row: _Shown, tail: list[_Line], at: int, was: str
+    ) -> list[tuple[int, tuple[int, ...]]]:
+        """The bottom row's entry re-laid onto it (XERK-2746): ``row``, the bottom row, re-reads
+        ``tail[at]`` (``was`` before this frame) and took the words of the entry's rows below
+        it, which no row shows any more ("so we need to" / "check the cluster" -> "So we need
+        to check the cluster."). The bottom line takes the merged text (``_update``), so the
+        rows below were stored beside it.
+
+        Returns those lines as ``_claims`` folds of ``tail[at]``: dropped a frame later unless
+        shown again (one frame of OCR reading two rows as one box). They must be the speaker's,
+        shown right under the line on the last frame, and the row must hold every word of
+        ``was`` then theirs, in order: dropped, a word they held but the row lacks was lost for
+        good (QA: at ``_REVISED`` coverage "prod", "quickly", or a re-flowed row's "check"
+        OCR-missed). ``was`` losing a word is a re-flow
+        (a word moved up onto the row above), ``_reflow``'s: folding there lost it
+        (``_simulate_teams`` seed 32). Empty otherwise, or when the line didn't take the row's
+        text: their words then live nowhere else (a carried line never takes one)."""
+        line, below = tail[at], range(at + 1, len(tail))
+        if not below or line.norm != row.norm:
+            return []
+        if any(tail[j].speaker != line.speaker for j in below):
+            return []
+        # They were the rows right under the line on the last frame: a bottom row paired with
+        # an older line it starts like ("itself." for "itself me that it") folded the live
+        # entry's row into it and lost a word (``_simulate_teams`` seed 191, noise 0.2).
+        shown_last = [id(ln) for ln in (self._last.lines if self._last else [])]
+        run = [id(line), *(id(tail[j]) for j in below)]
+        if not any(shown_last[k : k + len(run)] == run for k in range(len(shown_last))):
+            return []
+        draft = [(w, at) for w in _words(was)] + [
+            (w, j) for j in below for w in _words(tail[j].text)
+        ]
+        now = _words(row.text)
+        self._budget.spend([w for w, _ in draft], now)
+        sm = SequenceMatcher(None, [w for w, _ in draft], now, autojunk=False)
+        if sum(b.size for b in sm.get_matching_blocks()) != len(draft):
+            return []
+        return [(j, (at,)) for j in below]
 
     def _drop(self, line: _Line, out: dict[str, Segment]) -> None:
         """Forget a stale known line; a stored one is re-emitted blank (the store has no
