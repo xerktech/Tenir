@@ -460,7 +460,7 @@ def _spoken(word: str) -> bool:
     return not (len(word) == 2 and word[0] == word[1] and word[0] in "iljtfr")
 
 
-def _edited(was: list[str], now: list[str]) -> bool:
+def _edited(was: list[str], now: list[str], budget: MergeBudget) -> bool:
     """Whether ``now`` may replace a stored line reading ``was``: Teams finishing or rewording
     an entry (XERK-2721, XERK-2732). ``now`` adds whole words that read as speech, and may
     drop some of ``was``'s.
@@ -481,6 +481,7 @@ def _edited(was: list[str], now: list[str]) -> bool:
         return True
     # Not every word kept in order: a drop, scored on difflib's alignment. An insertion
     # ``_inserted`` refused (a stray glyph) or one difflib aligns oddly drops nothing here.
+    budget.spend(was, now)  # after ``_match``: metered, never refused (``MergeBudget``)
     ops = SequenceMatcher(None, was, now, autojunk=False).get_opcodes()
     kept = sum(a2 - a1 for op, a1, a2, _, _ in ops if op == "equal")
     added = [now[b1:b2] for op, _, _, b1, b2 in ops if op in ("insert", "replace")]
@@ -498,9 +499,19 @@ def _edited(was: list[str], now: list[str]) -> bool:
         # each added word with each dropped one too, not only the spans (QA).
         pairs = [(" ".join(was[a1:a2]), " ".join(now[b1:b2]))]
         pairs += [(d, w) for d in was[a1:a2] for w in now[b1:b2]]
-        if any(_ratio(d, w, _MISREAD_LIKE) >= _MISREAD_LIKE for d, w in pairs):
+        if any(_like(d, w, budget) for d, w in pairs):
             return False
     return True
+
+
+def _like(a: str, b: str, budget: MergeBudget) -> bool:
+    """Whether ``b`` reads like a misread of ``a`` (``_MISREAD_LIKE``), metered by ``spend``:
+    ``_edited`` runs after ``_match``, where ``MergeBudget.ratio`` could refuse mid-frame."""
+    sm = SequenceMatcher(None, a, b, autojunk=False)
+    if sm.real_quick_ratio() < _MISREAD_LIKE or sm.quick_ratio() < _MISREAD_LIKE:
+        return False
+    budget.spend(a, b)
+    return sm.ratio() >= _MISREAD_LIKE
 
 
 def _revisions(
@@ -1127,7 +1138,7 @@ class CaptionMerger:
             return
         if shown.norm == line.grow_refused:
             return
-        if not _edited(_words(line.text), _words(shown.text)):
+        if not _edited(_words(line.text), _words(shown.text), self._budget):
             return
         if any(ln is not line and _exact(shown, ln) for ln in self._lines[-_TAIL:]):
             return  # it re-reads another known line: growing this one copied that (XERK-2719)
