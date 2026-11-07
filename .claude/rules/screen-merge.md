@@ -166,11 +166,17 @@ paths:
     (`_REVISED` of them) its rows took, after the first claimed one (`_claims`, XERK-2739):
     "so we need to" / "check the cluster" -> one row claimed only the first; the rest stored twice.
     - Only unshown draft lines are candidates, so a real next row still on screen is never blanked.
+    - Never a line from her next entry on (`_Line.head`): it may repeat the words the rewrite fixed
+      ("to tst first" / "to test first"); OCR missing its block on the re-lay frame blanked it
+      for good (QA). Accepted: Zoom heads scrolled rows too, so fewer Zoom stale copies go.
+    - Only the accepted revision blanks (`p == len(cands)`), and only lines `_REVISED` taken.
     - Accepted: a draft line the rewrite dropped (a stutter) stays stored.
-    - Measured per seed vs main: Zoom `_simulate` differs on 1/4000 runs (a stale copy gone);
-      `_simulate_teams` 3/400 seeds, each storing fewer words twice.
+    - Measured per seed vs main: Zoom `_simulate` (4000 runs) identical; `_simulate_teams` 2/400
+      seeds differ, each storing fewer words twice and losing none.
     - Tests: `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
-      `test_a_row_a_rewrite_dropped_is_kept`.
+      `test_a_row_a_rewrite_dropped_is_kept`,
+      `test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked`,
+      `test_a_refused_rewrite_blanks_nothing`, `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
     389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
   - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),

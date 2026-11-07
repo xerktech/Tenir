@@ -3492,6 +3492,40 @@ def test_an_entry_re_laid_onto_one_row_blanks_its_later_rows(draft: list, final:
     assert list(by_id.values()).count("") == len(draft) - 1
 
 
+def test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked() -> None:
+    """Her next entry repeats the words the re-lay fixed in a draft row ("to tst first" ->
+    "to test first"), and OCR misses its block on the re-lay's frame. Its words pair with the
+    rewrite, but it is her own entry, said again: it is kept, as on main (QA, XERK-2739)."""
+    a = blk("Bo", "we deploy it", "to tst first")
+    b = blk("Bo", "to test first")
+    r = blk("Bo", "We deploy it to test first.")
+    stored, by_id = _entry_run([([a], 4), ([a, b], 4), ([r], 1), ([r, b], 6)])
+    assert ("Bo", "to test first") in stored
+    assert "" not in by_id.values()
+
+
+def test_a_refused_rewrite_blanks_nothing() -> None:
+    """A rewrite leaving a newer known line unshown is refused (a new line like an old one):
+    no draft row it seemed to take is blanked."""
+    a = blk("Bo", "we deploy it", "to tst first")
+    cy = blk("Cy", "to test first")
+    r = blk("Bo", "We deploy it to test first.")
+    stored, by_id = _entry_run([([a], 4), ([a, cy], 4), ([r], 1), ([r, cy], 6)])
+    assert ("Bo", "to tst first") in stored
+    assert "" not in by_id.values()
+
+
+def test_a_draft_row_the_rewrite_took_one_word_of_is_kept() -> None:
+    """A draft row is a stale copy only when the rewrite took most (``_REVISED``) of its
+    words; one shared word ("and") is not enough to blank it."""
+    cy = blk("Cy", "Okay.")
+    draft = ["so we need to", "check the cluster", "and then call the vendor today"]
+    final = "So we need to check the cluster and."
+    stored, by_id = _entry_run([([blk("Bo", *draft), cy], 5), ([blk("Bo", final), cy], 6)])
+    assert ("Bo", draft[2]) in stored
+    assert list(by_id.values()).count("") == 1
+
+
 def test_a_row_a_rewrite_dropped_is_kept() -> None:
     """A row whose words the shorter rewrite left out (a stutter Teams dropped, or speech the
     re-laid row lacks) is no stale copy: it stays stored."""
