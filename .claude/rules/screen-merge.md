@@ -295,11 +295,11 @@ paths:
       merge with steady neighbours is taken as growth, its first row's words stored twice, as
       on main (XERK-2734: needs a rewrite claiming both lines). QA's hand repro is still
       refused (`test_an_entry_merging_its_rows_into_its_last_is_not_growth`); fz seed 190 isn't.
-    - Measured per seed vs main (c19408d): Zoom `_simulate` (1000 seeds, 4 modes) and fz.py
+    - Measured per seed vs main (c6669c5): Zoom `_simulate` (1000 seeds, 4 modes) and fz.py
       zoom identical, kit zf.py one seed better; `_simulate_teams` (200) lost 143 -> 104,
-      stored twice 140 -> 140; `noise=0.2` lost 176 -> 131, twice 1355 -> 1345. Kit x2701
-      fz.py teams (200 x 12): extra falls or holds on every mode, lost never rises; one seed worse (190, the
-      XERK-2734 merge, +6). Kit x2716 tf.py: lost falls on every mode; ~18/2400 seeds score a
+      stored twice 139 -> 139; `noise=0.2` lost 175 -> 130, twice 1350 -> 1340. Kit x2701
+      fz.py teams (200 x 12): extra falls or holds on every mode, lost never rises; one
+      seed worse (190, the XERK-2734 merge, +6). Kit x2716 tf.py: lost falls on every mode; ~18/2400 seeds score a
       word or two more "extra", each traced to a real growth main lost that its word
       alignment misplaces (seeds 89, 124, 51), or a noise-garbled row main's block re-flow
       happened to rewrite a frame later (late/0.2/8 seed 75). fz "extra" up is real
