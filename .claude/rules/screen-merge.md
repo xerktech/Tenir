@@ -184,6 +184,15 @@ paths:
       `test_a_rewrite_keeps_a_draft_row_whose_words_it_does_not_hold`,
       `test_a_garbled_rewrite_frame_is_not_kept_by_the_fold`,
       `test_no_draft_row_is_folded_when_the_rewrite_revises_nothing`.
+    - Re-lay onto one row starting with the head's words (XERK-2739) and the speaker's next entry
+      repeating the fixed words while OCR-missed (own block, or read into this one with its
+      avatar missed: its words pair with the rewrite, never blank it). Tests:
+      `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
+      `test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked`,
+      `test_the_next_entry_read_into_the_block_during_a_re_lay_is_never_blanked`,
+      `test_a_re_lay_onto_fewer_rows_blanks_rows_below_a_second_claimed_row`,
+      `test_a_row_a_rewrite_dropped_is_kept`, `test_a_refused_rewrite_blanks_nothing`,
+      `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
     389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
   - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
