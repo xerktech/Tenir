@@ -607,10 +607,26 @@ def _revisions(
     everything below it is newer (a repeat there is said again), so revising stops."""
     last = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
     start = (aligned[last] or 0) + 1 if last >= 0 else 0
+    # An older line is offered only to a new row re-reading it verbatim (XERK-2738): Teams
+    # added a row to an entry above it, so the row below is that line, not a new one. Past
+    # ``_REVISE_MS`` it was stored again and the added row ordered after it. Only while those
+    # rows outnumber its later known copies (as ``_reread_below``): an older twin ("yes" said
+    # twice, one row of it shown) took the recent one's claim, and a revision main made was
+    # lost (QA).
+    new_rows = shown[last + 1 :]
+    old = {
+        j
+        for j in range(start, len(tail))
+        if ts - tail[j].first_ms > _REVISE_MS
+        and sum(1 for s in new_rows if _exact(s, tail[j]))
+        > sum(
+            1 for ln in tail[j + 1 :] if ln.norm == tail[j].norm and ln.speaker == tail[j].speaker
+        )
+    }
     cands = [
         j
         for j in range(start, len(tail))
-        if not tail[j].carried and ts - tail[j].first_ms <= _REVISE_MS
+        if not tail[j].carried and (ts - tail[j].first_ms <= _REVISE_MS or j in old)
     ]
     runs: list[list[int]] = []
     for i in range(last + 1, len(shown)):
@@ -689,6 +705,9 @@ def _revisions(
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
     if p != len(cands):
+        return {}
+    # An older line is never rewritten: only its verbatim re-read may claim it.
+    if any(j in old and not _exact(shown[i], tail[j]) for i, j in out.items()):
         return {}
     if merged is not None:
         merged += folds

@@ -196,6 +196,22 @@ paths:
       Tests: `test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry`,
       `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`,
       `test_making_room_never_moves_or_re_emits_a_carried_line` (carried lines are skipped).
+    - `_align` can't match a row below such a new row (unpaired under a header: `_UNPAIRED`);
+      only `_revisions` pairs it. So a known line past `_REVISE_MS` is still a candidate for a
+      new row reading it verbatim, and never for any other (XERK-2738): else it was stored
+      again and the new row ordered after the old copy.
+    - Only while new rows reading it exactly outnumber the speaker's later known copies of it
+      (as `_reread_below`): an older twin ("yes" said twice, one row shown) took the recent
+      one's claim, `p == len(cands)` failed and a revision main made was lost (QA). "Newest
+      copy only" instead left one of two rows re-reading a repeated line new.
+    - Each gate (re-read, count, speaker, guard) has a test that fails when it is removed.
+    - `_simulate_teams` only grows the last entry, so its per-seed A/B never reaches this path.
+      Tests: `test_a_row_added_above_an_old_entry_is_stored_before_it_once`,
+      `test_an_old_line_is_never_rewritten_by_a_new_row_resembling_it`,
+      `test_an_older_twin_of_a_line_never_spoils_a_revision`,
+      `test_rows_re_reading_an_old_repeated_line_each_pair_with_a_copy`,
+      `test_another_speakers_copy_of_an_old_line_does_not_hide_it`,
+      `test_an_old_line_no_row_re_reads_verbatim_is_not_offered`.
   - A rewrite with fewer rows than its draft (rows joined, stutters dropped) drops each draft
     line no row claimed whose every word the claiming rows hold (`_claims` `folded`, XERK-2701):
     blanked like `_reflow`'s stale lines. A draft line with a word the rows lack stays.
