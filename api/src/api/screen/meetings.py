@@ -90,13 +90,18 @@ class FairPool:
                 if fut.cancelled():
                     continue
                 self._busy += 1
-            self._pool.submit(self._call, call, fut)
+            try:
+                self._pool.submit(self._call, call, fut)
+            except RuntimeError as exc:  # the executor is shut down (process exit)
+                with self._lock:
+                    self._busy -= 1
+                _settle(fut, None, exc)
 
     def _call(self, call: Callable[[], Any], fut: asyncio.Future[Any]) -> None:
         try:
             try:
                 result, error = call(), None
-            except Exception as exc:
+            except BaseException as exc:  # all of them: an unsettled future hangs its caller
                 result, error = None, exc
             _settle(fut, result, error)
         finally:
@@ -105,7 +110,7 @@ class FairPool:
             self._next()
 
 
-def _settle(fut: asyncio.Future[Any], result: Any, error: Exception | None) -> None:
+def _settle(fut: asyncio.Future[Any], result: Any, error: BaseException | None) -> None:
     """Hand a job's outcome to the loop its caller waits on (futures aren't thread-safe)."""
 
     def done() -> None:

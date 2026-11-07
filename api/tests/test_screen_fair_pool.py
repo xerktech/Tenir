@@ -41,7 +41,7 @@ def test_users_take_turns_however_many_frames_one_has_queued() -> None:
         await asyncio.gather(held, *jobs)
         return order
 
-    order = asyncio.run(run())
+    order = asyncio.run(asyncio.wait_for(run(), 10))
     # The live user's one frame waits behind one job per other user, not behind all eight.
     assert order == ["a0", "b0", "live0", "a1", "b1", "a2", "b2", "a3", "b3"]
 
@@ -53,7 +53,7 @@ def test_a_failing_job_raises_to_its_caller_and_the_pool_keeps_serving() -> None
             await pool.run("a", lambda: 1 // 0)
         return await pool.run("a", lambda: 7)
 
-    assert asyncio.run(run()) == 7
+    assert asyncio.run(asyncio.wait_for(run(), 10)) == 7
 
 
 def test_a_job_cancelled_while_waiting_never_runs() -> None:
@@ -71,7 +71,35 @@ def test_a_job_cancelled_while_waiting_never_runs() -> None:
             await gone
         return ran
 
-    assert asyncio.run(run()) == ["kept"]
+    assert asyncio.run(asyncio.wait_for(run(), 10)) == ["kept"]
+
+
+class _Abort(BaseException):
+    pass
+
+
+def test_a_base_exception_in_a_job_reaches_its_caller() -> None:
+    def abort() -> None:
+        raise _Abort
+
+    async def run() -> int:
+        pool = FairPool(workers=1, name="test-fair")
+        with pytest.raises(_Abort):
+            await pool.run("a", abort)
+        return await pool.run("a", lambda: 7)
+
+    assert asyncio.run(asyncio.wait_for(run(), 10)) == 7
+
+
+def test_a_shut_down_pool_fails_the_job_instead_of_hanging() -> None:
+    async def run() -> int:
+        pool = FairPool(workers=1, name="test-fair")
+        pool._pool.shutdown()
+        with pytest.raises(RuntimeError):
+            await pool.run("a", lambda: 1)
+        return pool._busy
+
+    assert asyncio.run(asyncio.wait_for(run(), 10)) == 0
 
 
 def test_jobs_run_on_both_threads_at_once() -> None:
@@ -81,7 +109,7 @@ def test_jobs_run_on_both_threads_at_once() -> None:
         # Each job waits for the other: only two threads running together get past it.
         await asyncio.gather(pool.run("a", both.wait), pool.run("a", both.wait))
 
-    asyncio.run(run())
+    asyncio.run(asyncio.wait_for(run(), 10))
 
 
 def test_a_windows_caption_work_waits_in_its_users_turn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,5 +132,5 @@ def test_a_windows_caption_work_waits_in_its_users_turn(monkeypatch: pytest.Monk
         end_ms=60_000,
     )
     block = CaptionBlock(speaker="Ann", has_header=True, lines=["hello there"])
-    asyncio.run(tracker.on_caption([block], 1_000))
+    asyncio.run(asyncio.wait_for(tracker.on_caption([block], 1_000), 10))
     assert users and set(users) == {("hh", "owner")}
