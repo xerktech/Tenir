@@ -2953,21 +2953,6 @@ def test_a_same_speaker_entry_inserted_above_another_speakers_is_stored_once() -
     ]
 
 
-def test_a_stored_block_read_under_another_header_is_stored_again() -> None:
-    """Accepted (XERK-2727): Teams re-attributing a stored entry looks exactly like someone
-    else repeating it, followed by a repeat of the reply after it. Matching it across
-    speakers lost both real lines (QA), so the re-attributed block is stored again."""
-    frames = [[blk("Bob", "we ship today"), blk("Cy", "ok")]] * 4 + [
-        [blk("Ana", "we ship today"), blk("Cy", "ok")]
-    ] * 4
-    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
-        ("Bob", "we ship today"),
-        ("Cy", "ok"),
-        ("Ana", "we ship today"),
-        ("Cy", "ok"),
-    ]
-
-
 @pytest.mark.parametrize(
     "case",
     ["reread_row_not_inserted", "misread_twin_not_reread_below", "earlier_misread_copy_is_no_twin"],
@@ -2998,20 +2983,6 @@ def test_qa_fuzz_panels_store_what_main_did(case: str) -> None:
     for seg in m.flush(len(data["frames"]) * 1000 + 10_000):
         stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
     assert [[sp, text] for _, sp, text in sorted(stored.values()) if text] == data["stored"]
-
-
-def test_another_speaker_repeating_a_line_and_its_reply_stores_both() -> None:
-    """QA (XERK-2727): Cy repeats Ana's line word for word and Bo his "ok" after it. A
-    cross-speaker match took them for a re-attributed block and lost both."""
-    frames = [[blk("Ana", "we ship it today"), blk("Bo", "ok")]] * 4 + [
-        [blk("Cy", "we ship it today"), blk("Bo", "ok")]
-    ] * 4
-    assert _stored(CaptionMerger(start_ms=0, stable_ms=3000), frames) == [
-        ("Ana", "we ship it today"),
-        ("Bo", "ok"),
-        ("Cy", "we ship it today"),
-        ("Bo", "ok"),
-    ]
 
 
 def test_an_entry_grown_below_its_twin_is_not_an_inserted_entry() -> None:
@@ -5076,3 +5047,264 @@ def test_making_room_never_moves_or_re_emits_a_carried_line() -> None:
     bo = m._lines[1]
     assert new.order_ms == 1 and bo.order_ms == 2  # the live line still moves down
     assert set(out) == {bo.segment.segment_id}
+
+
+# --- XERK-2736: an entry re-attributed to another speaker ---------------------------------
+
+
+def _once(out: list[Segment]) -> list[tuple[str | None, str]]:
+    """Each segment once, as last written (an upsert re-emits it), in store order."""
+    once = {s.segment_id: s for s in out}
+    return [(s.speaker, s.text) for s in sorted(once.values(), key=lambda s: s.start_ms)]
+
+
+def test_an_entry_re_attributed_to_another_speaker_is_stored_once_under_the_new_name() -> None:
+    """The ticket's repro: Teams re-labels Bob's stored entry as Ana's, rows unchanged."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", "we ship today"), blk("Cy", "ok")], t * 1000)
+    for t in range(4, 8):
+        out += m.feed([blk("Ana", "we ship today"), blk("Cy", "ok")], t * 1000)
+    out += m.flush(20_000)
+    assert _once(out) == [("Ana", "we ship today"), ("Cy", "ok")]
+
+
+def test_a_re_attributed_live_entry_keeps_growing_under_the_new_name() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    out += m.feed([blk("Cy", "ok"), blk("Bob", "we ship it")], 0)
+    out += m.feed([blk("Cy", "ok"), blk("Ana", "we ship it")], 1000)
+    out += m.feed([blk("Cy", "ok"), blk("Ana", "we ship it")], 2000)
+    out += m.feed([blk("Cy", "ok"), blk("Ana", "we ship it today")], 3000)
+    out += m.flush(20_000)
+    assert _once(out) == [("Cy", "ok"), ("Ana", "we ship it today")]
+
+
+def test_a_name_misread_on_one_frame_changes_nothing() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", "we ship today"), blk("Cy", "ok")], t * 1000)
+    out += m.feed([blk("Bo", "we ship today"), blk("Cy", "ok")], 4000)
+    for t in range(5, 8):
+        out += m.feed([blk("Bob", "we ship today"), blk("Cy", "ok")], t * 1000)
+    out += m.flush(20_000)
+    assert _once(out) == [("Bob", "we ship today"), ("Cy", "ok")]
+
+
+@pytest.mark.parametrize("gap_ms", [2000, 3000, 5000])
+def test_another_speaker_repeating_a_line_and_its_reply_after_dropped_frames_stores_both(
+    gap_ms: int,
+) -> None:
+    """XERK-2727 QA's shape: with time between the snapshots for Cy to say X and Bo "ok"
+    again, the same rows under a new header are a repeat, never a re-attribution."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Ana", "we ship it today"), blk("Bo", "ok")], t * 1000)
+    for t in range(4):
+        out += m.feed([blk("Cy", "we ship it today"), blk("Bo", "ok")], 3000 + gap_ms + t * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [
+        ("Ana", "we ship it today"),
+        ("Bo", "ok"),
+        ("Cy", "we ship it today"),
+        ("Bo", "ok"),
+    ]
+
+
+def test_another_speaker_repeating_a_line_shown_as_it_is_said_stores_both() -> None:
+    """At 1 fps a repeat is seen growing, so its frames never read the old rows exactly."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Ana", "we ship it today"), blk("Bo", "ok")], t * 1000)
+    frames = [
+        [blk("Ana", "we ship it today"), blk("Bo", "ok"), blk("Cy", "we ship")],
+        [blk("Bo", "ok"), blk("Cy", "we ship it today")],
+        [blk("Cy", "we ship it today"), blk("Bo", "ok")],
+        [blk("Cy", "we ship it today"), blk("Bo", "ok")],
+        [blk("Cy", "we ship it today"), blk("Bo", "ok")],
+    ]
+    for k, frame in enumerate(frames):
+        out += m.feed(frame, 3000 + k * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [
+        ("Ana", "we ship it today"),
+        ("Bo", "ok"),
+        ("Cy", "we ship it today"),
+        ("Bo", "ok"),
+    ]
+
+
+def test_a_short_reply_said_again_as_the_panel_scrolls_is_kept() -> None:
+    """[Bo thanks][Ana thanks] -> [Ana thanks][Ana thanks]: Ana thanked again within a
+    frame, and the rows read as the panel scrolled up a row (cross-speaker fuzz, seed 2)."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    out += m.feed([blk("Bo", "thanks"), blk("Ana", "thanks")], 0)
+    for t in range(1, 5):
+        out += m.feed([blk("Ana", "thanks"), blk("Ana", "thanks")], t * 1000)
+    out += m.flush(20_000)
+    assert _once(out) == [("Bo", "thanks"), ("Ana", "thanks"), ("Ana", "thanks")]
+
+
+def test_a_short_entry_re_attributed_is_stored_again_but_never_lost() -> None:
+    """Accepted: under ``_REHEAD_WORDS`` a re-labelled reply is indistinguishable from the
+    reply said again whole between frames, and a duplicate beats losing speech."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", "sounds good"), blk("Cy", "ok")], t * 1000)
+    for t in range(4, 8):
+        out += m.feed([blk("Ana", "sounds good"), blk("Cy", "ok")], t * 1000)
+    out += m.flush(20_000)
+    assert ("Bob", "sounds good") in _once(out) and ("Ana", "sounds good") in _once(out)
+
+
+X = "can you hear me"
+
+
+@pytest.mark.parametrize("ana_frames", [1, 2])
+def test_a_cross_speaker_repeat_on_a_one_row_panel_keeps_every_line(ana_frames: int) -> None:
+    """QA: with no row keeping its name, nothing shows the panel didn't turn over. Holding
+    Ana's one frame lost her line; two frames re-labelled Bob's line as hers."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    frames = [[blk("Bob", "can")], [blk("Bob", X)], [blk("Bob", X)]]
+    frames += [[blk("Ana", X)]] * ana_frames + [[blk("Cy", "yes")], [blk("Cy", "yes")]]
+    out = []
+    for k, frame in enumerate(frames):
+        out += m.feed(frame, k * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [("Bob", X), ("Ana", X), ("Cy", "yes")]
+
+
+def test_a_goodbye_round_said_again_in_full_keeps_every_line() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    g = "thanks everyone see you"
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Ana", g), blk("Bob", g)], t * 1000)
+    for t in range(3, 6):
+        out += m.feed([blk("Cy", g), blk("Dee", g)], t * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [("Ana", g), ("Bob", g), ("Cy", g), ("Dee", g)]
+
+
+def test_a_long_line_said_again_as_the_panel_scrolls_is_kept() -> None:
+    """The names read as the last frame's scrolled up a row: Ana said her line again."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    out += m.feed([blk("Bo", X), blk("Ana", X)], 0)
+    for t in range(1, 5):
+        out += m.feed([blk("Ana", X), blk("Ana", X)], t * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [("Bo", X), ("Ana", X), ("Ana", X)]
+
+
+def test_a_name_misread_on_one_frame_before_a_scroll_re_labels_nothing() -> None:
+    """The next frame doesn't agree, so the held frame is merged as usual (main's duplicate),
+    and Bob keeps his line."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Bob", X), blk("Cy", "ok")], t * 1000)
+    out += m.feed([blk("Bo", X), blk("Cy", "ok")], 3000)
+    for t in range(4, 7):
+        out += m.feed([blk("Cy", "ok"), blk("Dee", "hi there")], t * 1000)
+    out += m.flush(60_000)
+    stored = _once(out)
+    assert stored[:2] == [("Bob", X), ("Cy", "ok")]
+    assert ("Dee", "hi there") in stored
+
+
+def test_a_held_frame_s_repeat_is_stored_when_the_panel_moves_on() -> None:
+    """[Ana X][Bo ok] -> [Cy X][Bo ok] once, then the panel scrolls: Cy did repeat X."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(3):
+        out += m.feed([blk("Ana", X), blk("Bo", "ok")], t * 1000)
+    out += m.feed([blk("Cy", X), blk("Bo", "ok")], 3000)
+    for t in range(4, 7):
+        out += m.feed([blk("Bo", "ok"), blk("Dee", "hi there")], t * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [
+        ("Ana", X), ("Bo", "ok"), ("Cy", X), ("Bo", "ok"), ("Dee", "hi there")
+    ]
+
+
+def test_a_re_attributed_entry_wrapping_onto_a_short_row_is_stored_once() -> None:
+    """The word gate counts the entry, not each row (QA: a 2-word last row blocked it)."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    rows = ("we ship the release today and", "then test")
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", *rows), blk("Cy", "ok")], t * 1000)
+    for t in range(4, 8):
+        out += m.feed([blk("Ana", *rows), blk("Cy", "ok")], t * 1000)
+    out += m.flush(20_000)
+    assert _once(out) == [("Ana", rows[0]), ("Ana", rows[1]), ("Cy", "ok")]
+
+
+def test_an_entry_with_a_same_text_twin_is_never_re_attributed() -> None:
+    """QA fuzz seed 936: Cy says G twice; the merger folded the second G into the first
+    (scrolled off a frame, then back), so re-labelling "that" line lost one of Cy's."""
+    g = "sounds good to me"
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    frames = [
+        [blk("Ana", "let us do that"), blk("Cy", g)],
+        [blk("Cy", g), blk("Dee", "let")],
+        [blk("Dee", "let us do that"), blk("Cy", "sounds")],
+        [blk("Cy", g), blk("Cy", "sounds good to")],
+        [blk("Cy", g), blk("Cy", g)],
+    ] + [[blk("Ana", g), blk("Cy", g)]] * 6
+    out = []
+    for k, frame in enumerate(frames):
+        out += m.feed(frame, k * 1000)
+    out += m.flush(60_000)
+    stored = _once(out)
+    assert stored.count(("Cy", g)) >= 2, stored
+
+
+def test_a_misread_name_then_the_real_one_re_labels_to_the_real_one() -> None:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", X), blk("Cy", "ok")], t * 1000)
+    out += m.feed([blk("Bib", X), blk("Cy", "ok")], 4000)
+    for t in range(5, 9):
+        out += m.feed([blk("Ana", X), blk("Cy", "ok")], t * 1000)
+    out += m.flush(60_000)
+    assert _once(out) == [("Ana", X), ("Cy", "ok")]
+
+
+def test_names_read_on_one_frame_each_re_label_nothing() -> None:
+    """Bib then Ana for a frame each, then the panel moves on: no two frames agreed, so
+    Bob keeps his line (QA: no test needed the names to agree)."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(4):
+        out += m.feed([blk("Bob", X), blk("Cy", "ok")], t * 1000)
+    out += m.feed([blk("Bib", X), blk("Cy", "ok")], 4000)
+    out += m.feed([blk("Ana", X), blk("Cy", "ok")], 5000)
+    for t in range(6, 9):
+        out += m.feed([blk("Cy", "ok"), blk("Dee", "hi there")], t * 1000)
+    out += m.flush(60_000)
+    stored = _once(out)
+    assert stored[:2] == [("Bob", X), ("Cy", "ok")], stored
+    assert ("Dee", "hi there") in stored
+
+
+def test_a_carried_entry_read_under_another_name_is_never_re_attributed() -> None:
+    """The ended meeting's segment keeps its speaker (XERK-2615): main's behaviour stands."""
+    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
+    old = []
+    for t in range(4):
+        old += m1.feed([blk("Bob", "we ship today"), blk("Cy", "ok")], t * 1000)
+    old += m1.flush(10_000)
+    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
+    m2.feed([blk("Bob", "we ship today"), blk("Cy", "ok")], 65_000)
+    for t in range(66, 70):
+        m2.feed([blk("Ana", "we ship today"), blk("Cy", "ok")], t * 1000)
+    assert _once(old) == [("Bob", "we ship today"), ("Cy", "ok")]
