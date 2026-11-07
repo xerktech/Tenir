@@ -149,11 +149,12 @@ def _same_pane(a: CaptionPane, b: CaptionPane) -> bool:
     )
 
 
-async def locate_pane(ocr: OcrClient, jpeg: bytes, size: tuple[int, int]) -> CaptionPane | None:
+async def locate_pane(
+    ocr: OcrClient, jpeg: bytes, size: tuple[int, int], user: tuple[str, str]
+) -> CaptionPane | None:
     """The Teams live-captions pane of a full frame: divider-shaped lines found in the pixels,
     then the strip above each OCR'd for the heading. Raises OcrError."""
-    loop = asyncio.get_running_loop()
-    found = await loop.run_in_executor(CPU_POOL, teams_pane.candidates, jpeg, size)
+    found = await CPU_POOL.run(user, teams_pane.candidates, jpeg, size)
     for cand in found:
         pane = teams_pane.pane_of(cand, await ocr.read(cand.band_jpeg), size)
         if pane is not None:
@@ -273,13 +274,13 @@ async def screen_ws(ws: WebSocket) -> None:
     async def read_frame(header: ScreenFrameHeader, jpeg: bytes) -> None:
         if closing.is_set():
             return
-        loop = asyncio.get_running_loop()
+        user = (principal.household, principal.user_id)
         server_now = now_ms()
         ts = header.ts if abs(header.ts - server_now) <= _MAX_CLOCK_SKEW_MS else server_now
 
         async def read_pane() -> tuple[CaptionPane | None, bool]:
             try:
-                return await locate_pane(ocr, jpeg, image_size(jpeg)), True
+                return await locate_pane(ocr, jpeg, image_size(jpeg), user), True
             except OcrError as exc:
                 # Keep the client's last region: a blip must not stop a meeting's crops.
                 log.warning("screen OCR of the caption pane heading failed: %s", exc)
@@ -339,20 +340,20 @@ async def screen_ws(ws: WebSocket) -> None:
                 parser = _PARSERS[header.platform]
                 if header.region.value == "full":
                     if header.platform is Platform.teams:
-                        frame = await loop.run_in_executor(
-                            CPU_POOL, lambda: teams.parse_full_frame(result, jpeg, pane=pane)
+                        frame = await CPU_POOL.run(
+                            tracker.user, lambda: teams.parse_full_frame(result, jpeg, pane=pane)
                         )
                     else:
-                        frame = await loop.run_in_executor(
-                            CPU_POOL, parser.parse_full_frame, result, jpeg
+                        frame = await CPU_POOL.run(
+                            tracker.user, parser.parse_full_frame, result, jpeg
                         )
                     await tracker.on_full(frame, ts)
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)
                 else:
                     roster = await tracker.ensure_roster()
-                    blocks = await loop.run_in_executor(
-                        CPU_POOL,
+                    blocks = await CPU_POOL.run(
+                        tracker.user,
                         lambda: parser.parse_caption_crop(
                             result,
                             roster,

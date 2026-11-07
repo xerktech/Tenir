@@ -169,7 +169,7 @@ async def replay(platform: str, frames: list[Frame], *, ocr: OcrClient | None = 
                     pane = find_pane(f)
                 else:
                     try:
-                        pane = await locate_pane(ocr, f.jpeg, size)
+                        pane = await locate_pane(ocr, f.jpeg, size, ("replay", "replay"))
                     except OcrError:  # as live (ws.read_pane): this frame parses without one
                         out.pane_ocr_errors += 1
                         pane = None

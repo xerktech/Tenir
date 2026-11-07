@@ -69,7 +69,7 @@ paths:
       noise (60% drops half). Half the rate dropped frames at 1 fps. One user's 8 crafted
       windows: ~0.2-0.3 s CPU a second (was ~8). Raising
       `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
-    - Accepted: several users' device tokens together can still fill the pool.
+    - Several users' tokens together: `CPU_POOL` serves users in turn (XERK-2737).
     - Accepted: one window's clock (up to +60 s) stalls the refill for the user's others.
     - Tests: `test_crafted_caption_frames_spend_at_most_the_windows_work_budget`,
       `test_a_frame_over_budget_mid_alignment_changes_nothing`,
