@@ -116,7 +116,10 @@ def _settle(fut: asyncio.Future[Any], result: Any, error: BaseException | None) 
     def done() -> None:
         if fut.cancelled():
             return
-        if error is not None:
+        if isinstance(error, StopIteration):
+            # A future refuses StopIteration, and an unset one hangs its caller.
+            fut.set_exception(RuntimeError("pool job raised StopIteration"))
+        elif error is not None:
             fut.set_exception(error)
         else:
             fut.set_result(result)

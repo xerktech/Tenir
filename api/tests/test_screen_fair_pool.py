@@ -91,6 +91,15 @@ def test_a_base_exception_in_a_job_reaches_its_caller() -> None:
     assert asyncio.run(asyncio.wait_for(run(), 10)) == 7
 
 
+def test_a_job_raising_stop_iteration_fails_instead_of_hanging() -> None:
+    async def run() -> None:
+        pool = FairPool(workers=1, name="test-fair")
+        with pytest.raises(RuntimeError):
+            await pool.run("a", next, iter(()))
+
+    asyncio.run(asyncio.wait_for(run(), 10))
+
+
 def test_a_shut_down_pool_fails_the_job_instead_of_hanging() -> None:
     async def run() -> int:
         pool = FairPool(workers=1, name="test-fair")
