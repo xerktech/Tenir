@@ -3552,25 +3552,82 @@ def test_an_old_entry_gaining_words_is_not_revised() -> None:
 
 
 
+
+def _emitted(frames: list[tuple[list[CaptionBlock], int]]) -> list[str]:
+    """Every text the merger emits over ``frames`` (each fed ``count`` times, one a second),
+    in order: an upsert stored and later overwritten still reached the store."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    texts: list[str] = []
+    t = 0
+    for blocks, count in frames:
+        for _ in range(count):
+            texts += [seg.text for seg in m.feed(blocks, t)]
+            t += 1000
+    return texts + [seg.text for seg in m.flush(t + 60_000)]
+
+
+_SHIP = _entries("green.", "we ship the build on friday", "ok")
+_REWRITE = _entries("green.", "we ship the new build friday", "ok")
+
+
+def test_a_rewrite_inserting_and_dropping_a_word_is_stored() -> None:
+    """XERK-2732: Teams inserts "new" and drops "on" on one frame; the whole draft was kept."""
+    stored, _ = _entry_run([(_SHIP, 5), (_REWRITE, 2)])
+    assert stored == [("Ana", "green."), ("Ana", "we ship the new build friday"), ("Ana", "ok")]
+
+
+def test_a_one_frame_rewrite_dropping_a_word_is_never_stored() -> None:
+    """Two frames in a row must agree: one, or one between full reads, emits nothing (QA:
+    asserting the final text alone missed a mutant storing it, then overwriting it)."""
+    short = _emitted([(_SHIP, 5), (_REWRITE, 1), (_SHIP, 5)])
+    broken = _emitted([(_SHIP, 5), (_REWRITE, 1), (_SHIP, 1), (_REWRITE, 1), (_SHIP, 5)])
+    for texts in (short, broken):
+        assert "we ship the new build friday" not in texts, texts
+
+
+def test_a_word_dropped_alone_is_never_taken() -> None:
+    """A read that only drops words is OCR missing them, however long it lasts (QA: a
+    deterministic miss repeats on every frame; "we do not ship it" became "we do ship it").
+    Accepted: Teams dropping a word with nothing added keeps it (XERK-2732's two-step shape)."""
+    for draft, read in [
+        ("we do not ship it on friday", "we do ship it on friday"),
+        ("we ship the new build on friday", "we ship the new build friday"),
+    ]:
+        texts = _emitted(
+            [(_entries("green.", draft, "ok"), 5), (_entries("green.", read, "ok"), 20)]
+        )
+        assert read not in texts, texts
+
+
+def test_two_words_read_as_one_beside_a_new_one_keeps_the_stored_entry() -> None:
+    """Only the dropped span resembles the read ("of is" -> "ofbuild"): no single word does
+    (QA's differential found such merged reads)."""
+    texts = _emitted(
+        [(_entries("green.", "we of is friday i", "ok"), 5), (_entries("green.", "we ofbuild friday i", "ok"), 20)]
+    )
+    assert "we ofbuild friday i" not in texts, texts
+
+
 @pytest.mark.parametrize(
-    "top", ["Yes, the pods need enable should we.", "Yes the pods need enable should we now"]
+    "read",
+    [
+        "we sh uld ship the build",  # a garble splitting a word
+        "we should th build",  # a word missed beside a garbled one ("ship the" -> "th")
+        "we should ship l build",  # a word missed, a stray glyph read
+        "ship the new build",  # the crop clipping the row's start
+        "we should ship the new",  # ... or its end
+        "we new build",  # most of the row missed
+    ],
 )
-def test_a_rewrite_never_revises_the_ended_meetings_carried_line(top: str) -> None:
-    """QA (XERK-2694): a carried line's segment belongs to the ended meeting (XERK-2615), so
-    a rewrite of the block it sits in must not re-emit it into the next conversation."""
-    m1 = CaptionMerger(start_ms=0, stable_ms=3000)
-    old = set()
-    for t in range(5):
-        old |= {s.segment_id for s in m1.feed([blk("Ana", "yes the pods need enable should we")], t * 1000)}
-    old |= {s.segment_id for s in m1.flush(5000)}
-    m2 = CaptionMerger(start_ms=65_000, stable_ms=3000, carried=m1.recent())
-    draft = ["yes the pods need enable should we", "the cluster not need pods it the", "how right right in overlay"]
-    final = [top, "cluster not need pods it, the how", "right in overlay."]
-    emitted = []
-    for k, rows in enumerate([draft] * 6 + [final] * 5):
-        emitted += m2.feed([blk("Ana", *rows)], 65_000 + k * 1000)
-    emitted += m2.flush(90_000)
-    assert not {s.segment_id for s in emitted} & old
+def test_a_lasting_misread_dropping_words_keeps_the_stored_entry(read: str) -> None:
+    """Reads that drop words the way OCR does are never taken, however long they last."""
+    texts = _emitted(
+        [
+            (_entries("green.", "we should ship the build", "ok"), 5),
+            (_entries("green.", read, "ok"), 20),
+        ]
+    )
+    assert read not in texts, texts
 
 
 def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:

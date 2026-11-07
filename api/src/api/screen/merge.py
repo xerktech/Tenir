@@ -418,6 +418,12 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
 
 
+def _subsequence(was: list[str], now: list[str]) -> bool:
+    """Whether ``now`` holds every word of ``was``, in order."""
+    it = iter(now)
+    return all(w in it for w in was)
+
+
 def _inserted(was: list[str], now: list[str]) -> bool:
     """Whether ``now`` keeps every word of ``was``, in order, and adds whole words that read
     as speech: Teams finishing or rewording an entry (XERK-2721). OCR jitter garbles or
@@ -452,6 +458,49 @@ def _spoken(word: str) -> bool:
     if len(word) < 2:
         return False
     return not (len(word) == 2 and word[0] == word[1] and word[0] in "iljtfr")
+
+
+def _edited(was: list[str], now: list[str]) -> bool:
+    """Whether ``now`` may replace a stored line reading ``was``: Teams finishing or rewording
+    an entry (XERK-2721, XERK-2732). ``now`` adds whole words that read as speech, and may
+    drop some of ``was``'s.
+
+    Added words are speech as for ``_inserted`` (``_spoken``: no stray glyph runs).
+
+    Dropped words (XERK-2732): OCR loses words too (a missed or garbled one), and a miss on
+    static pixels repeats on every frame, so no frame count tells it from a Teams edit (QA).
+    A read that only drops words is never taken. One that drops words beside an added word
+    (Teams rewording: "build on friday" -> "new build friday") is, when it keeps half the
+    words and the row's first and last (a read cut off at either end is the crop clipping
+    it), and adds nothing resembling what it dropped (a garble splits "should" into "sh
+    uld"), span or word: a reword inflecting a word it keeps ("to test it" -> "tested it")
+    keeps the draft. Holding it for more frames than an insertion lost words on every fuzz."""
+    if not was or not now or now == was:
+        return False
+    if _inserted(was, now):
+        return True
+    # Not every word kept in order: a drop, scored on difflib's alignment. An insertion
+    # ``_inserted`` refused (a stray glyph) or one difflib aligns oddly drops nothing here.
+    ops = SequenceMatcher(None, was, now, autojunk=False).get_opcodes()
+    kept = sum(a2 - a1 for op, a1, a2, _, _ in ops if op == "equal")
+    added = [now[b1:b2] for op, _, _, b1, b2 in ops if op in ("insert", "replace")]
+    dropped = [was[a1:a2] for op, a1, a2, _, _ in ops if op in ("delete", "replace")]
+    if not dropped or not added or not all(any(_spoken(w) for w in run) for run in added):
+        return False
+    if _subsequence(was, now):
+        return False  # every word kept: ``_inserted`` refused the added ones
+    if 2 * kept < len(was) or ops[0][0] != "equal" or ops[-1][0] != "equal":
+        return False
+    for op, a1, a2, b1, b2 in ops:
+        if op != "replace":
+            continue
+        # A garble beside a missed word folds into one span ("ship the" -> "th"): compare
+        # each added word with each dropped one too, not only the spans (QA).
+        pairs = [(" ".join(was[a1:a2]), " ".join(now[b1:b2]))]
+        pairs += [(d, w) for d in was[a1:a2] for w in now[b1:b2]]
+        if any(_ratio(d, w, _MISREAD_LIKE) >= _MISREAD_LIKE for d, w in pairs):
+            return False
+    return True
 
 
 def _revisions(
@@ -1070,13 +1119,15 @@ class CaptionMerger:
         middle entry ("and the notes" -> "...are done") or reworded one ("the build is
         green." -> "...red now not green"). Rows above the bottom otherwise keep their text
         (OCR jitter), so these were lost. Taken once two frames in a row read it alike: one
-        misread frame is never stored. A rewrite dropping words still keeps the draft.
+        misread frame is never stored. A read that only drops words keeps the draft (``_edited``).
         Confirmed reads are applied after ``_reflow`` (``_apply_grows``)."""
         # The speaker matches (a misread pairing and a match both require it), and
         # ``_revise`` refuses a carried line (the ended meeting's segment, XERK-2615).
         if not line.final or ts - line.first_ms > _REVISE_MS:
             return
-        if shown.norm == line.grow_refused or not _inserted(_words(line.text), _words(shown.text)):
+        if shown.norm == line.grow_refused:
+            return
+        if not _edited(_words(line.text), _words(shown.text)):
             return
         if any(ln is not line and _exact(shown, ln) for ln in self._lines[-_TAIL:]):
             return  # it re-reads another known line: growing this one copied that (XERK-2719)
