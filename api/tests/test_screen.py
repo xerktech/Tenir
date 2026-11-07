@@ -4916,6 +4916,117 @@ def test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry(case: str) -
     assert len({start for start, _, _ in rows}) == len(rows)  # no ties
 
 
+@pytest.mark.parametrize("shown_for", [5, 25, 35])
+def test_a_row_added_above_an_old_entry_is_stored_before_it_once(shown_for: int) -> None:
+    """XERK-2738: Teams adds a row to Bo's entry above Cy's. Once Cy's line was on screen past
+    ``_REVISE_MS``, nothing paired her row with it: "Okay." was stored again and Bo's row
+    after the first copy. Her row re-reads it verbatim, so it is that line at any age."""
+    first = blk("Bo", "so or what like so so so like itself")
+    grown = blk("Bo", "so or what like so so so like itself", "cluster logs build")
+    cy = blk("Cy", "Okay.")
+    stored, _ = _entry_run([([first, cy], shown_for), ([grown, cy], 5)])
+    assert stored == [
+        ("Bo", "so or what like so so so like itself"),
+        ("Bo", "cluster logs build"),
+        ("Cy", "Okay."),
+    ]
+
+
+def test_an_old_line_is_never_rewritten_by_a_new_row_resembling_it() -> None:
+    """XERK-2738's guard: an old line is offered only to its verbatim re-read. When the claims
+    would hand it another row ("Okay, sure." above a re-read "Okay."), nothing is revised:
+    Cy's stored "Okay." keeps its text."""
+    first = blk("Bo", "so or what like so so so like itself")
+    grown = blk("Bo", "so or what like so so so like itself", "cluster logs build")
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    texts: dict[str, str] = {}
+    cy_id = None
+    for t in range(40):
+        if t < 35:
+            blocks = [first, blk("Cy", "Okay.")]
+        else:
+            blocks = [grown, blk("Cy", "Okay, sure.", "Okay.")]
+        for seg in m.feed(blocks, t * 1000):
+            texts[seg.segment_id] = seg.text
+            if cy_id is None and seg.speaker == "Cy":
+                cy_id = seg.segment_id
+    assert cy_id is not None
+    assert texts[cy_id] == "Okay."
+    assert "Okay, sure." in texts.values()
+
+
+def test_an_older_twin_of_a_line_never_spoils_a_revision() -> None:
+    """XERK-2738 (QA): Bo said "yes" twice, the first over ``_REVISE_MS`` ago. Offering that
+    old copy too took the recent one's claim, so nothing was revised and Bo's "yes" and Ana's
+    entry were stored again. Only the newest copy of a text is offered."""
+    a1 = "need asking same did"
+    a3 = ("again task same task need", "again that api")
+    stored, _ = _entry_run(
+        [
+            ([blk("Bo", "yes")], 40),
+            ([blk("Bo", "yes"), blk("Ana", a1)], 8),
+            ([blk("Bo", "yes"), blk("Ana", a1), blk("Bo", "yes")], 6),
+            ([blk("Bo", "yes"), blk("Ana", a1), blk("Bo", "yes"), blk("Ana", *a3)], 2),
+            ([blk("Bo", "yes", "we ship it"), blk("Ana", *a3)], 8),
+        ]
+    )
+    assert stored == [
+        ("Bo", "yes"),
+        ("Ana", a1),
+        ("Bo", "yes"),
+        ("Bo", "we ship it"),
+        ("Ana", a3[0]),
+        ("Ana", a3[1]),
+    ]
+
+
+def test_rows_re_reading_an_old_repeated_line_each_pair_with_a_copy() -> None:
+    """XERK-2738 (QA): Bo said "yes" twice, both copies over ``_REVISE_MS`` old, and Ana's
+    entry above gained a row. Two rows read "yes", so both copies are offered; offering only
+    the newest left the other row new, and Bo's lines and Cy's were stored again."""
+    x, a1 = "so or what like so so so like itself", "need asking same did"
+    box = [blk("Bo", "yes"), blk("Cy", a1), blk("Bo", "yes")]
+    stored, _ = _entry_run(
+        [([blk("Ana", x), *box], 40), ([blk("Ana", x, "cluster logs build"), *box], 8)]
+    )
+    assert stored == [
+        ("Ana", x),
+        ("Ana", "cluster logs build"),
+        ("Bo", "yes"),
+        ("Cy", a1),
+        ("Bo", "yes"),
+    ]
+
+
+def test_another_speakers_copy_of_an_old_line_does_not_hide_it() -> None:
+    """XERK-2738 (QA): only the speaker's own later copies count against an old line. Bo's
+    "yes" below Cy's is not hers, so her row still re-reads her line."""
+    x = "so or what like so so so like itself"
+    stored, _ = _entry_run(
+        [
+            ([blk("Bo", x), blk("Cy", "yes"), blk("Bo", "yes")], 35),
+            ([blk("Bo", x, "cluster logs build"), blk("Cy", "yes"), blk("Bo", "yes")], 5),
+        ]
+    )
+    assert stored == [("Bo", x), ("Bo", "cluster logs build"), ("Cy", "yes"), ("Bo", "yes")]
+
+
+def test_an_old_line_no_row_re_reads_verbatim_is_not_offered() -> None:
+    """XERK-2738 (QA): an old line joins the revision candidates only when a new row reads it
+    exactly. Offering every old line let Cy's rewritten entry miss a candidate, and Bo's row
+    above was stored a second time."""
+    x, y = "so or what like so so so like itself", "cluster logs build"
+    stored, _ = _entry_run(
+        [
+            ([blk("Bo", x), blk("Cy", "Okay.", "let me check")], 35),
+            ([blk("Bo", x, y), blk("Cy", "Okay, let me check that")], 2),
+            ([blk("Bo", x, y), blk("Cy", "Okay, let me check that"), blk("Cy", "Okay.")], 5),
+        ]
+    )
+    assert stored.count(("Bo", x)) == 1
+    assert stored.count(("Bo", y)) == 1
+
+
 def test_lines_after_a_wrapped_row_keep_unique_increasing_starts() -> None:
     """XERK-2729: lines first seen in one snapshot are a millisecond apart, so making room
     above one moves every line after it down; a line said later still sorts last."""
