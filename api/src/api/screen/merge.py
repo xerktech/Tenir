@@ -96,6 +96,9 @@ _HELD = 0.5
 # only when it was on screen this recently: at 1 fps a new line and a repeat of her next entry
 # can't both be said between two snapshots, but after dropped frames they can (XERK-2716).
 _SAID_BETWEEN_MS = 3_000
+# A new entry Teams shows between two known ones (XERK-2727): costs more than a misread, so a
+# row that is one keeps that pairing (and ``_grew_over_twin``).
+_INSERTED = -1.5
 _WORD = re.compile(r"[\w']+")
 # Alignment work a window may spend (XERK-2730): a token bucket refilled by snapshot time.
 # Crafted rows (12 x 160 chars of "a b a b") cost difflib ~1.5 s CPU per frame on the shared
@@ -309,6 +312,29 @@ def _exact(shown: _Shown, known: _Line) -> bool:
     return shown.norm == known.norm and _same_speaker(shown.speaker, known.speaker)
 
 
+def _same_text(a: str, b: str) -> bool:
+    """Whether two normalized lines read the same text: exactly, or one char of one word
+    misread ("0kay." for "okay.", XERK-2727). Looser (same word count, ratio >= 0.75) took
+    different lines for twins and re-stored whole boxes (QA). A line grown by a word is not."""
+    if a == b:
+        return True
+    wa, wb = _words(a), _words(b)
+    if len(wa) != len(wb):
+        return False
+    diff = [(x, y) for x, y in zip(wa, wb, strict=True) if x != y]
+    if len(diff) > 1:
+        return False
+    if not diff:
+        return True  # case and punctuation aside, the same words
+    x, y = diff[0]
+    return len(x) == len(y) and sum(c != d for c, d in zip(x, y, strict=True)) == 1
+
+
+def _twin(shown: _Shown, known: _Line) -> bool:
+    """Whether ``shown`` reads ``known``'s text (``_same_text``), by its speaker."""
+    return _same_speaker(shown.speaker, known.speaker) and _same_text(shown.norm, known.norm)
+
+
 def _reread_below(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> bool:
     """Whether rows from ``shown[i]`` on read ``tail[k]``'s text exactly more often than the
     known lines after it hold it (so one of them re-reads ``tail[k]`` itself), and an earlier
@@ -318,7 +344,7 @@ def _reread_below(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> boo
     known = tail[k]
     if known.carried:  # the ended meeting's line keeps main's behaviour
         return False
-    below = sum(1 for s in shown[i:] if _exact(s, known))
+    below = sum(1 for s in shown[i:] if _twin(s, known))
     after = sum(1 for ln in tail[k + 1 :] if ln.norm == known.norm)
     return below > after and any(
         ln.norm == known.norm and ln.speaker == known.speaker and not ln.carried
@@ -341,8 +367,40 @@ def _grew_over_twin(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> b
         not any(_exact(shown[i - 1], ln) for ln in tail if ln is not known)
         and len(now) > len(had)
         and now[: len(had)] == had
-        and any(ln.norm == known.norm for ln in tail[k + 1 :])
-        and any(_exact(s, known) for s in shown[i:])
+        and any(_same_text(ln.norm, known.norm) for ln in tail[k + 1 :])
+        and any(_twin(s, known) for s in shown[i:])
+    )
+
+
+def _inserted_entry(
+    shown: list[_Shown], i: int, tail: list[_Line], j: int, *, above_matched: bool
+) -> bool:
+    """Whether ``shown[i]`` is a new Teams entry right after ``tail[j]``, above the known
+    lines below it (XERK-2727): the first row under a header, of ``tail[j]``'s speaker, that
+    starts with its words and adds more. Unpaired under a header it cost ``_UNPAIRED`` and
+    the known entries below were stored again. Only where ``tail[j]`` can't be revised
+    (``_revisions`` takes a skipped draft): a carried line (it never grows; its growth is
+    a new line), or one the row above is aligned to (the entry stays, so this one is new).
+    ``above_matched``: the alignment matched ``shown[i - 1]`` with ``tail[j]``. Not when
+    another of the speaker's known lines reads like ``tail[j]``: the row above may be that
+    one, and this row ``tail[j]`` grown (QA: "yes", "yes" -> "yes maybe please")."""
+    row, known = shown[i], tail[j]
+    if row.speaker is None or row.speaker != known.speaker:
+        return False
+    if i and shown[i - 1].block == row.block:
+        return False
+    had, now = _words(known.text), _words(row.text)
+    if not had or len(now) <= len(had) or now[: len(had)] != had:
+        return False
+    if any(_exact(row, ln) for ln in tail):
+        # It re-reads a known line: that line, wrapped or re-flowed, not a new entry (QA:
+        # the line was stored twice and the word wrapped below it lost).
+        return False
+    if known.carried:
+        return True
+    return above_matched and not any(
+        ln is not known and ln.speaker == known.speaker and _same_text(ln.norm, known.norm)
+        for ln in tail
     )
 
 
@@ -351,13 +409,15 @@ def _align(
     tail: list[_Line],
     budget: MergeBudget,
     misreads: dict[int, int] | None = None,
+    inserted: set[int] | None = None,
 ) -> list[int | None]:
     """For each shown line, the index into ``tail`` it re-reads, or None (new or a glitch).
 
     Monotone alignment: shown[i] -> tail[j] pairs never cross. Leading tail lines (scrolled
     off) are free to skip; shown lines past the last aligned one are new; a shown line left
     unaligned above it is a glitch. ``misreads`` (when given) gets each glitch the alignment
-    paired with a known line: shown index -> tail index."""
+    paired with a known line: shown index -> tail index. ``inserted`` (when given) gets each
+    unaligned row above the last match that is a new entry (``_inserted_entry``), not a glitch."""
     n, m = len(shown), len(tail)
     neg = float("-inf")
     # best[i][j]: best score with shown[:i] and tail[:j] consumed.
@@ -370,10 +430,19 @@ def _align(
     for i in range(1, n + 1):
         for j in range(m + 1):
             options: list[tuple[float, str]] = [(best[i - 1][j] + unpaired[i - 1], "glitch")]
+            if j and _inserted_entry(
+                shown, i - 1, tail, j - 1, above_matched=i >= 2 and move[i - 1][j] == "match"
+            ):
+                options.append((best[i - 1][j] + _INSERTED, "inserted"))
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
                 in_entry = i >= 2 and shown[i - 2].block == shown[i - 1].block
-                if _misread(shown[i - 1], tail[j - 1], budget, in_entry=in_entry):
+                if _misread(shown[i - 1], tail[j - 1], budget, in_entry=in_entry) or (
+                    # A block's top row grown over a twin row of its line (XERK-2727):
+                    # [okay, ship it][0kay.] over okay./okay. paired nothing when the twin
+                    # was misread, so ``_revisions``' verbatim cut missed it too.
+                    not in_entry and _grew_over_twin(shown, i, tail, j - 1)
+                ):
                     options.append((best[i - 1][j - 1] + _GLITCH, "misread"))
                 known = tail[j - 1]
                 # A carried line can't grow: its segment is the ended meeting's, so the
@@ -410,6 +479,8 @@ def _align(
         elif step == "skip_known":
             j -= 1
         else:
+            if step == "inserted" and inserted is not None:
+                inserted.add(i - 1)
             i -= 1
     return out
 
@@ -788,6 +859,8 @@ class CaptionMerger:
         # taken on the next frame if it still doesn't show the folded line (``feed``).
         self._folded: list[tuple[int, tuple[int, ...]]] = []
         self._fold_held: list[tuple[_Line, list[_Line]]] = []
+        # The last ``_match``'s rows aligned as new entries between known lines (``_align``).
+        self._inserted: set[int] = set()
         # This and the last feed's grown-over-twin reads, keyed by line id (``feed``).
         self._grown_reads: dict[int, str] = {}
         # Each stored line's last read with words added (``_grow``), this frame's, and this
@@ -860,7 +933,8 @@ class CaptionMerger:
         shown = _shown(blocks)
         tail = self._tail(ts)
         self._misreads = {}
-        aligned = _align(shown, tail, self._budget, self._misreads)
+        self._inserted = set()
+        aligned = _align(shown, tail, self._budget, self._misreads, self._inserted)
         speakers = self._speakers(blocks, shown, aligned, tail)
         self._folded = []
         revised = _revisions(shown, speakers, aligned, tail, ts, self._budget, self._folded)
@@ -962,7 +1036,7 @@ class CaptionMerger:
                 speaker = line.speaker or speaker
                 self._revise(line, line_shown, ts, out)
                 row_line[i] = line
-            elif i < last_aligned:
+            elif i < last_aligned and i not in self._inserted:
                 k = self._misreads.get(i)
                 if (
                     k is not None

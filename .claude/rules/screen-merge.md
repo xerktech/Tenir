@@ -39,6 +39,19 @@ paths:
     - The unpaired grown row is then revised by `_revisions` via XERK-2717's draft cut (its
       twin below cuts the draft). Without that cut, the run's later entries diluted coverage.
     - Test: `test_a_grown_entry_above_a_same_text_entry_is_stored_once`.
+    - "Twin" means the same words, or one char of one word misread (`_same_text`, XERK-2727):
+      "0kay." under a grown "okay, ship it" stored 6 rows. Same word count + ratio >= 0.75
+      took different lines for twins and re-stored whole boxes (QA fuzz). A grown row never is.
+      - Only rows count as twins (`_reread_below`'s `below`, `_grew_over_twin`); known lines
+        compare exactly in `_reread_below`: a one-char-misread stored line counted as a twin
+        re-stored a 4-line box (QA fuzz, `test_qa_fuzz_panels_store_what_main_did`).
+      - Accepted: counting rows by twin in `below` costs ~0.5% of QA's noisy Teams fuzz seeds a
+        stored misread or an extra short row (vs. main); exact `below` loses ticket case 3
+        (`twin_misread`).
+      - A block's top row grown over its twin row may pair as a misread in `_align` (no other
+        top-row misread fits: ratio < 0.5).
+      - Accepted: under Teams re-attributing entries (QA relab fuzz) this pairing does worse
+        than main on ~2% of seeds, once taking another speaker's words (XERK-2736).
   - A stored line extends only on whole-word growth, so the ASR finishing its last word after
     it was stored ("deploy" -> "deployment failed") loses the rest of that line. Accepted
     (XERK-2597): three char-growth rules each traded it for stray OCR chars stored ("yesl",
@@ -79,6 +92,27 @@ paths:
       `test_a_caption_frame_over_budget_is_dropped_and_counted`.
   - A misread must look like its known line (same speaker, ratio >= 0.5): pairing any two
     lines "explained away" a reply said between snapshots.
+  - A new Teams entry between two known ones is stored, not a glitch (`_inserted_entry`,
+    XERK-2727): a header block's first row of the known line's speaker that starts with its
+    words and adds more. Unpaired it cost `_UNPAIRED`, so the entries below were stored again.
+    - Only when that known line can't be revised: carried (its growth is a new line), or the
+      row above is aligned to it. A skipped revisable line is `_revisions`' (XERK-2717 shape):
+      inserting there stored "green, so ship it" beside "green.".
+    - Never a row that reads a known line exactly: it is that line wrapped, and inserting it
+      stored it twice and lost the word wrapped below (QA fuzz dump in
+      `test_qa_fuzz_panels_store_what_main_did`).
+    - Never when another of the speaker's known lines is its twin: the row above may be that
+      one (leading lines skip free), and this row the line grown (QA: a third "yes" stored).
+    - Costs `_INSERTED` (below `_GLITCH`): a grown row over its twin stays a misread.
+    - Tests: `test_a_same_speaker_entry_inserted_above_another_speakers_is_stored_once`,
+      `test_a_carried_entry_grown_above_a_carried_line_stores_only_the_growth`,
+      `test_an_entry_grown_below_its_twin_is_not_an_inserted_entry`.
+  - Accepted (XERK-2727): a stored block re-read under another speaker's header (Teams
+    re-attributing it) is stored again. It looks exactly like someone repeating the line and
+    the reply after it: matching across speakers, even verbatim 3+ words, lost both (QA).
+    Telling them apart needs another signal. Tests:
+    `test_a_stored_block_read_under_another_header_is_stored_again`,
+    `test_another_speaker_repeating_a_line_and_its_reply_stores_both`.
   - Lines first seen in one snapshot get start_ms 1 ms apart: Postgres orders ties randomly.
   - An unpaired line under a verified header is never a glitch (it may sit between known
     lines: [Bo, Cy yes, Ana okay] after [Cy, Bo, Ana okay]); only header-less lines are.
