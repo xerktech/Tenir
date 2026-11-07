@@ -46,3 +46,9 @@ paths:
   mount) and pull with `kubectl cp`; it saves client meeting screenshots, so set it for one
   meeting, then unset it and delete the files. `orgSiteKey` is client input: it is slugged.
   Tests: `test_screen_samples.py`.
+- CPU work on frames (pane finding, parsing, merging) goes through `CPU_POOL.run(user, ...)`
+  (`meetings.FairPool`, XERK-2737), never `run_in_executor`: jobs queue per user (household,
+  owner) and users take turns, so crafted frames from several device tokens slow a live
+  meeting by one job per busy user, not by every frame queued.
+  - Accepted: latency still grows with the number of busy users; each needs an admin token.
+  - Tests: `api/tests/test_screen_fair_pool.py`.

@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import Awaitable, Callable, Hashable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, TypeVar
 from dataclasses import dataclass
 
 from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
@@ -38,10 +41,91 @@ CAPTIONS_OFF_MS = 120_000
 # ...and again this often while it lasts (a desktop notification each time).
 CAPTIONS_OFF_REPEAT_MS = 900_000
 
+T = TypeVar("T")
+
+
+class FairPool:
+    """A thread pool whose waiting jobs take turns by user (XERK-2737).
+
+    Each user (a device token's owner) has a FIFO queue; a free thread takes the next job from
+    the user at the front of the line, who then goes to the back. So a user's frame waits
+    behind at most one job per other busy user, not behind every frame they have queued: one
+    user's crafted frames, or several users' together, slow live meetings in proportion to the
+    number of users, never to the number of frames. A job whose caller was cancelled (socket
+    closed) before it started is skipped. Thread-safe and loop-agnostic: every caller's own
+    event loop gets its result."""
+
+    def __init__(self, workers: int, name: str) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
+        self._workers = workers
+        self._busy = 0
+        # Users with waiting jobs, the next to be served first (dicts keep insertion order).
+        self._queues: dict[Hashable, deque[tuple[Callable[[], Any], asyncio.Future[Any]]]] = {}
+        self._lock = threading.Lock()
+
+    async def run(self, user: Hashable, fn: Callable[..., T], *args: Any) -> T:
+        """Run ``fn(*args)`` on the pool in ``user``'s turn; its result or exception."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[T] = loop.create_future()
+        with self._lock:
+            self._queues.setdefault(user, deque()).append((lambda: fn(*args), fut))
+        queued = time.perf_counter()
+        self._next()
+        try:
+            return await fut
+        finally:
+            # Time spent waiting for a thread plus the work: how hard users contend.
+            metrics.observe("screen.cpu_wait", (time.perf_counter() - queued) * 1000)
+
+    def _next(self) -> None:
+        while True:
+            with self._lock:
+                if self._busy >= self._workers or not self._queues:
+                    return
+                user = next(iter(self._queues))
+                queue = self._queues.pop(user)
+                call, fut = queue.popleft()
+                if queue:
+                    self._queues[user] = queue  # back of the line
+                if fut.cancelled():
+                    continue
+                self._busy += 1
+            self._pool.submit(self._call, call, fut)
+
+    def _call(self, call: Callable[[], Any], fut: asyncio.Future[Any]) -> None:
+        try:
+            try:
+                result, error = call(), None
+            except Exception as exc:
+                result, error = None, exc
+            _settle(fut, result, error)
+        finally:
+            with self._lock:
+                self._busy -= 1
+            self._next()
+
+
+def _settle(fut: asyncio.Future[Any], result: Any, error: Exception | None) -> None:
+    """Hand a job's outcome to the loop its caller waits on (futures aren't thread-safe)."""
+
+    def done() -> None:
+        if fut.cancelled():
+            return
+        if error is not None:
+            fut.set_exception(error)
+        else:
+            fut.set_result(result)
+
+    try:
+        fut.get_loop().call_soon_threadsafe(done)
+    except RuntimeError:
+        pass  # the caller's loop is closed: nobody is waiting for this result
+
+
 # Caption parsing and merging are CPU work on attacker-shaped input; they get their own two
 # threads so a flood of crafted frames queues here, not ahead of every store write in the
-# default pool that the rest of the api shares.
-CPU_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="screen-cpu")
+# default pool that the rest of the api shares. Jobs take turns by user (XERK-2737).
+CPU_POOL = FairPool(workers=2, name="screen-cpu")
 
 
 class AccountGone(Exception):
@@ -78,6 +162,8 @@ class MeetingTracker:
     ) -> None:
         self.household = household
         self.owner = owner
+        # Whose turn this window's CPU work waits for on the shared pool (XERK-2737).
+        self.user = (household, owner)
         self.meta = meta
         self.store = store
         self.account_exists = account_exists
@@ -180,12 +266,11 @@ class MeetingTracker:
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
-        loop = asyncio.get_running_loop()
         if (
             self.meta.platform == "teams"
             and self.merger is not None
             and not any(b.has_header and (b.speaker or b.avatar) for b in blocks)
-            and not await loop.run_in_executor(CPU_POOL, self.merger.knows_any, blocks, ts)
+            and not await CPU_POOL.run(self.user, self.merger.knows_any, blocks, ts)
         ):
             # No header the roster or an avatar vouches for, and re-reading no recent line:
             # not the panel but other text in the band, a slide mid-meeting whose headings
@@ -218,7 +303,7 @@ class MeetingTracker:
             # else starts no meeting. Otherwise they were re-stored as a second conversation.
             merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
-        segments = await loop.run_in_executor(CPU_POOL, merger.feed, blocks, ts)
+        segments = await CPU_POOL.run(self.user, merger.feed, blocks, ts)
         if self.merger is not None and self._fed_ts is not None:
             # The time between snapshots the merger sees decides its dropped-frame rules (a
             # Teams entry is revised in place only within 3 s, XERK-2717): measure it, per
