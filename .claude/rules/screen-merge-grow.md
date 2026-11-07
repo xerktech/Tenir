@@ -121,13 +121,16 @@ paths:
       by chance ("right we check" / "We check it now...") passed and was blanked (QA). Accepted:
       a merge that drops a leading filler ("um so we" -> "So we") keeps the draft, as main.
     - Refusing the growth instead (XERK-2728) left the row unpaired and re-stored the box.
+    - Not handled: the entry as the bottom (live) block, another block above it: rows 2.. are
+      stored twice, and some shapes re-store the box (as main; XERK-2746).
     - Accepted, as `_reflow`: the old layout coming back after the merge confirmed re-stores a
       blanked row as new, after the next speaker (QA flicker fuzz; Teams doesn't revert).
-    - Measured vs main (bf25140), per seed: `_simulate`, `_simulate_teams`, kit tf.py identical;
-      kit x2701 fz.py Teams fewer extra words on 4 seeds, none worse; QA kit x2734 af*.py no
+    - Measured vs main (ce18657), per seed: `_simulate`, `_simulate_teams`, kit tf.py identical;
+      kit x2701 fz.py Teams fewer extra words on 5 seeds, none worse; QA kit x2734 af*.py no
       seed loses a said word (af2 counts a dropped filler, or a one-frame entry main's copies
-      masked, as lost: 3 seeds); af merge kind 46/300 seeds fewer extra words.
+      masked, as lost: 3 seeds); af merge kind 47/300 seeds fewer extra words.
     - Tests: `test_an_entry_rewritten_from_two_rows_into_one_is_stored_once`,
+      `test_an_entry_rewritten_from_three_rows_into_one_blanks_both_rows_it_merged`,
       `test_a_merged_row_aligned_to_the_entrys_second_row_still_merges_it`,
       `test_a_growth_in_front_of_an_entrys_row_blanks_no_row_it_did_not_merge`.
   - A row reading another known line exactly is never growth of the line it misreads (as

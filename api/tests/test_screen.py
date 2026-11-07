@@ -3668,6 +3668,16 @@ def test_an_entry_rewritten_from_two_rows_into_one_is_stored_once() -> None:
 _CY = blk("Cy", "Okay.")
 
 
+def test_an_entry_rewritten_from_three_rows_into_one_blanks_both_rows_it_merged() -> None:
+    """XERK-2734 over three rows: the merged row claims every row above the one it grew, so
+    the middle row is blanked too, not left stored beside the merged text (QA mutant)."""
+    stored, _ = _entry_run(
+        [([blk("Bo", "so we check", "the cluster", "and deploy it"), _CY], 5),
+         ([blk("Bo", "So we check the cluster and deploy it."), _CY], 6)]
+    )
+    assert stored == [("Bo", "So we check the cluster and deploy it."), ("Cy", "Okay.")]
+
+
 @pytest.mark.parametrize(
     "between",
     [[], [([_CY], 1)], [([blk("Bo", "we should ship", "the build on friday"), _CY], 1)]],
