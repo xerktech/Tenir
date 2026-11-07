@@ -69,7 +69,7 @@ paths:
       noise (60% drops half). Half the rate dropped frames at 1 fps. One user's 8 crafted
       windows: ~0.2-0.3 s CPU a second (was ~8). Raising
       `screen_meeting_fps` needs the rate scaled. Retune from `screen.merge_cpu.<platform>`.
-    - Accepted: several users' device tokens together can still fill the pool.
+    - Several users' tokens together: `CPU_POOL` serves users in turn (XERK-2737).
     - Accepted: one window's clock (up to +60 s) stalls the refill for the user's others.
     - Tests: `test_crafted_caption_frames_spend_at_most_the_windows_work_budget`,
       `test_a_frame_over_budget_mid_alignment_changes_nothing`,
@@ -162,25 +162,37 @@ paths:
       Tests: `test_a_grown_entrys_wrapped_row_is_stored_before_the_next_entry`,
       `test_lines_after_a_wrapped_row_keep_unique_increasing_starts`,
       `test_making_room_never_moves_or_re_emits_a_carried_line` (carried lines are skipped).
-  - A rewrite onto fewer rows than the draft blanks the draft lines no row claims whose words
-    (`_REVISED` of them) its rows took, after the first claimed one (`_claims`, XERK-2739):
-    "so we need to" / "check the cluster" -> one row claimed only the first; the rest stored twice.
-    - Only unshown draft lines are candidates, so a real next row still on screen is never blanked.
-    - Only an unbroken run below the claims: a draft row the rewrite didn't take (a fixed typo)
-      stops it. Her next entry repeating the fixed words ("to tst first" / "to test first"),
-      OCR-missed on the re-lay frame, paired with the rewrite instead and was blanked for good
-      (QA), whether in its own block or read into this one (avatar missed, so a `_Line.head`
-      stop missed it; that stop then guarded nothing more and was dropped).
-    - Only the accepted revision blanks (`p == len(cands)`), and only lines `_REVISED` taken.
-    - Accepted: a draft line the rewrite dropped (a stutter) stays stored.
-    - Measured per seed vs main: Zoom `_simulate` (4000 runs) identical; `_simulate_teams` 2/400
-      seeds differ, each storing fewer words twice and losing none.
-    - Tests: `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
-      `test_a_row_a_rewrite_dropped_is_kept`,
-      `test_a_re_lay_onto_fewer_rows_blanks_rows_below_a_second_claimed_row`,
+  - A rewrite with fewer rows than its draft (rows joined, stutters dropped) drops each draft
+    line no row claimed whose every word the claiming rows hold (`_claims` `folded`, XERK-2701):
+    blanked like `_reflow`'s stale lines. A draft line with a word the rows lack stays.
+    - Held one frame (`_fold_held`): dropped when the next frame doesn't show the draft line.
+    - On the drop, the claiming lines open the rewritten-row window (`rewrite_until`): with
+      the draft row gone, later reads align onto them and keep their text, so a misread
+      rewrite read on 1 or 2+ frames was stored for good (two QA rounds). Main revised it.
+      Accepted, as for any rewritten row: two identical misreads right after the drop are
+      stored (main kept the right text plus the duplicate row).
+    - No check that the claiming lines are seen on the drop frame: a frame missing her block
+      (another speaker only, scrolled, empty) then still takes the fold, and the rewrite seen
+      again is stored once. Accepted: if the draft itself comes back after such a frame (a
+      reverted rewrite), it is stored again, out of order (QA sc15 `v1_C_then_D`).
+      Tests: `test_a_fold_is_taken_over_a_frame_showing_only_another_speaker`,
+      `test_two_like_misreads_long_after_a_fold_are_not_taken` (the window's end).
+    - Tests also: `test_a_jittered_read_right_after_a_fold_is_never_stored`,
+      `test_a_draft_row_shown_again_is_never_folded`.
+    - Only with a revision that stands: `_revisions` voids folds with its claims (`p`).
+    - Tests: `test_a_rewrite_with_fewer_rows_than_its_draft_drops_the_folded_row`,
+      `test_a_rewrite_keeps_a_draft_row_whose_words_it_does_not_hold`,
+      `test_a_garbled_rewrite_frame_is_not_kept_by_the_fold`,
+      `test_no_draft_row_is_folded_when_the_rewrite_revises_nothing`.
+    - Re-lay onto one row starting with the head's words (XERK-2739) and the speaker's next entry
+      repeating the fixed words while OCR-missed (own block, or read into this one with its
+      avatar missed: its words pair with the rewrite, never blank it). Tests:
+      `test_an_entry_re_laid_onto_one_row_blanks_its_later_rows`,
       `test_the_speakers_next_entry_ocr_missed_during_a_re_lay_is_never_blanked`,
       `test_the_next_entry_read_into_the_block_during_a_re_lay_is_never_blanked`,
-      `test_a_refused_rewrite_blanks_nothing`, `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.
+      `test_a_re_lay_onto_fewer_rows_blanks_rows_below_a_second_claimed_row`,
+      `test_a_row_a_rewrite_dropped_is_kept`, `test_a_refused_rewrite_blanks_nothing`,
+      `test_a_draft_row_the_rewrite_took_one_word_of_is_kept`.
   - Measured (1000 seeds, vs. before): clean, noise and 30% drops unchanged; noise + drops
     389 dup runs (409), 118 lines lost (113). `_simulate` is Zoom-only: it can't show rewrites.
   - Tests: `test_a_rewritten_teams_entry_is_stored_once` (real pairs from a 2026-11-04 meeting),
@@ -258,19 +270,67 @@ paths:
     misread on every frame, so two frames agreeing isn't enough (QA). Doubled words and "a"
     inside a longer run are kept: refusing them lost a second growth main stored (QA).
     Accepted: a word OCR doubles on every frame ("the the") is stored.
+  - A thin stroke read twice ("ll", "ii") is a stray glyph pair too (`_spoken`, XERK-2728).
+    Never widen it to vowel-less pairs: "PM", "Dr", "vs", "mm" are speech (QA). Test:
+    `test_a_two_letter_word_inserted_mid_entry_is_stored`.
   - Applied after `_reflow` (`_apply_grows`), and only while the row's block's other rows and
     the speaker's rows right above/below read as their lines: else it is a re-flow or rewrite
     (within a block or across her entries), and taking the row alone stored the moved words
     twice (QA). Checking only for the moved words missed a word inserted beside them.
+  - A neighbour counts as changed only when it lost a word the row adds (XERK-2728): a word
+    re-flows only off a row that lost it. Counting any change refused real growth for good
+    when both entries grew in one frame, or the neighbour was jittered on one frame, misread
+    on every frame ("on fridav") or re-punctuated. Test:
+    `test_a_neighbour_changing_without_losing_the_added_words_does_not_refuse_a_growth`.
+    - An adjacent neighbour whose edge word facing the row changed counts too, but only when
+      the row gained a word on that side: a misaligned or reworded row never shows the moved
+      word itself (`_simulate_teams` seed 61). Tests:
+      `test_a_reworded_word_moving_across_the_break_between_entries_is_not_growth`,
+      `test_a_word_moved_within_an_entry_is_not_growth` (the multiset check's only pin).
+      - Never on the facing edge change alone: one jittered frame of it ("tben") refused a
+        real insertion for good and lost words in all three fuzzers (QA). Accepted: a word
+        reworded as it moves and landing mid-row ("and tomorrow test it") is taken. Test:
+        `test_one_jittered_frame_of_a_neighbours_facing_word_does_not_refuse_a_growth`.
+    - A gain at the row's start is refused when the entry's row above is off screen (the
+      crop's header-less top row) or, in the same block, reads as no known line (rewritten):
+      the neighbour check can't see the loss, and the moved words were stored twice (QA).
+      Accepted: a real word Teams adds at the crop top row's start is lost. A mid-row
+      insertion there is kept. Tests:
+      `test_words_moved_down_from_a_row_off_the_crop_are_not_growth`,
+      `test_a_word_moved_off_a_row_rewritten_past_recognition_is_not_growth` (fz seed 103),
+      `test_a_word_inserted_mid_row_on_the_crops_top_row_is_stored`.
+    - Not a block's top row whose line wasn't its entry's first (rows merged into it): that
+      refusal left the row unpaired and re-stored the box (QA fz seed 176). Accepted: such a
+      merge with steady neighbours is taken as growth, its first row's words stored twice, as
+      on main (XERK-2734: needs a rewrite claiming both lines). QA's hand repro is still
+      refused (`test_an_entry_merging_its_rows_into_its_last_is_not_growth`); fz seed 190 isn't.
+    - Measured per seed vs main (c6669c5): Zoom `_simulate` (1000 seeds, 4 modes) and fz.py
+      zoom identical, kit zf.py one seed better; `_simulate_teams` (200) lost 143 -> 104,
+      stored twice 139 -> 139; `noise=0.2` lost 175 -> 130, twice 1350 -> 1340. Kit x2701
+      fz.py teams (200 x 12): extra falls or holds on every mode, lost never rises; one
+      seed worse (190, the XERK-2734 merge, +6). Kit x2716 tf.py: lost falls on every mode; ~18/2400 seeds score a
+      word or two more "extra", each traced to a real growth main lost that its word
+      alignment misplaces (seeds 89, 124, 51), or a noise-garbled row main's block re-flow
+      happened to rewrite a frame later (late/0.2/8 seed 75). fz "extra" up is real
+      duplication; tf "extra" up was mostly the scorer (QA).
   - A read refused so is refused for good (`_Line.grow_refused`), from its first frame: only
     waiting let it land once the changed entry scrolled off (QA). Accepted: if that entry is
     OCR-missed on exactly the frames the word moves, nothing shows the re-flow.
   - A row with no known line (the live entry's new bottom row, a glitch) counts as unchanged:
     counting it refused real insertions for good (QA: Teams-sim words lost 143 -> 185).
-  - Accepted: a rewrite with fewer words ("green done now." -> "green.") keeps the draft.
-  - Pre-existing, kept: a matched stored line growing by whole words within `_EXTEND_MS`
-    extends on one frame (any line, not only the newest); waiting delayed a line finalized
-    by the next block and broke `test_extended_line_never_ends_before_it_starts`.
+  - Accepted: a rewrite with fewer words ("green done now." -> "green.") keeps the draft, so
+    an entry gaining a word on one frame and dropping another later keeps the dropped one.
+  - A matched stored line growing by whole words within `_EXTEND_MS` extends on one frame
+    (any line), unless the added words are the leading words the row below just lost, or are
+    all 1-char on a line the speaker has said on from (`_moved_up`, XERK-2701): those were
+    stored for good ("today" twice, "notes l"). Her newest line takes "I"/"5" at once:
+    `_inserted` refuses 1-char growth on every frame, so refusing it there lost it (QA).
+    - Not "only the speaker's newest line": Zoom with dropped frames completes a line on the
+      one frame it shows it after her next line appeared; 26/1000 noise+drop seeds lost words.
+    - Tests: `test_one_frame_of_a_stray_glyph_on_a_matched_stored_entry_is_never_stored`,
+      `test_a_word_re_flowing_up_from_the_next_row_is_not_stored_twice`,
+      `test_a_speakers_newest_line_still_takes_a_one_char_last_word`,
+      `test_growth_matching_another_speakers_unchanged_row_below_is_taken`.
   - A row reading another known line exactly is never growth of the line it misreads (as
     XERK-2719's `_grew_over_twin`): growing it copied that line (`test_a_row_reading_another_line_exactly_is_not_revised_into_it`).
   - Measured vs main (d386ad0): `_simulate_teams` (200 seeds) words lost 236 -> 143 (stored
