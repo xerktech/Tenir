@@ -309,6 +309,41 @@ paths:
     `test_a_finished_entry_reflowing_above_the_next_speaker_is_stored_once`,
     `test_a_middle_row_missed_while_the_bottom_row_grows_is_kept`,
     `test_a_line_the_ocr_missed_between_rows_is_kept`.
+- Teams re-lays the bottom (live) entry onto fewer rows (XERK-2746); `_merged_above` covers
+  a block below it (XERK-2734).
+  - The bottom row re-reading its line with the entry's rows below merged in folds those lines
+    (`_merged_below`, as `_claims` folds: dropped a frame later unless shown again). The live
+    line takes the merged text in `_update`; nothing claimed the rows below, so they stayed.
+  - Only when the line took the row's text, and the row holds every word of the line then of
+    each folded line, in order. At `_REVISED` coverage words the row lacked were lost for good
+    (QA: "prod", "quickly"; a re-flowed row's "check" OCR-missed). The line losing a word is a
+    re-flow (`_reflow`'s): folding there lost the word moved up (`_simulate_teams` seed 32).
+    Accepted: a re-lay that rewords or drops a filler keeps the row below, as before.
+  - The line and the folded lines must be consecutive rows of the last frame: a bottom row
+    paired with an older line it starts like ("itself.") folded the live row (seed 191, 0.2).
+    Accepted: one frame of OCR missing a row right before the re-lay keeps it, as before.
+  - The same-speaker check is defensive: another speaker's header finalizes the line above
+    it, so that line can't grow over their row.
+  - `_claims` coverage counts a stutter ("so so so") once: a stored entry re-laid without its
+    repeats failed coverage and the whole box was stored again.
+  - A header run's rows above its first claim stay new rows (placed above) when the draft was
+    seen within `_SAID_BETWEEN_MS` (`_claims(lead=)`): Teams added words on a row above the
+    entry's first. At 1 fps a line and a repeat of the next can't both be said between
+    frames; after dropped frames [okay, sounds good] over a known "sounds good" is two lines.
+  - Measured per seed vs main (e7131ea): Zoom `_simulate` (4 x 1000) 30 noise+drop seeds
+    differ, none worse by line counts: duplicate lines 66 -> 31, lost 22 -> 22 (QA saw two
+    keep main's misordered copy instead of the placed one). `_simulate_teams` (200): noise 0
+    identical totals; 0.2 extra/lost words 1303/111 -> 1222/109; no seed worse.
+  - Tests: `test_an_entry_re_laid_onto_its_bottom_row_is_stored_once`,
+    `test_a_row_below_with_a_word_the_bottom_row_lacks_is_never_folded`,
+    `test_a_row_added_above_an_entrys_first_row_is_stored_before_it_once`,
+    `test_an_entry_grown_at_its_start_then_re_laid_above_another_is_stored_once`,
+    `test_a_row_above_a_repeat_after_dropped_frames_is_a_line_said_between_them`,
+    `test_a_bottom_row_growing_other_words_keeps_the_row_ocr_missed_below_it`,
+    `test_a_row_the_bottom_line_did_not_take_is_never_folded`,
+    `test_one_frame_reading_two_rows_as_one_blanks_neither`,
+    `test_a_fold_never_takes_a_reflow_or_an_older_line`,
+    `test_another_speakers_entry_is_never_folded_into_the_bottom_row` (no gate pin).
 - Growth of stored Teams entries (`_grow`, `_apply_grows`, `_merged_above`; XERK-2721,
   XERK-2734): see `screen-merge-grow.md`.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):

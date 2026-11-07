@@ -5470,3 +5470,113 @@ def test_a_carried_entry_read_under_another_name_is_never_re_attributed() -> Non
     for t in range(66, 70):
         m2.feed([blk("Ana", "we ship today"), blk("Cy", "ok")], t * 1000)
     assert _once(old) == [("Bob", "we ship today"), ("Cy", "ok")]
+
+
+# XERK-2746: Teams re-lays the bottom (live) entry onto fewer rows.
+_CY = blk("Cy", "Okay.")
+_TWO_ROWS = blk("Bo", "so we need to", "check the cluster")
+_ONE_ROW = blk("Bo", "So we need to check the cluster.")
+_STUTTER = blk("Bo", "so or what like so so so like itself", "cluster logs build")
+_STUTTER_ONE_ROW = blk("Bo", "So or what itself cluster logs build.")
+
+
+@pytest.mark.parametrize("shown_for", [4, 5])
+@pytest.mark.parametrize(
+    ("draft", "merged"), [(_TWO_ROWS, _ONE_ROW), (_STUTTER, _STUTTER_ONE_ROW)], ids=["plain", "stutter"]
+)
+def test_an_entry_re_laid_onto_its_bottom_row_is_stored_once(
+    draft: CaptionBlock, merged: CaptionBlock, shown_for: int
+) -> None:
+    """XERK-2746: the bottom row took the merged text (the live line, or a stored one
+    re-read as its rewrite) and nothing claimed the entry's rows below it: the second row was
+    stored beside it, or the whole box again (Cy's "Okay." twice) when a stutter Teams
+    dropped failed the rewrite's word coverage."""
+    stored, _ = _entry_run([([_CY, draft], shown_for), ([_CY, merged], 6)])
+    assert stored == [("Cy", "Okay."), ("Bo", merged.lines[0])]
+
+
+def test_a_row_added_above_an_entrys_first_row_is_stored_before_it_once() -> None:
+    """XERK-2746: Teams adds words at the start of Bo's entry, on a row above the one shown.
+    A claim had to start at a run's first row, so the box was stored again. At 1 fps a line
+    and a repeat of the next one can't both be said between frames: the row is new, stored
+    before the entry's line."""
+    stored, _ = _entry_run([([blk("Bo", "check the cluster"), _CY], 4), ([_TWO_ROWS, _CY], 5)])
+    assert stored == [("Bo", "so we need to"), ("Bo", "check the cluster"), ("Cy", "Okay.")]
+
+
+def test_an_entry_grown_at_its_start_then_re_laid_above_another_is_stored_once() -> None:
+    """XERK-2746's third shape: with the row added above stored before the entry's line, the
+    re-lay onto one row is XERK-2734's merge: one line for Bo's entry, Cy once."""
+    stored, _ = _entry_run(
+        [([blk("Bo", "check the cluster"), _CY], 4), ([_TWO_ROWS, _CY], 4), ([_ONE_ROW, _CY], 6)]
+    )
+    assert stored == [("Bo", "So we need to check the cluster."), ("Cy", "Okay.")]
+
+
+def test_a_row_above_a_repeat_after_dropped_frames_is_a_line_said_between_them() -> None:
+    """XERK-2746's gate: only a draft seen on the last frames may be claimed below a new row.
+    After dropped frames [okay, sounds good] over a known "sounds good" is two new lines."""
+    stored, _ = _entry_run(
+        [([blk("Bo", "sounds good")], 4), (None, 4), ([blk("Bo", "okay", "sounds good")], 5)]
+    )
+    assert stored == [("Bo", "sounds good"), ("Bo", "okay"), ("Bo", "sounds good")]
+
+
+def test_a_bottom_row_growing_other_words_keeps_the_row_ocr_missed_below_it() -> None:
+    """XERK-2746's gate: the rows below fold into the bottom row only when it holds their
+    words; a row OCR stopped reading while the line above grew other words is kept."""
+    stored, _ = _entry_run(
+        [([_CY, _TWO_ROWS], 4), ([_CY, blk("Bo", "so we need to restart it now")], 6)]
+    )
+    assert ("Bo", "check the cluster") in stored
+
+
+@pytest.mark.parametrize(
+    ("draft", "merged", "kept"),
+    [
+        # Teams's re-lay (or OCR) lacks two of the row's words.
+        (["so we need to", "check the prod cluster quickly"], "So we need to check the cluster.",
+         "check the prod cluster quickly"),
+        # A re-flowed row's new bottom row OCR-missed: "check" lives only in the row.
+        (["so we", "need to check"], "so we need to", "need to check"),
+    ],
+)
+def test_a_row_below_with_a_word_the_bottom_row_lacks_is_never_folded(
+    draft: list[str], merged: str, kept: str
+) -> None:
+    """XERK-2746 QA: folding a row the bottom row holds most of lost the rest for good. A row
+    folds only when every one of its words is in the bottom row."""
+    stored, _ = _entry_run([([_CY, blk("Bo", *draft)], 4), ([_CY, blk("Bo", merged)], 6)])
+    assert ("Bo", kept) in stored
+
+
+def test_a_row_the_bottom_line_did_not_take_is_never_folded() -> None:
+    """XERK-2746's gate: a one-letter word is no growth of a stored line the speaker said on
+    from (``_moved_up``), so the line keeps its text; folding the row below would lose "I"."""
+    stored, _ = _entry_run([([_CY, blk("Bo", "we ship", "I")], 6), ([_CY, blk("Bo", "we ship I")], 6)])
+    assert ("Bo", "I") in stored
+
+
+def test_another_speakers_entry_is_never_folded_into_the_bottom_row() -> None:
+    """XERK-2746: Cy's line below Bo's is never folded into Bo's row. (The speaker check in
+    ``_merged_below`` is defensive: Cy's header finalizes Bo's line, so it can't grow.)"""
+    stored, _ = _entry_run(
+        [([blk("Bo", "so we need to"), blk("Cy", "check the cluster")], 2),
+         ([blk("Bo", "so we need to check the cluster")], 6)]
+    )
+    assert ("Cy", "check the cluster") in stored
+
+
+def test_one_frame_reading_two_rows_as_one_blanks_neither() -> None:
+    """XERK-2746: a fold is taken a frame late, once the next frame doesn't show the row
+    either. One frame of OCR reading both rows as one box blanks nothing."""
+    stored, _ = _entry_run([([_CY, _TWO_ROWS], 4), ([_CY, _ONE_ROW], 1), ([_CY, _TWO_ROWS], 5)])
+    assert ("Bo", "check the cluster") in stored
+
+
+@pytest.mark.parametrize(("seed", "noise"), [(32, 0.0), (191, 0.2)])
+def test_a_fold_never_takes_a_reflow_or_an_older_line(seed: int, noise: float) -> None:
+    """XERK-2746: ``_merged_below`` lost a word on these seeds (main lost none). Seed 32: the
+    line lost a word moved up onto the row above (a re-flow, ``_reflow``'s). Seed 191: the
+    bottom row paired with an older line it starts like, not the row above the folded one."""
+    assert _simulate_teams(seed, noise=noise)[2] == 0
