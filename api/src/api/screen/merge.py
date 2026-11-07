@@ -891,7 +891,6 @@ class CaptionMerger:
             edge = -1 if k < i else 0  # the neighbour's side facing this row
             return kw[edge:][:1] == sw[edge:][:1] or now[-1 - edge :][:1] == was[-1 - edge :][:1]
 
-
         for line, row, confirmed in self._grows:
             if not any(ln is line for ln in self._lines):
                 continue  # ``_reflow`` dropped the line
