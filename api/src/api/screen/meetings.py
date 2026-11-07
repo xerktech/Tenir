@@ -24,7 +24,7 @@ from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen import turma
-from api.screen.merge import CaptionMerger, _Line
+from api.screen.merge import CaptionMerger, MergeBudget, OverBudget, _Line
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
 log = logging.getLogger("api.screen")
@@ -189,6 +189,10 @@ class MeetingTracker:
         self._fed_ts: int | None = None
         # The stored lines of the meeting that last ended here (XERK-2615), see on_caption.
         self._ended_lines: list[_Line] = []
+        # Alignment work this window may spend (XERK-2730), shared by all its mergers: after a
+        # meeting ends each frame gets a fresh one, and a bucket each refilled per frame (QA).
+        # ``ScreenMeetings.put`` swaps in its user's, shared by all their windows.
+        self.budget = MergeBudget()
         self.last_caption_ms = 0
         self._last_blocks: list[CaptionBlock] = []
         self.last_ts = 0
@@ -272,6 +276,15 @@ class MeetingTracker:
             )
 
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
+        try:
+            await self._on_caption(blocks, ts)
+        except OverBudget:
+            # The merger's CPU bucket ran dry (XERK-2730): a crafted frame costs difflib
+            # seconds on the shared CPU_POOL. Dropped like a frame latest-frame-wins skipped;
+            # the merger is unchanged and the next snapshot re-reads the box.
+            metrics.incr(f"screen.caption_over_budget.{self.meta.platform}")
+
+    async def _on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
         if (
@@ -294,10 +307,6 @@ class MeetingTracker:
             and not any(b.has_header for b in blocks)
             and blocks == self._last_blocks
         )
-        self._last_blocks = blocks
-        if not stale:
-            self.last_caption_ms = ts
-        self._caption_seen_ms = ts
         if self.active:
             for b in blocks:
                 if b.has_header and b.speaker and b.speaker != self.active:
@@ -309,10 +318,24 @@ class MeetingTracker:
             # A panel left on screen past the end timer (a break) still shows the ended
             # meeting's lines (XERK-2615): they align as known, and a crop holding nothing
             # else starts no meeting. Otherwise they were re-stored as a second conversation.
-            merger = CaptionMerger(start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines)
+            merger = CaptionMerger(
+                start_ms=ts, stable_ms=self.stable_ms, carried=self._ended_lines, budget=self.budget
+            )
         # Off the event loop: the alignment is CPU work, and a slow one stalled every socket.
-        segments = await CPU_POOL.run(self.user, merger.feed, blocks, ts)
-        if self.merger is not None and self._fed_ts is not None:
+        try:
+            segments = await CPU_POOL.run(self.user, merger.feed, blocks, ts)
+        finally:
+            # Merge CPU per snapshot, to retune merge.py's budget from real meetings.
+            metrics.observe(f"screen.merge_cpu.{self.meta.platform}", merger.last_cpu_ms)
+        # Only a frame the merger took holds the meeting open: one refused for its cost
+        # (``OverBudget``) is dropped like one latest-frame-wins skipped (XERK-2730).
+        self._last_blocks = blocks
+        if not stale:
+            self.last_caption_ms = ts
+        self._caption_seen_ms = ts
+        # A zero gap is no gap: ``clock`` holds ts flat while a client's clock runs ahead of
+        # the last frame, and those zeros filled the shared percentiles (XERK-2701).
+        if self.merger is not None and self._fed_ts is not None and ts > self._fed_ts:
             # The time between snapshots the merger sees decides its dropped-frame rules (a
             # Teams entry is revised in place only within 3 s, XERK-2717): measure it, per
             # platform, from real meetings rather than modelling it (XERK-2722). Only after
@@ -405,8 +428,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# Ended meetings' lines kept for windows whose tracker was dropped (see ScreenMeetings).
+# Ended meetings' lines kept for windows whose tracker was dropped (see ScreenMeetings), and
+# the users whose alignment-work buckets are kept.
 _MAX_CARRIES = 1000
+# A user's bucket holds this many windows' worth (merge._WORK_PER_S): two dense meetings at once.
+_USER_WORK = 2
 
 
 class ScreenMeetings:
@@ -419,14 +445,24 @@ class ScreenMeetings:
         # on screen, and a fresh tracker without them re-stored it as a second conversation.
         # Capped, oldest out: keys come from device-token clients.
         self._carries: dict[tuple[str, str, str], list[_Line]] = {}
+        # One alignment-work bucket per user (XERK-2730), across their windows and sockets: a
+        # device token feeds up to MAX_WINDOWS windows per socket into the shared 2-thread
+        # CPU_POOL, and a bucket per window let one token take most of it. Capped, oldest out.
+        self._budgets: dict[tuple[str, str], MergeBudget] = {}
 
     def get(self, key: tuple[str, str, str]) -> MeetingTracker | None:
         return self._trackers.get(key)
 
     def put(self, key: tuple[str, str, str], tracker: MeetingTracker) -> MeetingTracker:
         kept = self._trackers.setdefault(key, tracker)
-        if kept is tracker and (lines := self._carries.pop(key, None)) is not None:
-            tracker._ended_lines = lines
+        if kept is tracker:
+            if (lines := self._carries.pop(key, None)) is not None:
+                tracker._ended_lines = lines
+            user = (key[0], key[1])
+            tracker.budget = self._budgets.pop(user, None) or MergeBudget(_USER_WORK)
+            self._budgets[user] = tracker.budget  # most recently used last
+            while len(self._budgets) > _MAX_CARRIES:
+                del self._budgets[next(iter(self._budgets))]
         return kept
 
     def _drop(self, key: tuple[str, str, str], tracker: MeetingTracker) -> None:
@@ -477,6 +513,7 @@ class ScreenMeetings:
     def clear(self) -> None:
         self._trackers.clear()
         self._carries.clear()
+        self._budgets.clear()
 
 
 meetings = ScreenMeetings()
