@@ -1128,6 +1128,27 @@ def test_the_gap_between_snapshots_fed_to_a_meeting_is_metered() -> None:
     asyncio.run(run())
 
 
+def test_a_clock_held_flat_meters_no_zero_gaps() -> None:
+    """XERK-2701: a client clock running ahead makes ``clock`` hold ts flat, and each frame
+    then pushed a 0 ms gap into the shared percentiles."""
+
+    async def run() -> None:
+        metrics.reset()
+        t = _tracker(InMemoryConversationStore())
+        # Frames stamped behind the last one (400, 700): the tracker's clock holds them at 1000.
+        for ts, text in (
+            (0, "hello there"),
+            (1000, "hello there friend"),
+            (400, "hello there friend of"),
+            (700, "hello there friend of mine"),
+        ):
+            await t.on_caption([blk(None, text, header=False)], t.clock(ts))
+        gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
+        assert (gap["count"], gap["p50_ms"]) == (1, 1000)
+
+    asyncio.run(run())
+
+
 def test_a_frame_the_merger_fails_on_is_not_a_gap(monkeypatch: pytest.MonkeyPatch) -> None:
     """XERK-2722: the gap is between snapshots the merger took; a feed that raised is skipped."""
 
@@ -1428,7 +1449,9 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
     from api.main import app
 
     _, _, _, admin = screen
-    token = device_token(admin, ttl_seconds=1)
+    # Not 1 s: ``exp`` is whole seconds, so a 1 s token could expire during the handshake
+    # itself under load, a real expiry before cleanup that flaked this test (XERK-2701).
+    token = device_token(admin, ttl_seconds=3)
 
     def gone() -> Cadence:
         raise RuntimeError("client went away")
@@ -1439,7 +1462,7 @@ def test_a_socket_that_fails_its_first_send_leaves_no_timer_or_revoker(
             ws.receive_text()
         assert screen_ws._revokers.get(admin.user_id) is None
         # A leaked timer would fire after exp and count an expiry for a dead socket.
-        time.sleep(2.1)
+        time.sleep(3.1)
     assert "screen.token_expired" not in metrics.snapshot()["counters"]
 
 
@@ -3032,6 +3055,154 @@ def test_a_one_frame_growth_of_a_stored_entry_is_never_stored() -> None:
         out += m.feed(_entries("green.", "and the notes", "for the api"), t * 1000)
     out += m.flush(20_000)
     assert [s.text for s in out] == ["green.", "and the notes", "for the api"]
+
+
+def _replay(frames: list[list[CaptionBlock]]) -> list[tuple[str | None, str]]:
+    """Feed one snapshot a second; the (speaker, text) rows stored, as last written, blank
+    ones (dropped lines) left out."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, Segment] = {}
+    for t, frame in enumerate(frames, 1):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = seg
+    for seg in m.flush((len(frames) + 2) * 1000):
+        stored[seg.segment_id] = seg
+    return [(s.speaker, s.text) for s in sorted(stored.values(), key=lambda s: s.start_ms) if s.text]
+
+
+def test_one_frame_of_a_stray_glyph_on_a_matched_stored_entry_is_never_stored() -> None:
+    """XERK-2701: a stored row above the bottom re-read once with a stray glyph ("notes l"
+    matches "and the notes" closely) was extended on that single frame and kept it."""
+    panel = _entries("green.", "and the notes", "for the api")
+    stray = _entries("green.", "and the notes l", "for the api")
+    assert _replay([panel] * 5 + [stray] + [panel] * 4) == [
+        ("Ana", "green."),
+        ("Ana", "and the notes"),
+        ("Ana", "for the api"),
+    ]
+
+
+def test_a_word_re_flowing_up_from_the_next_row_is_not_stored_twice() -> None:
+    """XERK-2701: Teams re-flows "today" up from the row below; the one-frame extension took
+    it onto the row above while the row below kept it, so it was stored twice."""
+    before = _entries("we ship the build", "today on friday")
+    after = _entries("we ship the build today", "on friday")
+    words = " ".join(text for _, text in _replay([before] * 5 + [after] * 5)).split()
+    assert words.count("today") == 1
+
+
+def test_a_rewrite_with_fewer_rows_than_its_draft_drops_the_folded_row() -> None:
+    """XERK-2694 accepted it, XERK-2701 fixes it: a rewrite joining the draft's rows into one
+    left the second draft row stored beside the final. It is re-emitted blank (no delete)."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke")]
+    final = [blk("Ana", "We did it in test first so nothing broke.")]
+    assert _replay([draft] * 4 + [final] * 5) == [
+        ("Ana", "We did it in test first so nothing broke.")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("frames", "want"),
+    [
+        # Zoom: the next speaker finalized "and so do" mid-sentence, then "I" landed.
+        (
+            [[blk("Ana", "and so do")]] * 5
+            + [[blk("Ana", "and so do I")]] * 5
+            + [[blk("Ana", "and so do I"), blk("Bo", "great")]] * 5,
+            "and so do I",
+        ),
+        # Teams: Bo's entry below finalized it; Teams then finished it with a 1-char word.
+        (
+            [[blk("Ana", "the meeting is in room")]] * 2
+            + [[blk("Ana", "the meeting is in room"), blk("Bo", "thanks.")]] * 4
+            + [[blk("Ana", "The meeting is in room 5."), blk("Bo", "thanks.")]] * 5,
+            "The meeting is in room 5.",
+        ),
+    ],
+)
+def test_a_speakers_newest_line_still_takes_a_one_char_last_word(frames, want) -> None:
+    """XERK-2701 QA: refusing 1-char growth on one frame lost "I" / "5" for good, since
+    ``_inserted`` refuses it on every frame. Only a line she has said on from refuses it."""
+    assert ("Ana", want) in _replay(frames)
+
+
+_FOLD_DRAFT = [blk("Ana", "we did it in test first so", "nothing broke")]
+_FOLD_FINAL = [blk("Ana", "We did it in test first so nothing broke.")]
+
+
+@pytest.mark.parametrize("frames", [1, 2, 3])
+def test_a_garbled_rewrite_frame_is_not_kept_by_the_fold(frames: int) -> None:
+    """XERK-2701 QA: dropping the folded draft row on the rewrite frame left the next correct
+    read aligned onto the garbled line; holding the drop a frame moved that to a misread read
+    twice. Once the row is dropped, the claiming line takes two later reads that agree."""
+    garbled = [blk("Ana", "We did it in tcst flrst so nothing broke.")]
+    stored = _replay([_FOLD_DRAFT] * 4 + [garbled] * frames + [_FOLD_FINAL] * 5)
+    assert all("tcst" not in text for _, text in stored)
+    assert ("Ana", "We did it in test first so nothing broke.") in stored
+
+
+def test_a_jittered_read_right_after_a_fold_is_never_stored() -> None:
+    """One jittered re-read ("nothinq") of the claiming line on the frame the fold is taken
+    is never stored: the rewritten-row window needs two reads that agree."""
+    jitter = [blk("Ana", "We did it in test first so nothinq broke.")]
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL, jitter] + [_FOLD_FINAL] * 5)
+    assert stored == [("Ana", "We did it in test first so nothing broke.")]
+
+
+def test_a_fold_is_taken_over_a_frame_showing_only_another_speaker() -> None:
+    """The next frame missing Ana's block (only Cy shows) still takes the fold: the rewrite
+    seen again after it is stored once. Holding the drop until the claiming line is seen
+    again kept the duplicate here (QA, accepted trade-off: a draft re-shown after such a
+    frame, a reverted rewrite, is stored again out of order)."""
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL, [blk("Cy", "ok")]] + [_FOLD_FINAL] * 5)
+    assert [t for sp, t in stored if sp == "Ana"] == ["We did it in test first so nothing broke."]
+
+
+def test_two_like_misreads_long_after_a_fold_are_not_taken() -> None:
+    """The window a fold opens closes after ``_REVISE_MS``: two identical misreads of the
+    line read later are jitter, not a rewrite."""
+    jitter = [blk("Ana", "We did it in test first so nothinq broke.")]
+    frames = [_FOLD_DRAFT] * 4 + [_FOLD_FINAL] * 34 + [jitter] * 2 + [_FOLD_FINAL] * 5
+    assert _replay(frames) == [("Ana", "We did it in test first so nothing broke.")]
+
+
+def test_a_draft_row_shown_again_is_never_folded() -> None:
+    """A draft row on screen the frame after the rewrite is real, not a stale copy."""
+    stored = _replay([_FOLD_DRAFT] * 4 + [_FOLD_FINAL] + [_FOLD_DRAFT] * 6)
+    assert ("Ana", "nothing broke") in stored
+
+
+def test_no_draft_row_is_folded_when_the_rewrite_revises_nothing() -> None:
+    """A fold counts only with the revision it belongs to: here Bo's unshown "ok" voids it
+    (the box shows the newest lines), so Ana's "nothing broke" must stay stored."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke")]
+    stored = _replay(
+        [draft] * 4
+        + [[*draft, blk("Bo", "ok")]] * 4
+        + [[blk("Ana", "We did it in test first so nothing broke.")]] * 3
+        + [[blk("Ana", "We did it in test first so nothing broke."), blk("Bo", "ok")]] * 3
+    )
+    assert ("Ana", "nothing broke") in stored
+
+
+def test_growth_matching_another_speakers_unchanged_row_below_is_taken() -> None:
+    """Only words the row below no longer starts with moved up: Bo's "today we test" still
+    reads as before, so Ana's "today" is her own growth, kept as on main."""
+    stored = _replay(
+        [[blk("Ana", "we ship the build")]] * 4
+        + [[blk("Ana", "we ship the build"), blk("Bo", "today we test")]] * 4
+        + [[blk("Ana", "we ship the build today"), blk("Bo", "today we test")]]
+        + [[blk("Bo", "today we test"), blk("Cy", "fine")]] * 4
+    )
+    assert ("Ana", "we ship the build today") in stored
+
+
+def test_a_rewrite_keeps_a_draft_row_whose_words_it_does_not_hold() -> None:
+    """Only a draft row every word of which the rewrite's rows hold is folded away."""
+    draft = [blk("Ana", "we did it in test first so", "nothing broke at all")]
+    final = [blk("Ana", "We did it in test first so nothing.")]
+    stored = _replay([draft] * 4 + [final] * 5)
+    assert ("Ana", "nothing broke at all") in stored
 
 
 def test_ocr_jitter_adding_and_garbling_words_on_a_stored_entry_is_not_stored() -> None:
