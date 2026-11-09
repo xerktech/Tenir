@@ -48,6 +48,38 @@ def write_window(root: Path, frames: list[dict], *, sized: bool = True) -> Path:
     return window
 
 
+def test_a_window_the_sampler_itself_wrote_replays_like_the_fixture(tmp_path: Path) -> None:
+    # Written by the live sampler, not by hand: its file names carry a run tag the harness once
+    # missed, so a real capture loaded as "no frame pairs".
+    from api.contract import ScreenFrameHeader
+    from api.screen import samples
+
+    samples._reset_for_tests()
+    try:
+        for f in FIXTURE["frames"]:
+            jpeg = _jpeg(f["width"], f["height"])
+            ocr = cr.load_ocr({"lines": f["lines"], "width": f["width"], "height": f["height"]}, jpeg)
+            header = ScreenFrameHeader.model_validate(
+                {
+                    "type": "screen.frame",
+                    "windowTitle": "w",
+                    "orgSiteKey": "replay",
+                    "orgName": "Replay",
+                    "platform": "teams",
+                    "ts": BASE + f["t"],
+                    "region": f["region"],
+                }
+            )
+            assert samples.save(str(tmp_path), 10_000, header, jpeg, ocr, BASE + f["t"])
+    finally:
+        samples._reset_for_tests()
+    (window,) = tmp_path.iterdir()
+    platform, frames = cr.load_window(window)
+    assert platform == "teams" and len(frames) == len(FIXTURE["frames"])
+    rows = asyncio.run(cr.replay(platform, frames)).rows
+    assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
+
+
 @pytest.mark.parametrize("sized", [True, False])
 def test_replaying_the_teams_fixture_stores_what_the_socket_stores(
     tmp_path: Path, sized: bool

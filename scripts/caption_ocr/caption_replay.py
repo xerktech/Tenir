@@ -1,8 +1,8 @@
 """Replay sampled meeting frames through the live caption path and measure what it stores.
 
 The screen sampler (``API_SCREEN_SAMPLE_DIR``, XERK-2705) keeps a window's frames as
-``<dir>/<platform>-<slug>-<hash>/<ts>-<n>-<region>.jpg`` plus a ``.json`` of the OCR read the
-API made of it. This replays one such window, in ``(ts, n)`` order, through the production
+``<dir>/<platform>-<slug>-<hash>/<ts>-<run>-<n>-<region>.jpg`` plus a ``.json`` of the OCR read
+the API made of it (``<run>`` is the writing process's tag; older files lack it). This replays one such window, in ``(ts, n)`` order, through the production
 ``MeetingTracker`` (parser, ``CaptionMerger``, meeting start/end, the deployment's
 ``API_SCREEN_*`` timings) into an in-memory store. Run it from ``api/`` (``pip install -e .``)::
 
@@ -60,7 +60,11 @@ from api.screen.ocr import (
 )
 from api.screen.zoom import CaptionPane
 
-_NAME = re.compile(r"^(?P<ts>\d+)-(?P<n>\d+)-(?P<region>caption|full)$")
+# The sampler's own names carry a per-process run tag (``samples._RUN``, 6 hex digits); the
+# merged harness once read only the untagged form and found no frames in a real capture.
+_NAME = re.compile(
+    r"^(?P<ts>\d+)-(?:(?P<run>[0-9a-f]{6})-)?(?P<n>\d+)-(?P<region>caption|full)$"
+)
 _PARSERS = {"teams": teams, "zoom": zoom}
 DUP_SHARE = 0.8  # a row is a duplicate when this share of its words is in a recent row
 DUP_MIN_WORDS = 3  # shorter rows ("Yes.", "Thanks Kunal.") are stock replies, not rewrites
@@ -356,7 +360,7 @@ def summarize(rows: list[Row]) -> dict[str, int]:
 async def run(args: argparse.Namespace) -> dict:
     platform, frames = load_window(Path(args.window))
     if not frames:
-        raise SystemExit(f"{args.window}: no <ts>-<n>-<region>.jpg/.json frame pairs")
+        raise SystemExit(f"{args.window}: no <ts>-[<run>-]<n>-<region>.jpg/.json frame pairs")
     ocr = HttpOcrClient(args.ocr, timeout=settings.ocr_timeout_seconds) if args.ocr else None
     full = await replay(platform, frames, ocr=ocr)
     rows = full.rows

@@ -43,3 +43,6 @@ paths:
   lost sync for good after 16 unmatched rows (both QA, everything after counted as lost).
 - Its chain maximises pairs first, own-speaker pairs only as the tie-break: speaker-blind it
   invented speaker changes, same-speaker-only it hid real misattribution (both QA).
+- Replay must read the sampler's own file names (`<ts>-<run>-<n>-<region>`): a hand-built test
+  window once hid a format the harness couldn't load. Keep
+  `test_a_window_the_sampler_itself_wrote_replays_like_the_fixture` writing via `samples.save`.
