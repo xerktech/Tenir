@@ -48,6 +48,70 @@ def write_window(root: Path, frames: list[dict], *, sized: bool = True) -> Path:
     return window
 
 
+def test_a_window_the_sampler_itself_wrote_replays_like_the_fixture(tmp_path: Path) -> None:
+    # Written by the live sampler, not by hand: its file names carry a run tag the harness once
+    # missed, so a real capture loaded as "no frame pairs".
+    from api.contract import ScreenFrameHeader
+    from api.screen import samples
+
+    samples._reset_for_tests()
+    try:
+        for f in FIXTURE["frames"]:
+            jpeg = _jpeg(f["width"], f["height"])
+            ocr = cr.load_ocr(
+                {"lines": f["lines"], "width": f["width"], "height": f["height"]}, jpeg
+            )
+            header = ScreenFrameHeader.model_validate(
+                {
+                    "type": "screen.frame",
+                    "windowTitle": "w",
+                    "orgSiteKey": "replay",
+                    "orgName": "Replay",
+                    "platform": "teams",
+                    "ts": BASE + f["t"],
+                    "region": f["region"],
+                }
+            )
+            assert samples.save(str(tmp_path), 10_000, header, jpeg, ocr, BASE + f["t"])
+    finally:
+        samples._reset_for_tests()
+    (window,) = tmp_path.iterdir()
+    platform, frames = cr.load_window(window)
+    assert platform == "teams" and len(frames) == len(FIXTURE["frames"])
+    rows = asyncio.run(cr.replay(platform, frames)).rows
+    assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
+
+
+@pytest.mark.parametrize("listed_reversed", [False, True])
+def test_a_window_holding_two_sampler_runs_replays_in_time_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listed_reversed: bool
+) -> None:
+    # Each process numbers its frames from 1, so the later run's n collide with the earlier
+    # run's: ordering by n before ts would interleave the two meetings' frames. The directory
+    # is listed both ways: a tie left to the filesystem's order passed on one order only (QA).
+    real_glob = Path.glob
+    monkeypatch.setattr(
+        Path, "glob", lambda self, pat: iter(sorted(real_glob(self, pat), reverse=listed_reversed))
+    )
+    window = tmp_path / "teams-replay-0123abcd"
+    window.mkdir()
+    names = ["5000-bbbbbb-00001", "1000-aaaaaa-00001", "6000-bbbbbb-00002", "2000-aaaaaa-00002"]
+    names += ["6000-aaaaaa-00002"]  # a same-millisecond tie: the run tag decides
+    for stem in names:
+        (window / f"{stem}-full.jpg").write_bytes(_jpeg(20, 10))
+        (window / f"{stem}-full.json").write_text(
+            json.dumps({"lines": [{"text": stem, "box": [0, 0, 9, 9], "score": 1.0}]})
+        )
+    _, frames = cr.load_window(window)
+    assert [f.ocr.lines[0].text for f in frames] == [
+        "1000-aaaaaa-00001",
+        "2000-aaaaaa-00002",
+        "5000-bbbbbb-00001",
+        "6000-aaaaaa-00002",
+        "6000-bbbbbb-00002",
+    ]
+
+
 @pytest.mark.parametrize("sized", [True, False])
 def test_replaying_the_teams_fixture_stores_what_the_socket_stores(
     tmp_path: Path, sized: bool
