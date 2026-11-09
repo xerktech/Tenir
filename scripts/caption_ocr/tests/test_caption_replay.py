@@ -82,9 +82,17 @@ def test_a_window_the_sampler_itself_wrote_replays_like_the_fixture(tmp_path: Pa
     assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
 
 
-def test_a_window_holding_two_sampler_runs_replays_in_time_order(tmp_path: Path) -> None:
+@pytest.mark.parametrize("listed_reversed", [False, True])
+def test_a_window_holding_two_sampler_runs_replays_in_time_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listed_reversed: bool
+) -> None:
     # Each process numbers its frames from 1, so the later run's n collide with the earlier
-    # run's: ordering by n before ts would interleave the two meetings' frames.
+    # run's: ordering by n before ts would interleave the two meetings' frames. The directory
+    # is listed both ways: a tie left to the filesystem's order passed on one order only (QA).
+    real_glob = Path.glob
+    monkeypatch.setattr(
+        Path, "glob", lambda self, pat: iter(sorted(real_glob(self, pat), reverse=listed_reversed))
+    )
     window = tmp_path / "teams-replay-0123abcd"
     window.mkdir()
     names = ["5000-bbbbbb-00001", "1000-aaaaaa-00001", "6000-bbbbbb-00002", "2000-aaaaaa-00002"]
