@@ -5029,7 +5029,9 @@ def test_zooms_real_avatar_astride_the_name_and_its_text_starts_a_meeting(name: 
     ocr, _ = frame
     groups = zoom.row_groups(ocr.lines)
     (_, y0, _, y1), (_, by0, _, by1) = groups[1][0].box, groups[2][0].box
-    real = _with_disc(frame, y1 + 5, 26)  # 26 px across, as on the real panel's 20 px font
+    # Real crops centre it 0.1-0.22 of the text row's height past the rows' gap midpoint; the
+    # fixture's gap is wider, so a bigger disc reaches up to overlap the name as there (QA).
+    real = _with_disc(frame, (y1 + by0) / 2 + 0.2 * (by1 - by0), 32)
     px = zoom._grey_pixels(real, ocr, groups)
     assert px is not None and zoom._has_avatar(px, groups[1], groups[2]) is True
     assert parse_caption_crop(ocr, Roster(), jpeg=real) != []
