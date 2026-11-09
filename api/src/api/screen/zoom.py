@@ -510,8 +510,12 @@ def parse_caption_crop(
     if px is None or dim is None:
         return blocks
     vouched = any(
-        row in dim_names and (is_name_like(_name_form(row)) or _has_avatar(px, group))
-        for row, group in zip(rows, groups, strict=True)
+        row in dim_names
+        and (
+            is_name_like(_name_form(row))
+            or _has_avatar(px, group, groups[i + 1] if i + 1 < len(groups) else None)
+        )
+        for i, (row, group) in enumerate(zip(rows, groups, strict=True))
     )
     return blocks if vouched else []
 
@@ -590,22 +594,40 @@ def _grey_pixels(
 
 # Zoom's avatar circle: grey distance from the panel that counts as its ink, how far left of
 # the name it may sit (name heights), its height range (name heights), and the share of the
-# search column's width a y line needs lit to count. The real panel (2026 capture) draws a
-# filled circle left of the name line, starting level with it; synthetic tuned, re-measure
-# on real crops (the panel_crop fixture draws it 28 px at a 20 px name).
+# search column's width a y line needs lit to count, and the window its centre must fall in.
+# Real Zoom crops (XERK-2705, 22 name rows, one meeting) draw a ~1.1-1.3 h photo circle
+# astride the name and its first text row: centred ~4 px below the name box's bottom, the
+# text row's centre ~11 px lower. The panel_crop fixture centres it level with the name.
+# The window runs from a quarter name height above the name's centre (a disc above the name
+# isn't its avatar) down to ``_AVATAR_BELOW`` of the text row's height past the gap between
+# the rows: past that it is a circle beside the text row (an emoji, a bullet). Measured on the
+# text row, not the name: OCR boxes "vera cruz" shorter and lower than "Tim Mahler" while the
+# avatar stays put, and a name-height window missed it (QA). With no row below, the window is
+# ``_AVATAR_CENTRE`` name heights below the name's top.
 _AVATAR_INK = 40
 _AVATAR_REACH = 3.0
 _AVATAR_TALL = (0.8, 4.0)
 _AVATAR_LIT = 0.12
+_AVATAR_CENTRE = (0.25, 1.35)
+_AVATAR_BELOW = 0.3
 
 
-def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
-    """A round patch of ink left of this row's first box, overlapping its height: Zoom's
-    avatar beside a speaker's name line. A docs page's grey meta line or heading has bare
-    page (or a bullet, an outline icon: not filled circles) there. False when the row starts
-    at the crop's left edge, with no room to show a circle."""
+def _has_avatar(
+    px: _Pixels, group: list[OcrLine], below: list[OcrLine] | None = None
+) -> bool:
+    """A round patch of ink left of this row's first box: Zoom's avatar beside a speaker's
+    name line, astride it and ``below`` (the next row, its first text line; XERK-2705). A docs
+    page's grey meta line or heading has bare page (or a bullet, an outline icon: not filled
+    circles) there. False when the row starts at the crop's left edge, with no room to show a
+    circle."""
     x0, y0, _, y1 = group[0].box
     h = max(y1 - y0, 1.0)
+    lo = (y0 + y1) / 2 - 0.25 * h
+    if below:
+        by0, by1 = below[0].box[1], below[0].box[3]
+        hi = (y1 + by0) / 2 + _AVATAR_BELOW * max(by1 - by0, 1.0)
+    else:
+        lo, hi = y0 + _AVATAR_CENTRE[0] * h, y0 + _AVATAR_CENTRE[1] * h
     right = int(x0 - 0.1 * h)
     left = max(0, int(x0 - _AVATAR_REACH * h))
     if right - left < _AVATAR_TALL[0] * h:
@@ -616,8 +638,8 @@ def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
         _AVATAR_TALL[0] * h <= bottom - top <= _AVATAR_TALL[1] * h
         and top < y1
         and bottom > y0
-        # The circle starts level with the name; a text row meeting its lower half isn't it.
-        and top <= (y0 + y1) / 2
+        # Centred astride the name and its first text row, never on the row below.
+        and lo <= (top + bottom) / 2 <= hi
         and _is_round(ink[top:bottom])
         for top, bottom in _runs(lit)
     )

@@ -4993,8 +4993,8 @@ def test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing() -> None
 
 
 def test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar() -> None:
-    """Zoom's avatar starts level with the name line; a circle that only meets the row's lower
-    half belongs to something below it (QA mutant)."""
+    """A circle centred lower than Zoom's avatar sits (past ``_AVATAR_CENTRE``) belongs to
+    something below the name, an emoji or bullet on the next row (QA mutant)."""
     ocr, jpeg = panel_crop(("Bo Chen", True, False), ("we shipped it", False))
     groups = zoom.row_groups(ocr.lines)
     y0, y1 = groups[0][0].box[1], groups[0][0].box[3]
@@ -5005,6 +5005,44 @@ def test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar() -> None:
     img.save(buf, format="JPEG", quality=80)
     px = zoom._grey_pixels(buf.getvalue(), ocr, groups)
     assert px is not None and zoom._has_avatar(px, groups[0]) is False
+
+
+def _with_disc(frame: tuple[OcrResult, bytes], centre: float, d: int) -> bytes:
+    """``frame``'s JPEG with a filled disc ``d`` px across left of the rows, centred at y."""
+    ocr, jpeg = frame
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    top = round(centre - d / 2)
+    ImageDraw.Draw(img).ellipse((44 - d - 4, top, 44 - 4, top + d), fill=(230, 200, 180))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("name", ["jsmith", "vera cruz", "anna"])
+def test_zooms_real_avatar_astride_the_name_and_its_text_starts_a_meeting(name: str) -> None:
+    """XERK-2705: real Zoom crops centre the avatar astride the name and its first text row,
+    2-6 px below the name box. Requiring it to start level with the name (the fixture's
+    shape) found no avatar on any of 22 real name rows, so a lower-case off-roster speaker
+    never started a meeting. A name of x-height letters ("vera cruz") gets a shorter, lower
+    OCR box while the avatar stays put: a window in name heights missed it (QA)."""
+    frame = panel_crop(("earlier entry", False), (name, True, False), ("we shipped it", False))
+    ocr, _ = frame
+    groups = zoom.row_groups(ocr.lines)
+    (_, y0, _, y1), (_, by0, _, by1) = groups[1][0].box, groups[2][0].box
+    # Real crops centre it 0.1-0.22 of the text row's height past the rows' gap midpoint; the
+    # fixture's gap is wider, so a bigger disc reaches up to overlap the name as there (QA).
+    real = _with_disc(frame, (y1 + by0) / 2 + 0.2 * (by1 - by0), 32)
+    px = zoom._grey_pixels(real, ocr, groups)
+    assert px is not None and zoom._has_avatar(px, groups[1], groups[2]) is True
+    assert parse_caption_crop(ocr, Roster(), jpeg=real) != []
+    # Not the name's avatar, and no start: a disc centred above the name's middle (a docs
+    # icon over the line), or a big one centred low beside the text row (an emoji, a photo).
+    hi = (y1 + by0) / 2 + 0.3 * (by1 - by0)  # _AVATAR_BELOW
+    for centre, d in (((y0 + y1) / 2 - 0.25 * (y1 - y0) - 3, 26), (hi + 2, 40)):
+        other = _with_disc(frame, centre, d)
+        px = zoom._grey_pixels(other, ocr, groups)
+        assert px is not None and zoom._has_avatar(px, groups[1], groups[2]) is False, centre
+        assert parse_caption_crop(ocr, Roster(), jpeg=other) == [], centre
 
 
 @pytest.mark.parametrize("grey", ["Parameters:", "Note,", "x" * 30 + " " + "y" * 40])
