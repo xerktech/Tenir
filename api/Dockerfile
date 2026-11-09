@@ -41,9 +41,10 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 # once the base image itself ships the fix:
 #   CVE-2026-14456: libssl3t64/openssl/openssl-provider-legacy
 #   CVE-2026-103111: libpcre2-8-0 (fixed in 10.46-1~deb13u3)
+#   CVE-2026-76844, CVE-2026-85091: zlib1g (fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade \
-       libssl3t64 openssl openssl-provider-legacy libpcre2-8-0 \
+       libssl3t64 openssl openssl-provider-legacy libpcre2-8-0 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv
