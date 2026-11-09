@@ -34,10 +34,12 @@ paths:
     start 55/63 probes (QA). Without pixels or a text row, the position rule's header stands.
   - The avatar only adds, never removes (operator's call): requiring it stopped meetings of
     off-roster speakers whose avatar was cut off, navy/maroon/dark grey, square or absent (QA).
-  - Real Zoom crops (XERK-2705, sampler): the avatar is a ~1.1-1.3 h photo circle centred
-    1.10-1.25 name heights below the name's top, astride the name and its first text row
-    (`_AVATAR_CENTRE` 0.25-1.35). "Starts level with the name" (the fixture) found it on 0/22
-    real rows. The next row's centre sits 1.46-1.75 h down: widening past 1.35 takes its emoji.
+  - Real Zoom crops (XERK-2705, sampler): the avatar is a ~26 px photo circle astride the
+    name and its first text row, centred 2-6 px below the name box. "Starts level with the
+    name" (the fixture) found it on 0/22 real rows. The window ends `_AVATAR_BELOW` of the
+    text row's height past the rows' gap, not in name heights: OCR boxes x-height names
+    ("vera cruz") shorter and lower while the avatar stays put, and missed 2/7 (QA). Without a
+    row below, `_AVATAR_CENTRE` name heights. `top < y1` stops most next-row circles first.
   - Measured there: name ink / text ink 0.55-0.60, also at 0.5x q80 and 0.75x q30 through real
     tenir-ocr, so `_NAME_DIM` 0.8 has margin. Starts lost on heavy blur are OCR misreads of
     the name row, not the threshold. One speaker, one dark-theme meeting: re-measure on others.
