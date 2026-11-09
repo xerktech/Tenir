@@ -590,18 +590,21 @@ def _grey_pixels(
 
 # Zoom's avatar circle: grey distance from the panel that counts as its ink, how far left of
 # the name it may sit (name heights), its height range (name heights), and the share of the
-# search column's width a y line needs lit to count. The real panel (2026 capture) draws a
-# filled circle left of the name line, starting level with it; synthetic tuned, re-measure
-# on real crops (the panel_crop fixture draws it 28 px at a 20 px name).
+# search column's width a y line needs lit to count, and where its centre may sit below the
+# name box's top (name heights). Real Zoom crops (XERK-2705, 22 name rows, one meeting) draw
+# a ~1.1-1.3 h photo circle centred 1.10-1.25 h below the name's top: astride the name and
+# its first text row, whose centre sits 1.46-1.75 h down. The panel_crop fixture centres it
+# ~0.6 h down. Below the window it is a circle beside the next row (an emoji, a bullet).
 _AVATAR_INK = 40
 _AVATAR_REACH = 3.0
 _AVATAR_TALL = (0.8, 4.0)
 _AVATAR_LIT = 0.12
+_AVATAR_CENTRE = (0.25, 1.35)
 
 
 def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
     """A round patch of ink left of this row's first box, overlapping its height: Zoom's
-    avatar beside a speaker's name line. A docs page's grey meta line or heading has bare
+    avatar beside a speaker's name line (centred about one name height down, XERK-2705). A docs page's grey meta line or heading has bare
     page (or a bullet, an outline icon: not filled circles) there. False when the row starts
     at the crop's left edge, with no room to show a circle."""
     x0, y0, _, y1 = group[0].box
@@ -616,8 +619,8 @@ def _has_avatar(px: _Pixels, group: list[OcrLine]) -> bool:
         _AVATAR_TALL[0] * h <= bottom - top <= _AVATAR_TALL[1] * h
         and top < y1
         and bottom > y0
-        # The circle starts level with the name; a text row meeting its lower half isn't it.
-        and top <= (y0 + y1) / 2
+        # Centred astride the name and its first text row, never on the row below.
+        and _AVATAR_CENTRE[0] * h <= (top + bottom) / 2 - y0 <= _AVATAR_CENTRE[1] * h
         and _is_round(ink[top:bottom])
         for top, bottom in _runs(lit)
     )

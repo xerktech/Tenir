@@ -34,9 +34,17 @@ paths:
     start 55/63 probes (QA). Without pixels or a text row, the position rule's header stands.
   - The avatar only adds, never removes (operator's call): requiring it stopped meetings of
     off-roster speakers whose avatar was cut off, navy/maroon/dark grey, square or absent (QA).
-  - So still open (XERK-2705, needs real crops): a grey Title Case docs line ("Last Updated")
-    or an all-Title-Case page with no roster starts a meeting; so does a filled disc / emoji
-    beside a grey docs line; legacy off-roster `Name: text` starts nothing.
+  - Real Zoom crops (XERK-2705, sampler): the avatar is a ~1.1-1.3 h photo circle centred
+    1.10-1.25 name heights below the name's top, astride the name and its first text row
+    (`_AVATAR_CENTRE` 0.25-1.35). "Starts level with the name" (the fixture) found it on 0/22
+    real rows. The next row's centre sits 1.46-1.75 h down: widening past 1.35 takes its emoji.
+  - Measured there: name ink / text ink 0.55-0.60, also at 0.5x q80 and 0.75x q30 through real
+    tenir-ocr, so `_NAME_DIM` 0.8 has margin. Starts lost on heavy blur are OCR misreads of
+    the name row, not the threshold. One speaker, one dark-theme meeting: re-measure on others.
+  - That meeting showed only the panel, never the legacy one-line `Name: text` overlay, so
+    off-roster overlay lines still start nothing (accepting any `Word:` would start docs pages).
+  - Still open: a grey Title Case docs line ("Last Updated") or an all-Title-Case page with no
+    roster starts a meeting; so does a filled disc / emoji beside a grey docs line.
   - The avatar is only visible because the client keeps `AVATAR_ROOM` px left of the box
     (`desktop/tenir_capture/caption_box.py`): cut at the glyphs, avatars darker than
     `BOX_WHITE` (Zoom's blue/green) never reached the api (QA).
@@ -46,6 +54,7 @@ paths:
     `test_the_avatar_needs_a_round_patch_level_with_the_name`,
     `test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing`,
     `test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar`,
+    `test_zooms_real_avatar_astride_the_name_and_its_text_starts_a_meeting`,
     `desktop/tests/test_caption_panel.py::test_the_crop_keeps_a_dark_avatar_left_of_the_name`.
   - Toolbar rows are dropped before parsing (`_is_toolbar_row`): Title Case labels need >= 2
     and 3/4 of the row, so speech like "Share more of it" stays.

@@ -4993,14 +4993,43 @@ def test_a_bright_name_shaped_row_beside_an_avatar_vouches_for_nothing() -> None
 
 
 def test_a_circle_starting_below_the_name_s_middle_is_not_its_avatar() -> None:
-    """Zoom's avatar starts level with the name line; a circle that only meets the row's lower
-    half belongs to something below it (QA mutant)."""
+    """A circle centred lower than Zoom's avatar sits (past ``_AVATAR_CENTRE``) belongs to
+    something below the name, an emoji or bullet on the next row (QA mutant)."""
     ocr, jpeg = panel_crop(("Bo Chen", True, False), ("we shipped it", False))
     groups = zoom.row_groups(ocr.lines)
     y0, y1 = groups[0][0].box[1], groups[0][0].box[3]
     img = Image.open(io.BytesIO(jpeg)).convert("RGB")
     top = int((y0 + y1) / 2) + 3
     ImageDraw.Draw(img).ellipse((8, top, 36, top + 28), fill=(230, 200, 180))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    px = zoom._grey_pixels(buf.getvalue(), ocr, groups)
+    assert px is not None and zoom._has_avatar(px, groups[0]) is False
+
+
+def test_zooms_real_avatar_astride_the_name_and_its_text_starts_a_meeting() -> None:
+    """XERK-2705: real Zoom crops centre the avatar 1.10-1.25 name heights below the name's
+    top, astride the name and its first text row. Requiring it to start level with the name
+    (the fixture's shape) found no avatar on any of 22 real name rows, so a lower-case
+    off-roster speaker ("jsmith") never started a meeting."""
+    ocr, jpeg = panel_crop(("jsmith", True, False), ("we shipped it on friday", False))
+    groups = zoom.row_groups(ocr.lines)
+    y0, y1 = groups[0][0].box[1], groups[0][0].box[3]
+    h = y1 - y0
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    d = round(1.2 * h)  # the real circle: 1.04-1.3 name heights across
+    centre = y0 + 1.18 * h
+    top = round(centre - d / 2)
+    ImageDraw.Draw(img).ellipse((44 - d - 4, top, 44 - 4, top + d), fill=(230, 200, 180))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    px = zoom._grey_pixels(buf.getvalue(), ocr, groups)
+    assert px is not None and zoom._has_avatar(px, groups[0]) is True
+    assert parse_caption_crop(ocr, Roster(), jpeg=buf.getvalue()) != []
+    # The same circle centred on the text row below (1.6 h down, past the window) is not it.
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    top = round(y0 + 1.6 * h - d / 2)
+    ImageDraw.Draw(img).ellipse((44 - d - 4, top, 44 - 4, top + d), fill=(230, 200, 180))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=80)
     px = zoom._grey_pixels(buf.getvalue(), ocr, groups)
