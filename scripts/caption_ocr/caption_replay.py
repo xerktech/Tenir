@@ -62,9 +62,7 @@ from api.screen.zoom import CaptionPane
 
 # The sampler's own names carry a per-process run tag (``samples._RUN``, 6 hex digits); the
 # merged harness once read only the untagged form and found no frames in a real capture.
-_NAME = re.compile(
-    r"^(?P<ts>\d+)-(?:(?P<run>[0-9a-f]{6})-)?(?P<n>\d+)-(?P<region>caption|full)$"
-)
+_NAME = re.compile(r"^(?P<ts>\d+)-(?:(?P<run>[0-9a-f]{6})-)?(?P<n>\d+)-(?P<region>caption|full)$")
 _PARSERS = {"teams": teams, "zoom": zoom}
 DUP_SHARE = 0.8  # a row is a duplicate when this share of its words is in a recent row
 DUP_MIN_WORDS = 3  # shorter rows ("Yes.", "Thanks Kunal.") are stock replies, not rewrites

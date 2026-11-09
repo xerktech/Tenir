@@ -58,7 +58,9 @@ def test_a_window_the_sampler_itself_wrote_replays_like_the_fixture(tmp_path: Pa
     try:
         for f in FIXTURE["frames"]:
             jpeg = _jpeg(f["width"], f["height"])
-            ocr = cr.load_ocr({"lines": f["lines"], "width": f["width"], "height": f["height"]}, jpeg)
+            ocr = cr.load_ocr(
+                {"lines": f["lines"], "width": f["width"], "height": f["height"]}, jpeg
+            )
             header = ScreenFrameHeader.model_validate(
                 {
                     "type": "screen.frame",
