@@ -97,7 +97,7 @@ def load_window(path: Path) -> tuple[str, list[Frame]]:
     platform = path.name.split("-", 1)[0]
     if platform not in _PARSERS:
         raise SystemExit(f"{path}: not a <platform>-<slug>-<hash> sampler directory")
-    frames = []
+    frames: list[tuple[str, Frame]] = []
     for jpg in path.glob("*.jpg"):
         m = _NAME.match(jpg.stem)
         meta = jpg.with_suffix(".json")
@@ -108,9 +108,11 @@ def load_window(path: Path) -> tuple[str, list[Frame]]:
             ocr = load_ocr(json.loads(meta.read_text()), jpeg)
         except Exception as exc:  # one bad file names itself rather than a bare traceback
             raise SystemExit(f"{meta}: unreadable OCR read: {exc!r}") from exc
-        frames.append(Frame(int(m["ts"]), int(m["n"]), m["region"], jpeg, ocr))
-    frames.sort(key=lambda f: (f.ts, f.n))
-    return platform, frames
+        frames.append((m["run"] or "", Frame(int(m["ts"]), int(m["n"]), m["region"], jpeg, ocr)))
+    # ts first: n restarts at 1 in each sampler process, so a window holding two runs has
+    # colliding n. The run tag only breaks a same-millisecond tie, so glob order never decides.
+    frames.sort(key=lambda rf: (rf[1].ts, rf[1].n, rf[0]))
+    return platform, [f for _, f in frames]
 
 
 def find_pane(frame: Frame) -> CaptionPane | None:

@@ -82,6 +82,28 @@ def test_a_window_the_sampler_itself_wrote_replays_like_the_fixture(tmp_path: Pa
     assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
 
 
+def test_a_window_holding_two_sampler_runs_replays_in_time_order(tmp_path: Path) -> None:
+    # Each process numbers its frames from 1, so the later run's n collide with the earlier
+    # run's: ordering by n before ts would interleave the two meetings' frames.
+    window = tmp_path / "teams-replay-0123abcd"
+    window.mkdir()
+    names = ["5000-bbbbbb-00001", "1000-aaaaaa-00001", "6000-bbbbbb-00002", "2000-aaaaaa-00002"]
+    names += ["6000-aaaaaa-00002"]  # a same-millisecond tie: the run tag decides
+    for stem in names:
+        (window / f"{stem}-full.jpg").write_bytes(_jpeg(20, 10))
+        (window / f"{stem}-full.json").write_text(
+            json.dumps({"lines": [{"text": stem, "box": [0, 0, 9, 9], "score": 1.0}]})
+        )
+    _, frames = cr.load_window(window)
+    assert [f.ocr.lines[0].text for f in frames] == [
+        "1000-aaaaaa-00001",
+        "2000-aaaaaa-00002",
+        "5000-bbbbbb-00001",
+        "6000-aaaaaa-00002",
+        "6000-bbbbbb-00002",
+    ]
+
+
 @pytest.mark.parametrize("sized", [True, False])
 def test_replaying_the_teams_fixture_stores_what_the_socket_stores(
     tmp_path: Path, sized: bool
