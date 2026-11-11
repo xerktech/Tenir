@@ -733,22 +733,29 @@ def _revisions(
             if c := _claims(shown, rows, tail, cands[q:e], budget, folded, lead=lead, score=score):
                 found = (e, c)
                 break
-        if found is not None and found[0] == own < end and first == 0 and lead:
-            # The panel's top run claimed only her entry above her next one: that entry may
-            # have scrolled off, and the run is her next entry re-laid ("Yes." / "Yes we can
-            # ship it." -> "Yes we can ship it, after the" / "review."). A short entry's few
-            # words pass coverage inside any row starting with them, so every later claim
-            # shifted up one entry and the short one was lost (XERK-2799). Her next entry
-            # (to the entry after it) is taken instead when the rows pair more of its words.
-            nxt_own = next((k for k in range(own + 1, end) if tail[cands[k]].head), end)
-            alt_folded: list[tuple[int, tuple[int, ...]]] = []
-            alt_score: list[int] = []
-            alt = _claims(
-                shown, rows, tail, cands[own:nxt_own], budget, alt_folded, lead=lead,
-                score=alt_score,
-            )
-            if alt and alt_score[0] > score[0]:
-                found, folded = (nxt_own, alt), alt_folded
+        if found is not None and found[0] == own < end and first == 0:
+            # The panel's top run claimed only her entry above her next one, and she has more
+            # entries than header blocks shown: that many scrolled off, and the run may be a
+            # later entry re-laid ("Yes." / "Yes we can ship it." -> "Yes we can ship it,
+            # after the" / "review."). A short entry's few words pass coverage inside any row
+            # starting with them, so every later claim shifted up one entry and the short one
+            # was lost (XERK-2799). Each of the next ``off`` entries is tried; the one the
+            # rows pair most words of is taken over the short one when it pairs more, and the
+            # later one on a tie (the panel shows the newest). Without the count, the short
+            # entry still shown and rewritten ("Yes." -> "Yes, we can.") switched too (QA).
+            off = _scrolled(shown, runs, speaker, tail, cands[q:])
+            starts = [own, *(k for k in range(own + 1, end) if tail[cands[k]].head), end]
+            best = score[0]
+            for s0, s1 in list(zip(starts, starts[1:]))[:off]:
+                alt_folded: list[tuple[int, tuple[int, ...]]] = []
+                alt_score: list[int] = []
+                alt = _claims(
+                    shown, rows, tail, cands[s0:s1], budget, alt_folded, lead=lead,
+                    score=alt_score,
+                )
+                if alt and alt_score[0] > score[0] and alt_score[0] >= best:
+                    best = alt_score[0]
+                    found, folded = (s1, alt), alt_folded
         if found is None:
             if fresh:
                 break
@@ -766,6 +773,28 @@ def _revisions(
     if merged is not None:
         merged += folds
     return out
+
+
+def _scrolled(
+    shown: list[_Shown],
+    runs: list[list[int]],
+    speaker: str | None,
+    tail: list[_Line],
+    draft_lines: list[int],
+) -> int:
+    """How many more of the speaker's entries ``draft_lines`` holds (its first line, and each
+    later line of hers first shown under a header) than her header blocks among ``runs``:
+    the panel shows the newest entries, so that many scrolled off its top."""
+    who = tail[draft_lines[0]].speaker
+    entries = 1 + sum(1 for j in draft_lines[1:] if tail[j].head and tail[j].speaker == who)
+    blocks = sum(
+        1
+        for r in runs
+        if shown[r[0]].speaker is not None
+        and (r[0] == 0 or shown[r[0] - 1].block != shown[r[0]].block)
+        and _same_speaker(speaker, shown[r[0]].speaker)
+    )
+    return max(0, entries - blocks)
 
 
 def _claims(

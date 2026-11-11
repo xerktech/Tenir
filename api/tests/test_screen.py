@@ -4931,6 +4931,19 @@ def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
     assert len(final.values()) == len(set(final.values()))  # no row stored twice
 
 
+def _gapped_run(frames: list[list[CaptionBlock]], gap: int) -> list[tuple]:
+    """Feed one frame every ``gap`` ms, flush; the stored (speaker, text) rows in order."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, Segment] = {}
+    for k, blocks in enumerate(frames):
+        for seg in m.feed(blocks, k * gap):
+            final[seg.segment_id] = seg
+    for seg in m.flush(len(frames) * gap + 60_000):
+        final[seg.segment_id] = seg
+    rows = sorted(final.values(), key=lambda s: s.start_ms)
+    return [(s.speaker, s.text) for s in rows if s.text]
+
+
 @pytest.mark.parametrize("gap", [1000, 2000, 3000])
 @pytest.mark.parametrize(
     ("short", "draft", "said", "grown", "tail"),
@@ -4960,22 +4973,41 @@ def test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_ke
     off and the next entry is re-laid, the top run's draft cut at her next entry was "Yes."
     alone: its one word passed coverage inside the re-laid row, so every Bo segment shifted up
     an entry and "Yes." was lost. Gaps up to ``_SAID_BETWEEN_MS``, the 3 s gate."""
-    m = CaptionMerger(start_ms=0, stable_ms=3000)
     frames = [
         [blk("Bo", short), blk("Bo", draft)],
         [blk("Bo", short), blk("Bo", said), blk("Bo", draft)],
         [blk("Bo", short), blk("Bo", said), blk("Bo", *grown)],
     ] + [[blk("Bo", *tail), blk("Bo", *grown), blk("Cy", "can you share the screen.")]] * 4
-    final: dict[str, Segment] = {}
-    for k, blocks in enumerate(frames):
-        for seg in m.feed(blocks, k * gap):
-            final[seg.segment_id] = seg
-    for seg in m.flush(len(frames) * gap + 60_000):
-        final[seg.segment_id] = seg
-    stored = [(s.speaker, s.text) for s in sorted(final.values(), key=lambda s: s.start_ms)]
-    assert [(sp, t) for sp, t in stored if t] == [
+    assert _gapped_run(frames, gap) == [
         ("Bo", short),
         *[("Bo", row) for row in tail],
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize("flicker", [False, True])
+def test_a_short_entry_still_shown_and_rewritten_is_revised_in_place(
+    gap: int, flicker: bool
+) -> None:
+    """QA (XERK-2799): "Yes." still at the panel's top and rewritten ("Yes, we can."), above
+    her next entry re-laid. She shows as many header blocks as she has entries, so nothing
+    scrolled off and the top row revises "Yes." (as main). Switching to her next entry kept
+    "Yes." and stored "tests pass." twice. ``flicker``: the rewrite shows on one frame only."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = [blk("Bo", "Yes we can ship it, after the", "review."), blk("Bo", *grown)]
+    cy = blk("Cy", "can you share the screen.")
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+        [blk("Bo", "Yes, we can."), *relaid, cy],
+    ] + [[blk("Bo", "Yes." if flicker else "Yes, we can."), *relaid, cy]] * 3
+    assert _gapped_run(frames, gap) == [
+        ("Bo", "Yes, we can."),
+        ("Bo", "Yes we can ship it, after the"),
+        ("Bo", "review."),
         *[("Bo", row) for row in grown],
         ("Cy", "can you share the screen."),
     ]

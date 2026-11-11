@@ -199,7 +199,14 @@ paths:
       next entry, taken when the rows pair more of its words (XERK-2799): "Yes." scrolled off
       and "Yes we can ship it." re-laid; the one word passed coverage, every later claim
       shifted up an entry and "Yes." was lost. The gap gate can't see a scroll within 3 s.
-      Test: `test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_kept`.
+      - Only when her entries outnumber her header blocks shown (`_scrolled`): "Yes." still on
+        top and rewritten ("Yes, we can.") switched too, kept "Yes." and stored a row twice (QA).
+      - Each of the `_scrolled` entries below is tried, ties to the later one: trying only the
+        next one claimed "Yes, I will share." under a stale "yes" draft above it (QA fuzz).
+      - Measured vs main (QA kit fz2 short-entry fuzz, 28800 runs): words lost 110251 -> 110224,
+        extra 133282 -> 131454; the ~20 runs "losing" 1-2 words lose text never on screen.
+      - Tests: `test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_kept`,
+        `test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`.
     - Accepted: OCR missing her block for over `_SAID_BETWEEN_MS` (3+ frames at 1 fps) re-stores
       the box (main stored it once). Every looser gate QA tried also lost the scrolled-off
       line; telling a miss from a scroll needs another signal (a row below scrolling up).
