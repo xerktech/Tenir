@@ -219,6 +219,12 @@ def _is_circle_text(text: str, *, tall: bool) -> bool:
     return len(letters) <= 2 and tall
 
 
+# Buttons Teams draws inside the caption pane itself. A box is dropped from a caption crop only
+# when it reads exactly one of these: level with a header, row_groups joined "Go to current"
+# onto it, and the header then read as caption text under the previous speaker (XERK-2792).
+_CAPTION_PANE_UI = {"go to current"}
+
+
 def _initials_of(name: str) -> set[str]:
     return {t[0].upper() for t in name.replace(",", " ").split() if t[0].isalpha()}
 
@@ -553,7 +559,14 @@ def _strip_glued_initials(row: str, above: str, roster: Roster) -> str:
     letters = {c for c in token if c.isalpha()}
     if not letters or not all(c.isupper() for c in letters):
         return row
-    return rest.lstrip() if letters <= _initials_of(name) else row
+    initials = _initials_of(name)
+    if letters <= initials:
+        return rest.lstrip()
+    # Two capitals one letter off the circle's: OCR misread one of them ("LA Thank you." under
+    # Tom Adams, real Teams OCR, XERK-2792). Off by both ("AR" under Mark Hale) stays text.
+    if len(token) == 2 and token.isalpha() and len(initials) >= 2 and letters & initials:
+        return rest.lstrip()
+    return row
 
 
 def _strip_misread_avatar(text: str, roster: Roster) -> str:
@@ -746,6 +759,11 @@ def parse_caption_crop(
     rows: list[str] = []
     headed: list[bool] = []
     ocr = _drop_tile_initials(ocr)
+    ocr = OcrResult(
+        ocr.width,
+        ocr.height,
+        tuple(b for b in ocr.lines if norm_name(b.text) not in _CAPTION_PANE_UI),
+    )
     stripped_from = ocr.lines
     stripped = _strip_header_boxes(ocr.lines, roster)
     ocr = OcrResult(ocr.width, ocr.height, stripped)

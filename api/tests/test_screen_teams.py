@@ -512,6 +512,39 @@ def test_a_leading_token_that_is_not_the_speakers_initials_stays_text(glued: str
     assert [(b.speaker, b.lines) for b in blocks] == [("Mark Hale", [glued])]
 
 
+@pytest.mark.parametrize("names", [("Tom Adams", "Mark Hale"), ()])
+def test_avatar_initials_misread_by_one_letter_are_stripped(names: tuple) -> None:
+    # Real Teams OCR read Tom Adams' circle "TA" as "LA" (XERK-2792).
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Tom Adams", 56, 4, 200, 20),
+            line("LA Thank you.", 10, 26, 300, 46),
+            line("and the rest of it", 56, 48, 300, 68),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["Thank you.", "and the rest of it"]]
+
+
+@pytest.mark.parametrize("names", [("Tom Adams", "Mark Hale"), ()])
+def test_the_go_to_current_button_is_not_caption_text(names: tuple) -> None:
+    # Teams' "Go to current" button level with a header joined its row, so the header read
+    # as text under the previous speaker (XERK-2792, real Teams OCR: header x 60, button 402).
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line("Tom Adams", 60, 52, 200, 68),
+            line("Go to current", 402, 52, 520, 68),
+            line("All right thank", 60, 74, 300, 94),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["We can start now."], ["All right thank"]]
+    if names:
+        assert [b.speaker for b in blocks] == ["Mark Hale", "Tom Adams"]
+
+
 def test_capital_caption_words_that_are_not_the_speakers_initials_stay_text() -> None:
     blocks = teams.parse_caption_crop(
         result(

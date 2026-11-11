@@ -52,6 +52,12 @@ paths:
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
+  - Caption crops drop a box reading exactly "Go to current" (`_CAPTION_PANE_UI`) before
+    `row_groups`: level with a header it joined the row and lost the header (XERK-2792). Test:
+    `test_the_go_to_current_button_is_not_caption_text`.
+  - A row glued onto the avatar sheds a 2-capital token one letter off the speaker's initials
+    ("LA" for "TA", real OCR); off by both ("AR" under Mark Hale) stays. Test:
+    `test_avatar_initials_misread_by_one_letter_are_stripped`.
   - A short token before a roster name on a box left of the text below it is a misread circle
     ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
   - Caption crops read their pixels for avatars (`_pixel_avatars`, XERK-2614): a round run of
