@@ -296,9 +296,16 @@ paths:
     `_misread` of it (XERK-2716) when it isn't its block's top row: unpaired under a header it
     cost `_UNPAIRED`, so a 3-row entry re-flowing above the same speaker's next entry aligned
     nothing and the box was stored again. The row above needn't match (a re-wrap moves words).
-  - Never pair a block's top row that way: it may be a new line starting with an old one's words
-    ("yes." / "yes I think so too."), and `_fill_glitches` can't place a top-row glitch, so its
-    growth was lost (QA: hundreds of words in a "late growth" fuzz). A row of the block above
+  - A block's top row pairs that way when the row above matched the line just before
+    (`_misread(placed=)`, XERK-2791): one speaker's one-row Teams entries are all top rows, and
+    one growing as the next appeared stored the box again (real frames). Off-roster speakers
+    were None before, cheap glitches that hid it. No probe found yet tells the "row above
+    matched" bound from "any row above"; keep it until real frames show it costs lines.
+    Tests: `test_an_entry_growing_as_the_next_one_appears_below_is_stored_once`,
+    `test_a_new_entry_under_a_shown_twin_of_its_start_is_a_new_line`.
+  - Never pair any other block's top row that way: it may be a new line starting with an old
+    one's words ("yes." / "yes I think so too."), and `_fill_glitches` can't place a top-row
+    glitch, so its growth was lost (QA: hundreds of words in a "late growth" fuzz). A row of the block above
     doesn't count: dropping that check lost hundreds more.
   - `_reflow` takes such a glitch row that grew by whole words even with no word moved (else
     "like" -> "like with the keto." was lost): a glitch row only (the live bottom row grows every

@@ -81,6 +81,31 @@ paths:
     A photo has no OCR box, so text rules merged its speaker into the last one. Tests:
     `test_a_photo_avatar_speaker_off_the_roster_gets_their_own_header`,
     `test_a_name_shaped_first_caption_line_stays_under_its_speaker`.
+  - An avatar'd header the roster doesn't match names its speaker by its cleaned text
+    (`caption_blocks`, XERK-2791): a meeting whose window isn't on screen fills no roster, and a
+    real one stored 50 of 64 rows with no speaker. Measure with `caption_replay.py --rows`.
+  - The tracker names such a speaker by the spelling most read this meeting
+    (`MeetingTracker._as_heard`): the merger compares speakers exactly, so one frame misreading
+    "Omar Patcl" stored the whole panel again (QA). A spelling under `_HEARD_OWN` frames, or read
+    `_HEARD_SHARE`x less than a like one, is a misread of it; else a person of their own.
+    - Keeping the first reading instead named a speaker by a misread first frame all meeting
+      (QA): a spelling outreading a rarer like one takes its held lines (`CaptionMerger.rename`).
+    - Accepted: a new person whose name reads like an off-roster speaker's has their first
+      entry stored under that name as well (a misread can't be told from a newcomer yet).
+      Roster names and "Speaker N" labels are never unified. Ties go to the first heard.
+    - Crafted names cost difflib (QA: ~2 s a frame on the event loop). So likeness is computed
+      once per new spelling (`_likes`, linked both ways), at most `_NEW_PER_FRAME` new a frame,
+      never past `_LIKE_MAX_CHARS`, and `_as_heard` runs on `CPU_POOL` (worst 90-340 ms a frame
+      while 200 names fill, by node load), only for frames with an off-roster speaker.
+      Tests: `test_off_roster_names_are_compared_once_each`,
+      `test_a_frame_brings_in_at_most_a_few_new_spellings`,
+      `test_off_roster_names_are_unified_off_the_event_loop`.
+    - Per meeting (cleared in `end`). Tests:
+      `test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines`,
+      `test_a_long_running_speakers_name_misread_on_three_frames_is_stored_once`,
+      `test_two_people_with_like_names_off_the_roster_stay_apart`.
+  - Accepted: a name read off-roster then matched to a differently spelled tile once a full
+    frame fills the roster can split one entry across two names (unmeasured on real frames).
   - No avatar found (faint photo, odd layout) keeps the position rule. An avatar-only rule
     there lost 11/96 real-OCR cases with no roster (QA). Test:
     `test_with_no_avatar_found_a_roster_keeps_the_position_rule`.
