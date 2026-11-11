@@ -20,7 +20,7 @@ import io
 import math
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -185,6 +185,11 @@ class Roster:
 
         return self.aliases.get(alias_key(name), name)
 
+    def near(self, header: str) -> bool:
+        """``header`` reads near a roster name (``_near_name``): maybe a misread of it."""
+        # Not ``_cut``: a cut reading is a prefix of a name in ``_names``.
+        return _near_name(norm_name(header), self._names)
+
     def copy(self) -> Roster:
         out = Roster(self.aliases)
         out._names = dict(self._names)
@@ -238,6 +243,33 @@ class Roster:
             names = {d for r, d in good if good[0][0] - r < 0.05}
             return prefer if prefer in names else None
         return good[0][1]
+
+
+# An unmatched header this alike to a roster name may be its misread (XERK-2802 QA: "Tirn
+# Mahler" read 0.857 to "Tim Mahler", under ``_NAME_MATCH``), so it names no new speaker.
+_NAME_NEAR = 0.7
+
+
+def _near_name(key: str, names: Iterable[str]) -> bool:
+    """``key`` reads near a roster key: ``_NAME_NEAR`` alike; or one word that is any of its
+    words or a cut of its first ("Montgomery", "Chris" / "Christopher Montgomery"); or two+
+    words each a prefix of the other's ("Ana L" / "Ana Lopez", "Christopher M" / "Chris
+    Montgomery"). A one-word roster key cut from the header's first word is not: roster "Jo"
+    left "John Smith" unnamed (QA)."""
+    words = key.split()
+    for k in names:
+        other = k.split()
+        if len(words) == 1 and (words[0] in other or other[0].startswith(words[0])):
+            return True
+        # Roster "Jo" (a short tile) / "Jo Ann"; never a later word ("Kim" / "John Kim", QA).
+        if len(other) == 1 and words[:1] == other:
+            return True
+        pairs = list(zip(words, other))
+        if len(pairs) > 1 and all(a.startswith(b) or b.startswith(a) for a, b in pairs):
+            return True
+        if SequenceMatcher(None, key, k).ratio() >= _NAME_NEAR:
+            return True
+    return False
 
 
 def _same_name(key: str, names: dict[str, str]) -> str | None:
@@ -417,8 +449,8 @@ def _active_tile(img, tiles: list[tuple[str, OcrLine]]) -> str | None:
 
 @dataclass
 class CaptionBlock:
-    # The roster name the header matched, or (Teams) the header's own name when an avatar
-    # vouches for it; None for any other unmatched header and for the header-less block of
+    # The roster name the header matched, or the header's own name when an avatar vouches
+    # for it (Teams; Zoom only for a dim name row); None for any other unmatched header and for the header-less block of
     # lines continuing from above the crop.
     speaker: str | None
     has_header: bool
@@ -487,12 +519,26 @@ def parse_caption_crop(
     def name_like(text: str) -> bool:
         return is_name_like(text) or text in dim_names
 
+    # Dim display-name rows with Zoom's avatar circle beside them: a speaker's name line, so an
+    # off-roster one names its speaker (XERK-2802). A dim row alone doesn't: a docs page's grey
+    # Title Case line ("Last Updated") reads the same.
+    avatars = (
+        set()
+        if px is None or dim is None
+        else {
+            i
+            for i in dim
+            if rows[i] in dim_names
+            and _has_avatar(px, groups[i], groups[i + 1] if i + 1 < len(groups) else None)
+        }
+    )
     blocks = caption_blocks(
         rows,
         roster,
         active=active,
         name_like=name_like,
         unknown_headers=header_can_sit,
+        avatars=avatars,
         name_rows=dim,
     )
     if live or any(b.has_header and b.speaker for b in blocks):
@@ -513,12 +559,8 @@ def parse_caption_crop(
     if px is None or dim is None:
         return blocks
     vouched = any(
-        row in dim_names
-        and (
-            is_name_like(_name_form(row))
-            or _has_avatar(px, group, groups[i + 1] if i + 1 < len(groups) else None)
-        )
-        for i, (row, group) in enumerate(zip(rows, groups, strict=True))
+        i in avatars or (row in dim_names and is_name_like(_name_form(row)))
+        for i, row in enumerate(rows)
     )
     return blocks if vouched else []
 
@@ -799,7 +841,14 @@ def caption_blocks(
             # An avatar beside the header vouches that it names a speaker, so it keeps that
             # name though the roster lacks it: a meeting whose window isn't on screen fills
             # no roster, and every row was stored with no speaker (XERK-2791).
-            named_by = roster.display(row) if i in marked else None
+            # Never one that reads near a roster name: it may be that speaker misread, and a
+            # new name re-stored their whole entry (XERK-2802 QA). Unnamed, it merges as before.
+            name = clean_tile_name(row) or row
+            named_by = (
+                roster.display(name)
+                if i in marked and not roster.near(name)
+                else None
+            )
             blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
             continue
         if not blocks:
