@@ -40,15 +40,17 @@ paths:
   `test_a_new_entry_after_dropped_frames_does_not_overwrite_her_last_one`,
   `test_a_later_draft_start_never_skips_her_first_draft_line`.
 - Real Teams frames (sampler, XERK-2774), two more causes of a box stored again:
-  - `_score` pairs a row with the same words as a known line as exact: a stored entry Teams
-    re-punctuates ("go to Cy" -> "go to Cy.") was only a ratio match, under the cost of
-    leaving the rewritten live entry unshown.
-    - Only while the line's row last read with the same words (`_Line.read`): "Yes, we can."
-      (her "Yes." rewritten) paired "yes we can.", stale since its row grew, and the rewrite
-      was lost (XERK-2799's shape). Narrowing to end punctuation instead still lost it ("Yes
-      we can?") and gave back mid-line re-punctuation (QA fuzz). Tests:
+  - `_update` takes a re-read adding only end punctuation ("go to Cy" -> "go to Cy.") as
+    growth, on any line (no word moves): kept unpunctuated, the next frame's row matched it
+    only by ratio, under the cost of leaving the rewritten live entry unshown, and the box was
+    stored again.
+    - Never match rows to lines by words alone instead: "Yes, we can." (her "Yes." rewritten)
+      paired "yes we can.", stale since its row grew, and the rewrite was lost (XERK-2799's
+      shape). Guards on that match (end punctuation only, the row's last read) each still lost
+      it on a nearby shape: a re-wrap or a reverting frame (QA). Tests:
       `test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`,
-      `test_a_rewrite_re_punctuated_like_her_stale_line_still_revises_her_short_entry`.
+      `test_a_rewrite_re_punctuated_like_her_stale_line_still_revises_her_short_entry`,
+      `test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last`.
   - `_update` takes growth that adds punctuation at the join ("All right" -> "All right,
     let's..."). Not by words alone: a re-flowed row then overwrote "pods." with the row above
     (`_simulate_teams` seed 125). Test: `test_an_entry_punctuated_as_it_grows_is_stored_once`.
@@ -56,11 +58,9 @@ paths:
       up ("...locally" -> "...locally, or"); taken as growth, the rows below kept too few of
       the draft's words to claim it and its stale lines were stored (QA fuzz seed 84). Test:
       `test_a_word_moved_up_with_a_comma_above_her_next_line_is_a_rewrite_not_growth`.
-  - That match needs `_CUT_WORDS`+ words: "Yes??" after "Yes." is as often her next
-    entry, and matched by words its draft went to the entry after and was lost (QA fuzz).
-    Test: `test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last`.
   - The real meeting replays at 0 duplicate rows with its roster seeded, 1 without (main: 2
-    and 3); `_simulate` (1000 x 4) and `_simulate_teams` (200 x 2) identical to main per seed.
+    and 3), keeping the end punctuation Teams gives finished entries; `_simulate` (1000 x 4)
+    and `_simulate_teams` (200 x 2) identical to main per seed.
   - Still open: a split below another speaker's re-punctuated short entry ("Cy" -> "Cy.")
     stores the draft twice (XERK-2805); a short entry Teams reorders around a live entry
     stores a line twice (XERK-2806). Both on main too.

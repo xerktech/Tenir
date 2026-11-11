@@ -3087,7 +3087,7 @@ def test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once() -> None:
                 blk("Cy", "So yesterday we had a demo with the team")]),
     ]
     assert _stored_at(frames) == [
-        ("Ana", "Let's go to Cy"),
+        ("Ana", "Let's go to Cy."),
         ("Cy", "Hi, good morning."),
         ("Cy", "So yesterday we had a demo with the team"),
     ]

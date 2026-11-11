@@ -246,9 +246,6 @@ class _Line:
     # Earlier texts it held for ``_HELD_MS`` before changing (``_split_grown``, XERK-2796):
     # evidence that a row reading one of them is this line, not a clipped repeat of it.
     held: tuple[str, ...] = ()
-    # The row the alignment last paired with it (its norm; "" until one): a line whose row
-    # since read otherwise (grown, re-laid) is stale, not re-punctuated (``_score``).
-    read: str = ""
     # When ``_reflow`` last changed its text (a stored line's ``changed_ms`` stays put).
     reflowed_ms: int = 0
 
@@ -278,16 +275,7 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     if not _same_speaker(shown.speaker, known.speaker):
         return 0.0
     a, b = shown.norm, known.norm
-    words = _words(a)
-    if a == b or (
-        words == _words(b) == _words(known.read or b) and len(words) >= _CUT_WORDS
-    ):
-        # Same words, re-punctuated: Teams punctuates an entry as it finalises it, after it
-        # was stored ("let's go to Cy" -> "...Cy."). Only a ratio match, it lost to
-        # storing the whole box again once the live entry below was rewritten (XERK-2774).
-        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz). Nor a
-        # line whose row last read otherwise: "Yes, we can." (her "Yes." rewritten) paired
-        # "yes we can.", stale since its row grew, and the rewrite was lost (XERK-2799).
+    if a == b:
         return _MATCH
     if growable and a.startswith(b):
         return _MATCH - 0.5  # the line growing
@@ -1400,7 +1388,6 @@ class CaptionMerger:
             if at is not None:
                 line = tail[at]
                 line.seen_ms = ts
-                line.read = line_shown.norm
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
@@ -1679,6 +1666,11 @@ class CaptionMerger:
         # of the draft's words to claim it, so its stale lines were stored too (QA).
         marks = ("", ",", ".", "?", "!") if not said_on else ("",)
         grew = any(shown.norm.startswith(line.norm + mark + " ") for mark in marks)
+        # Or only end punctuation added: Teams finalising the entry ("let's go to Cy" ->
+        # "...Cy."). Kept unpunctuated, its next re-read matched it only by ratio and lost to
+        # storing the box again (XERK-2774, real frames). Matching by words instead paired a
+        # rewrite with a stale line of hers whose row had grown (XERK-2799's shape, QA).
+        grew = grew or shown.norm in {line.norm + mark for mark in ".?!,"}
         if not line.final:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
             # words); a line above it changes only by OCR jitter, so it keeps its text.
