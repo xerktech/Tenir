@@ -5794,3 +5794,46 @@ def test_a_fold_never_takes_a_reflow_or_an_older_line(seed: int, noise: float) -
     line lost a word moved up onto the row above (a re-flow, ``_reflow``'s). Seed 191: the
     bottom row paired with an older line it starts like, not the row above the folded one."""
     assert _simulate_teams(seed, noise=noise)[2] == 0
+
+
+def test_an_entry_growing_as_the_next_one_appears_below_is_stored_once() -> None:
+    """XERK-2791, a real Teams shape: one speaker's one-row entries, each a block's top row.
+    "All right" grew on the frame the next entry appeared under it; unpaired under its header,
+    that frame stored "OK.", the grown entry and "Next up is" again. Off-roster speakers had
+    no name before, so their rows were cheap glitches and the growth was lost instead."""
+    ana = ["we can ship the release on friday once", "the last two checks are green for the"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *ana[:1], ana[1] + " release."), blk("Bo", "OK")], 1),
+            (
+                [
+                    blk(None, ana[1] + " release.", header=False),
+                    blk("Ana", "That's pretty much."),
+                    blk("Bo", "OK."),
+                    blk("Bo", "All right"),
+                ],
+                1,
+            ),
+            ([blk("Bo", t) for t in ("OK.", "All right, let's wrap it up today.", "Next up is")], 1),
+            ([blk("Bo", t) for t in ("OK.", "All right, let's wrap it up today.", "Next up is Cy")], 6),
+        ]
+    )
+    assert [text for _, text in stored][2:] == [
+        "OK",
+        "That's pretty much.",
+        "OK.",
+        "All right, let's wrap it up today.",
+        "Next up is Cy",
+    ]
+
+
+def test_a_new_entry_under_a_shown_twin_of_its_start_is_a_new_line() -> None:
+    """The row above re-reading the line before is what places a grown top row: with the old
+    entry still shown above, a row starting with its words is a new entry (XERK-2716)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 5),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert [text for _, text in stored] == ["OK.", "yes.", "yes I think so too."]

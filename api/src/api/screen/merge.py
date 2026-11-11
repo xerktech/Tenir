@@ -282,8 +282,16 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     return 0.0
 
 
-def _misread(shown: _Shown, known: _Line, budget: MergeBudget, *, in_entry: bool = False) -> bool:
-    """Whether ``shown`` misreads ``known``. ``in_entry``: ``shown`` is not its block's top row."""
+def _misread(
+    shown: _Shown,
+    known: _Line,
+    budget: MergeBudget,
+    *,
+    in_entry: bool = False,
+    placed: bool = False,
+) -> bool:
+    """Whether ``shown`` misreads ``known``. ``in_entry``: ``shown`` is not its block's top row.
+    ``placed``: the row above re-reads the known line right before ``known``."""
     if not _same_speaker(shown.speaker, known.speaker):
         return False
     a, b = shown.norm, known.norm
@@ -295,7 +303,12 @@ def _misread(shown: _Shown, known: _Line, budget: MergeBudget, *, in_entry: bool
     # takes its words. Only below another row of its block: a block's top row may be a new
     # line starting with an old one's words ("yes." / "yes I think so too."), and a glitch
     # there has no row above for ``_reflow`` to place it by (both lost words, QA).
-    if not in_entry:
+    # A block's top row right under the row re-reading the line before ``known`` grew that
+    # line (XERK-2791): Teams heads each entry, so one speaker's one-row entries ("OK." /
+    # "All right" -> "All right, let's wrap it up today.") are each a top row. Its neighbour
+    # places it, so it is no new line starting with an old one's words: that would show the
+    # old line between them.
+    if not (in_entry or placed):
         return False
     had = _words(known.text)
     return bool(had) and _words(shown.text)[: len(had)] == had
@@ -450,7 +463,10 @@ def _align(
             if j:
                 options.append((best[i][j - 1] + _MISS, "skip_known"))
                 in_entry = i >= 2 and shown[i - 2].block == shown[i - 1].block
-                if _misread(shown[i - 1], tail[j - 1], budget, in_entry=in_entry) or (
+                placed = i >= 2 and j >= 2 and move[i - 1][j - 1] == "match"
+                if _misread(
+                    shown[i - 1], tail[j - 1], budget, in_entry=in_entry, placed=placed
+                ) or (
                     # A block's top row grown over a twin row of its line (XERK-2727):
                     # [okay, ship it][0kay.] over okay./okay. paired nothing when the twin
                     # was misread, so ``_revisions``' verbatim cut missed it too.

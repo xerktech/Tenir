@@ -15,18 +15,20 @@ import threading
 import time
 import uuid
 from array import array
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Hashable, Iterable
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen import turma
 from api.screen.merge import _SAID_BETWEEN_MS, CaptionMerger, MergeBudget, OverBudget, _Line
-from api.screen.zoom import CaptionBlock, FullFrame, Roster
+from api.screen.teams import _SPEAKER_LABEL
+from api.screen.zoom import _MAX_ROSTER, _NAME_MATCH, CaptionBlock, FullFrame, Roster, norm_name
 
 log = logging.getLogger("api.screen")
 
@@ -156,6 +158,36 @@ class Cadence:
         )
 
 
+# Frames an off-roster spelling is read on before it is a speaker of its own (XERK-2791):
+# QA's misread rigs changed a header on 1-3 frames; one real window had none in 187 reads.
+_HEARD_OWN = 3
+# ... and while a like spelling is read over this many times as often, it is still its misread:
+# a header misread on 3 of a long-running speaker's ~100 frames re-stored the panel (QA rig).
+_HEARD_SHARE = 10
+
+
+# Names longer than this (normalized) are never unified: OCR text is attacker-controlled, and
+# difflib is quadratic in length. Real display names are shorter.
+_LIKE_MAX_CHARS = 32
+# New spellings compared per frame (each against every heard one); later ones in the frame
+# are kept as read. A real panel shows a handful of headers; 20 crafted 64-char ones a frame
+# cost ~2 s CPU (QA).
+_NEW_PER_FRAME = 8
+
+
+def _like(a: str, b: str) -> bool:
+    """Two speaker names read alike: one an OCR misread of the other."""
+    ka, kb = norm_name(a), norm_name(b)
+    if max(len(ka), len(kb)) > _LIKE_MAX_CHARS:
+        return False
+    sm = SequenceMatcher(None, ka, kb)
+    return (
+        sm.real_quick_ratio() >= _NAME_MATCH
+        and sm.quick_ratio() >= _NAME_MATCH
+        and (sm.ratio() >= _NAME_MATCH)
+    )
+
+
 class MeetingTracker:
     def __init__(
         self,
@@ -183,6 +215,11 @@ class MeetingTracker:
         # The socket currently feeding this window, for cadence changes; None when detached.
         self.notify: Notify | None = None
         self.roster: Roster | None = None
+        # Off-roster speakers named by their avatar'd Teams header (XERK-2791): frames each
+        # spelling was read on this meeting, in the order first heard, and the like spellings
+        # of each, compared once when it is first heard (``_as_heard``).
+        self._heard: Counter[str] = Counter()
+        self._likes: dict[str, list[str]] = {}
         self.active: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
@@ -282,6 +319,62 @@ class MeetingTracker:
                 )
             )
 
+    def _off_roster(self, name: str | None) -> bool:
+        """A speaker ``_as_heard`` unifies: off the roster, and no "Speaker N" label."""
+        return (
+            name is not None
+            and not _SPEAKER_LABEL.match(name)
+            and (self.roster is None or name not in self.roster)
+        )
+
+    def _as_heard(self, blocks: list[CaptionBlock]) -> list[CaptionBlock]:
+        """Off-roster speakers under the spelling most read for them (XERK-2791). The merger
+        tells speakers apart by exact name, so one frame misreading a header ("Omar Patcl")
+        was a new speaker and the whole panel was stored again under it (QA).
+
+        A spelling read on fewer than ``_HEARD_OWN`` frames, or ``_HEARD_SHARE`` times less
+        often than a like one (``_NAME_MATCH``), is a misread of the likest read at least as
+        often (the first heard on a tie); past that it is a person of their own ("Ana Silvo"
+        beside "Ana Silva"), whose first entry is stored under the like name too (accepted:
+        a misread can't be told from a newcomer on their first frames). When a spelling
+        outreads a rarer like one, the merger's held lines move to it: keeping the
+        first reading named a speaker by a misread for the whole meeting (QA). Roster names
+        and "Speaker N" labels ("Speaker 1" reads like "Speaker 2") are left as they are."""
+        names = sorted({b.speaker for b in blocks if self._off_roster(b.speaker)})
+        new = 0
+        for name in names:
+            if name not in self._likes and len(self._likes) < _MAX_ROSTER and new < _NEW_PER_FRAME:
+                new += 1
+                like = [n for n in self._likes if _like(n, name)]
+                for n in like:
+                    self._likes[n].append(name)
+                self._likes[name] = like
+            if name in self._likes:
+                self._heard[name] += 1
+        order = {n: i for i, n in enumerate(self._likes)}
+        as_read: dict[str, str] = {}
+        for name in names:
+            count = self._heard[name]
+            if count == 0:
+                continue  # past the cap: kept as read
+            like = self._likes[name]
+            if count < _HEARD_OWN or any(self._heard[n] >= count * _HEARD_SHARE for n in like):
+                # A tie goes to the spelling heard first: two new like names on one frame
+                # each took the other's and swapped (QA).
+                over = [n for n in like if (self._heard[n], -order[n]) > (count, -order[name])]
+                if over:
+                    as_read[name] = max(over, key=lambda n: (self._heard[n], -order[n]))
+                    continue
+            if self.merger is not None:
+                for n in like:
+                    if self._heard[n] < min(count, _HEARD_OWN):
+                        self.merger.rename(n, name)
+        if not as_read:
+            return blocks
+        return [
+            replace(b, speaker=as_read[b.speaker]) if b.speaker in as_read else b for b in blocks
+        ]
+
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         try:
             await self._on_caption(blocks, ts)
@@ -294,6 +387,10 @@ class MeetingTracker:
     async def _on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
         if not blocks:
             return
+        if any(self._off_roster(b.speaker) for b in blocks):
+            # Off the loop and in the user's turn, like the merge (XERK-2737): it runs
+            # difflib. Only then: a pool turn on every frame doubled a busy pod's caption lag.
+            blocks = await CPU_POOL.run(self.user, self._as_heard, blocks)
         if (
             self.meta.platform == "teams"
             and self.merger is not None
@@ -437,6 +534,8 @@ class MeetingTracker:
         self.merger = None
         # The next meeting on this window starts with whoever its tiles show then.
         self.roster = None
+        self._heard.clear()
+        self._likes.clear()
         self.active = None
         await self._send(self.cadence.message(meeting=False, org_site_key=self.meta.org_site_key))
         return conversation_id
