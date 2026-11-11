@@ -725,11 +725,30 @@ def _revisions(
         if own not in ends and recent:
             ends.append(own)
         found = None
+        lead = fresh and recent
+        score: list[int] = []
         for e in ends:
             folded: list[tuple[int, tuple[int, ...]]] = []
-            if c := _claims(shown, rows, tail, cands[q:e], budget, folded, lead=fresh and recent):
+            score = []
+            if c := _claims(shown, rows, tail, cands[q:e], budget, folded, lead=lead, score=score):
                 found = (e, c)
                 break
+        if found is not None and found[0] == own < end and first == 0 and lead:
+            # The panel's top run claimed only her entry above her next one: that entry may
+            # have scrolled off, and the run is her next entry re-laid ("Yes." / "Yes we can
+            # ship it." -> "Yes we can ship it, after the" / "review."). A short entry's few
+            # words pass coverage inside any row starting with them, so every later claim
+            # shifted up one entry and the short one was lost (XERK-2799). Her next entry
+            # (to the entry after it) is taken instead when the rows pair more of its words.
+            nxt_own = next((k for k in range(own + 1, end) if tail[cands[k]].head), end)
+            alt_folded: list[tuple[int, tuple[int, ...]]] = []
+            alt_score: list[int] = []
+            alt = _claims(
+                shown, rows, tail, cands[own:nxt_own], budget, alt_folded, lead=lead,
+                score=alt_score,
+            )
+            if alt and alt_score[0] > score[0]:
+                found, folded = (nxt_own, alt), alt_folded
         if found is None:
             if fresh:
                 break
@@ -758,6 +777,7 @@ def _claims(
     folded: list[tuple[int, tuple[int, ...]]] | None = None,
     *,
     lead: bool = False,
+    score: list[int] | None = None,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
     rows keep under ``_REVISED`` of ``draft_lines``' words in order.
@@ -765,7 +785,8 @@ def _claims(
     ``folded`` (when given) gets the draft lines no row claims but whose every word a claiming
     row holds, between two claimed lines or after the last, each with the claimed lines: a
     rewrite with fewer rows than its draft ("we did it in test first so" / "nothing broke" ->
-    one row) folded them into the rows, and kept they were stored twice (XERK-2701)."""
+    one row) folded them into the rows, and kept they were stored twice (XERK-2701).
+    ``score`` (when given) gets how many draft words the claiming rows pair with."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -800,6 +821,8 @@ def _claims(
     said = sum(1 for n, (w, _) in enumerate(draft) if not n or draft[n - 1][0] != w)
     if not claims or (len(pairs) < _REVISED * said and not _cut_back(draft, mine)):
         return None
+    if score is not None:
+        score.append(sum(1 for r, _ in pairs if r in claims))
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
         paired = {

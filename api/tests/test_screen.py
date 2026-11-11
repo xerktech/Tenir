@@ -4931,6 +4931,56 @@ def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
     assert len(final.values()) == len(set(final.values()))  # no row stored twice
 
 
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize(
+    ("short", "draft", "said", "grown", "tail"),
+    [
+        pytest.param(
+            "Yes.",
+            "yes we can.",
+            "Yes we can ship it.",
+            ("Yes we can ship it friday if the", "tests pass."),
+            ("Yes we can ship it, after the", "review."),
+            id="yes",
+        ),
+        pytest.param(
+            "Okay.",
+            "okay so the build.",
+            "Okay so the build is green.",
+            ("Okay so the build is green on the", "staging cluster."),
+            ("Okay so the build is green, after the", "review."),
+            id="okay",
+        ),
+    ],
+)
+def test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_kept(
+    gap: int, short: str, draft: str, said: str, grown: tuple, tail: tuple
+) -> None:
+    """XERK-2799: Bo says "Yes." then entries starting "Yes we can ...". Once "Yes." scrolls
+    off and the next entry is re-laid, the top run's draft cut at her next entry was "Yes."
+    alone: its one word passed coverage inside the re-laid row, so every Bo segment shifted up
+    an entry and "Yes." was lost. Gaps up to ``_SAID_BETWEEN_MS``, the 3 s gate."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    frames = [
+        [blk("Bo", short), blk("Bo", draft)],
+        [blk("Bo", short), blk("Bo", said), blk("Bo", draft)],
+        [blk("Bo", short), blk("Bo", said), blk("Bo", *grown)],
+    ] + [[blk("Bo", *tail), blk("Bo", *grown), blk("Cy", "can you share the screen.")]] * 4
+    final: dict[str, Segment] = {}
+    for k, blocks in enumerate(frames):
+        for seg in m.feed(blocks, k * gap):
+            final[seg.segment_id] = seg
+    for seg in m.flush(len(frames) * gap + 60_000):
+        final[seg.segment_id] = seg
+    stored = [(s.speaker, s.text) for s in sorted(final.values(), key=lambda s: s.start_ms)]
+    assert [(sp, t) for sp, t in stored if t] == [
+        ("Bo", short),
+        *[("Bo", row) for row in tail],
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
 @pytest.mark.parametrize("missed", [0, 1])
 def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(missed: int) -> None:
     """QA (XERK-2720): one frame of OCR missing one of Ana's blocks just before her entry grows
