@@ -67,6 +67,7 @@ _TAIL = 20
 # most: otherwise an older run of the same words ("yes", "thanks", "yes") could be matched
 # instead, swallowing the new line.
 _MATCH = 3.0
+_END = ".,?! "  # end punctuation a finalised entry may gain or change (``_score``)
 _GLITCH = -1.0
 # A glitch is normally a misread of a known line in the same place (a garbled or half-cut top
 # line): that pairing is a substitution and costs _GLITCH. A shown line with no known line to
@@ -272,11 +273,13 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     if not _same_speaker(shown.speaker, known.speaker):
         return 0.0
     a, b = shown.norm, known.norm
-    if a == b or (_words(a) == _words(b) and len(_words(a)) >= _CUT_WORDS):
-        # Same words, re-punctuated: Teams punctuates an entry as it finalises it, after it
+    if a == b or (a.rstrip(_END) == b.rstrip(_END) and len(_words(a)) >= _CUT_WORDS):
+        # Re-punctuated at the end: Teams punctuates an entry as it finalises it, after it
         # was stored ("let's go to Cy" -> "...Cy."). Only a ratio match, it lost to
         # storing the whole box again once the live entry below was rewritten (XERK-2774).
-        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz).
+        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz). Not
+        # by words alone: "Yes, we can." (her "Yes." rewritten) paired a stale "yes we can."
+        # of hers below it and the rewrite was lost (XERK-2799's shape).
         return _MATCH
     if growable and a.startswith(b):
         return _MATCH - 0.5  # the line growing
@@ -643,7 +646,45 @@ def _revisions(
     line its words matched, until a row matches none: it and the rows after it stay new.
 
     A block of only new rows under its own header that revises nothing is a fresh entry:
-    everything below it is newer (a repeat there is said again), so revising stops."""
+    everything below it is newer (a repeat there is said again), so revising stops.
+
+    The panel's top run may claim a later entry of hers than its draft's first when that
+    pairs more words (``_revise_runs``' ``pick``): her first entry may have scrolled off
+    (XERK-2799). Taken only when the whole panel's claims then pair strictly more words than
+    without it: the short entry still shown and rewritten ("Yes." -> "Yes, we can.") pairs
+    fewer once every later run has shifted down an entry, whatever the headers read (QA:
+    counting her header blocks instead switched there when OCR misread one of them). Each
+    entry is tried on its own: the top run taking the one it pairs most words of starved her
+    later runs, and the panel then refused the switch altogether."""
+    out, folds, paired, alts, _ = _revise_runs(shown, speakers, aligned, tail, ts, budget)
+    best = (False, paired)
+    for pick in range(alts):
+        # Among entries the top run pairs every word of, the latest wins: the panel shows the
+        # newest, and a stale draft or the scrolled-off entry it grew from ("Okay." ->
+        # "Okay, after the review we merge.") pairs as fully as the entry shown (QA fuzz).
+        # Failing that, the most words. Never on a tie with no switch.
+        res = _revise_runs(shown, speakers, aligned, tail, ts, budget, pick=pick)
+        rank = (res[4], pick if res[4] else res[2])
+        if res[2] > paired and rank >= best:
+            out, folds, best = res[0], res[1], rank
+    if merged is not None:
+        merged += folds
+    return out
+
+
+def _revise_runs(
+    shown: list[_Shown],
+    speakers: list[str | None],
+    aligned: list[int | None],
+    tail: list[_Line],
+    ts: int,
+    budget: MergeBudget,
+    pick: int | None = None,
+) -> tuple[dict[int, int], list[tuple[int, tuple[int, ...]]], int, int, bool]:
+    """``_revisions``' claims and folds, with the draft words its claims pair (-1 when it
+    revises nothing), how many later entries the top run may switch to, and whether it
+    switched to one whose every word it pairs. ``pick``: the top run claims that one of
+    them instead, when it pairs more words than its own claim."""
     last = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
     start = (aligned[last] or 0) + 1 if last >= 0 else 0
     # An older line is offered only to a new row re-reading it verbatim (XERK-2738): Teams
@@ -676,6 +717,9 @@ def _revisions(
     out: dict[int, int] = {}
     folds: list[tuple[int, tuple[int, ...]]] = []
     p = 0  # cands before p are taken (or skipped over by an earlier revision)
+    paired = 0
+    alts = 0
+    whole = False
     for rows in runs:
         first = rows[0]
         fresh = shown[first].speaker is not None and (
@@ -694,6 +738,7 @@ def _revisions(
                 break
             continue
         found = None
+        score: list[int] = []
         for q in qs:
             end = q
             while (
@@ -756,6 +801,7 @@ def _revisions(
                 later = q != qs[0]
                 if later and not live:
                     continue
+                score = []
                 if c := _claims(
                     shown, rows, tail, cands[q:e], budget, folded,
                     # A later start never skips rows: a garbled re-read above a repeat
@@ -766,11 +812,33 @@ def _revisions(
                     # a 3-word draft's words overwrote it, and a start past her first draft
                     # line lost that line (both QA).
                     split_only=later,
+                    score=score,
                 ):
                     found = (e, c, folded)
                     break
             if found is not None:
                 break
+        # Only for her first start: a later one is taken only as a split (above).
+        if found is not None and q == qs[0] and found[0] == own < end and first == 0:
+            # The panel's top run claimed only her entry above her next one. That entry may
+            # have scrolled off, the run a later entry re-laid ("Yes." / "Yes we can ship
+            # it." -> "Yes we can ship it, after the" / "review."): a short entry's few words
+            # pass coverage inside any row starting with them, so every later claim shifted
+            # up an entry and the short one was lost (XERK-2799). ``_revisions`` tries each
+            # later entry of hers here (``pick``) and keeps the panel pairing most words.
+            starts = [own, *(k for k in range(own + 1, end) if tail[cands[k]].head), end]
+            alts = len(starts) - 1
+            if pick is not None:
+                s0, s1 = starts[pick], starts[pick + 1]
+                alt_folded: list[tuple[int, tuple[int, ...]]] = []
+                alt_score: list[int] = []
+                alt = _claims(
+                    shown, rows, tail, cands[s0:s1], budget, alt_folded, lead=fresh and recent,
+                    score=alt_score,
+                )
+                if alt and alt_score[0] > score[0]:
+                    found, score = (s1, alt, alt_folded), alt_score
+                    whole = alt_score[0] == sum(len(_words(tail[j].text)) for j in cands[s0:s1])
         if found is None:
             if fresh:
                 break
@@ -778,16 +846,15 @@ def _revisions(
         p, claims, folded = found
         out.update(claims)
         folds += folded
+        paired += score[0]
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
     if p != len(cands):
-        return {}
+        return {}, [], -1, alts, whole
     # An older line is never rewritten: only its verbatim re-read may claim it.
     if any(j in old and not _exact(shown[i], tail[j]) for i, j in out.items()):
-        return {}
-    if merged is not None:
-        merged += folds
-    return out
+        return {}, [], -1, alts, whole
+    return out, folds, paired, alts, whole
 
 
 def _claims(
@@ -801,6 +868,7 @@ def _claims(
     lead: bool = False,
     split: list[str] | None = None,
     split_only: bool = False,
+    score: list[int] | None = None,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
     rows keep under ``_REVISED`` of ``draft_lines``' words in order.
@@ -810,7 +878,8 @@ def _claims(
     rewrite with fewer rows than its draft ("we did it in test first so" / "nothing broke" ->
     one row) folded them into the rows, and kept they were stored twice (XERK-2701).
     ``split``: the words of her next entry right below the rows (``_cut_back``); with
-    ``split_only`` that split is the only way the rows may claim the draft."""
+    ``split_only`` that split is the only way the rows may claim the draft.
+    ``score`` (when given) gets how many draft words the claiming rows pair with."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -848,6 +917,8 @@ def _claims(
         and not _cut_back(draft, mine, split or [], split_only=split_only)
     ):
         return None
+    if score is not None:
+        score.append(sum(1 for r, _ in pairs if r in claims))
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
         paired = {
