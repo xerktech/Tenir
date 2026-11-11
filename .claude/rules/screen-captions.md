@@ -41,6 +41,11 @@ paths:
   after a meeting: a pod restart clears them. Retune merge timing gates from these, not guesses.
   Tests: `test_the_gap_between_snapshots_fed_to_a_meeting_is_metered`,
   `test_a_frame_the_merger_fails_on_is_not_a_gap`.
+- Read a past meeting's gaps from its `screen meeting ended: <id> (<platform>, caption gaps
+  n= p50= p95= max= over_3s=[ dropped=])` log line in Loki, not `/metrics` (XERK-2724). Deploys restart
+  the pod often enough that a meeting's in-memory samples are usually gone by the time anyone
+  reads them. `over_3s` counts gaps past `merge._SAID_BETWEEN_MS`: retune that gate only if it
+  is more than a few percent of `n`. Test: `test_a_meeting_logs_its_own_caption_gaps_when_it_ends`.
 - Real frames for tuning come from the opt-in sampler (`samples.py`, `API_SCREEN_SAMPLE_DIR`,
   XERK-2705), never from git. On k8x point it under the `/data/audio` volume (the only persistent
   mount) and pull with `kubectl cp`; it saves client meeting screenshots, so set it for one
