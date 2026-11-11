@@ -50,12 +50,16 @@ paths:
     Punctuation alone lost "Acme Global Partners" mid-caption when absent, and when present
     merged a new speaker after an unfinished line into the last one (both QA, real OCR).
   - With no roster, the last row, name-shaped, where a header can sit (after a punctuated row or
-    with avatar evidence, never alone) is a pending header (XERK-2794): the next entry's header
-    shows before its text, and read as text it was stored as speech for good. A mid-panel name
-    row is a header anyway once a row follows; a finished caption tail gets Teams' "." and is
-    text again. Accepted: a name-shaped tail never punctuated ("Hi Hank Ives") is lost. Tests:
-    `test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header`,
-    `test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored`.
+    with avatar evidence, never alone) is a pending header (XERK-2794, `caption_blocks`, shared
+    with Zoom): the next entry's header shows before its text, and read as text it was stored as
+    speech for good. A mid-panel name row is a header anyway once a row follows; a finished
+    caption tail gets Teams' "." and is text again.
+    - It verifies no crop (`zoom.pending_header`): slide text over a name started meetings (QA).
+      Requiring a header above it instead re-stored names once the header scrolled off.
+    - Accepted: a name-shaped tail never punctuated ("Sounds Good", "Hi Hank Ives") is lost.
+    - Tests: `test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header`,
+      `test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored`,
+      `test_without_a_roster_slide_text_over_a_trailing_name_starts_no_meeting`.
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.

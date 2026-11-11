@@ -714,6 +714,12 @@ _HEADER_BEFORE_TEXT = [
 ]
 
 
+def test_without_a_roster_slide_text_over_a_trailing_name_starts_no_meeting() -> None:
+    # QA on XERK-2794: the trailing name read as an empty header verified the crop.
+    ocr, _ = panel([("Revenue grew ten percent.", None), ("Mark Hale", None)])
+    assert teams.parse_caption_crop(ocr, Roster()) == []
+
+
 @pytest.mark.parametrize("window", [99, 3])
 def test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored(window) -> None:
     # XERK-2794: on origin/main "Tom Adams" and "Mark Hale" were stored as speech.

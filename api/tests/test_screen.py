@@ -325,6 +325,21 @@ def test_without_a_roster_a_name_line_is_an_unverified_header() -> None:
     ]
 
 
+def test_without_a_roster_or_pixels_a_trailing_name_after_a_finished_line_is_a_header() -> None:
+    # XERK-2794: the next entry's name shown before its text was stored as speech.
+    blocks = parse_caption_crop(crop("Mark Hale", "We can start now.", "Tom Adams"), Roster())
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        (None, True, ["We can start now."]),
+        (None, True, []),
+    ]
+
+
+def test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting() -> None:
+    # QA on XERK-2794: a trailing name with no header above it verified a docs page.
+    rows = ("Fixed a crash on start.", "Improved sync speed.", "Known Issues")
+    assert parse_caption_crop(crop(*rows), Roster()) == []
+
+
 def test_ocr_pieces_on_one_row_are_joined_and_noise_dropped() -> None:
     result = OcrResult(
         700,
