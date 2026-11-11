@@ -49,9 +49,30 @@ paths:
     punctuated row, or carrying avatar evidence (initials in its box or a circle beside it).
     Punctuation alone lost "Acme Global Partners" mid-caption when absent, and when present
     merged a new speaker after an unfinished line into the last one (both QA, real OCR).
+  - With no roster, the last row, name-shaped, where a header can sit (after a punctuated row or
+    with avatar evidence, never alone) is a pending header (XERK-2794, `caption_blocks`, shared
+    with Zoom): the next entry's header shows before its text, and read as text it was stored as
+    speech for good. A mid-panel name row is a header anyway once a row follows; a finished
+    caption tail gets Teams' "." and is text again.
+    - It verifies no crop (`zoom.pending_header`): slide text over a name started meetings (QA).
+      Requiring a header above it instead re-stored names once the header scrolled off.
+    - Accepted: a name-shaped tail never punctuated ("Sounds Good", "Hi Hank Ives") is lost.
+    - Tests: `test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header`,
+      `test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored`,
+      `test_without_a_roster_slide_text_over_a_trailing_name_starts_no_meeting`.
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
+  - Caption crops drop a box reading exactly "Go to current" (`_drop_pane_buttons`) before
+    `row_groups`: level with a header it joined the row and lost the header (XERK-2792). Only
+    unpunctuated and well right of the text column: a spoken "go to current." stays (QA).
+    Tests: `test_the_go_to_current_button_is_not_caption_text`,
+    `test_go_to_current_spoken_at_the_text_column_stays`.
+  - A row glued onto the avatar sheds a 2-capital token one letter off the circle, compared
+    position by position (first+last initial: "LA" for "TA", real OCR). A shared letter alone
+    stripped "AI"/"IT" openers under Tom Adams (QA). Tests:
+    `test_avatar_initials_misread_by_one_letter_are_stripped`,
+    `test_a_two_capital_word_not_one_letter_off_the_circle_stays_text`.
   - A short token before a roster name on a box left of the text below it is a misread circle
     ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
   - Caption crops read their pixels for avatars (`_pixel_avatars`, XERK-2614): a round run of
@@ -60,6 +81,31 @@ paths:
     A photo has no OCR box, so text rules merged its speaker into the last one. Tests:
     `test_a_photo_avatar_speaker_off_the_roster_gets_their_own_header`,
     `test_a_name_shaped_first_caption_line_stays_under_its_speaker`.
+  - An avatar'd header the roster doesn't match names its speaker by its cleaned text
+    (`caption_blocks`, XERK-2791): a meeting whose window isn't on screen fills no roster, and a
+    real one stored 50 of 64 rows with no speaker. Measure with `caption_replay.py --rows`.
+  - The tracker names such a speaker by the spelling most read this meeting
+    (`MeetingTracker._as_heard`): the merger compares speakers exactly, so one frame misreading
+    "Omar Patcl" stored the whole panel again (QA). A spelling under `_HEARD_OWN` frames, or read
+    `_HEARD_SHARE`x less than a like one, is a misread of it; else a person of their own.
+    - Keeping the first reading instead named a speaker by a misread first frame all meeting
+      (QA): a spelling outreading a rarer like one takes its held lines (`CaptionMerger.rename`).
+    - Accepted: a new person whose name reads like an off-roster speaker's has their first
+      entry stored under that name as well (a misread can't be told from a newcomer yet).
+      Roster names and "Speaker N" labels are never unified. Ties go to the first heard.
+    - Crafted names cost difflib (QA: ~2 s a frame on the event loop). So likeness is computed
+      once per new spelling (`_likes`, linked both ways), at most `_NEW_PER_FRAME` new a frame,
+      never past `_LIKE_MAX_CHARS`, and `_as_heard` runs on `CPU_POOL` (worst 90-340 ms a frame
+      while 200 names fill, by node load), only for frames with an off-roster speaker.
+      Tests: `test_off_roster_names_are_compared_once_each`,
+      `test_a_frame_brings_in_at_most_a_few_new_spellings`,
+      `test_off_roster_names_are_unified_off_the_event_loop`.
+    - Per meeting (cleared in `end`). Tests:
+      `test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines`,
+      `test_a_long_running_speakers_name_misread_on_three_frames_is_stored_once`,
+      `test_two_people_with_like_names_off_the_roster_stay_apart`.
+  - Accepted: a name read off-roster then matched to a differently spelled tile once a full
+    frame fills the roster can split one entry across two names (unmeasured on real frames).
   - No avatar found (faint photo, odd layout) keeps the position rule. An avatar-only rule
     there lost 11/96 real-OCR cases with no roster (QA). Test:
     `test_with_no_avatar_found_a_roster_keeps_the_position_rule`.

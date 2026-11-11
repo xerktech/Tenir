@@ -325,6 +325,55 @@ def test_without_a_roster_a_name_line_is_an_unverified_header() -> None:
     ]
 
 
+def test_without_a_roster_or_pixels_a_trailing_name_after_a_finished_line_is_a_header() -> None:
+    # XERK-2794: the next entry's name shown before its text was stored as speech.
+    blocks = parse_caption_crop(crop("Mark Hale", "We can start now.", "Tom Adams"), Roster())
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        (None, True, ["We can start now."]),
+        (None, True, []),
+    ]
+
+
+def test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting() -> None:
+    # QA on XERK-2794: a trailing name with no header above it verified a docs page.
+    rows = ("Fixed a crash on start.", "Improved sync speed.", "Known Issues")
+    assert parse_caption_crop(crop(*rows), Roster()) == []
+
+
+def test_a_dim_trailing_name_still_starts_a_meeting_and_keeps_the_text_above() -> None:
+    # QA on XERK-2794: the no-pixel guard also refused a dim name row, and once the panel
+    # scrolled the first entry's text was never stored.
+    first = [("so that is where the budget stands", False), ("Shad Tischer", True)]
+    then = [("Shad Tischer", True), ("we shipped it on friday", False)]
+
+    async def run() -> list[str]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "zoom"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ros = await t.ensure_roster()
+        ts = 0
+        for rows in [first] * 4 + [then] * 4:
+            ocr, jpeg = panel_crop(*rows)
+            live = t.conversation_id is not None
+            await t.on_caption(parse_caption_crop(ocr, ros, live=live, jpeg=jpeg), ts)
+            ts += 4000
+        await t.end(ts + 70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [s.text for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    assert asyncio.run(run()) == ["so that is where the budget stands", "we shipped it on friday"]
+
+
 def test_ocr_pieces_on_one_row_are_joined_and_noise_dropped() -> None:
     result = OcrResult(
         700,
@@ -5471,6 +5520,25 @@ def test_another_speaker_repeating_a_line_and_its_reply_after_dropped_frames_sto
     ]
 
 
+def test_a_cross_speaker_repeat_round_at_a_two_second_cadence_keeps_every_line() -> None:
+    """XERK-2797 QA: Teams frames reach the merger ~2 s apart, time for Cy to say X again.
+    The same rows under a new header are then a repeat; a re-attribution reads the same, so
+    it is stored twice (accepted: widening ``_REHEAD_MS`` to the cadence lost these lines)."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Dee", "thank you all so much"), blk("Dee", "yes")], t * 2000)
+    for t in range(5, 9):
+        out += m.feed([blk("Cy", "thank you all so much"), blk("Dee", "yes")], t * 2000)
+    out += m.flush(60_000)
+    assert _once(out) == [
+        ("Dee", "thank you all so much"),
+        ("Dee", "yes"),
+        ("Cy", "thank you all so much"),
+        ("Dee", "yes"),
+    ]
+
+
 def test_another_speaker_repeating_a_line_shown_as_it_is_said_stores_both() -> None:
     """At 1 fps a repeat is seen growing, so its frames never read the old rows exactly."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
@@ -5775,6 +5843,49 @@ def test_a_fold_never_takes_a_reflow_or_an_older_line(seed: int, noise: float) -
     line lost a word moved up onto the row above (a re-flow, ``_reflow``'s). Seed 191: the
     bottom row paired with an older line it starts like, not the row above the folded one."""
     assert _simulate_teams(seed, noise=noise)[2] == 0
+
+
+def test_an_entry_growing_as_the_next_one_appears_below_is_stored_once() -> None:
+    """XERK-2791, a real Teams shape: one speaker's one-row entries, each a block's top row.
+    "All right" grew on the frame the next entry appeared under it; unpaired under its header,
+    that frame stored "OK.", the grown entry and "Next up is" again. Off-roster speakers had
+    no name before, so their rows were cheap glitches and the growth was lost instead."""
+    ana = ["we can ship the release on friday once", "the last two checks are green for the"]
+    stored, _ = _entry_run(
+        [
+            ([blk("Ana", *ana[:1], ana[1] + " release."), blk("Bo", "OK")], 1),
+            (
+                [
+                    blk(None, ana[1] + " release.", header=False),
+                    blk("Ana", "That's pretty much."),
+                    blk("Bo", "OK."),
+                    blk("Bo", "All right"),
+                ],
+                1,
+            ),
+            ([blk("Bo", t) for t in ("OK.", "All right, let's wrap it up today.", "Next up is")], 1),
+            ([blk("Bo", t) for t in ("OK.", "All right, let's wrap it up today.", "Next up is Cy")], 6),
+        ]
+    )
+    assert [text for _, text in stored][2:] == [
+        "OK",
+        "That's pretty much.",
+        "OK.",
+        "All right, let's wrap it up today.",
+        "Next up is Cy",
+    ]
+
+
+def test_a_new_entry_under_a_shown_twin_of_its_start_is_a_new_line() -> None:
+    """The row above re-reading the line before is what places a grown top row: with the old
+    entry still shown above, a row starting with its words is a new entry (XERK-2716)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 5),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert [text for _, text in stored] == ["OK.", "yes.", "yes I think so too."]
 
 
 @pytest.mark.parametrize("missed", [1, 2, 3, 5])

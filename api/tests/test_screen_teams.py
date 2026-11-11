@@ -512,6 +512,116 @@ def test_a_leading_token_that_is_not_the_speakers_initials_stays_text(glued: str
     assert [(b.speaker, b.lines) for b in blocks] == [("Mark Hale", [glued])]
 
 
+@pytest.mark.parametrize(
+    ("speaker", "names"),
+    [("Tom Adams", ("Tom Adams", "Mark Hale")), ("Tom Adams", ()), ("Adams, Tom", ("Adams, Tom",))],
+)
+def test_avatar_initials_misread_by_one_letter_are_stripped(speaker: str, names: tuple) -> None:
+    # Real Teams OCR read Tom Adams' circle "TA" as "LA" (XERK-2792); "Adams, Tom" draws "TA".
+    blocks = teams.parse_caption_crop(
+        result(
+            line(speaker, 56, 4, 200, 20),
+            line("LA Thank you.", 10, 26, 300, 46),
+            line("and the rest of it", 56, 48, 300, 68),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["Thank you.", "and the rest of it"]]
+
+
+@pytest.mark.parametrize("names", [("Tom Adams", "Mark Hale"), ()])
+def test_the_go_to_current_button_is_not_caption_text(names: tuple) -> None:
+    # Teams' "Go to current" button level with a header joined its row, so the header read
+    # as text under the previous speaker (XERK-2792, real Teams OCR: header x 60, button 402).
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line("Tom Adams", 60, 52, 200, 68),
+            line("Go to current", 402, 52, 520, 68),
+            line("All right thank", 60, 74, 300, 94),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["We can start now."], ["All right thank"]]
+    if names:
+        assert [b.speaker for b in blocks] == ["Mark Hale", "Tom Adams"]
+
+
+@pytest.mark.parametrize(
+    ("speaker", "glued"),
+    [
+        ("Tom Adams", "AI is the plan."),  # shares a letter, but not in the circle's place
+        ("Tom Adams", "IT is down."),
+        ("Priya", "PA system is on."),  # one-word name: no two-letter circle to misread
+    ],
+)
+def test_a_two_capital_word_not_one_letter_off_the_circle_stays_text(
+    speaker: str, glued: str
+) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line(speaker, 56, 4, 200, 20), line(glued, 10, 26, 300, 46)), roster(speaker)
+    )
+    assert [b.lines for b in blocks] == [[glued]]
+
+
+@pytest.mark.parametrize("spoken", ["go to current.", "Go to current"])
+def test_go_to_current_spoken_at_the_text_column_stays(spoken: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("I think we should just", 60, 26, 300, 46),
+            line(spoken, 60, 48, 200, 68),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [["I think we should just", spoken]]
+
+
+@pytest.mark.parametrize("button", ["Go to current", "Go to current ↓"])
+def test_only_the_whole_button_text_is_dropped(button: str) -> None:
+    # Right of the text column, as the button sits: only its exact, unpunctuated text goes.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line(button, 402, 26, 520, 46),
+            line("and then", 60, 48, 200, 68),
+            line("Go to current events", 402, 48, 600, 68),
+            line("and also", 60, 70, 200, 90),
+            line("Go to current.", 402, 70, 520, 90),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [
+        ["We can start now.", "and then Go to current events", "and also Go to current."]
+    ]
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_the_button_alone_in_a_crop_is_no_caption(live: bool) -> None:
+    # No text box to measure a column from: the button can't be a spoken line beside it.
+    ocr = result(line("Go to current", 300, 40, 420, 60))
+    assert teams.parse_caption_crop(ocr, Roster(), live=live) == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [line("caption line 0", 60, 26, 300, 46)],  # one caption row: the column is that row
+        [line("MH Yes we can.", 10, 26, 300, 46)],  # its avatar glued on
+        [],  # the button alone under the header
+    ],
+)
+def test_the_button_is_dropped_beside_a_single_caption_row(rows: list) -> None:
+    ocr = result(line("Mark Hale", 60, 4, 200, 20), *rows, line("Go to current", 300, 58, 420, 74))
+    blocks = teams.parse_caption_crop(ocr, roster("Mark Hale"), live=True)
+    assert all("Go to current" not in " ".join(b.lines) for b in blocks)
+    assert [ln for b in blocks for ln in b.lines] == [
+        teams._strip_glued_initials(r.text, "Mark Hale", Roster()) for r in rows
+    ]
+
+
 def test_capital_caption_words_that_are_not_the_speakers_initials_stay_text() -> None:
     blocks = teams.parse_caption_crop(
         result(
@@ -560,6 +670,66 @@ def test_without_a_roster_a_directory_name_line_is_an_unverified_header() -> Non
         result(line("Raman, Priya", 56, 4, 150, 20), line("Okay.", 56, 26, 100, 46)), Roster()
     )
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [(None, True, ["Okay."])]
+
+
+def test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header() -> None:
+    # XERK-2794: the next entry's header shows before its text. Read as caption text it was
+    # stored as speech under the previous speaker, and never re-read once its text arrived.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line("Tom Adams", 60, 52, 200, 68),
+        ),
+        Roster(),
+    )
+    assert blocks_of(blocks) == [(None, True, ["We can start now."]), (None, True, [])]
+
+
+@pytest.mark.parametrize(
+    ("rows", "caption"),
+    [
+        # After an unfinished line it is the caption going on ("I spoke with" / "John Smith").
+        (["Mark Hale", "I spoke with", "John Smith"], ["I spoke with", "John Smith"]),
+        # Alone in a live crop: nothing says a header sits there (as before XERK-2794).
+        (["Kunal Shah"], ["Kunal Shah"]),
+    ],
+)
+def test_without_a_roster_a_trailing_name_where_no_header_sits_stays_caption(
+    rows: list[str], caption: list[str]
+) -> None:
+    ocr = result(*(line(t, 60, 4 + 24 * i, 60 + 9 * len(t), 20 + 24 * i) for i, t in enumerate(rows)))
+    blocks = teams.parse_caption_crop(ocr, Roster(), live=True)
+    assert [ln for b in blocks for ln in b.lines] == caption
+
+
+_HEADER_BEFORE_TEXT = [
+    ("Mark Hale", "circle"),
+    ("We can start now.", None),
+    ("Tom Adams", "circle"),
+    ("Hello there everyone", None),
+    ("and welcome to the call.", None),
+    ("Mark Hale", "circle"),
+    ("Thanks Tom.", None),
+]
+
+
+def test_without_a_roster_slide_text_over_a_trailing_name_starts_no_meeting() -> None:
+    # QA on XERK-2794: the trailing name read as an empty header verified the crop.
+    ocr, _ = panel([("Revenue grew ten percent.", None), ("Mark Hale", None)])
+    assert teams.parse_caption_crop(ocr, Roster()) == []
+
+
+@pytest.mark.parametrize("window", [99, 3])
+def test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored(window) -> None:
+    # XERK-2794: on origin/main "Tom Adams" and "Mark Hale" were stored as speech.
+    stored = _scrolled_meeting(_HEADER_BEFORE_TEXT, window, jpeg=False, named=())
+    assert [text for _, text in stored] == [
+        "We can start now.",
+        "Hello there everyone",
+        "and welcome to the call.",
+        "Thanks Tom.",
+    ]
 
 
 # --- real OCR of rendered Teams windows (XERK-2609) ----------------------------------------
@@ -962,7 +1132,8 @@ def test_an_unknown_speaker_with_an_avatar_splits_an_unfinished_entry(last: str,
     )
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
         ("Priya Raman", True, [last]),
-        (None, True, ["Sure, I have them right here."]),
+        # Off the roster, his avatar vouches for his header: it names him (XERK-2791).
+        ("Diego Alvarez", True, ["Sure, I have them right here."]),
     ]
 
 
@@ -1360,7 +1531,7 @@ def test_a_photo_avatar_speaker_off_the_roster_gets_their_own_header(bg, fill) -
     ocr, jpeg = panel(_PHOTO_AFTER_UNFINISHED, bg=bg, fill=fill, above=300)
     expected = [
         ("Priya Raman", True, ["Let's look at the numbers for the north region"]),
-        (None, True, ["Sure, I have them right here."]),
+        ("Diego Alvarez", True, ["Sure, I have them right here."]),
     ]
     assert blocks_of(teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg)) == expected
     # Without the image the old position rule still merges him (the regression guard).
@@ -1374,7 +1545,7 @@ def test_a_guest_with_a_photo_avatar_gets_their_own_header() -> None:
     rows = [*_PHOTO_AFTER_UNFINISHED[:2], ("Tomas Berg (Guest)", "circle"), ("Hello all.", None)]
     ocr, jpeg = panel(rows)
     blocks = teams.parse_caption_crop(ocr, roster("Priya Raman"), jpeg=jpeg)
-    assert blocks_of(blocks)[1:] == [(None, True, ["Hello all."])]
+    assert blocks_of(blocks)[1:] == [("Tomas Berg", True, ["Hello all."])]
 
 
 @pytest.mark.parametrize("names", [(), ("Priya Raman",)])
@@ -1389,10 +1560,10 @@ def test_a_name_shaped_first_caption_line_stays_under_its_speaker(names: tuple[s
             ("is joining us next week.", None),
         ]
     )
-    speaker = names[0] if names else None
+    # Each avatar'd header names its speaker, on the roster or not (XERK-2791).
     assert blocks_of(teams.parse_caption_crop(ocr, roster(*names), jpeg=jpeg)) == [
-        (speaker, True, ["Acme Global Partners", "signed the deal today."]),
-        (None, True, ["Lena Moss", "is joining us next week."]),
+        ("Priya Raman", True, ["Acme Global Partners", "signed the deal today."]),
+        ("Hank Ives", True, ["Lena Moss", "is joining us next week."]),
     ]
 
 
@@ -1694,8 +1865,265 @@ def test_a_photo_speaker_off_the_roster_alone_in_the_panel_is_stored() -> None:
 
     assert asyncio.run(run()) == [
         ("Priya Raman", "Let's look at the numbers for the north region"),
-        (None, "Sure, I have them right here."),
+        ("Diego Alvarez", "Sure, I have them right here."),
     ]
+
+
+def _tracked(
+    frames: list[tuple[list, int]], names: tuple[str, ...] = (), meetings: int = 1
+) -> list[tuple[str | None, str]]:
+    """Feed each frame of caption blocks ``count`` times, one a second, through a Teams
+    ``MeetingTracker`` whose roster holds ``names``, ending the meeting after the frames
+    (``meetings`` times over); returns every stored (speaker, text) row."""
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence, MeetingTracker
+
+    async def run() -> list[tuple[str | None, str]]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "teams"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ts = 0
+        rows: list[tuple[str | None, str]] = []
+        for meeting in range(meetings):
+            ros = await t.ensure_roster()
+            for name in names:
+                ros.add(name)
+            for blocks, count in frames[meeting::meetings] if meetings > 1 else frames:
+                for _ in range(count):
+                    await t.on_caption(blocks, ts)
+                    ts += 1000
+            cid = await t.end(ts)
+            ts += 70_000
+            conv = store.get("default", cid) if cid else None
+            assert conv is not None
+            segs = sorted(conv.segments, key=lambda s: s.start_ms)
+            rows += [(s.speaker, s.text) for s in segs if s.text]
+        return rows
+
+    return asyncio.run(run())
+
+
+def test_an_off_roster_name_misread_on_one_frame_is_stored_once() -> None:
+    """XERK-2791 QA: names off the roster were compared exactly, so one frame reading "Omar
+    Patcl" was a new speaker and the panel was stored again under it, with Grace's partial
+    line beside her finished one. The tracker keeps the name first read."""
+    from api.screen.zoom import CaptionBlock
+
+    def panel(omar: str, grace: str) -> list[CaptionBlock]:
+        return [
+            CaptionBlock(omar, True, ["we need the fix today."], avatar=True),
+            CaptionBlock("Grace Huang", True, [grace], avatar=True),
+        ]
+
+    assert _tracked(
+        [
+            (panel("Omar Patel", "sure I"), 4),
+            (panel("Omar Patcl", "sure I can do"), 1),
+            (panel("Omar Patel", "sure I can do it."), 6),
+        ]
+    ) == [("Omar Patel", "we need the fix today."), ("Grace Huang", "sure I can do it.")]
+
+
+def test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines() -> None:
+    """XERK-2791 QA: the first reading stood for good, so a misread first frame named every
+    later line "Omar Patcl". The spelling read most takes the lines held under the misread."""
+    from api.screen.zoom import CaptionBlock
+
+    def omar(name: str, text: str) -> list[CaptionBlock]:
+        return [CaptionBlock(name, True, [text], avatar=True)]
+
+    assert _tracked(
+        [(omar("Omar Patcl", "we need"), 1), (omar("Omar Patel", "we need the fix today."), 8)]
+    ) == [("Omar Patel", "we need the fix today.")]
+
+
+def test_a_long_running_speakers_name_misread_on_three_frames_is_stored_once() -> None:
+    """Three frames of "Omar Patcl" after 30 of "Omar Patel" are still a misread: a spelling
+    read a tenth as often as a like one is not a person of their own (QA rig)."""
+    from api.screen.zoom import CaptionBlock
+
+    def panel(omar: str, grace: str) -> list[CaptionBlock]:
+        return [
+            CaptionBlock(omar, True, ["we need the fix today."], avatar=True),
+            CaptionBlock("Grace Huang", True, [grace], avatar=True),
+        ]
+
+    assert _tracked(
+        [
+            (panel("Omar Patel", "sure I"), 30),
+            (panel("Omar Patcl", "sure I can do"), 3),
+            (panel("Omar Patel", "sure I can do it."), 6),
+        ]
+    ) == [("Omar Patel", "we need the fix today."), ("Grace Huang", "sure I can do it.")]
+
+
+def test_two_people_with_like_names_off_the_roster_stay_apart() -> None:
+    """A like spelling read on frame after frame is a person of their own, not a misread.
+    Accepted: their first frames can't be told from a misread, so that entry is also stored
+    under the like name (QA)."""
+    from api.screen.zoom import CaptionBlock
+
+    silva = CaptionBlock("Ana Silva", True, ["the budget is approved."], avatar=True)
+    silvo = CaptionBlock("Ana Silvo", True, ["great, thanks for checking."], avatar=True)
+    assert _tracked([([silva], 5), ([silva, silvo], 8)]) == [
+        ("Ana Silva", "the budget is approved."),
+        ("Ana Silva", "great, thanks for checking."),
+        ("Ana Silvo", "great, thanks for checking."),
+    ]
+
+
+def test_two_like_names_first_read_together_never_swap() -> None:
+    """Both new on one frame, each read once: the tie goes to the one heard first, so
+    neither takes the other's name (QA: they swapped, and both entries were stored twice)."""
+    from api.screen.zoom import CaptionBlock
+
+    silva = CaptionBlock("Ana Silva", True, ["the budget is approved."], avatar=True)
+    silvo = CaptionBlock("Ana Silvo", True, ["great, thanks for checking."], avatar=True)
+    rows = _tracked([([silva, silvo], 10)])
+    assert ("Ana Silvo", "the budget is approved.") not in rows
+    assert rows[0] == ("Ana Silva", "the budget is approved.")
+    assert rows[-1] == ("Ana Silvo", "great, thanks for checking.")
+    assert len(rows) == 3
+
+
+def test_a_misread_heard_again_later_still_goes_to_the_name_most_read() -> None:
+    """A misread first heard before its name is still that name's like spelling when it
+    recurs: the like lists link both ways (QA: one-way, the recurrence was a new speaker)."""
+    from api.screen.zoom import CaptionBlock
+
+    def omar(name: str) -> list[CaptionBlock]:
+        return [CaptionBlock(name, True, ["we need the fix today."], avatar=True)]
+
+    frames = [("Omar Patcl", 1), ("Omar Patel", 5), ("Omar Patcl", 1), ("Omar Patel", 3)]
+    assert _tracked([(omar(name), n) for name, n in frames]) == [
+        ("Omar Patel", "we need the fix today.")
+    ]
+
+
+def test_a_frame_brings_in_at_most_a_few_new_spellings() -> None:
+    """Each new spelling is compared with every heard one: a crafted crop of many new names
+    is taken a few a frame (QA: 20 a frame stalled the loop ~2 s), the rest kept as read."""
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen import meetings as meetings_mod
+    from api.screen.zoom import CaptionBlock
+
+    t = meetings_mod.MeetingTracker(
+        "default",
+        "user-1",
+        ScreenMeta("tesoro", "Tesoro", "teams"),
+        store=InMemoryConversationStore(),
+        account_exists=lambda _: True,
+        cadence=meetings_mod.Cadence(0.2, 1.0, 10.0),
+        stable_ms=3000,
+        end_ms=60_000,
+    )
+    people = (
+        "Alice Brown, Bob Chen, Carla Diaz, Dmitri Egorov, Elena Fischer, Farid Ghani, "
+        "Grace Huang, Hiro Ito, Ines Jansen, Jamal King, Kofi Lartey, Lena Moss, Mateo Novak, "
+        "Nadia Ortiz, Omar Patel, Priya Raman, Quinn Reyes, Rosa Silva, Sven Tolle, Uma Vance"
+    ).split(", ")
+    frame = [CaptionBlock(name, True, ["hi."], avatar=True) for name in people]
+    assert t._as_heard(frame) == frame
+    assert len(t._likes) == meetings_mod._NEW_PER_FRAME
+    t._as_heard(frame)
+    assert len(t._likes) == 2 * meetings_mod._NEW_PER_FRAME
+
+
+def test_off_roster_names_are_unified_off_the_event_loop(monkeypatch) -> None:
+    """``_as_heard`` runs difflib on attacker-chosen names: it takes a CPU_POOL turn, never
+    the event loop (QA: ~2 s stalls), and no turn at all for a frame of roster names."""
+    import threading
+
+    from api.screen import meetings as meetings_mod
+    from api.screen.zoom import CaptionBlock
+
+    threads: list[bool] = []
+    as_heard = meetings_mod.MeetingTracker._as_heard
+
+    def spy(self, blocks):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return as_heard(self, blocks)
+
+    monkeypatch.setattr(meetings_mod.MeetingTracker, "_as_heard", spy)
+    priya = CaptionBlock("Priya Raman", True, ["the budget is approved."], avatar=True)
+    _tracked([([priya], 3)], names=("Priya Raman",))
+    assert threads == []
+    _tracked([([CaptionBlock("Diego Alvarez", True, ["hi there."], avatar=True)], 2)])
+    assert threads == [False, False]
+
+
+def test_off_roster_names_are_compared_once_each(monkeypatch) -> None:
+    """Likeness is worked out when a spelling is first heard, never per frame: the per-frame
+    loop over every heard name cost ~2 s a frame on crafted crops (QA). Long names never
+    compare (difflib is quadratic)."""
+    from api.screen import meetings as meetings_mod
+    from api.screen.zoom import CaptionBlock
+
+    calls: list[tuple[str, str]] = []
+    like = meetings_mod._like
+    monkeypatch.setattr(meetings_mod, "_like", lambda a, b: calls.append((a, b)) or like(a, b))
+    names = [f"Person Number{i:03d}" for i in range(20)]
+    frame = [CaptionBlock(n, True, [f"line from {n}."], avatar=True) for n in names[:5]]
+    _tracked([(frame, 1), ([CaptionBlock(n, True, ["hi."], avatar=True) for n in names], 5)])
+    assert len(calls) == len(names) * (len(names) - 1) // 2
+    assert not like("A" * 70, "A" * 69 + "B")
+
+
+def test_like_names_on_the_roster_are_never_read_as_one_another() -> None:
+    """Roster names are matched by the parser; only off-roster readings are unified."""
+    from api.screen.zoom import CaptionBlock
+
+    silva = CaptionBlock("Ana Silva", True, ["the budget is approved."], avatar=True)
+    silvo = CaptionBlock("Ana Silvo", True, ["great, thanks."], avatar=True)
+    assert _tracked([([silva], 4), ([silva, silvo], 6)], names=("Ana Silva", "Ana Silvo")) == [
+        ("Ana Silva", "the budget is approved."),
+        ("Ana Silvo", "great, thanks."),
+    ]
+
+
+def test_a_meetings_readings_do_not_name_the_next_meetings_speakers() -> None:
+    """The spellings heard are per meeting: the next meeting's "Ana Silvo" is not meeting
+    one's "Ana Silva" (QA: a tracker kept them for its whole life)."""
+    from api.screen.zoom import CaptionBlock
+
+    silva = CaptionBlock("Ana Silva", True, ["the budget is approved."], avatar=True)
+    silvo = CaptionBlock("Ana Silvo", True, ["hello, can you hear me?"], avatar=True)
+    assert _tracked([([silva], 6), ([silvo], 6)], meetings=2) == [
+        ("Ana Silva", "the budget is approved."),
+        ("Ana Silvo", "hello, can you hear me?"),
+    ]
+
+
+def test_teams_speaker_labels_are_never_read_as_one_another() -> None:
+    """"Speaker 1" reads like "Speaker 2": the off-roster name unifying leaves labels be."""
+    from api.screen.zoom import CaptionBlock
+
+    one = CaptionBlock("Speaker 1", True, ["hello there."], avatar=True)
+    two = CaptionBlock("Speaker 2", True, ["hi, how are you?"], avatar=True)
+    assert _tracked([([one], 4), ([one, two], 6)]) == [
+        ("Speaker 1", "hello there."),
+        ("Speaker 2", "hi, how are you?"),
+    ]
+
+
+def test_an_off_roster_speaker_is_named_by_their_alias() -> None:
+    """An avatar'd header off the roster takes the household's alias, as a roster name does."""
+    from api.persistence.models import alias_key
+
+    ocr, jpeg = panel(_PHOTO_AFTER_UNFINISHED)
+    ros = Roster({alias_key("Diego Alvarez"): "Diego (Ops)"})
+    ros.add("Priya Raman")
+    assert blocks_of(teams.parse_caption_crop(ocr, ros, jpeg=jpeg))[1][0] == "Diego (Ops)"
 
 
 def test_ws_passes_the_crop_image_to_the_teams_parser(screen) -> None:
@@ -1725,7 +2153,7 @@ def test_ws_passes_the_crop_image_to_the_teams_parser(screen) -> None:
     assert conv is not None
     assert [(s.speaker, s.text) for s in conv.segments] == [
         ("Priya Raman", "Let's look at the numbers for the north region"),
-        (None, "Sure, I have them right here."),
+        ("Diego Alvarez", "Sure, I have them right here."),
     ]
 
 
@@ -1846,7 +2274,9 @@ def test_a_speaker_whose_avatar_is_missed_merges_into_the_one_before() -> None:
     )
 
 
-def _scrolled_meeting(rows: list[tuple[str, str | None]], window: int, *, jpeg: bool = True):  # type: ignore[no-untyped-def]
+def _scrolled_meeting(  # type: ignore[no-untyped-def]
+    rows: list[tuple[str, str | None]], window: int, *, jpeg: bool = True, named=None
+):
     """Stored (speaker, text) after ``rows`` arrive one by one in a panel showing at most
     ``window`` rows (the oldest scroll off the top)."""
     import asyncio
@@ -1867,7 +2297,7 @@ def _scrolled_meeting(rows: list[tuple[str, str | None]], window: int, *, jpeg: 
             end_ms=60_000,
         )
         ros = await t.ensure_roster()
-        for n in _NAMED:
+        for n in _NAMED if named is None else named:
             ros.add(n)
         ts = 0
         blocks: list = []

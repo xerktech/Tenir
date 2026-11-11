@@ -43,6 +43,7 @@ from api.screen.zoom import (
     clean_tile_name,
     is_name_like,
     norm_name,
+    pending_header,
     row_groups,
     _is_round,
     _reading_order,
@@ -217,6 +218,12 @@ def _is_circle_text(text: str, *, tall: bool) -> bool:
     if letters.isupper() or not letters.istitle():
         return True
     return len(letters) <= 2 and tall
+
+
+# Buttons Teams draws inside the caption pane itself. A box is dropped from a caption crop only
+# when it reads exactly one of these: level with a header, row_groups joined "Go to current"
+# onto it, and the header then read as caption text under the previous speaker (XERK-2792).
+_CAPTION_PANE_UI = {"go to current"}
 
 
 def _initials_of(name: str) -> set[str]:
@@ -498,6 +505,32 @@ def _drop_tile_labels(ocr: OcrResult) -> OcrResult:
     return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if id(b) not in drop))
 
 
+def _drop_pane_buttons(ocr: OcrResult) -> OcrResult:
+    """``ocr`` minus the caption pane's own buttons ("Go to current"): a box reading exactly
+    one, unpunctuated, that starts well right of the caption text column. A spoken "go to
+    current." or a wrapped line reading just that starts at the column and stays (QA).
+    The column is measured without the candidates: with one caption row, the button's own
+    box was the column's median and never sat right of it (QA)."""
+
+    def candidate(b: OcrLine) -> bool:
+        t = b.text.strip()
+        return norm_name(t) in _CAPTION_PANE_UI and not t.endswith((".", "?", "!"))
+
+    if not any(candidate(b) for b in ocr.lines):
+        return ocr
+    text = [
+        b for b in ocr.lines if not candidate(b) and _initials(b.text, any_case=True) is None
+    ]
+    if not text:  # the button alone: nothing it could be a spoken line of
+        return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not candidate(b)))
+    edge, row_h, _ = _text_column(text)
+
+    def button(b: OcrLine) -> bool:
+        return candidate(b) and b.box[0] > edge + 2 * row_h
+
+    return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not button(b)))
+
+
 def _strip_avatar_token(row: str, roster: Roster, *, any_case: bool = False) -> str:
     """A name row whose OCR box swallowed the initials circle: "PR Raman, Priya".
 
@@ -553,7 +586,26 @@ def _strip_glued_initials(row: str, above: str, roster: Roster) -> str:
     letters = {c for c in token if c.isalpha()}
     if not letters or not all(c.isupper() for c in letters):
         return row
-    return rest.lstrip() if letters <= _initials_of(name) else row
+    if letters <= _initials_of(name):
+        return rest.lstrip()
+    # The circle's two capitals with one letter misread ("LA Thank you." under Tom Adams's
+    # "TA", real Teams OCR, XERK-2792). Judged letter by letter against the circle, so "AI" or
+    # "IT" opening a caption under Tom Adams stays; off by both ("AR" under Mark Hale) stays.
+    circle = _circle_initials(name)
+    if circle and len(token) == 2 and sum(a == b for a, b in zip(token, circle)) == 1:
+        return rest.lstrip()
+    return row
+
+
+def _circle_initials(name: str) -> str | None:
+    """The two letters Teams draws in a name's avatar circle, first name then last ("Adams,
+    Tom" and "Tom Adams" are both "TA"); None for a one-word name."""
+    last, sep, first = name.partition(",")
+    words = (first.split() + last.split()) if sep else name.split()
+    words = [w for w in words if w[:1].isalpha()]
+    if len(words) < 2:
+        return None
+    return (words[0][0] + words[-1][0]).upper()
 
 
 def _strip_misread_avatar(text: str, roster: Roster) -> str:
@@ -745,7 +797,7 @@ def parse_caption_crop(
     doesn't match (``_pixel_avatars``, XERK-2614); without it, the row's position does."""
     rows: list[str] = []
     headed: list[bool] = []
-    ocr = _drop_tile_initials(ocr)
+    ocr = _drop_pane_buttons(_drop_tile_initials(ocr))
     stripped_from = ocr.lines
     stripped = _strip_header_boxes(ocr.lines, roster)
     ocr = OcrResult(ocr.width, ocr.height, stripped)
@@ -830,5 +882,8 @@ def parse_caption_crop(
     # no roster and no pixels to read, any header does (as before XERK-2614); with pixels and
     # no avatar at all it may be a slide, which then started meetings after a reset.
     unknown_ok = not len(roster) and pixels is None
-    verified = any(b.has_header and (b.speaker or b.avatar or unknown_ok) for b in blocks)
+    verified = any(
+        b.has_header and (b.speaker or b.avatar or (unknown_ok and not pending_header(blocks, b)))
+        for b in blocks
+    )
     return blocks if verified or live else []

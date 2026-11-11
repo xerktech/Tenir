@@ -169,6 +169,13 @@ paths:
     - Only a line seen within `_SAID_BETWEEN_MS` cuts: at 1 fps a new line plus a repeat of her
       next entry can't both be said between snapshots; after dropped frames they can ("yes." /
       "yes I think so too." stays a new line). Same frames, no gap: it is the entry growing.
+    - Stays 3 s although real Teams gaps run past it (XERK-2724, v0.6.169 Teams meeting:
+      `caption_gap.teams` n=33 p50 2052 p95 4115 max 4149 ms; caption OCR p50 1.8 s). At 3 s
+      ~1 gap in 10 reads as dropped frames and stores a grown entry twice. 5 s fixed that, but
+      lost lines at 3-5 s gaps (QA fuzz, kit x2724g): a short entry claimed by her next one
+      starting with its words (XERK-2799, already lost at <= 3 s on main), and [sounds good]
+      x2 -> [okay / sounds good] via `_claims(lead=)`. A duplicate is the lesser harm. Faster
+      snapshots (XERK-2798) shrink the duplicates; don't re-widen without fixing both losses.
     - Measured per seed vs main (after XERK-2716): Zoom `_simulate`, `_simulate_teams` and kit
       zf.py identical; kit x2716 tf.py "both" (200 seeds) extra words 8635 -> 7212, lost
       5566 -> 5602 (late words now stored after the next entry; main's copies masked them).
@@ -289,9 +296,16 @@ paths:
     `_misread` of it (XERK-2716) when it isn't its block's top row: unpaired under a header it
     cost `_UNPAIRED`, so a 3-row entry re-flowing above the same speaker's next entry aligned
     nothing and the box was stored again. The row above needn't match (a re-wrap moves words).
-  - Never pair a block's top row that way: it may be a new line starting with an old one's words
-    ("yes." / "yes I think so too."), and `_fill_glitches` can't place a top-row glitch, so its
-    growth was lost (QA: hundreds of words in a "late growth" fuzz). A row of the block above
+  - A block's top row pairs that way when the row above matched the line just before
+    (`_misread(placed=)`, XERK-2791): one speaker's one-row Teams entries are all top rows, and
+    one growing as the next appeared stored the box again (real frames). Off-roster speakers
+    were None before, cheap glitches that hid it. No probe found yet tells the "row above
+    matched" bound from "any row above"; keep it until real frames show it costs lines.
+    Tests: `test_an_entry_growing_as_the_next_one_appears_below_is_stored_once`,
+    `test_a_new_entry_under_a_shown_twin_of_its_start_is_a_new_line`.
+  - Never pair any other block's top row that way: it may be a new line starting with an old
+    one's words ("yes." / "yes I think so too."), and `_fill_glitches` can't place a top-row
+    glitch, so its growth was lost (QA: hundreds of words in a "late growth" fuzz). A row of the block above
     doesn't count: dropping that check lost hundreds more.
   - `_reflow` takes such a glitch row that grew by whole words even with no word moved (else
     "like" -> "like with the keto." was lost): a glitch row only (the live bottom row grows every
@@ -396,6 +410,12 @@ paths:
   - Only within `_REHEAD_MS` (1.5 s) of the last frame: after one dropped frame [Ana X][Bo ok]
     -> [Cy X][Bo ok] may be Cy repeating X and Bo his reply. A 3 s window lost both (QA), as
     did matching X across speakers by text alone (XERK-2727 QA).
+  - Stays 1.5 s although real Teams frames reach the merger ~2 s apart, so a Teams re-label is
+    stored twice (XERK-2797). Within one ~2 s frame pair a re-attribution and another speaker
+    repeating the entry read the same, so any wider gate (fixed or cadence-relative, QA) loses
+    the repeat round: [Dee X][Dee yes] -> [Cy X][Dee yes] kept 2 of 4 lines (fuzz: ~20 fewer
+    duplicates, 9 more lost / 1500 seeds). A duplicate is the lesser harm; XERK-2798 is the fix.
+    Test: `test_a_cross_speaker_repeat_round_at_a_two_second_cadence_keeps_every_line`.
   - Each guard lost real lines without it (QA, fuzz): a row must keep its name (an anchor: a
     one-row panel or a goodbye round said again in full turned over); the names must not read
     as the last frame's scrolled up ([Bo X][Ana X] -> [Ana X][Ana X]); each re-named entry
