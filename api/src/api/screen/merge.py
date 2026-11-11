@@ -639,7 +639,45 @@ def _revisions(
     line its words matched, until a row matches none: it and the rows after it stay new.
 
     A block of only new rows under its own header that revises nothing is a fresh entry:
-    everything below it is newer (a repeat there is said again), so revising stops."""
+    everything below it is newer (a repeat there is said again), so revising stops.
+
+    The panel's top run may claim a later entry of hers than its draft's first when that
+    pairs more words (``_revise_runs``' ``pick``): her first entry may have scrolled off
+    (XERK-2799). Taken only when the whole panel's claims then pair strictly more words than
+    without it: the short entry still shown and rewritten ("Yes." -> "Yes, we can.") pairs
+    fewer once every later run has shifted down an entry, whatever the headers read (QA:
+    counting her header blocks instead switched there when OCR misread one of them). Each
+    entry is tried on its own: the top run taking the one it pairs most words of starved her
+    later runs, and the panel then refused the switch altogether."""
+    out, folds, paired, alts, _ = _revise_runs(shown, speakers, aligned, tail, ts, budget)
+    best = (False, paired)
+    for pick in range(alts):
+        # Among entries the top run pairs every word of, the latest wins: the panel shows the
+        # newest, and a stale draft or the scrolled-off entry it grew from ("Okay." ->
+        # "Okay, after the review we merge.") pairs as fully as the entry shown (QA fuzz).
+        # Failing that, the most words. Never on a tie with no switch.
+        res = _revise_runs(shown, speakers, aligned, tail, ts, budget, pick=pick)
+        rank = (res[4], pick if res[4] else res[2])
+        if res[2] > paired and rank >= best:
+            out, folds, best = res[0], res[1], rank
+    if merged is not None:
+        merged += folds
+    return out
+
+
+def _revise_runs(
+    shown: list[_Shown],
+    speakers: list[str | None],
+    aligned: list[int | None],
+    tail: list[_Line],
+    ts: int,
+    budget: MergeBudget,
+    pick: int | None = None,
+) -> tuple[dict[int, int], list[tuple[int, tuple[int, ...]]], int, int, bool]:
+    """``_revisions``' claims and folds, with the draft words its claims pair (-1 when it
+    revises nothing), how many later entries the top run may switch to, and whether it
+    switched to one whose every word it pairs. ``pick``: the top run claims that one of
+    them instead, when it pairs more words than its own claim."""
     last = max((i for i, a in enumerate(aligned) if a is not None), default=-1)
     start = (aligned[last] or 0) + 1 if last >= 0 else 0
     # An older line is offered only to a new row re-reading it verbatim (XERK-2738): Teams
@@ -672,6 +710,9 @@ def _revisions(
     out: dict[int, int] = {}
     folds: list[tuple[int, tuple[int, ...]]] = []
     p = 0  # cands before p are taken (or skipped over by an earlier revision)
+    paired = 0
+    alts = 0
+    whole = False
     for rows in runs:
         first = rows[0]
         fresh = shown[first].speaker is not None and (
@@ -734,28 +775,25 @@ def _revisions(
                 found = (e, c)
                 break
         if found is not None and found[0] == own < end and first == 0:
-            # The panel's top run claimed only her entry above her next one, and she has more
-            # entries than header blocks shown: that many scrolled off, and the run may be a
-            # later entry re-laid ("Yes." / "Yes we can ship it." -> "Yes we can ship it,
-            # after the" / "review."). A short entry's few words pass coverage inside any row
-            # starting with them, so every later claim shifted up one entry and the short one
-            # was lost (XERK-2799). Each of the next ``off`` entries is tried; the one the
-            # rows pair most words of is taken over the short one when it pairs more, and the
-            # later one on a tie (the panel shows the newest). Without the count, the short
-            # entry still shown and rewritten ("Yes." -> "Yes, we can.") switched too (QA).
-            off = _scrolled(shown, runs, speaker, tail, cands[q:])
+            # The panel's top run claimed only her entry above her next one. That entry may
+            # have scrolled off, the run a later entry re-laid ("Yes." / "Yes we can ship
+            # it." -> "Yes we can ship it, after the" / "review."): a short entry's few words
+            # pass coverage inside any row starting with them, so every later claim shifted
+            # up an entry and the short one was lost (XERK-2799). ``_revisions`` tries each
+            # later entry of hers here (``pick``) and keeps the panel pairing most words.
             starts = [own, *(k for k in range(own + 1, end) if tail[cands[k]].head), end]
-            best = score[0]
-            for s0, s1 in list(zip(starts, starts[1:]))[:off]:
+            alts = len(starts) - 1
+            if pick is not None:
+                s0, s1 = starts[pick], starts[pick + 1]
                 alt_folded: list[tuple[int, tuple[int, ...]]] = []
                 alt_score: list[int] = []
                 alt = _claims(
                     shown, rows, tail, cands[s0:s1], budget, alt_folded, lead=lead,
                     score=alt_score,
                 )
-                if alt and alt_score[0] > score[0] and alt_score[0] >= best:
-                    best = alt_score[0]
-                    found, folded = (s1, alt), alt_folded
+                if alt and alt_score[0] > score[0]:
+                    found, folded, score = (s1, alt), alt_folded, alt_score
+                    whole = alt_score[0] == sum(len(_words(tail[j].text)) for j in cands[s0:s1])
         if found is None:
             if fresh:
                 break
@@ -763,38 +801,15 @@ def _revisions(
         p, claims = found
         out.update(claims)
         folds += folded
+        paired += score[0]
     # The box always shows the newest lines: revisions that leave a newer known line unshown
     # are a new line that merely resembles an older one ("okay", Bo, "okay so lets start").
     if p != len(cands):
-        return {}
+        return {}, [], -1, alts, whole
     # An older line is never rewritten: only its verbatim re-read may claim it.
     if any(j in old and not _exact(shown[i], tail[j]) for i, j in out.items()):
-        return {}
-    if merged is not None:
-        merged += folds
-    return out
-
-
-def _scrolled(
-    shown: list[_Shown],
-    runs: list[list[int]],
-    speaker: str | None,
-    tail: list[_Line],
-    draft_lines: list[int],
-) -> int:
-    """How many more of the speaker's entries ``draft_lines`` holds (its first line, and each
-    later line of hers first shown under a header) than her header blocks among ``runs``:
-    the panel shows the newest entries, so that many scrolled off its top."""
-    who = tail[draft_lines[0]].speaker
-    entries = 1 + sum(1 for j in draft_lines[1:] if tail[j].head and tail[j].speaker == who)
-    blocks = sum(
-        1
-        for r in runs
-        if shown[r[0]].speaker is not None
-        and (r[0] == 0 or shown[r[0] - 1].block != shown[r[0]].block)
-        and _same_speaker(speaker, shown[r[0]].speaker)
-    )
-    return max(0, entries - blocks)
+        return {}, [], -1, alts, whole
+    return out, folds, paired, alts, whole
 
 
 def _claims(

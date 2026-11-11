@@ -195,18 +195,24 @@ paths:
       The XERK-2717 cut did it too, masked only by the later rows failing. Neither simulation
       reaches this path; a same-speaker Teams fuzz did.
     - Not "seen on the last frame": one frame of OCR missing her block re-stored the box (QA).
-    - The panel's top run claiming only the entry above her next one (`own` cut) also tries her
-      next entry, taken when the rows pair more of its words (XERK-2799): "Yes." scrolled off
-      and "Yes we can ship it." re-laid; the one word passed coverage, every later claim
-      shifted up an entry and "Yes." was lost. The gap gate can't see a scroll within 3 s.
-      - Only when her entries outnumber her header blocks shown (`_scrolled`): "Yes." still on
-        top and rewritten ("Yes, we can.") switched too, kept "Yes." and stored a row twice (QA).
-      - Each of the `_scrolled` entries below is tried, ties to the later one: trying only the
-        next one claimed "Yes, I will share." under a stale "yes" draft above it (QA fuzz).
-      - Measured vs main (QA kit fz2 short-entry fuzz, 28800 runs): words lost 110251 -> 110224,
-        extra 133282 -> 131454; the ~20 runs "losing" 1-2 words lose text never on screen.
+    - The panel's top run claiming only the entry above her next one (`own` cut) may claim one
+      of her later entries instead (`_revise_runs(pick=)`, XERK-2799): "Yes." scrolled off and
+      "Yes we can ship it." re-laid; the one word passed coverage, every later claim shifted
+      up an entry and "Yes." was lost. The gap gate can't see a scroll within 3 s.
+      - `_revisions` runs the whole panel once per candidate and keeps a switch only when the
+        panel pairs strictly more words than without it: "Yes." still on top and rewritten
+        ("Yes, we can.") pairs fewer once every later run shifts down an entry.
+      - Never decide it by counting her header blocks on screen: one header misread (unmatched,
+        missing, merged) or a stale draft line in the tail miscounted, and it switched (QA).
+      - Each candidate runs on its own: a greedy pick starved her later runs (switch refused).
+      - Among candidates the top run pairs whole, the latest wins (the panel shows the newest),
+        else the most words: a stale draft or the scrolled entry it grew from ("Okay." ->
+        "Okay, after the review we merge.") pairs as fully as the shown one (QA fuzz).
+      - Measured vs main (QA kit fz2, 28800 runs): words lost 110251 -> 110205, extra 133282 ->
+        130976; no run loses a row shown on screen (fz, 10800: 72 better, 1 trade).
       - Tests: `test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_kept`,
-        `test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`.
+        `test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`,
+        `test_the_entry_a_top_run_re_lays_is_the_latest_it_pairs_whole`.
     - Accepted: OCR missing her block for over `_SAID_BETWEEN_MS` (3+ frames at 1 fps) re-stores
       the box (main stored it once). Every looser gate QA tried also lost the scrolled-off
       line; telling a miss from a scroll needs another signal (a row below scrolling up).

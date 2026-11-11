@@ -5013,6 +5013,64 @@ def test_a_short_entry_still_shown_and_rewritten_is_revised_in_place(
     ]
 
 
+@pytest.mark.parametrize(
+    ("frames", "kept"),
+    [
+        pytest.param(
+            [
+                [blk("Bo", "Okay.")],
+                [blk("Bo", "Okay.")],
+                [blk("Bo", "Okay."), blk("Bo", "okay, after")],
+                [
+                    blk("Bo", "Okay, after the review we merge."),
+                    blk("Bo", "okay, after the review we"),
+                    blk("Cy", "Yes."),
+                ],
+                [
+                    blk("Bo", "Okay, after the review we merge."),
+                    blk("Bo", "okay, after the review we merge that works"),
+                    blk("Cy", "Yes."),
+                ],
+                [
+                    blk("Bo", "okay, after the review we merge that works", "for"),
+                    blk("Cy", "Yes."),
+                    blk("Cy", "yes we"),
+                ],
+            ]
+            + [
+                [
+                    blk("Bo", "Okay, after the review we merge that works", "for me."),
+                    blk("Cy", "Yes."),
+                    blk("Cy", "yes we can ship"),
+                ]
+            ]
+            * 4,
+            "Okay, after the review we merge.",
+            id="latest-whole-entry",  # fuzz seed 891: both pair whole, the shown one is later
+        ),
+        pytest.param(
+            [
+                [blk("Bo", "yes")],
+                [blk("Bo", "Yes."), blk("Bo", "yes,")],
+                [blk("Bo", "Yes, I will share."), blk("Bo", "yes, i will")],
+                [blk("Bo", "Yes, I will share."), blk("Bo", "yes, i will share"), blk("Cy", "ok")],
+            ]
+            + [[blk("Bo", "yes, i will share can", "you"), blk("Cy", "Okay so.")]] * 4,
+            "Yes, I will share.",
+            id="two-entries-off",  # fuzz seed 570: a stale "yes" draft above it scrolled too
+        ),
+    ],
+)
+def test_the_entry_a_top_run_re_lays_is_the_latest_it_pairs_whole(
+    frames: list[list[CaptionBlock]], kept: str
+) -> None:
+    """QA fuzz (XERK-2799): the top run of a scrolled panel may pair every word of more than
+    one of her stored entries (a stale draft, or the entry it grew from). Taking the one
+    pairing most words, or only her next one, overwrote a shown entry with the live one."""
+    stored = [text for _, text in _gapped_run(frames, 1000)]
+    assert kept in stored
+
+
 @pytest.mark.parametrize("missed", [0, 1])
 def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(missed: int) -> None:
     """QA (XERK-2720): one frame of OCR missing one of Ana's blocks just before her entry grows
