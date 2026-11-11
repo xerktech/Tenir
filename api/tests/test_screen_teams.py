@@ -598,6 +598,13 @@ def test_only_the_whole_button_text_is_dropped(button: str) -> None:
     ]
 
 
+@pytest.mark.parametrize("live", [True, False])
+def test_the_button_alone_in_a_crop_is_no_caption(live: bool) -> None:
+    # No text box to measure a column from: the button can't be a spoken line beside it.
+    ocr = result(line("Go to current", 300, 40, 420, 60))
+    assert teams.parse_caption_crop(ocr, Roster(), live=live) == []
+
+
 @pytest.mark.parametrize(
     "rows",
     [
