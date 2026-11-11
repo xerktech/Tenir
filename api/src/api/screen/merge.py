@@ -1703,7 +1703,7 @@ class CaptionMerger:
         # "...Cy."). Kept unpunctuated, its next re-read matched it only by ratio and lost to
         # storing the box again (XERK-2774, real frames). Matching by words instead paired a
         # rewrite with a stale line of hers whose row had grown (XERK-2799's shape, QA).
-        grew = grew or shown.norm in {line.norm + mark for mark in ".?!,"}
+        grew = grew or shown.norm in {line.norm + mark for mark in ".?!"}
         if not line.final:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
             # words); a line above it changes only by OCR jitter, so it keeps its text.

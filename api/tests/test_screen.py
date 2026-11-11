@@ -3101,11 +3101,12 @@ def test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once() -> None:
     ]
 
 
-def test_an_entry_finalised_with_a_period_before_it_is_stored_is_stored_once() -> None:
+def test_an_entry_finalised_with_a_period_before_it_is_stored_keeps_the_period() -> None:
     """XERK-2774 (real Teams frames): Teams ended Ana's live line with a period before it was
     stored ("Let's go to Cy" -> "Let's go to Cy."). Refused as growth, the line kept its old
-    text, the next frame's row matched it only by ratio, and with Cy's entry split below the
-    whole box was stored again."""
+    text; on the real capture the next frames' rows then matched it only by ratio and the box
+    was stored again (2 rows). These synthetic frames don't reproduce that duplicate, only
+    the period that is now kept."""
     ok = blk("Ana", "OK.")
     intro = blk("Ana", "All right, let's get it going today.")
     frames = [

@@ -43,9 +43,11 @@ paths:
   - `_update` takes a re-read adding only end punctuation ("go to Cy" -> "go to Cy.") as
     growth of a line not yet stored, above her next line too (no word moves): kept
     unpunctuated, the next frame's row matched it only by ratio, under the cost of leaving
-    the rewritten live entry unshown, and the box was stored again. A stored line still
-    refuses it (`_moved_up`: no words added), as on main. Test:
-    `test_an_entry_finalised_with_a_period_before_it_is_stored_is_stored_once`.
+    the rewritten live entry unshown, and the box was stored again (2 rows of the real
+    capture). Only "." "?" "!": a comma leads on (`_LEADS_ON`). A stored line still refuses it
+    (`_moved_up`: no words added), as on main. Test (pins the kept period only; synthetic
+    frames didn't reproduce the duplicate, QA):
+    `test_an_entry_finalised_with_a_period_before_it_is_stored_keeps_the_period`.
     - Never match rows to lines by words alone instead: "Yes, we can." (her "Yes." rewritten)
       paired "yes we can.", stale since its row grew, and the rewrite was lost (XERK-2799's
       shape). Guards on that match (end punctuation only, the row's last read) each still lost
