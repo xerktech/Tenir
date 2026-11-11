@@ -41,9 +41,11 @@ paths:
   `test_a_later_draft_start_never_skips_her_first_draft_line`.
 - Real Teams frames (sampler, XERK-2774), two more causes of a box stored again:
   - `_update` takes a re-read adding only end punctuation ("go to Cy" -> "go to Cy.") as
-    growth, on any line (no word moves): kept unpunctuated, the next frame's row matched it
-    only by ratio, under the cost of leaving the rewritten live entry unshown, and the box was
-    stored again.
+    growth of a line not yet stored, above her next line too (no word moves): kept
+    unpunctuated, the next frame's row matched it only by ratio, under the cost of leaving
+    the rewritten live entry unshown, and the box was stored again. A stored line still
+    refuses it (`_moved_up`: no words added), as on main. Test:
+    `test_an_entry_finalised_with_a_period_before_it_is_stored_is_stored_once`.
     - Never match rows to lines by words alone instead: "Yes, we can." (her "Yes." rewritten)
       paired "yes we can.", stale since its row grew, and the rewrite was lost (XERK-2799's
       shape). Guards on that match (end punctuation only, the row's last read) each still lost

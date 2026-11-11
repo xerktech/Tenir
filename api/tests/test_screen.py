@@ -3093,6 +3093,27 @@ def test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once() -> None:
     ]
 
 
+def test_an_entry_finalised_with_a_period_before_it_is_stored_is_stored_once() -> None:
+    """XERK-2774 (real Teams frames): Teams ended Ana's live line with a period before it was
+    stored ("Let's go to Cy" -> "Let's go to Cy."). Refused as growth, the line kept its old
+    text, the next frame's row matched it only by ratio, and with Cy's entry split below the
+    whole box was stored again."""
+    ok = blk("Ana", "OK.")
+    intro = blk("Ana", "All right, let's get it going today.")
+    frames = [
+        (0, [ok, intro, blk("Ana", "Let's go to")]),
+        (1000, [ok, intro, blk("Ana", "Let's go to Cy")]),
+        (3000, [intro, blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah hi good morning")]),
+        (4000, [intro, blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah hi good morning so we")]),
+        (6000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah. Hi, good morning."),
+                blk("Cy", "So we merged the fix")]),
+        (7000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah. Hi, good morning."),
+                blk("Cy", "So we merged the fix yesterday")]),
+    ]
+    rows = _stored_at(frames)
+    assert [r for r in rows if "go to" in r[1]] == [("Ana", "Let's go to Cy.")], rows
+
+
 def test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once() -> None:
     """XERK-2774 (real Teams frames): the frame Teams split Ana's entry showed no row the
     merger knew (all scrolled off), so her draft was looked for from her oldest recent line

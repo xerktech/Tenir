@@ -1666,7 +1666,8 @@ class CaptionMerger:
         # of the draft's words to claim it, so its stale lines were stored too (QA).
         marks = ("", ",", ".", "?", "!") if not said_on else ("",)
         grew = any(shown.norm.startswith(line.norm + mark + " ") for mark in marks)
-        # Or only end punctuation added: Teams finalising the entry ("let's go to Cy" ->
+        # Or, on a line not yet stored, only end punctuation added (a stored one refuses it
+        # in ``_moved_up``): Teams finalising the entry ("let's go to Cy" ->
         # "...Cy."). Kept unpunctuated, its next re-read matched it only by ratio and lost to
         # storing the box again (XERK-2774, real frames). Matching by words instead paired a
         # rewrite with a stale line of hers whose row had grown (XERK-2799's shape, QA).
