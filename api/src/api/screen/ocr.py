@@ -15,6 +15,7 @@ dense at the smallest height (a shared slide) contributes nothing.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 from dataclasses import dataclass
@@ -44,6 +45,11 @@ MAX_SPLITS = 24
 _EDGE = 3
 # The largest frame the api decodes to cut into strips (a 4K window and a little more).
 MAX_FRAME_PIXELS = 3840 * 2400
+# Full-frame strip requests in flight at once, process-wide (XERK-2798). tenir-ocr has 4
+# engines (OCR_WORKERS) and takes requests in no order, so idle windows' full frames (dozens
+# of strips each, back to back) kept all four busy and every caption crop waited behind them:
+# 1.8 s p50 in a real Teams meeting. Two stay free for the crops (a Teams crop's two halves).
+FULL_FRAME_REQUESTS = 2
 
 
 @dataclass(frozen=True)
@@ -182,6 +188,7 @@ class HttpOcrClient:
 
     def __init__(self, base_url: str, *, timeout: float) -> None:
         self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
+        self._full_slots = asyncio.Semaphore(FULL_FRAME_REQUESTS)
 
     async def _post(self, image: bytes) -> object:
         try:
@@ -221,18 +228,18 @@ class HttpOcrClient:
             raise OcrError(f"not a readable image: {exc!r}") from exc
         # (line in frame coordinates, piece read, distance to that piece's nearest cut)
         pieces: list[tuple[OcrLine, int, int]] = []
-        pending = pending or [(t, b, 0) for t, b in strips(width, height)]
         splits = n = 0
-        while pending:
-            top, bottom, depth = pending.pop(0)
+
+        async def post_piece(top: int, bottom: int) -> object:
             buf = io.BytesIO()
             img.crop((0, top, width, bottom)).save(buf, format="JPEG", quality=90)
-            payload = await self._post(buf.getvalue())
-            may_split = splits < MAX_SPLITS if full else split_once and depth == 0
-            if _too_dense(payload) and bottom - top > MIN_SPLIT_HEIGHT and may_split:
-                splits += 1
-                pending[:0] = [(t, b, depth + 1) for t, b in halves(top, bottom)]
-                continue
+            if not full:
+                return await self._post(buf.getvalue())
+            async with self._full_slots:
+                return await self._post(buf.getvalue())
+
+        def add(payload: object, top: int, bottom: int) -> None:
+            nonlocal n
             n += 1
             for ln in parse_lines(payload):
                 # A line touching a cut edge is a fragment ("Priya Ra"); the overlap is taller
@@ -247,6 +254,31 @@ class HttpOcrClient:
                 )
                 box = (ln.box[0], ln.box[1] + top, ln.box[2], ln.box[3] + top)
                 pieces.append((OcrLine(ln.text, box, ln.score), n, margin))
+
+        if pending:
+            # A dense crop's two halves are read at once, so it costs one engine's time, not
+            # two in a row (XERK-2798). Only these two: strips stay one at a time, or one
+            # oversized crop queued dozens of requests ahead of everyone's crops (QA).
+            tasks = [asyncio.create_task(post_piece(t, b)) for t, b, _ in pending]
+            try:
+                payloads = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()  # a failed half drops the frame: free the other's engine
+            for (top, bottom, _), payload in zip(pending, payloads, strict=True):
+                add(payload, top, bottom)
+            pending = []
+        else:
+            pending = [(t, b, 0) for t, b in strips(width, height)]
+        while pending:
+            top, bottom, depth = pending.pop(0)
+            payload = await post_piece(top, bottom)
+            may_split = splits < MAX_SPLITS if full else split_once and depth == 0
+            if _too_dense(payload) and bottom - top > MIN_SPLIT_HEIGHT and may_split:
+                splits += 1
+                pending[:0] = [(t, b, depth + 1) for t, b in halves(top, bottom)]
+                continue
+            add(payload, top, bottom)
         # Only Teams crops drop overlapping re-reads: full frames' strip reads are tuned for
         # tile-name recall (XERK-2610) and Zoom crops are unchanged; neither was re-measured.
         lines = _drop_rereads(pieces) if split_once and not full else [p[0] for p in pieces]
