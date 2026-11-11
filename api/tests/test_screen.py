@@ -6419,7 +6419,9 @@ def test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole(
     assert said in rows and clip not in rows
 
 
-@pytest.mark.parametrize("end", [".", "…", '."', "。", "？", "؟", " 🙂", " ❤️", " 1️⃣"])
+@pytest.mark.parametrize(
+    "end", [".", "…", '."', "。", "？", "؟", " 🙂", " ❤️", " 1️⃣", " \u2139\ufe0f", " 1\u20e3"]
+)
 def test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole(
     end: str,
 ) -> None:

@@ -411,7 +411,8 @@ paths:
     - Never the line grown on (the next entry still growing): a finished entry clipped on the
       frame her next entry, extending it, first shows was cut for good (QA). Accepted: a next
       entry still growing when the row returns is stored twice, as main; so is a live line
-      ending on a comma, dash or emoji (read as finished).
+      ending on a comma, dash or emoji (read as finished). A finished line with no closing
+      mark reads as live and may be cut, as main cuts it when read exactly (QA).
     - With no row aligned, the line is the one known line the whole split test passes for:
       matching on the row below alone, an older "Yes." matched too and nothing split (QA).
   - A next entry wrapped onto 2+ rows: its later rows pair with the lines after the grown one
