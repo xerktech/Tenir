@@ -401,14 +401,16 @@ paths:
   - Accepted (operator's call): a repeat clipped to a text the first copy paused on 2 s+ (or
     any text at 2 s+ frame gaps) is still cut ("Thank you so much." -> "Thank you"); on
     screen it reads exactly like the miss. Only lines changed within `_REVISE_MS`.
-  - The row below may read an unfinished grown line (ending on a letter or digit, any script;
-    a mark list missed "。", "…", '."' and those lines were cut, QA) re-punctuated or
+  - The row below may read an unfinished grown line (`_unfinished`: ends on Unicode L/N/M;
+    a mark list missed "。", "…", '."' and those were cut; `isalnum` missed Hindi "है", QA)
+    re-punctuated or
     clipped (its words a prefix of the line's), holding more than the row it splits off
     (XERK-2804). A finished line must read exactly: clipped over her next entry's first
     frame (its words, unpunctuated) it reads alike, and was cut for good (QA fuzz seed 146).
     - Never the line grown on (the next entry still growing): a finished entry clipped on the
       frame her next entry, extending it, first shows was cut for good (QA). Accepted: a next
-      entry still growing when the row returns is stored twice, as main.
+      entry still growing when the row returns is stored twice, as main; so is a live line
+      ending on a comma, dash or emoji (read as finished).
     - With no row aligned, the line is the one known line the whole split test passes for:
       matching on the row below alone, an older "Yes." matched too and nothing split (QA).
   - A next entry wrapped onto 2+ rows: its later rows pair with the lines after the grown one
@@ -429,7 +431,8 @@ paths:
     `test_a_one_frame_glyph_long_after_a_late_reflow_is_never_stored`,
     `test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole`,
     `test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole`,
-    `test_another_speakers_row_over_the_grown_entry_never_splits_it`.
+    `test_another_speakers_row_over_the_grown_entry_never_splits_it`,
+    `test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished`.
 - Growth of stored Teams entries (`_grow`, `_apply_grows`, `_merged_above`; XERK-2721,
   XERK-2734): see `screen-merge-grow.md`.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):

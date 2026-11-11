@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Hashable, Sequence
@@ -1021,7 +1022,7 @@ def _split_grown(
     The row below need not read an unfinished grown line exactly (XERK-2804): its words may
     be the line's re-punctuated, or cut short (OCR clipped the row that frame), as long as it
     holds more words than the row above. Never the line's words grown on, nor a finished
-    line's (ending on a mark, not a letter or digit) read inexactly: her finished entry, clipped as her next entry opening with
+    line's (ending on punctuation or a symbol) read inexactly: her finished entry, clipped as her next entry opening with
     its words first shows, reads alike on that frame, and was cut for good (QA).
     Rows of its block below it that read the line's next lines exactly pair with them (a
     two-row next entry): left new, its second row was stored again beside the line.
@@ -1065,6 +1066,14 @@ def _split_grown(
     return out
 
 
+def _unfinished(text: str) -> bool:
+    """Whether ``text`` ends on a letter, digit or combining mark (Unicode L/N/M, any script:
+    Hindi "है" ends on a vowel sign), not on punctuation or a symbol: a live entry, not one
+    Teams finished (``_splits``)."""
+    end = text.rstrip()[-1:]
+    return bool(end) and unicodedata.category(end)[0] in "LNM"
+
+
 def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
     """Whether ``row`` over ``nxt`` is ``line``'s held text over the entry it grew into
     while OCR missed ``row`` (``_split_grown``)."""
@@ -1080,13 +1089,13 @@ def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
         and any(_words(t) == now for t in line.held)
         and (
             nxt.norm == line.norm
-            # Unfinished (ending on a letter or digit, any script), the row below may read
+            # Unfinished (ending on a letter, digit or mark, any script), the row below may read
             # the line re-punctuated or clipped, holding more than ``row``. A finished line
             # clipped as her next entry, opening with its words, first shows reads alike and
             # was cut (QA). Any closing mark counts ("。", "…", '."'): a list of marks missed
             # some, and those lines were cut (QA).
             or (
-                line.text.rstrip()[-1:].isalnum()
+                _unfinished(line.text)
                 and len(now) < len(got) <= len(had)
                 and had[: len(got)] == got
             )

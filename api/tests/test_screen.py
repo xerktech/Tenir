@@ -6283,6 +6283,25 @@ def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: l
     assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
 
 
+@pytest.mark.parametrize(
+    "live",
+    ["yes we ship at 3", "yes मुझे लगता है", "yes I think so too "],
+    ids=["digit", "vowel-sign", "trailing-space"],
+)
+def test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished(live: str) -> None:
+    """XERK-2804 (QA): an unfinished line is one ending on a letter, digit or combining mark
+    (Hindi ends most words on a vowel sign, which ``isalnum`` rejects), trailing space aside;
+    its re-punctuated row below splits it."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", live), 3),
+            (_entries("OK.", "yes.", live.rstrip() + "."), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", live.rstrip() + ".")]
+
+
 def test_an_older_one_word_line_does_not_stop_the_split() -> None:
     """QA (XERK-2804): with no row aligned above, the line to split was any known line the row
     below starts with; Cy's earlier "Yes." matched too and the next entry was stored twice."""
