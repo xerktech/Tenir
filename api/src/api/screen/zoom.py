@@ -20,7 +20,7 @@ import io
 import math
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -185,6 +185,11 @@ class Roster:
 
         return self.aliases.get(alias_key(name), name)
 
+    def near(self, header: str) -> bool:
+        """``header`` reads near a roster name (``_near_name``): maybe a misread of it."""
+        # Not ``_cut``: a cut reading is a prefix of a name in ``_names``.
+        return _near_name(norm_name(header), self._names)
+
     def copy(self) -> Roster:
         out = Roster(self.aliases)
         out._names = dict(self._names)
@@ -238,6 +243,33 @@ class Roster:
             names = {d for r, d in good if good[0][0] - r < 0.05}
             return prefer if prefer in names else None
         return good[0][1]
+
+
+# An unmatched header this alike to a roster name may be its misread (XERK-2802 QA: "Tirn
+# Mahler" read 0.857 to "Tim Mahler", under ``_NAME_MATCH``), so it names no new speaker.
+_NAME_NEAR = 0.7
+
+
+def _near_name(key: str, names: Iterable[str]) -> bool:
+    """``key`` reads near a roster key: ``_NAME_NEAR`` alike; or one word that is any of its
+    words or a cut of its first ("Montgomery", "Chris" / "Christopher Montgomery"); or two+
+    words each a prefix of the other's ("Ana L" / "Ana Lopez", "Christopher M" / "Chris
+    Montgomery"). A one-word roster key cut from the header's first word is not: roster "Jo"
+    left "John Smith" unnamed (QA)."""
+    words = key.split()
+    for k in names:
+        other = k.split()
+        if len(words) == 1 and (words[0] in other or other[0].startswith(words[0])):
+            return True
+        # Roster "Jo" (a short tile) / "Jo Ann"; never a later word ("Kim" / "John Kim", QA).
+        if len(other) == 1 and words[:1] == other:
+            return True
+        pairs = list(zip(words, other))
+        if len(pairs) > 1 and all(a.startswith(b) or b.startswith(a) for a, b in pairs):
+            return True
+        if SequenceMatcher(None, key, k).ratio() >= _NAME_NEAR:
+            return True
+    return False
 
 
 def _same_name(key: str, names: dict[str, str]) -> str | None:
@@ -417,8 +449,8 @@ def _active_tile(img, tiles: list[tuple[str, OcrLine]]) -> str | None:
 
 @dataclass
 class CaptionBlock:
-    # The roster name the header matched, or (Teams) the header's own name when an avatar
-    # vouches for it; None for any other unmatched header and for the header-less block of
+    # The roster name the header matched, or the header's own name when an avatar vouches
+    # for it (Teams; Zoom only for a dim name row); None for any other unmatched header and for the header-less block of
     # lines continuing from above the crop.
     speaker: str | None
     has_header: bool
@@ -426,6 +458,10 @@ class CaptionBlock:
     # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
     # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
     avatar: bool = False
+    # Named only after a speaker the tracker heard this meeting (``heard``, XERK-2805): no
+    # roster match or avatar vouches for it, so it verifies no crop (a slide's heading may
+    # read as their name).
+    heard: bool = False
 
 
 def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
@@ -451,8 +487,11 @@ def parse_caption_crop(
     active: str | None = None,
     live: bool = False,
     jpeg: bytes | None = None,
+    heard: Roster | None = None,
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks (``live``: Teams only).
+    """Split a caption-box crop into speaker blocks (``live`` and ``heard``: Teams only;
+    Zoom takes ``heard`` for the shared call in ``ws`` and ignores it: a Zoom dim row with no
+    avatar may be a docs grey line, so it stays unnamed, XERK-2802).
 
     Zoom's caption panel puts the speaker's name on its own line at the top of the crop (the
     client adds it, XERK-2506). A speaker not on the roster (a screen share shows only a strip
@@ -487,12 +526,26 @@ def parse_caption_crop(
     def name_like(text: str) -> bool:
         return is_name_like(text) or text in dim_names
 
+    # Dim display-name rows with Zoom's avatar circle beside them: a speaker's name line, so an
+    # off-roster one names its speaker (XERK-2802). A dim row alone doesn't: a docs page's grey
+    # Title Case line ("Last Updated") reads the same.
+    avatars = (
+        set()
+        if px is None or dim is None
+        else {
+            i
+            for i in dim
+            if rows[i] in dim_names
+            and _has_avatar(px, groups[i], groups[i + 1] if i + 1 < len(groups) else None)
+        }
+    )
     blocks = caption_blocks(
         rows,
         roster,
         active=active,
         name_like=name_like,
         unknown_headers=header_can_sit,
+        avatars=avatars,
         name_rows=dim,
     )
     if live or any(b.has_header and b.speaker for b in blocks):
@@ -513,12 +566,8 @@ def parse_caption_crop(
     if px is None or dim is None:
         return blocks
     vouched = any(
-        row in dim_names
-        and (
-            is_name_like(_name_form(row))
-            or _has_avatar(px, group, groups[i + 1] if i + 1 < len(groups) else None)
-        )
-        for i, (row, group) in enumerate(zip(rows, groups, strict=True))
+        i in avatars or (row in dim_names and is_name_like(_name_form(row)))
+        for i, row in enumerate(rows)
     )
     return blocks if vouched else []
 
@@ -576,9 +625,7 @@ class _Pixels:
     ink: np.ndarray  # rows x columns
 
 
-def _grey_pixels(
-    jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]
-) -> _Pixels | None:
+def _grey_pixels(jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]) -> _Pixels | None:
     """The crop's pixels, None when they can't be read (no image, a size OCR didn't read, a
     box that isn't finite)."""
     if not jpeg or not all(math.isfinite(v) for g in groups for ln in g for v in ln.box):
@@ -615,9 +662,7 @@ _AVATAR_CENTRE = (0.25, 1.35)
 _AVATAR_BELOW = 0.3
 
 
-def _has_avatar(
-    px: _Pixels, group: list[OcrLine], below: list[OcrLine] | None = None
-) -> bool:
+def _has_avatar(px: _Pixels, group: list[OcrLine], below: list[OcrLine] | None = None) -> bool:
     """A round patch of ink left of this row's first box: Zoom's avatar beside a speaker's
     name line, astride it and ``below`` (the next row, its first text line; XERK-2705). A docs
     page's grey meta line or heading has bare page (or a bullet, an outline icon: not filled
@@ -723,6 +768,7 @@ def caption_blocks(
     avatars: set[int] | None = None,
     avatars_decide: bool = False,
     name_rows: set[int] | None = None,
+    heard: Roster | None = None,
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
@@ -743,7 +789,10 @@ def caption_blocks(
 
     ``name_rows`` (Zoom, from pixels): rows drawn as speaker names. A name-shaped one is a
     header whatever follows it: the last row (no text shown yet), another name-shaped row
-    ("Sounds Good"), a one-word display name ("Shad")."""
+    ("Sounds Good"), a one-word display name ("Shad").
+
+    ``heard``: off-roster speakers the tracker has named this meeting (XERK-2805). An unknown
+    header with no avatar beside it that reads as one of them is theirs."""
     marked = avatars or set()
     named = name_rows or set()
     blocks: list[CaptionBlock] = []
@@ -799,8 +848,25 @@ def caption_blocks(
             # An avatar beside the header vouches that it names a speaker, so it keeps that
             # name though the roster lacks it: a meeting whose window isn't on screen fills
             # no roster, and every row was stored with no speaker (XERK-2791).
-            named_by = roster.display(row) if i in marked else None
-            blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
+            # Never one that reads near a roster name: it may be that speaker misread, and a
+            # new name re-stored their whole entry (XERK-2802 QA). Unnamed, it merges as before.
+            # Without an avatar, a header reading a speaker this meeting already named that way
+            # (``heard``, the tracker's) is still theirs (XERK-2805): one frame where OCR found
+            # no avatar left every header nameless, and Teams splitting an entry on it stored
+            # the entry twice.
+            name = clean_tile_name(row) or row
+            if i in marked:
+                named_by = None if roster.near(name) else roster.display(name)
+            else:
+                named_by = heard.match(name, prefer=active) if heard is not None else None
+            blocks.append(
+                CaptionBlock(
+                    named_by,
+                    True,
+                    avatar=i in marked,
+                    heard=named_by is not None and i not in marked,
+                )
+            )
             continue
         if not blocks:
             blocks.append(CaptionBlock(None, False))

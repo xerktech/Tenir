@@ -30,6 +30,7 @@ from api.screen.merge import CaptionMerger
 from api.screen.utterances import sentences
 from api.screen.ocr import HttpOcrClient, OcrError, OcrLine, OcrResult, parse_result
 from api.screen.zoom import (
+    caption_blocks,
     CaptionBlock,
     FullFrame,
     Roster,
@@ -2736,7 +2737,7 @@ def test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech()
         blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
         assert [(b.speaker, b.lines) for b in blocks] == [
             ("Tim Mahler", [tail]),
-            (None, ["that festival"]),
+            ("Shad Tischer", ["that festival"]),  # beside an avatar: named (XERK-2802)
         ], tail
         # Without the pixels only a sentence end makes room for a header (the old rule).
         if not tail.endswith("."):
@@ -2751,7 +2752,7 @@ def test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech()
         blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
         assert [(b.speaker, b.lines) for b in blocks] == [
             ("Tim Mahler", ["and then"]),
-            (None, [text]),
+            (name, [text]),
         ], name
     # Dark text on a light panel: the name is still the dimmer ink.
     ocr, jpeg = panel_crop(
@@ -2761,7 +2762,10 @@ def test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech()
         ("ok", False),
         light=True,
     )
-    assert [b.speaker for b in parse_caption_crop(ocr, roster, jpeg=jpeg)] == ["Tim Mahler", None]
+    assert [b.speaker for b in parse_caption_crop(ocr, roster, jpeg=jpeg)] == [
+        "Tim Mahler",
+        "Shad Tischer",
+    ]
 
 
 def test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech() -> None:
@@ -2776,7 +2780,11 @@ def test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech() -
     for ts in range(0, 10_000, 1000):
         ocr, jpeg = panel_crop(*head)
         blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
-        assert [(b.speaker, b.has_header, b.lines) for b in blocks][-1] == (None, True, [])
+        assert [(b.speaker, b.has_header, b.lines) for b in blocks][-1] == (
+            "Shad Tischer",
+            True,
+            [],
+        )
         stored += merger.feed(blocks, ts)
     for ts in range(10_000, 20_000, 1000):
         ocr, jpeg = panel_crop(*head, ("we shipped it", False))
@@ -2784,7 +2792,7 @@ def test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech() -
     stored += merger.flush(30_000)
     assert [(s.speaker, s.text) for s in stored] == [
         ("Tim Mahler", "and what it was"),
-        (None, "we shipped it"),
+        ("Shad Tischer", "we shipped it"),
     ]
 
 
@@ -6482,6 +6490,88 @@ def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
 
 
 @pytest.mark.parametrize(
+    ("header", "speaker"),
+    [("Bo Chen", "Bo Chen"), ("jsmith", "jsmith"), ("Raman, Priya (Guest)", "Raman, Priya")],
+)
+def test_an_off_roster_zoom_speaker_beside_an_avatar_is_named(header: str, speaker: str) -> None:
+    """XERK-2802: a dim Zoom name row with the avatar circle beside it names its speaker though
+    the roster lacks them (a share shows only a strip of tiles); its lines had no speaker."""
+    for roster in (Roster(), _roster("Ana Lopez")):
+        ocr, jpeg = panel_crop(
+            ("Ana Lopez", True), ("and then", False), (header, True), ("we shipped it", False)
+        )
+        blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
+        assert [(b.speaker, b.lines) for b in blocks][-1] == (speaker, ["we shipped it"])
+
+
+def test_an_off_roster_zoom_name_with_no_avatar_stays_unnamed() -> None:
+    """A dim row alone is no name (a docs page's grey "Last Updated" reads the same), and
+    without pixels there is no avatar to see: the header keeps no speaker, as before."""
+    ocr, jpeg = panel_crop(("Bo Chen", True, False), ("we shipped it", False))
+    for pixels in (jpeg, None):
+        (block,) = parse_caption_crop(ocr, Roster(), jpeg=pixels)
+        assert (block.speaker, block.has_header, block.lines) == (None, True, ["we shipped it"])
+
+
+def test_an_off_roster_zoom_speaker_s_lines_are_stored_under_their_name() -> None:
+    """End to end: the meeting stores the off-roster speaker's words under their name, and a
+    name misread on one frame is unified to the spelling read most (``_as_heard``)."""
+    store = InMemoryConversationStore()
+    text = ("we shipped the release on friday", False)
+    frames = [panel_crop(("Shad Tischer", True), text)] * 5
+    frames[2] = panel_crop(("Shad Tischcr", True), text)
+    _feed(_tracker(store), frames, roster_names=("Ana Lopez",))
+    (conv,) = store.list("default")
+    segments = store.get("default", conv.id).segments
+    assert [(s.speaker, s.text) for s in segments] == [
+        ("Shad Tischer", "we shipped the release on friday")
+    ]
+
+
+@pytest.mark.parametrize(
+    "misread", ["Tirn Mahler", "Tim Mah", "Tim", "Ti", "Mahler", "Timothy Mahler"]
+)
+def test_a_roster_speaker_s_name_misread_beside_an_avatar_names_no_new_speaker(
+    misread: str,
+) -> None:
+    """XERK-2802 QA: a roster name misread on one frame past ``Roster.match`` ("Tirn Mahler"
+    reads 0.857) was named by its text, and the merger stored the whole entry again under it.
+    A header reading near a roster name stays unnamed, merging as before."""
+    store = InMemoryConversationStore()
+    text = ("we shipped the release on friday", False)
+    frames = [panel_crop(("Tim Mahler", True), text)] * 6
+    frames[2] = panel_crop((misread, True), text)
+    _feed(_tracker(store), frames, roster_names=("Tim Mahler",))
+    (conv,) = store.list("default")
+    segments = store.get("default", conv.id).segments
+    assert [(s.speaker, s.text) for s in segments] == [
+        ("Tim Mahler", "we shipped the release on friday")
+    ]
+    assert Roster().near(misread) is False
+
+
+def test_a_header_reading_near_a_roster_name_is_never_named_by_its_avatar() -> None:
+    """XERK-2802 QA: shared with Teams (``avatars_decide``): "Priya R" beside roster "Priya
+    Raman" was named a new speaker. A short roster word only blocks itself, not every name
+    it starts ("Jo" / "John Smith")."""
+    roster = _roster("Priya Raman", "Jo")
+    rows = ["Priya R", "we shipped it", "John Smith", "and then", "Hank Ives", "ok then"]
+    for decide in (False, True):
+        blocks = caption_blocks(
+            rows, roster, avatars={0, 2, 4}, avatars_decide=decide, name_rows={0, 2, 4}
+        )
+        assert [b.speaker for b in blocks if b.has_header] == [None, "John Smith", "Hank Ives"]
+    near = ("Jo", "Jo Ann", "Priya", "Pri", "Raman")
+    assert [roster.near(n) for n in near] == [True] * len(near)
+    far = ("Samantha Jones", "John", "Prim Shah", "Ram", "John Kim")
+    assert [roster.near(n) for n in far] == [False] * len(far)
+    (block,) = caption_blocks(
+        ["John Kim", "we shipped it"], _roster("Kim"), avatars={0}, avatars_decide=True
+    )
+    assert block.speaker == "John Kim"
+
+
+@pytest.mark.parametrize(
     "back",
     [
         # Teams re-punctuated the next entry the frame the row came back.
@@ -6558,6 +6648,67 @@ def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() ->
         ]
     )
     assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
+
+
+@pytest.mark.parametrize(
+    "back",
+    [
+        ["yes I think so too, and we", "should ship it today."],
+        ["yes I think so too, and", "we should ship it."],
+        ["yes I think so too, and", "we should ship it today."],
+    ],
+    ids=["grown", "re-wrapped", "both"],
+)
+def test_a_two_row_entry_changing_as_the_missed_row_returns_is_stored_once(
+    back: list[str],
+) -> None:
+    """XERK-2807: the second row of the entry "yes." grew into grew (Ana talking on) or
+    took a word re-wrapped down from the row above as the missed row came back. Only an exact
+    read paired it, so the entry was stored twice."""
+    nxt = ["yes I think so too, and we", "should ship it"]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", *back)], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), *(("Ana", row) for row in back)]
+
+
+def test_a_row_below_holding_words_the_row_above_never_lost_is_a_new_line() -> None:
+    """XERK-2807: a later row pairs with the next entry's line only when its extra words in
+    front are the ones the row above lost; other words in front make it another line."""
+    nxt = ["yes I think so too, and we", "should ship it"]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", nxt[0], "so should ship it.")], 6),
+        ]
+    )
+    assert ("Ana", "so should ship it.") in stored
+
+
+@pytest.mark.parametrize(
+    "live", ["yes I think so too,", "yes I think so too -", "yes the plan is:", "yes we can; then"]
+)
+def test_a_live_line_pausing_on_a_comma_dash_or_colon_is_unfinished(live: str) -> None:
+    """XERK-2807: a live line ending on a mark that leads on read as finished, so its
+    re-punctuated return was never split and the next entry was stored twice."""
+    from api.screen.merge import _unfinished
+
+    assert _unfinished(live)
+    assert _unfinished("はい、") and not _unfinished("❤️") and not _unfinished("yes.")
+    back = live.rstrip(",-: ") + "."
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", live), 3),
+            (_entries("OK.", "yes.", back), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", back)]
 
 
 def _gap_run(frames: list[tuple[list[CaptionBlock], int]], gap: int) -> list[str]:

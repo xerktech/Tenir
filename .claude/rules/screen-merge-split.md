@@ -28,14 +28,22 @@ paths:
     frame (its words, unpunctuated) it reads alike, and was cut for good (QA fuzz seed 146).
     - Never the line grown on (the next entry still growing): a finished entry clipped on the
       frame her next entry, extending it, first shows was cut for good (QA). Accepted: a next
-      entry still growing when the row returns is stored twice, as main; so is a live line
-      ending on a comma, dash or emoji (read as finished). A finished line with no closing
-      mark reads as live and may be cut, as main cuts it when read exactly (QA).
+      entry still growing when the row returns is stored twice, as main; telling it from the
+      clipped finished entry needs a second signal (a later frame showing the clipped row).
+    - A line ending on a mark that leads on (`_LEADS_ON`: comma, dash, colon, semicolon, "、")
+      is live (XERK-2807): read as finished, its return was stored twice. An emoji stays
+      finished (unfinished, "❤️" lines were cut, QA), so it is still stored twice.
+    - Accepted (operator's call, XERK-2807): a finished line with no closing mark (" café")
+      reads as live, and clipped to its first word as her next entry opening with its words
+      first shows, is cut to that word (main kept it; main cuts it when read exactly).
     - With no row aligned, the line is the one known line the whole split test passes for:
       matching on the row below alone, an older "Yes." matched too and nothing split (QA).
   - A next entry wrapped onto 2+ rows: its later rows pair with the lines after the grown one
-    when they read them exactly (XERK-2804); left new, its second row was stored twice. Still
-    stored twice (as main): that second row growing or re-wrapped as the row returns.
+    when they read them exactly (XERK-2804); left new, its second row was stored twice.
+    - The frame's bottom row may also read the newest line with the words the row above lost
+      in front (re-wrapped down) and words added after (still growing) (`_rereads_below`,
+      XERK-2807). Only the bottom row: a middle row keeps its text (`_update`), so paired with
+      a re-wrap it lost the moved word. Still stored twice (as main): a middle row re-wrapped.
   - `_hold` counts from a `_reflow` too (`_Line.reflowed_ms`): else a rewrite within `_HELD_MS`
     of it noted the re-flowed text as held. Never move a stored line's `changed_ms` there: it
     reopens `_EXTEND_MS` and a one-frame stray glyph 30 s+ on was stored (QA).
@@ -52,4 +60,7 @@ paths:
     `test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole`,
     `test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole`,
     `test_another_speakers_row_over_the_grown_entry_never_splits_it`,
-    `test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished`.
+    `test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished`,
+    `test_a_two_row_entry_changing_as_the_missed_row_returns_is_stored_once`,
+    `test_a_row_below_holding_words_the_row_above_never_lost_is_a_new_line`,
+    `test_a_live_line_pausing_on_a_comma_dash_or_colon_is_unfinished`.

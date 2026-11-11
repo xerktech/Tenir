@@ -122,6 +122,24 @@ def test_replaying_the_teams_fixture_stores_what_the_socket_stores(
     assert [{"speaker": s, "text": t} for s, t in rows] == FIXTURE["expected"]["lines"]
 
 
+def test_replay_parses_crops_with_the_speakers_heard_like_the_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XERK-2805: ``ws`` names a header no avatar vouches for after the speakers heard so far;
+    a replay without them would score a nameless frame the socket names."""
+    heard = []
+    parse = cr.teams.parse_caption_crop
+
+    def spy(*args, **kwargs):
+        heard.append(kwargs.get("heard"))
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(cr.teams, "parse_caption_crop", spy)
+    platform, frames = cr.load_window(write_window(tmp_path, FIXTURE["frames"]))
+    asyncio.run(cr.replay(platform, frames))
+    assert heard and all(isinstance(h, cr.zoom.Roster) for h in heard)
+
+
 def test_frames_replay_in_ts_order_and_unpaired_files_are_skipped(tmp_path: Path) -> None:
     window = write_window(tmp_path, FIXTURE["frames"])
     (window / "notes.txt").write_text("x")
