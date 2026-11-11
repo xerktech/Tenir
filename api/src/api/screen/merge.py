@@ -1067,11 +1067,17 @@ def _split_grown(
 
 
 def _unfinished(text: str) -> bool:
-    """Whether ``text`` ends on a letter, digit or combining mark (Unicode L/N/M, any script:
-    Hindi "है" ends on a vowel sign), not on punctuation or a symbol: a live entry, not one
-    Teams finished (``_splits``)."""
-    end = text.rstrip()[-1:]
-    return bool(end) and unicodedata.category(end)[0] in "LNM"
+    """Whether ``text`` ends on a letter or digit (Unicode L/N, any script), past any combining
+    marks after it (Hindi "है" ends on a vowel sign), not on punctuation or a symbol: a live
+    entry, not one Teams finished (``_splits``). An emoji is finished: "❤️" ends on a
+    variation selector and "1️⃣" on an enclosing keycap (both marks); counted as unfinished,
+    such a line was cut (QA)."""
+    end = text.rstrip()
+    while end and unicodedata.category(end[-1])[0] == "M":
+        if end[-1] in "\ufe0e\ufe0f" or unicodedata.category(end[-1]) == "Me":
+            return False
+        end = end[:-1]
+    return bool(end) and unicodedata.category(end[-1])[0] in "LN"
 
 
 def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
@@ -1089,7 +1095,7 @@ def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
         and any(_words(t) == now for t in line.held)
         and (
             nxt.norm == line.norm
-            # Unfinished (ending on a letter, digit or mark, any script), the row below may read
+            # Unfinished (ending on a letter or digit, any script), the row below may read
             # the line re-punctuated or clipped, holding more than ``row``. A finished line
             # clipped as her next entry, opening with its words, first shows reads alike and
             # was cut (QA). Any closing mark counts ("。", "…", '."'): a list of marks missed

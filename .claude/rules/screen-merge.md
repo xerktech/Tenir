@@ -401,8 +401,9 @@ paths:
   - Accepted (operator's call): a repeat clipped to a text the first copy paused on 2 s+ (or
     any text at 2 s+ frame gaps) is still cut ("Thank you so much." -> "Thank you"); on
     screen it reads exactly like the miss. Only lines changed within `_REVISE_MS`.
-  - The row below may read an unfinished grown line (`_unfinished`: ends on Unicode L/N/M;
-    a mark list missed "。", "…", '."' and those were cut; `isalnum` missed Hindi "है", QA)
+  - The row below may read an unfinished grown line (`_unfinished`: its base end char, past
+    combining marks, is Unicode L/N; an emoji's VS16/keycap ends it finished. A mark list missed
+    "。", "…", '."'; `isalnum` missed Hindi "है"; L/N/M cut "❤️" lines — all QA)
     re-punctuated or
     clipped (its words a prefix of the line's), holding more than the row it splits off
     (XERK-2804). A finished line must read exactly: clipped over her next entry's first
