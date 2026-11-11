@@ -514,7 +514,7 @@ def test_a_leading_token_that_is_not_the_speakers_initials_stays_text(glued: str
 
 @pytest.mark.parametrize("names", [("Tom Adams", "Mark Hale"), ()])
 def test_avatar_initials_misread_by_one_letter_are_stripped(names: tuple) -> None:
-    # Real Teams OCR read Tom Adams' circle "TA" as "LA" (XERK-2792).
+    # Real Teams OCR read Tom Adams' circle "TA" as "LA" (XERK-2792); "TV" misreads the A.
     blocks = teams.parse_caption_crop(
         result(
             line("Tom Adams", 56, 4, 200, 20),
@@ -543,6 +543,50 @@ def test_the_go_to_current_button_is_not_caption_text(names: tuple) -> None:
     assert [b.lines for b in blocks] == [["We can start now."], ["All right thank"]]
     if names:
         assert [b.speaker for b in blocks] == ["Mark Hale", "Tom Adams"]
+
+
+@pytest.mark.parametrize(
+    ("speaker", "glued"),
+    [
+        ("Tom Adams", "AI is the plan."),  # shares a letter, but not in the circle's place
+        ("Tom Adams", "IT is down."),
+        ("Priya", "PA system is on."),  # one-word name: no two-letter circle to misread
+    ],
+)
+def test_a_two_capital_word_not_one_letter_off_the_circle_stays_text(
+    speaker: str, glued: str
+) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line(speaker, 56, 4, 200, 20), line(glued, 10, 26, 300, 46)), roster(speaker)
+    )
+    assert [b.lines for b in blocks] == [[glued]]
+
+
+@pytest.mark.parametrize("spoken", ["go to current.", "Go to current"])
+def test_go_to_current_spoken_at_the_text_column_stays(spoken: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("I think we should just", 60, 26, 300, 46),
+            line(spoken, 60, 48, 200, 68),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [["I think we should just", spoken]]
+
+
+@pytest.mark.parametrize("button", ["Go to current", "Go to current ↓"])
+def test_only_the_whole_button_text_is_dropped(button: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line(button, 402, 26, 520, 46),
+            line("Go to current events", 60, 48, 300, 68),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [["We can start now.", "Go to current events"]]
 
 
 def test_capital_caption_words_that_are_not_the_speakers_initials_stay_text() -> None:

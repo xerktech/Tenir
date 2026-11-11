@@ -52,12 +52,16 @@ paths:
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.
-  - Caption crops drop a box reading exactly "Go to current" (`_CAPTION_PANE_UI`) before
-    `row_groups`: level with a header it joined the row and lost the header (XERK-2792). Test:
-    `test_the_go_to_current_button_is_not_caption_text`.
-  - A row glued onto the avatar sheds a 2-capital token one letter off the speaker's initials
-    ("LA" for "TA", real OCR); off by both ("AR" under Mark Hale) stays. Test:
-    `test_avatar_initials_misread_by_one_letter_are_stripped`.
+  - Caption crops drop a box reading exactly "Go to current" (`_drop_pane_buttons`) before
+    `row_groups`: level with a header it joined the row and lost the header (XERK-2792). Only
+    unpunctuated and well right of the text column: a spoken "go to current." stays (QA).
+    Tests: `test_the_go_to_current_button_is_not_caption_text`,
+    `test_go_to_current_spoken_at_the_text_column_stays`.
+  - A row glued onto the avatar sheds a 2-capital token one letter off the circle, compared
+    position by position (first+last initial: "LA" for "TA", real OCR). A shared letter alone
+    stripped "AI"/"IT" openers under Tom Adams (QA). Tests:
+    `test_avatar_initials_misread_by_one_letter_are_stripped`,
+    `test_a_two_capital_word_not_one_letter_off_the_circle_stays_text`.
   - A short token before a roster name on a box left of the text below it is a misread circle
     ("3 Lee, Bo", "BI Lee, Bo" at 1920/1680, real OCR) and is stripped (`_strip_misread_avatar`).
   - Caption crops read their pixels for avatars (`_pixel_avatars`, XERK-2614): a round run of
