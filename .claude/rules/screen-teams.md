@@ -104,8 +104,17 @@ paths:
       `parse_caption_crop(heard=)`, XERK-2805): OCR found no avatar on 6 frames of a real
       meeting, every header was nameless, and Teams splitting an entry on one stored it twice.
       Only the unknown-header branch of `caption_blocks` uses it; roster matching and the
-      no-roster position rules (`len(roster)`) never see these names. Tests:
-      `test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard`,
+      no-roster position rules (`len(roster)`) never see these names.
+      - Such a header (`CaptionBlock.heard`) vouches for no crop: counted as a speaker, a slide
+        heading reading as their name was stored as their speech mid-meeting (QA).
+      - `heard` is empty while no meeting is live: an ended meeting's panel re-fills `_heard`,
+        and a slide carrying one of its names started a phantom meeting (QA).
+      - Names past `_LIKE_MAX_CHARS` are left out: `Roster.match` has no length cap (QA: 200
+        crafted 64-char names cost a 50-header crop 3.2 s).
+      - Tests: `test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard`,
+      `test_a_slide_heading_reading_as_a_heard_speaker_is_not_stored_as_speech`,
+      `test_a_guest_header_no_avatar_vouches_for_is_named_after_a_heard_speaker`,
+      `test_a_header_reading_like_two_heard_speakers_goes_to_the_active_one`,
       `test_an_entry_split_on_a_frame_no_avatar_was_found_on_is_stored_as_if_named`,
       `test_the_tracker_hears_each_speaker_under_the_spelling_it_stores`.
     - Per meeting (cleared in `end`). Tests:

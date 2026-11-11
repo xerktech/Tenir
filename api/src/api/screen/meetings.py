@@ -166,6 +166,9 @@ _HEARD_OWN = 3
 _HEARD_SHARE = 10
 
 
+# ``MeetingTracker.heard`` while no meeting is live: never added to.
+_NO_ONE_HEARD = Roster()
+
 # Names longer than this (normalized) are never unified: OCR text is attacker-controlled, and
 # difflib is quadratic in length. Real display names are shorter.
 _LIKE_MAX_CHARS = 32
@@ -334,10 +337,19 @@ class MeetingTracker:
         """The off-roster speakers heard this meeting under their own spelling (those
         ``_as_heard`` keeps as read), for the caption parser (XERK-2805): on a frame where OCR
         found no avatar every header was nameless, and Teams splitting an entry on that frame
-        stored it twice. A spelling taken for another's misread is left out."""
+        stored it twice. A spelling taken for another's misread is left out, and so is one
+        past ``_LIKE_MAX_CHARS`` (crafted names: ``Roster.match`` has no length cap).
+
+        Empty while no meeting is live: an ended meeting's panel left on screen re-fills
+        ``_heard``, and a slide heading reading as one of those names then started a meeting
+        (QA)."""
+        if self.conversation_id is None:
+            return _NO_ONE_HEARD
         order = {n: i for i, n in enumerate(self._likes)}
         names = tuple(
-            n for n, count in self._heard.items() if count and self._misread_of(n, order) is None
+            n
+            for n, count in self._heard.items()
+            if count and len(n) <= _LIKE_MAX_CHARS and self._misread_of(n, order) is None
         )
         if self._heard_roster[0] != names:
             roster = Roster()
@@ -420,7 +432,9 @@ class MeetingTracker:
         if (
             self.meta.platform == "teams"
             and self.merger is not None
-            and not any(b.has_header and (b.speaker or b.avatar) for b in blocks)
+            # A header named only after a heard speaker vouches for nothing (XERK-2805 QA):
+            # a slide heading reading as their name was stored as their speech.
+            and not any(b.has_header and ((b.speaker and not b.heard) or b.avatar) for b in blocks)
             and not await CPU_POOL.run(self.user, self.merger.knows_any, blocks, ts)
         ):
             # No header the roster or an avatar vouches for, and re-reading no recent line:

@@ -426,6 +426,10 @@ class CaptionBlock:
     # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
     # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
     avatar: bool = False
+    # Named only after a speaker the tracker heard this meeting (``heard``, XERK-2805): no
+    # roster match or avatar vouches for it, so it verifies no crop (a slide's heading may
+    # read as their name).
+    heard: bool = False
 
 
 def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
@@ -810,7 +814,14 @@ def caption_blocks(
                 named_by: str | None = roster.display(row)
             else:
                 named_by = heard.match(row, prefer=active) if heard is not None else None
-            blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
+            blocks.append(
+                CaptionBlock(
+                    named_by,
+                    True,
+                    avatar=i in marked,
+                    heard=named_by is not None and i not in marked,
+                )
+            )
             continue
         if not blocks:
             blocks.append(CaptionBlock(None, False))
