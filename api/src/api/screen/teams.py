@@ -43,6 +43,7 @@ from api.screen.zoom import (
     clean_tile_name,
     is_name_like,
     norm_name,
+    pending_header,
     row_groups,
     _is_round,
     _reading_order,
@@ -881,5 +882,8 @@ def parse_caption_crop(
     # no roster and no pixels to read, any header does (as before XERK-2614); with pixels and
     # no avatar at all it may be a slide, which then started meetings after a reset.
     unknown_ok = not len(roster) and pixels is None
-    verified = any(b.has_header and (b.speaker or b.avatar or unknown_ok) for b in blocks)
+    verified = any(
+        b.has_header and (b.speaker or b.avatar or (unknown_ok and not pending_header(blocks, b)))
+        for b in blocks
+    )
     return blocks if verified or live else []

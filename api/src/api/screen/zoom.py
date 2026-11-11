@@ -496,7 +496,9 @@ def parse_caption_crop(
     )
     if live or any(b.has_header and b.speaker for b in blocks):
         return blocks
-    if not any(b.has_header for b in blocks):
+    # Without pixels a trailing empty header is the position rule's guess (XERK-2794), so it
+    # vouches for nothing; with them it is a dim name row, which does (QA).
+    if not any(b.has_header and not (dim is None and pending_header(blocks, b)) for b in blocks):
         return []
     # Only unmatched headers. Without pixels, or with no text row to compare brightness
     # against, the position rule's header stands. Otherwise a dim row that reads as a
@@ -703,6 +705,13 @@ def _is_round(ink: np.ndarray) -> bool:
     return ends <= 0.9 * mid
 
 
+def pending_header(blocks: list[CaptionBlock], block: CaptionBlock) -> bool:
+    """``block`` is the crop's last row read as the next entry's header before its text
+    (no speaker, no text, no avatar): it vouches for no crop, or slide text over a name
+    would start a meeting (XERK-2794 QA)."""
+    return block is blocks[-1] and block.speaker is None and not block.lines and not block.avatar
+
+
 def caption_blocks(
     rows: list[str],
     roster: Roster,
@@ -766,6 +775,17 @@ def caption_blocks(
                 and (
                     i in named
                     or (has_next and not len(roster))
+                    # No roster, last row: a name where a header can sit (after a finished
+                    # line) is the next entry's header, its text not shown yet. Read as text
+                    # it was stored as speech for good (XERK-2794). It verifies no crop
+                    # (``pending_header``): slide text over a name started meetings (QA).
+                    or (
+                        0 < i
+                        and not has_next
+                        and not len(roster)
+                        and unknown_headers is not None
+                        and unknown_headers(i)
+                    )
                     or (
                         unknown_headers is not None
                         and has_next
