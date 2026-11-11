@@ -449,13 +449,8 @@ def _active_tile(img, tiles: list[tuple[str, OcrLine]]) -> str | None:
 
 @dataclass
 class CaptionBlock:
-<<<<<<< HEAD
     # The roster name the header matched, or the header's own name when an avatar vouches
     # for it (Teams; Zoom only for a dim name row); None for any other unmatched header and for the header-less block of
-=======
-    # The roster name the header matched, or (Teams) the header's own name when an avatar
-    # vouches for it; None for any other unmatched header and for the header-less block of
->>>>>>> origin/main
     # lines continuing from above the crop.
     speaker: str | None
     has_header: bool
@@ -846,7 +841,6 @@ def caption_blocks(
             # An avatar beside the header vouches that it names a speaker, so it keeps that
             # name though the roster lacks it: a meeting whose window isn't on screen fills
             # no roster, and every row was stored with no speaker (XERK-2791).
-<<<<<<< HEAD
             # Never one that reads near a roster name: it may be that speaker misread, and a
             # new name re-stored their whole entry (XERK-2802 QA). Unnamed, it merges as before.
             name = clean_tile_name(row) or row
@@ -855,9 +849,6 @@ def caption_blocks(
                 if i in marked and not roster.near(name)
                 else None
             )
-=======
-            named_by = roster.display(row) if i in marked else None
->>>>>>> origin/main
             blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
             continue
         if not blocks:
