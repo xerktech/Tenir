@@ -272,7 +272,10 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     if not _same_speaker(shown.speaker, known.speaker):
         return 0.0
     a, b = shown.norm, known.norm
-    if a == b:
+    if a == b or _words(a) == _words(b) != []:
+        # Same words, re-punctuated: Teams punctuates an entry as it finalises it, after it
+        # was stored ("let's go to Cy" -> "...Cy."). Only a ratio match, it lost to
+        # storing the whole box again once the live entry below was rewritten (XERK-2774).
         return _MATCH
     if growable and a.startswith(b):
         return _MATCH - 0.5  # the line growing
@@ -678,63 +681,81 @@ def _revisions(
             first == 0 or shown[first - 1].block != shown[first].block
         )
         speaker = speakers[first]
-        q = next(
-            (k for k in range(p, len(cands)) if _same_speaker(speaker, tail[cands[k]].speaker)),
-            None,
-        )
-        if q is None:
+        qs = [k for k in range(p, len(cands)) if _same_speaker(speaker, tail[cands[k]].speaker)]
+        if last >= 0 or rows is not runs[0]:
+            qs = qs[:1]
+        # Else no row re-reads a known line (the box scrolled past them all): her lines above
+        # the draft may have scrolled off too, so the draft may start at any of her recent
+        # lines. Offered only her first then, a rewrite with nothing left to anchor it was
+        # stored again whole (XERK-2774). It must still reach the newest line (below).
+        if not qs:
             if fresh:
                 break
             continue
-        end = q
-        while (
-            end < len(cands)
-            and tail[cands[end]].speaker == tail[cands[q]].speaker
-            and (end == q or cands[end] == cands[end - 1] + 1)
-        ):
-            end += 1
-        # The draft is the speaker's whole run of unshown lines, cut first where the next
-        # block is hers and re-reads one of them verbatim: Teams shows each entry as its own
-        # block, so the run then holds her next entries too, and a one-row entry that grew
-        # ("green." -> "green, so ship it") covered too few of its words (XERK-2717). Cuts go
-        # first: a full draft passing coverage swallowed a short entry after the next one
-        # ("ok."), which was then stored again. Someone else repeating her line cuts nothing,
-        # and nor does a line last seen before dropped frames (``_SAID_BETWEEN_MS``).
-        # Failing all those, the draft up to her next entry, a line first shown under a header
-        # (XERK-2720): her next entry still growing, misread or re-punctuated re-reads none of
-        # her lines verbatim. Only last: Zoom heads a speaker's run once (a scrolled-up row
-        # looks like an entry start), and cutting there first lost revisions in Zoom
-        # simulations.
-        nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
-        # Either cut needs the cut entry itself seen within ``_SAID_BETWEEN_MS``: a short entry
-        # scrolled off is no longer there to rewrite, and a later row holding its few words
-        # claimed it (QA). Not "on the last frame": one frame of OCR missing her block then
-        # stored the grown entry twice again (QA).
-        recent = ts - tail[cands[q]].seen_ms <= _SAID_BETWEEN_MS
-        cuts = [
-            k
-            for k in range(q + 1, end)
-            if recent
-            and nxt is not None
-            and speakers[nxt] == tail[cands[q]].speaker
-            and shown[nxt].norm == tail[cands[k]].norm
-            and ts - tail[cands[k]].seen_ms <= _SAID_BETWEEN_MS
-        ]
-        ends = [*reversed(cuts), end]
-        own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
-        if own not in ends and recent:
-            ends.append(own)
         found = None
-        for e in ends:
-            folded: list[tuple[int, tuple[int, ...]]] = []
-            if c := _claims(shown, rows, tail, cands[q:e], budget, folded, lead=fresh and recent):
-                found = (e, c)
+        for q in qs:
+            end = q
+            while (
+                end < len(cands)
+                and tail[cands[end]].speaker == tail[cands[q]].speaker
+                and (end == q or cands[end] == cands[end - 1] + 1)
+            ):
+                end += 1
+            # The draft is the speaker's whole run of unshown lines, cut first where the next
+            # block is hers and re-reads one of them verbatim: Teams shows each entry as its own
+            # block, so the run then holds her next entries too, and a one-row entry that grew
+            # ("green." -> "green, so ship it") covered too few of its words (XERK-2717). Cuts go
+            # first: a full draft passing coverage swallowed a short entry after the next one
+            # ("ok."), which was then stored again. Someone else repeating her line cuts nothing,
+            # and nor does a line last seen before dropped frames (``_SAID_BETWEEN_MS``).
+            # Failing all those, the draft up to her next entry, a line first shown under a header
+            # (XERK-2720): her next entry still growing, misread or re-punctuated re-reads none of
+            # her lines verbatim. Only last: Zoom heads a speaker's run once (a scrolled-up row
+            # looks like an entry start), and cutting there first lost revisions in Zoom
+            # simulations.
+            nxt = next((r[0] for r in runs if r[0] > rows[-1]), None)
+            # Either cut needs the cut entry itself seen within ``_SAID_BETWEEN_MS``: a short entry
+            # scrolled off is no longer there to rewrite, and a later row holding its few words
+            # claimed it (QA). Not "on the last frame": one frame of OCR missing her block then
+            # stored the grown entry twice again (QA).
+            recent = ts - tail[cands[q]].seen_ms <= _SAID_BETWEEN_MS
+            cuts = [
+                k
+                for k in range(q + 1, end)
+                if recent
+                and nxt is not None
+                and speakers[nxt] == tail[cands[q]].speaker
+                and shown[nxt].norm == tail[cands[k]].norm
+                and ts - tail[cands[k]].seen_ms <= _SAID_BETWEEN_MS
+            ]
+            ends = [*reversed(cuts), end]
+            own = next((k for k in range(q + 1, end) if tail[cands[k]].head), end)
+            if own not in ends and recent:
+                ends.append(own)
+            # Her next entry right below, under its own header: where Teams split the draft's
+            # tail off into a new entry as it finalised it (``_cut_back``).
+            split = (
+                [w for r in runs if r[0] == nxt for k in r for w in _words(shown[k].text)]
+                if nxt is not None and shown[nxt].speaker == tail[cands[q]].speaker
+                else []
+            )
+            for e in ends:
+                folded: list[tuple[int, tuple[int, ...]]] = []
+                if c := _claims(
+                    shown, rows, tail, cands[q:e], budget, folded,
+                    # A later start never skips rows: a garbled re-read above a repeat
+                    # ("~kay" / "okay") let the repeat claim the old line (Zoom fuzz).
+                    lead=fresh and recent and q == qs[0], split=split,
+                ):
+                    found = (e, c, folded)
+                    break
+            if found is not None:
                 break
         if found is None:
             if fresh:
                 break
             continue
-        p, claims = found
+        p, claims, folded = found
         out.update(claims)
         folds += folded
     # The box always shows the newest lines: revisions that leave a newer known line unshown
@@ -758,6 +779,7 @@ def _claims(
     folded: list[tuple[int, tuple[int, ...]]] | None = None,
     *,
     lead: bool = False,
+    split: list[str] | None = None,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
     rows keep under ``_REVISED`` of ``draft_lines``' words in order.
@@ -765,7 +787,8 @@ def _claims(
     ``folded`` (when given) gets the draft lines no row claims but whose every word a claiming
     row holds, between two claimed lines or after the last, each with the claimed lines: a
     rewrite with fewer rows than its draft ("we did it in test first so" / "nothing broke" ->
-    one row) folded them into the rows, and kept they were stored twice (XERK-2701)."""
+    one row) folded them into the rows, and kept they were stored twice (XERK-2701).
+    ``split``: the words of her next entry right below the rows (``_cut_back``)."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -798,7 +821,7 @@ def _claims(
     # A stutter ("so so so") counts once: Teams drops repeats when it re-lays an entry, and
     # counting each copy failed coverage, so the whole box was stored again (XERK-2746).
     said = sum(1 for n, (w, _) in enumerate(draft) if not n or draft[n - 1][0] != w)
-    if not claims or (len(pairs) < _REVISED * said and not _cut_back(draft, mine)):
+    if not claims or (len(pairs) < _REVISED * said and not _cut_back(draft, mine, split or [])):
         return None
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
@@ -817,7 +840,9 @@ def _claims(
     return claims
 
 
-def _cut_back(draft: list[tuple[str, int]], mine: list[tuple[str, int]]) -> bool:
+def _cut_back(
+    draft: list[tuple[str, int]], mine: list[tuple[str, int]], split: list[str]
+) -> bool:
     """Whether the rows read exactly the draft's leading words, dropping the rest of its last
     line: Teams cut the entry's live tail back as it finalised it (XERK-2774). The rows keep
     ``_CUT_WORDS``+ words and half the draft's, so a short new line opening like an older one
@@ -826,11 +851,16 @@ def _cut_back(draft: list[tuple[str, int]], mine: list[tuple[str, int]]) -> bool
     Only the draft's last line may lose words: a cut dropping a whole row left it known but
     unshown, and the rows were stored again (QA). That also keeps a draft running on into her
     later entries from being cut to a new entry opening like her first, which overwrote it
-    past the "reach the newest line" guard (QA)."""
+    past the "reach the newest line" guard (QA).
+
+    Any share of the draft passes when the words cut off open ``split``, her next entry right
+    below: Teams split the entry in two ("hi good morning so yesterday we" -> "Hi, good
+    morning." / "So yesterday we..."), so the dropped words are still shown."""
     words = [w for w, _ in mine]
+    rest = [w for w, _ in draft[len(words) :]]
     return (
-        len(words) >= max(_CUT_WORDS, len(draft) / 2)
-        and len(words) < len(draft)
+        (len(words) >= max(_CUT_WORDS, len(draft) / 2) or split[: len(rest)] == rest)
+        and 0 < len(words) < len(draft)
         and [w for w, _ in draft[: len(words)]] == words
         and draft[len(words)][1] == draft[-1][1]
     )
@@ -1470,7 +1500,13 @@ class CaptionMerger:
             line.pending = None
         if shown.norm == line.norm:
             return
-        grew = shown.norm.startswith(line.norm + " ")
+        # Teams may punctuate the join as the line grows ("All right" -> "All right, gentle
+        # it out"): refused, the line was stored short and the next frame re-stored the box
+        # (XERK-2774). Only punctuation added right after the known text: matching by words
+        # let a re-flowed row ("pods." -> "pods itself ... pods") overwrite a row (fuzz).
+        grew = any(
+            shown.norm.startswith(line.norm + mark + " ") for mark in ("", ",", ".", "?", "!")
+        )
         if not line.final:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
             # words); a line above it changes only by OCR jitter, so it keeps its text.

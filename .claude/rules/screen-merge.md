@@ -138,6 +138,27 @@ paths:
     `test_a_short_new_line_opening_like_the_last_is_not_a_cut_back`,
     `test_a_new_entry_opening_like_her_entry_before_last_is_not_a_cut_back`,
     `test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice`.
+  - Any share of the draft passes when the words cut off open her next entry right below:
+    Teams split the entry in two ("hi good morning so yesterday we" -> "Hi, good morning." /
+    "So yesterday we..."; real sampler frames, 2026-11-11). Test:
+    `test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once`.
+  - With no row aligned (every known row scrolled off), the first run may take its draft from
+    any of her recent lines, not only her oldest: that one claimed nothing and the split was
+    stored beside its draft. Only the first start may skip lead rows: a later one let a
+    repeat under a garbled re-read ("~kay" / "okay") claim the old line (Zoom fuzz 425, 512).
+    Test: `test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once`.
+- Real Teams frames (sampler, XERK-2774), two more causes of a box stored again:
+  - `_score` pairs a row with the same words as a known line as exact: a stored entry Teams
+    re-punctuates ("go to Cy" -> "go to Cy.") was only a ratio match, under the cost of
+    leaving the rewritten live entry unshown.
+  - `_update` takes growth that adds punctuation at the join ("All right" -> "All right,
+    let's..."). Not by words alone: a re-flowed row then overwrote "pods." with the row above
+    (`_simulate_teams` seed 125). Test: `test_an_entry_punctuated_as_it_grows_is_stored_once`.
+  - The real meeting replays at 0 duplicate rows (main: 3 of 3+ words, more shorter ones).
+    Per seed vs main (4,400 seeds): 3 differ, all fewer extra words (`_simulate_teams` noise
+    0.2 seed 46: 9 -> 8; Zoom noise+drops 865: 13 -> 0, 908: 6 -> 0), none loses a word.
+  - Still open: another speaker's entry Teams orders above her live entry ("OK" / Bo / "OK.")
+    stores it twice: a header row can't stay unpaired above a match (`_UNPAIRED`).
   - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
     known "sounds good" is a repeat, not a revision (QA: the reply was lost).
   - Aligned rows of a revised block take new words only once two frames read them alike
