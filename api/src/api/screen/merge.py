@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Hashable, Sequence
@@ -248,6 +249,8 @@ class _Line:
     # The row the alignment last paired with it (its norm; "" until one): a line whose row
     # since read otherwise (grown, re-laid) is stale, not re-punctuated (``_score``).
     read: str = ""
+    # When ``_reflow`` last changed its text (a stored line's ``changed_ms`` stays put).
+    reflowed_ms: int = 0
 
     @property
     def final(self) -> bool:
@@ -1058,7 +1061,7 @@ def _shown(blocks: list[CaptionBlock]) -> list[_Shown]:
 
 def _hold(line: _Line, ts: int) -> None:
     """Note ``line``'s text before it changes, if it read so for ``_HELD_MS``."""
-    if ts - line.changed_ms >= _HELD_MS:
+    if ts - max(line.changed_ms, line.reflowed_ms) >= _HELD_MS:
         line.held = (*line.held[-3:], line.text)
 
 
@@ -1083,7 +1086,18 @@ def _split_grown(
     gaps) is still cut; on screen it reads exactly like the miss. Only for a line first seen
     within ``_REVISE_MS`` of its last change (a repeat a minute later was cut; from first
     sight, a "yes." shown 27 s+ before growing was not split, QA), and below every aligned row:
-    a row above a match is a glitch (``_align``)."""
+    a row above a match is a glitch (``_align``).
+
+    The row below need not read an unfinished grown line exactly (XERK-2804): its words may
+    be the line's re-punctuated, or cut short (OCR clipped the row that frame), as long as it
+    holds more words than the row above. Never the line's words grown on, nor a finished
+    line's (ending on punctuation or a symbol) read inexactly: her finished entry, clipped as her next entry opening with
+    its words first shows, reads alike on that frame, and was cut for good (QA).
+    Rows of its block below it that read the line's next lines exactly pair with them (a
+    two-row next entry): left new, its second row was stored again beside the line.
+
+    With no row aligned, the line is the one known line the pair splits: matching the row
+    below alone, any older one-word line ("Yes.") also matched it and no split was made (QA)."""
     out: set[int] = set()
     floor = max((a for a in aligned if a is not None), default=-1)
     for i in range(len(shown) - 1):
@@ -1093,29 +1107,75 @@ def _split_grown(
         if aligned[i] is None:
             if any(a is not None for a in aligned[i:]):
                 continue
-            ks = [k for k in range(floor + 1, len(tail)) if tail[k].norm == nxt.norm]
+            ks = [k for k in range(floor + 1, len(tail)) if _splits(row, nxt, tail[k], ts)]
             if len(ks) != 1:
                 continue
             k = ks[0]
-        elif aligned[i] == floor:
+        elif aligned[i] == floor and _splits(row, nxt, tail[floor], ts):
             k = floor
         else:
             continue
-        line = tail[k]
-        if line.carried or ts - line.changed_ms > _REVISE_MS or nxt.norm != line.norm:
-            continue
-        if not _same_speaker(row.speaker, line.speaker):
-            continue
-        had, now = _words(line.text), _words(row.text)
-        if (
-            now
-            and len(now) < len(had)
-            and had[: len(now)] == now
-            and any(_words(t) == now for t in line.held)
-        ):
-            aligned[i] = k
-            out.add(i)
+        aligned[i] = k
+        out.add(i)
+        # The next entry's later rows re-read the lines after it (it wrapped).
+        taken = set(aligned)
+        for j, below in enumerate(shown[i + 2 :]):
+            at, n = k + 1 + j, i + 2 + j
+            if (
+                below.block != nxt.block
+                or at >= len(tail)
+                or aligned[n] is not None
+                or n in revised
+                or at in taken
+                or tail[at].norm != below.norm
+                or not _same_speaker(below.speaker, tail[at].speaker)
+            ):
+                break
+            aligned[n] = at
     return out
+
+
+def _unfinished(text: str) -> bool:
+    """Whether ``text`` ends on a letter or digit (Unicode L/N, any script), past any combining
+    marks after it (Hindi "है" ends on a vowel sign), not on punctuation or a symbol: a live
+    entry, not one Teams finished (``_splits``). An emoji is finished: "❤️" ends on a
+    variation selector and "1️⃣" on an enclosing keycap (both marks); counted as unfinished,
+    such a line was cut (QA)."""
+    end = text.rstrip()
+    while end and unicodedata.category(end[-1])[0] == "M":
+        if end[-1] in "\ufe0e\ufe0f" or unicodedata.category(end[-1]) == "Me":
+            return False
+        end = end[:-1]
+    return bool(end) and unicodedata.category(end[-1])[0] in "LN"
+
+
+def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
+    """Whether ``row`` over ``nxt`` is ``line``'s held text over the entry it grew into
+    while OCR missed ``row`` (``_split_grown``)."""
+    if line.carried or ts - line.changed_ms > _REVISE_MS:
+        return False
+    if not _same_speaker(row.speaker, line.speaker):
+        return False
+    had, now, got = _words(line.text), _words(row.text), _words(nxt.text)
+    return (
+        bool(now)
+        and len(now) < len(had)
+        and had[: len(now)] == now
+        and any(_words(t) == now for t in line.held)
+        and (
+            nxt.norm == line.norm
+            # Unfinished (ending on a letter or digit, any script), the row below may read
+            # the line re-punctuated or clipped, holding more than ``row``. A finished line
+            # clipped as her next entry, opening with its words, first shows reads alike and
+            # was cut (QA). Any closing mark counts ("。", "…", '."'): a list of marks missed
+            # some, and those lines were cut (QA).
+            or (
+                _unfinished(line.text)
+                and len(now) < len(got) <= len(had)
+                and had[: len(got)] == got
+            )
+        )
+    )
 
 
 class CaptionMerger:
@@ -1939,6 +1999,10 @@ class CaptionMerger:
                 if _norm(text) == ln.norm:
                     continue
                 ln.text, ln.norm = text, _norm(text)
+                # A stored line keeps ``changed_ms`` (it gates growth, ``_EXTEND_MS``: moved
+                # here, a one-frame stray glyph was stored, QA), but its text is new for
+                # ``_hold``: else a rewrite within ``_HELD_MS`` noted it as held (XERK-2804).
+                ln.reflowed_ms = ts
                 if ln.segment is None:
                     ln.changed_ms = ts
                 else:

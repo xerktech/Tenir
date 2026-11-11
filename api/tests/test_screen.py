@@ -6458,3 +6458,210 @@ def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
         ]
     )
     assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
+
+
+@pytest.mark.parametrize(
+    "back",
+    [
+        # Teams re-punctuated the next entry the frame the row came back.
+        [(_entries("OK.", "yes.", "yes I think so too."), 6)],
+        # OCR clipped the next entry's row that frame.
+        [
+            (_entries("OK.", "yes.", "yes I think so"), 1),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ],
+    ],
+    ids=["re-punctuated", "clipped"],
+)
+def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: list) -> None:
+    """XERK-2804: the row below the missed one read the grown line re-punctuated or clipped,
+    so ``_split_grown`` never paired it and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            *back,
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+@pytest.mark.parametrize(
+    "live",
+    ["yes we ship at 3", "yes मुझे लगता है", "yes I think so too "],
+    ids=["digit", "vowel-sign", "trailing-space"],
+)
+def test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished(live: str) -> None:
+    """XERK-2804 (QA): an unfinished line is one ending on a letter, digit or combining mark
+    (Hindi ends most words on a vowel sign, which ``isalnum`` rejects), trailing space aside;
+    its re-punctuated row below splits it."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", live), 3),
+            (_entries("OK.", "yes.", live.rstrip() + "."), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", live.rstrip() + ".")]
+
+
+def test_an_older_one_word_line_does_not_stop_the_split() -> None:
+    """QA (XERK-2804): with no row aligned above, the line to split was any known line the row
+    below starts with; Cy's earlier "Yes." matched too and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Cy", "Yes.")], 3),
+            ([blk("Cy", "Yes."), blk("Ana", "OK.")], 3),
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            (_entries("yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert stored == [
+        ("Cy", "Yes."),
+        ("Ana", "OK."),
+        ("Ana", "yes."),
+        ("Ana", "yes I think so too."),
+    ]
+
+
+def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
+    """XERK-2804: the live "yes." grew into a two-row entry while OCR missed its row. Once
+    both show, the entry's second row pairs with the line it re-reads, not stored again."""
+    nxt = ["yes I think so too, and we", "should ship it."]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", *nxt)], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
+
+
+def _gap_run(frames: list[tuple[list[CaptionBlock], int]], gap: int) -> list[str]:
+    """``_entry_run`` at ``gap`` ms between frames; returns every segment's last text."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, object] = {}
+    t = 0
+    for blocks, count in frames:
+        for _ in range(count):
+            for seg in m.feed(blocks, t):
+                final[seg.segment_id] = seg
+            t += gap
+    for seg in m.flush(t + 60_000):
+        final[seg.segment_id] = seg
+    return [s.text for s in sorted(final.values(), key=lambda s: s.start_ms) if s.text]
+
+
+def test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow() -> None:
+    """XERK-2804: ``_reflow`` changes a stored line's text but not its ``changed_ms`` (the
+    growth window), so a rewrite within ``_HELD_MS`` noted the re-flowed text as held
+    (evidence ``_split_grown`` cuts a repeat back to)."""
+    from api.screen.merge import _hold
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    for t in range(6):
+        m.feed([blk("Ana", *draft)], t * 1000)
+    m.feed([blk("Ana", *final)], 6000)
+    m.feed([blk("Ana", *final)], 7000)  # two reads agree: the re-flow lands
+    line = next(ln for ln in m._lines if ln.text == final[0])
+    assert line.final and line.changed_ms < 7000
+    _hold(line, 8000)  # a rewrite one frame later
+    assert final[0] not in line.held
+    _hold(line, 9000)  # shown 2 s
+    assert line.held[-1] == final[0]
+
+
+def test_a_one_frame_glyph_long_after_a_late_reflow_is_never_stored() -> None:
+    """QA (XERK-2804): a re-flow moving a stored line's ``changed_ms`` reopened its growth
+    window (``_EXTEND_MS``), and a stray glyph read once 30 s+ after it was said was stored."""
+    d = ["so after the review I can", "do the second task the."]
+    f = ["so after the review I", "can do the second task, the API contract"]
+    rows = _gap_run(
+        [
+            ([blk("Ana", *d)], 1),
+            ([blk("Ana", *d), blk("Bo", "Right.")], 2),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 13),
+            ([blk("Ana", f[0], f[1] + " l"), blk("Bo", "Right.")], 1),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 6),
+        ],
+        2000,
+    )
+    assert rows == [*f, "Right."]
+
+
+@pytest.mark.parametrize(
+    ("said", "clip", "nxt"),
+    [
+        # The next entry extends her finished one: never the line grown while missed.
+        ("Thank you all.", "Thank you", "Thank you all, and see you next week."),
+        # The row below holds no more words than the clipped row.
+        ("Thank you all so much.", "Thank you all", "Thank you all."),
+    ],
+    ids=["extends", "not-longer"],
+)
+def test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole(
+    said: str, clip: str, nxt: str
+) -> None:
+    """QA (XERK-2804): a finished entry, its row clipped on the one frame her next entry first
+    shows, then scrolled up: reverted to the clipped text, it was cut for good. At 2 s frame
+    gaps every word-by-word prefix of it is held."""
+    words = said.split()
+    rows = _gap_run(
+        [
+            *[(_entries("OK.", " ".join(words[:k])), 1) for k in range(1, len(words) + 1)],
+            (_entries("OK.", said), 3),
+            (_entries("OK.", clip, nxt), 1),
+            ([blk("Ana", nxt), blk("Bo", "Great.")], 6),
+        ],
+        2000,
+    )
+    assert said in rows and clip not in rows
+
+
+@pytest.mark.parametrize(
+    "end", [".", "…", '."', "。", "？", "؟", " 🙂", " ❤️", " 1️⃣", " \u2139\ufe0f", " 1\u20e3"]
+)
+def test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole(
+    end: str,
+) -> None:
+    """QA fuzz (XERK-2804, tf seed 146, its frames): Ana's entry, read whole once, is clipped
+    to "Sounds" on the frame her next entry first shows, reading its words unpunctuated. On
+    that frame it reads like the ticket's re-punctuated return; split, the entry was stored
+    as "Sounds" for good. Only an unfinished line (ending on a letter or digit) is read
+    inexactly: a closing mark outside ".?!" ("。", "…") was cut too (QA)."""
+    said = "Sounds good ok go cluster api pods" + end
+    cut = said.lower()[: -len(end)]  # her next entry's first frame: the words, unpunctuated
+    nxt = ("Sounds good ok go cluster api pods sounds", "good.")
+    frames = [
+        (2240, _entries("Sounds good.", "Sounds good ok.", "sounds")),
+        (4335, _entries("Sounds good.", "Sounds good ok.", said)),
+        (6396, _entries("Sounds good.", "Sounds good ok.", "Sounds", cut)),
+        (8454, [blk(None, "Sounds good ok."), blk("Ana", said), blk("Ana", *nxt), blk("Cy", "right")]),
+        (10430, [blk(None, said), blk("Ana", *nxt), blk("Cy", "Right."), blk("Bo", "thanks")]),
+        (12418, [blk("Cy", "Right."), blk("Bo", "Thanks.")]),
+    ]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, str] = {}
+    for t, blocks in frames:
+        for seg in m.feed(blocks, t):
+            final[seg.segment_id] = seg.text
+    for seg in m.flush(72_418):
+        final[seg.segment_id] = seg.text
+    assert said in final.values() and "Sounds" not in final.values()
+
+
+def test_another_speakers_row_over_the_grown_entry_never_splits_it() -> None:
+    """XERK-2804: Ana's live "yes." grew into her next entry while OCR missed its row; Bo's
+    "yes." shown above it is his own line, never her held text (``_splits`` speaker check)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            ([blk("Ana", "OK."), blk("Bo", "yes."), blk("Ana", "yes I think so too.")], 6),
+        ]
+    )
+    assert ("Bo", "yes.") in stored and ("Ana", "yes I think so too") in stored
