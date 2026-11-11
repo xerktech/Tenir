@@ -383,7 +383,10 @@ class MeetingTracker:
         outreads a rarer like one, the merger's held lines move to it: keeping the
         first reading named a speaker by a misread for the whole meeting (QA). Roster names
         and "Speaker N" labels ("Speaker 1" reads like "Speaker 2") are left as they are."""
-        names = sorted({b.speaker for b in blocks if self._off_roster(b.speaker)})
+        # A header named after a heard speaker (``CaptionBlock.heard``) is not a reading of
+        # them: counted, a slide headed with one of two like names, dropped frame after frame,
+        # outread the other and took their speech (XERK-2805 QA).
+        names = sorted({b.speaker for b in blocks if not b.heard and self._off_roster(b.speaker)})
         new = 0
         for name in names:
             if name not in self._likes and len(self._likes) < _MAX_ROSTER and new < _NEW_PER_FRAME:

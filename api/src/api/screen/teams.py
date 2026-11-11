@@ -892,12 +892,7 @@ def parse_caption_crop(
     # no avatar at all it may be a slide, which then started meetings after a reset.
     unknown_ok = not len(roster) and pixels is None
     verified = any(
-        b.has_header
-        and (
-            (b.speaker and not b.heard)
-            or b.avatar
-            or (unknown_ok and not pending_header(blocks, b))
-        )
+        b.has_header and (b.speaker or b.avatar or (unknown_ok and not pending_header(blocks, b)))
         for b in blocks
     )
     return blocks if verified or live else []

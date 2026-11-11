@@ -2014,6 +2014,31 @@ def test_a_slide_heading_reading_as_a_heard_speaker_is_not_stored_as_speech() ->
     ]
 
 
+def test_a_slide_headed_with_one_of_two_like_names_never_takes_the_others_speech() -> None:
+    """XERK-2805 QA: a header named after a heard speaker counted as a reading of them, so a
+    slide headed "Ana Silva" (dropped, frame after frame) outread "Ana Silvo" ``_HEARD_SHARE``
+    times and her next entry was stored as Silva's."""
+
+    def says(who: str, text: str) -> OcrResult:
+        return result(line(f"AS {who}", 18, 4, 170, 24), line(text, 65, 28, 400, 48))
+
+    slide = result(
+        line("Ana Silva", 65, 4, 170, 24),
+        line("Quarterly roadmap and hiring plan", 65, 28, 460, 48),
+    )
+    rows = _tracked(
+        [
+            (says("Ana Silva", "the budget is approved."), 5),
+            (says("Ana Silvo", "great, thanks for checking."), 5),
+            (slide, 60),
+            (says("Ana Silvo", "one more thing about the vendor."), 5),
+        ],
+        names=("Priya Raman",),
+    )
+    assert ("Ana Silvo", "one more thing about the vendor.") in rows
+    assert not any(r[0] == "Ana Silva" and "vendor" in r[1] for r in rows)
+
+
 def test_the_tracker_hears_each_speaker_under_the_spelling_it_stores() -> None:
     """XERK-2805: ``heard`` names nameless headers, so it holds the spellings ``_as_heard``
     keeps (one frame is enough for a new name) and never a misread of another; per meeting."""
@@ -2044,6 +2069,7 @@ def test_the_tracker_hears_each_speaker_under_the_spelling_it_stores() -> None:
         assert t.heard.names == []
         for k in range(5):
             await t.on_caption(panel("Omar Patel"), k * 1000)
+        assert t.heard.names == ["Omar Patel"]
         await t.on_caption(panel("Omar Patcl", "Grace Huang"), 5000)
         assert sorted(t.heard.names) == ["Grace Huang", "Omar Patel"]
         assert t.heard.match("Omar Patcl") == "Omar Patel"

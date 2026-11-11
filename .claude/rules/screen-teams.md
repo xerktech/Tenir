@@ -111,7 +111,13 @@ paths:
         and a slide carrying one of its names started a phantom meeting (QA).
       - Names past `_LIKE_MAX_CHARS` are left out: `Roster.match` has no length cap (QA: 200
         crafted 64-char names cost a 50-header crop 3.2 s).
+        Accepted: a real speaker named past 32 chars gets no such naming (as before).
+      - `_as_heard` never counts such a header as a reading: a slide headed with one of two
+        like names, dropped for a minute, outread the other and took their speech (QA).
+      - Accepted: a slide heading below a real avatar'd entry in one crop is stored as that heard
+        speaker's speech; before, the same slide text was stored with no speaker (XERK-2614).
       - Tests: `test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard`,
+      `test_a_slide_headed_with_one_of_two_like_names_never_takes_the_others_speech`,
       `test_a_slide_heading_reading_as_a_heard_speaker_is_not_stored_as_speech`,
       `test_a_guest_header_no_avatar_vouches_for_is_named_after_a_heard_speaker`,
       `test_a_header_reading_like_two_heard_speakers_goes_to_the_active_one`,
