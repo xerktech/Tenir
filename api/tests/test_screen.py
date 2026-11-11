@@ -2740,6 +2740,60 @@ def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
     assert out[0].end_ms == said_until
 
 
+def _cut_back(draft: str, final: str, *, below: bool = True) -> list[tuple[str | None, str, bool]]:
+    """Ana's entry shows ``draft`` for 3 frames, then ``final`` (above Bo's new entry when
+    ``below``); the stored (speaker, text, is the draft's segment) rows, in order."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, tuple[int, str | None, str]] = {}
+    after = [blk("Ana", final), *([blk("Bo", "sure that works")] if below else [])]
+    for t, frame in enumerate([[blk("Ana", draft)]] * 3 + [after] * 4):
+        for seg in m.feed(frame, t * 1000):
+            stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    for seg in m.flush(60_000):
+        stored[seg.segment_id] = (seg.start_ms, seg.speaker, seg.text)
+    first = min(stored, key=lambda k: stored[k][0])
+    rows = sorted(stored.items(), key=lambda kv: kv[1][0])
+    return [(sp, text, k == first) for k, (_, sp, text) in rows]
+
+
+@pytest.mark.parametrize("below", [True, False])
+@pytest.mark.parametrize(
+    ("draft", "final"),
+    [
+        ("Do you have something and then like", "Do you have something?"),
+        ("Merge it to dev it's all automatic", "Merge it to Dev."),
+        ("Patch right OK so now let's", "Patch right, OK."),
+    ],
+)
+def test_an_entry_teams_cuts_back_as_it_finalises_is_stored_once(
+    draft: str, final: str, below: bool
+) -> None:
+    """XERK-2774 (real shapes, 2026-11-10): Teams finalised the entry by cutting its live tail
+    and punctuating it. The rewrite kept under ``_REVISED`` of the draft's words, so it was
+    stored again beside the draft, as the bottom entry or above the next one."""
+    want = [("Ana", final, True), *([("Bo", "sure that works", False)] if below else [])]
+    assert _cut_back(draft, final, below=below) == want
+
+
+@pytest.mark.parametrize(
+    ("draft", "new"),
+    [
+        # Under half the draft's words.
+        ("we need to fix the cluster before friday", "We need to."),
+        # Under ``_CUT_WORDS``.
+        ("okay so lets start", "Okay so."),
+    ],
+)
+def test_a_short_new_line_opening_like_the_last_is_not_a_cut_back(draft: str, new: str) -> None:
+    """XERK-2774's cut-back needs the rows to keep enough of the draft: else a short new line
+    opening like the speaker's last one would overwrite it."""
+    assert _cut_back(draft, new) == [
+        ("Ana", draft, True),
+        ("Ana", new, False),
+        ("Bo", "sure that works", False),
+    ]
+
+
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
     """Only a recent line of the same speaker the box no longer shows can be revised: the
     same words from someone else, or after the revision window, are new lines."""
