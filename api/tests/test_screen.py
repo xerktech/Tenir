@@ -6255,3 +6255,69 @@ def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
         ]
     )
     assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
+
+
+@pytest.mark.parametrize(
+    "back",
+    [
+        # Teams re-punctuated the next entry the frame the row came back.
+        [(_entries("OK.", "yes.", "yes I think so too."), 6)],
+        # The next entry was still growing when the row came back.
+        [
+            (_entries("OK.", "yes I think so"), 1),
+            (_entries("OK.", "yes.", "yes I think so too"), 1),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ],
+        # OCR clipped the next entry's row that frame.
+        [
+            (_entries("OK.", "yes.", "yes I think so"), 1),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ],
+    ],
+    ids=["re-punctuated", "still-growing", "clipped"],
+)
+def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: list) -> None:
+    """XERK-2804: the row below the missed one read the grown line re-punctuated, grown on or
+    clipped, so ``_split_grown`` never paired it and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            *back,
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
+    """XERK-2804: the live "yes." grew into a two-row entry while OCR missed its row. Once
+    both show, the entry's second row pairs with the line it re-reads, not stored again."""
+    nxt = ["yes I think so too, and we", "should ship it."]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", *nxt)], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
+
+
+def test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow() -> None:
+    """XERK-2804: ``_reflow`` changed a stored line's text without its ``changed_ms``, so a
+    rewrite within ``_HELD_MS`` noted the re-flowed text as held (evidence ``_split_grown``
+    cuts a repeat back to)."""
+    from api.screen.merge import _hold
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    for t in range(6):
+        m.feed([blk("Ana", *draft)], t * 1000)
+    m.feed([blk("Ana", *final)], 6000)
+    m.feed([blk("Ana", *final)], 7000)  # two reads agree: the re-flow lands
+    line = next(ln for ln in m._lines if ln.text == final[0])
+    assert line.final and line.changed_ms == 7000
+    assert line.held == (draft[0],)
+    _hold(line, 8000)  # a rewrite one frame later
+    assert line.held == (draft[0],)

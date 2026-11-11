@@ -1014,7 +1014,13 @@ def _split_grown(
     gaps) is still cut; on screen it reads exactly like the miss. Only for a line first seen
     within ``_REVISE_MS`` of its last change (a repeat a minute later was cut; from first
     sight, a "yes." shown 27 s+ before growing was not split, QA), and below every aligned row:
-    a row above a match is a glitch (``_align``)."""
+    a row above a match is a glitch (``_align``).
+
+    The row below need not read the grown line exactly (XERK-2804): its words may be the
+    line's re-punctuated, grown on (the entry still live), or cut short (OCR clipped the row
+    that frame), as long as it holds more words than the row above. Rows of its block below it
+    that read the line's next lines exactly pair with them (a two-row next entry): left new,
+    its second row was stored again beside the line it re-reads."""
     out: set[int] = set()
     floor = max((a for a in aligned if a is not None), default=-1)
     for i in range(len(shown) - 1):
@@ -1024,7 +1030,7 @@ def _split_grown(
         if aligned[i] is None:
             if any(a is not None for a in aligned[i:]):
                 continue
-            ks = [k for k in range(floor + 1, len(tail)) if tail[k].norm == nxt.norm]
+            ks = [k for k in range(floor + 1, len(tail)) if _reads_grown(nxt, tail[k])]
             if len(ks) != 1:
                 continue
             k = ks[0]
@@ -1033,7 +1039,7 @@ def _split_grown(
         else:
             continue
         line = tail[k]
-        if line.carried or ts - line.changed_ms > _REVISE_MS or nxt.norm != line.norm:
+        if line.carried or ts - line.changed_ms > _REVISE_MS or not _reads_grown(nxt, line):
             continue
         if not _same_speaker(row.speaker, line.speaker):
             continue
@@ -1042,11 +1048,35 @@ def _split_grown(
             now
             and len(now) < len(had)
             and had[: len(now)] == now
+            and len(_words(nxt.text)) > len(now)
             and any(_words(t) == now for t in line.held)
         ):
             aligned[i] = k
             out.add(i)
+            # The next entry's later rows re-read the lines after it (it wrapped).
+            taken = set(aligned)
+            for j, below in enumerate(shown[i + 2 :]):
+                at, n = k + 1 + j, i + 2 + j
+                if (
+                    below.block != nxt.block
+                    or at >= len(tail)
+                    or aligned[n] is not None
+                    or n in revised
+                    or at in taken
+                    or tail[at].norm != below.norm
+                    or not _same_speaker(below.speaker, tail[at].speaker)
+                ):
+                    break
+                aligned[n] = at
     return out
+
+
+def _reads_grown(row: _Shown, line: _Line) -> bool:
+    """Whether ``row`` reads ``line``'s words, or a word-prefix of them, or them grown on
+    (``_split_grown``): Teams re-punctuates or extends the live entry, and OCR clips its row."""
+    got, had = _words(row.text), _words(line.text)
+    n = min(len(got), len(had))
+    return n > 0 and got[:n] == had[:n]
 
 
 class CaptionMerger:
@@ -1860,10 +1890,11 @@ class CaptionMerger:
                 ln.pending, ln.rewrite_until = None, 0
                 if _norm(text) == ln.norm:
                     continue
-                ln.text, ln.norm = text, _norm(text)
-                if ln.segment is None:
-                    ln.changed_ms = ts
-                else:
+                # As ``_revise``: a stored line's text changed now too. Left at its old time, a
+                # rewrite within ``_HELD_MS`` noted the re-flowed text as held (XERK-2804).
+                _hold(ln, ts)
+                ln.text, ln.norm, ln.changed_ms = text, _norm(text), ts
+                if ln.segment is not None:
                     # end_ms stays when it was said, as for a rewrite (_revise).
                     ln.segment.text = text
                     out[ln.segment.segment_id] = ln.segment
