@@ -3120,6 +3120,84 @@ def test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once() -> None
     ]
 
 
+def test_a_new_entry_after_dropped_frames_does_not_overwrite_her_last_one() -> None:
+    """XERK-2774 QA: with nothing aligned, a later draft start offered her 3-word last row,
+    and a new entry sharing 2 of its words overwrote it by coverage. A later start is taken
+    only as a split now."""
+    old = ["Then enable go that the", "overlay we pods?"]
+    new = ["We need what me, pods asking", "what, second um uh asking and", "me."]
+    frames = [
+        (1000, [blk(None, "build need.", header=False), blk("Bo", *old)]),
+        (14100, [blk("Bo", *new)]),
+    ]
+    assert _stored_at(frames) == [(None, "build need."), *(("Bo", r) for r in old + new)]
+
+
+def test_a_later_draft_start_never_skips_her_first_draft_line() -> None:
+    """XERK-2774 QA (fuzz seed 132): a re-wrap read with nothing aligned took its draft from
+    her second unshown line, and the first ("did cluster code right locally") was lost."""
+    draft = [
+        "did cluster code right locally",
+        "the push overlay fix process",
+        "again itself test locally do",
+        "repeat again overlay check",
+    ]
+    above = blk(None, "overlay repeat overlay check,", "like.", header=False)
+    frames = [
+        (1000, [above, blk("Bo", "change fix there locally")]),
+        (1700, [above, blk("Bo", "change fix there locally we")]),
+        (10600, [blk(None, *draft, header=False)]),
+        (13100, [blk(None, "locally, the push overlay fix", "process again itself, test",
+                     "locally do repeat, again", "overlay check?", header=False)]),
+    ]
+    assert ("Bo", "did cluster code right locally") in _stored_at(frames)
+
+
+def test_a_finished_entry_is_not_taken_for_a_split() -> None:
+    """XERK-2774 QA: Ana's entry finished long before a new pair of her entries opened like
+    it; taken for Teams splitting it, the pair overwrote it. A split needs a changing draft."""
+    frames = [[blk("Ana", "I think we are done here")]] * 2
+    frames += [[blk("Ana", "I think we are done here.")]] * 15
+    frames += [[blk("Ana", "I think."), blk("Ana", "We are done here then")]] * 4
+    rows = _stored_at([(t * 1000, f) for t, f in enumerate(frames)])
+    assert rows[0] == ("Ana", "I think we are done here."), rows
+
+
+def test_a_split_of_her_live_entry_keeps_the_like_one_she_just_finished() -> None:
+    """XERK-2774 QA fuzz: Cy's new entry opened with the words of the one she had just
+    finished, then Teams split it. Taken from the finished one as the draft, the split
+    overwrote it. A split is only of her newest line."""
+    frames = [(t, [blk("Cy", "cluster fix the")]) for t in (0, 500)]
+    frames += [(t, [blk("Cy", "Cluster, fix, the.")]) for t in (1000, 1500, 2000)]
+    frames += [
+        (2500, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster")]),
+        (3000, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster fix")]),
+        (3500, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster fix the")]),
+    ]
+    split = [blk("Cy", "Cluster?"), blk("Cy", "Fix the fix locally.")]
+    frames += [(t, split) for t in (4000, 4500, 5000, 6000)]
+    rows = _stored_at(frames)
+    assert rows[0] == ("Cy", "Cluster, fix, the."), rows
+    assert ("Cy", "Cluster?") in rows, rows
+
+
+def test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last() -> None:
+    """XERK-2774 QA fuzz: "Yes??" (her live "yes? yes" finalised) matched her "Yes." above
+    by words alone, so her next entry took the live draft and the entry was lost. Short
+    entries repeat too often for words alone to say it is the same one."""
+    above = blk(None, "check, push same? then need.", "me.", header=False)
+    frames = [(0, [above, blk("Ana", "Yes.")]), (500, [above, blk("Ana", "Yes.")])]
+    frames += [
+        (1000, [blk("Ana", "Yes."), blk("Ana", "yes")]),
+        (1700, [blk("Ana", "Yes."), blk("Ana", "yes? yes")]),
+    ]
+    grow = ["Yes", "Yes second", "Yes second cluster", "Yes second cluster will."]
+    frames += [(2200 + 500 * k, [blk("Ana", "Yes??"), blk("Ana", w)]) for k, w in enumerate(grow)]
+    frames += [(4200 + 500 * k, [blk("Ana", "Yes??"), blk("Ana", grow[-1])]) for k in range(3)]
+    yes = [w for _, w in _stored_at(frames) if w.startswith("Yes")]
+    assert len(yes) == 3, yes
+
+
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
     """Only a recent line of the same speaker the box no longer shows can be revised: the
     same words from someone else, or after the revision window, are new lines."""

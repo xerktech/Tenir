@@ -272,10 +272,11 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     if not _same_speaker(shown.speaker, known.speaker):
         return 0.0
     a, b = shown.norm, known.norm
-    if a == b or _words(a) == _words(b) != []:
+    if a == b or (_words(a) == _words(b) and len(_words(a)) >= _CUT_WORDS):
         # Same words, re-punctuated: Teams punctuates an entry as it finalises it, after it
         # was stored ("let's go to Cy" -> "...Cy."). Only a ratio match, it lost to
         # storing the whole box again once the live entry below was rewritten (XERK-2774).
+        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz).
         return _MATCH
     if growable and a.startswith(b):
         return _MATCH - 0.5  # the line growing
@@ -741,11 +742,30 @@ def _revisions(
             )
             for e in ends:
                 folded: list[tuple[int, tuple[int, ...]]] = []
+                # A split only of a draft still changing: Teams splits an entry as it
+                # finalises it, and a long-finished one was overwritten by a new pair of
+                # entries opening like it (QA).
+                live = ts - max(tail[cands[k]].changed_ms for k in range(q, e)) <= _SAID_BETWEEN_MS
+                # And only of her newest line: a reopen of her entry just finished ("Cluster,
+                # fix, the." / "cluster fix the" -> "Cluster?" / "Fix the") split the live one,
+                # and taking the finished one as the draft overwrote it (QA fuzz).
+                live = live and not any(
+                    _same_speaker(tail[cands[k]].speaker, tail[cands[q]].speaker)
+                    for k in range(e, len(cands))
+                )
+                later = q != qs[0]
+                if later and not live:
+                    continue
                 if c := _claims(
                     shown, rows, tail, cands[q:e], budget, folded,
                     # A later start never skips rows: a garbled re-read above a repeat
                     # ("~kay" / "okay") let the repeat claim the old line (Zoom fuzz).
-                    lead=fresh and recent and q == qs[0], split=split,
+                    lead=fresh and recent and not later,
+                    split=split if live else [],
+                    # And is taken only as a split: by coverage, a new entry sharing 2 of
+                    # a 3-word draft's words overwrote it, and a start past her first draft
+                    # line lost that line (both QA).
+                    split_only=later,
                 ):
                     found = (e, c, folded)
                     break
@@ -780,6 +800,7 @@ def _claims(
     *,
     lead: bool = False,
     split: list[str] | None = None,
+    split_only: bool = False,
 ) -> dict[int, int] | None:
     """The known line (index into ``tail``) each row of ``rows`` revises, or None when the
     rows keep under ``_REVISED`` of ``draft_lines``' words in order.
@@ -788,7 +809,8 @@ def _claims(
     row holds, between two claimed lines or after the last, each with the claimed lines: a
     rewrite with fewer rows than its draft ("we did it in test first so" / "nothing broke" ->
     one row) folded them into the rows, and kept they were stored twice (XERK-2701).
-    ``split``: the words of her next entry right below the rows (``_cut_back``)."""
+    ``split``: the words of her next entry right below the rows (``_cut_back``); with
+    ``split_only`` that split is the only way the rows may claim the draft."""
     draft = [(w, j) for j in draft_lines for w in _words(tail[j].text)]
     mine = [(w, i) for i in rows for w in _words(shown[i].text)]
     budget.charge([w for w, _ in draft], [w for w, _ in mine])
@@ -821,7 +843,10 @@ def _claims(
     # A stutter ("so so so") counts once: Teams drops repeats when it re-lays an entry, and
     # counting each copy failed coverage, so the whole box was stored again (XERK-2746).
     said = sum(1 for n, (w, _) in enumerate(draft) if not n or draft[n - 1][0] != w)
-    if not claims or (len(pairs) < _REVISED * said and not _cut_back(draft, mine, split or [])):
+    if not claims or (
+        (split_only or len(pairs) < _REVISED * said)
+        and not _cut_back(draft, mine, split or [], split_only=split_only)
+    ):
         return None
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
@@ -841,7 +866,11 @@ def _claims(
 
 
 def _cut_back(
-    draft: list[tuple[str, int]], mine: list[tuple[str, int]], split: list[str]
+    draft: list[tuple[str, int]],
+    mine: list[tuple[str, int]],
+    split: list[str],
+    *,
+    split_only: bool = False,
 ) -> bool:
     """Whether the rows read exactly the draft's leading words, dropping the rest of its last
     line: Teams cut the entry's live tail back as it finalised it (XERK-2774). The rows keep
@@ -858,8 +887,10 @@ def _cut_back(
     morning." / "So yesterday we..."), so the dropped words are still shown."""
     words = [w for w, _ in mine]
     rest = [w for w, _ in draft[len(words) :]]
+    by_split = bool(rest) and split[: len(rest)] == rest
+    long_enough = not split_only and len(words) >= max(_CUT_WORDS, len(draft) / 2)
     return (
-        (len(words) >= max(_CUT_WORDS, len(draft) / 2) or split[: len(rest)] == rest)
+        (long_enough or by_split)
         and 0 < len(words) < len(draft)
         and [w for w, _ in draft[: len(words)]] == words
         and draft[len(words)][1] == draft[-1][1]

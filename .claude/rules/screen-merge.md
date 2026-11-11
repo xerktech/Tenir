@@ -140,13 +140,22 @@ paths:
     `test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice`.
   - Any share of the draft passes when the words cut off open her next entry right below:
     Teams split the entry in two ("hi good morning so yesterday we" -> "Hi, good morning." /
-    "So yesterday we..."; real sampler frames, 2026-11-11). Test:
-    `test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once`.
+    "So yesterday we..."; real sampler frames, 2026-11-11). Only while the draft changed within
+    `_SAID_BETWEEN_MS`: a long-finished entry was overwritten by a new pair opening like it (QA).
+    And only when the draft reaches her newest line: a new entry reopening the words of one she
+    had just finished was split, and the finished one taken as the draft was overwritten (fuzz).
+    Tests: `test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once`,
+    `test_a_finished_entry_is_not_taken_for_a_split`,
+    `test_a_split_of_her_live_entry_keeps_the_like_one_she_just_finished`.
   - With no row aligned (every known row scrolled off), the first run may take its draft from
-    any of her recent lines, not only her oldest: that one claimed nothing and the split was
-    stored beside its draft. Only the first start may skip lead rows: a later one let a
-    repeat under a garbled re-read ("~kay" / "okay") claim the old line (Zoom fuzz 425, 512).
-    Test: `test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once`.
+    a later one of her recent lines, not only her oldest: that one claimed nothing and the
+    split was stored beside its draft. A later start is taken only as a split (`split_only`)
+    and never skips lead rows: by coverage, a new entry sharing 2 of a 3-word draft's words
+    overwrote it, a start past her first draft line lost it, and a repeat under a garbled
+    re-read ("~kay" / "okay") claimed the old line (QA, Zoom fuzz 425/512).
+    Tests: `test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once`,
+    `test_a_new_entry_after_dropped_frames_does_not_overwrite_her_last_one`,
+    `test_a_later_draft_start_never_skips_her_first_draft_line`.
 - Real Teams frames (sampler, XERK-2774), two more causes of a box stored again:
   - `_score` pairs a row with the same words as a known line as exact: a stored entry Teams
     re-punctuates ("go to Cy" -> "go to Cy.") was only a ratio match, under the cost of
@@ -154,9 +163,11 @@ paths:
   - `_update` takes growth that adds punctuation at the join ("All right" -> "All right,
     let's..."). Not by words alone: a re-flowed row then overwrote "pods." with the row above
     (`_simulate_teams` seed 125). Test: `test_an_entry_punctuated_as_it_grows_is_stored_once`.
+  - The words-only match needs `_CUT_WORDS`+ words: "Yes??" after "Yes." is as often her next
+    entry, and matched by words its draft went to the entry after and was lost (QA fuzz).
+    Test: `test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last`.
   - The real meeting replays at 0 duplicate rows (main: 3 of 3+ words, more shorter ones).
-    Per seed vs main (4,400 seeds): 3 differ, all fewer extra words (`_simulate_teams` noise
-    0.2 seed 46: 9 -> 8; Zoom noise+drops 865: 13 -> 0, 908: 6 -> 0), none loses a word.
+    `_simulate` (1000 x 4) and `_simulate_teams` (200 x 2) are identical to main per seed.
   - Still open: another speaker's entry Teams orders above her live entry ("OK" / Bo / "OK.")
     stores it twice: a header row can't stay unpaired above a match (`_UNPAIRED`).
   - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
