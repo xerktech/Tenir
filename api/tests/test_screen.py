@@ -5471,6 +5471,25 @@ def test_another_speaker_repeating_a_line_and_its_reply_after_dropped_frames_sto
     ]
 
 
+def test_a_cross_speaker_repeat_round_at_a_two_second_cadence_keeps_every_line() -> None:
+    """XERK-2797 QA: Teams frames reach the merger ~2 s apart, time for Cy to say X again.
+    The same rows under a new header are then a repeat; a re-attribution reads the same, so
+    it is stored twice (accepted: widening ``_REHEAD_MS`` to the cadence lost these lines)."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    out = []
+    for t in range(5):
+        out += m.feed([blk("Dee", "thank you all so much"), blk("Dee", "yes")], t * 2000)
+    for t in range(5, 9):
+        out += m.feed([blk("Cy", "thank you all so much"), blk("Dee", "yes")], t * 2000)
+    out += m.flush(60_000)
+    assert _once(out) == [
+        ("Dee", "thank you all so much"),
+        ("Dee", "yes"),
+        ("Cy", "thank you all so much"),
+        ("Dee", "yes"),
+    ]
+
+
 def test_another_speaker_repeating_a_line_shown_as_it_is_said_stores_both() -> None:
     """At 1 fps a repeat is seen growing, so its frames never read the old rows exactly."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)

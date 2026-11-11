@@ -385,6 +385,12 @@ paths:
   - Only within `_REHEAD_MS` (1.5 s) of the last frame: after one dropped frame [Ana X][Bo ok]
     -> [Cy X][Bo ok] may be Cy repeating X and Bo his reply. A 3 s window lost both (QA), as
     did matching X across speakers by text alone (XERK-2727 QA).
+  - Stays 1.5 s although real Teams frames reach the merger ~2 s apart, so a Teams re-label is
+    stored twice (XERK-2797). Within one ~2 s frame pair a re-attribution and another speaker
+    repeating the entry read the same, so any wider gate (fixed or cadence-relative, QA) loses
+    the repeat round: [Dee X][Dee yes] -> [Cy X][Dee yes] kept 2 of 4 lines (fuzz: ~20 fewer
+    duplicates, 9 more lost / 1500 seeds). A duplicate is the lesser harm; XERK-2798 is the fix.
+    Test: `test_a_cross_speaker_repeat_round_at_a_two_second_cadence_keeps_every_line`.
   - Each guard lost real lines without it (QA, fuzz): a row must keep its name (an anchor: a
     one-row panel or a goodbye round said again in full turned over); the names must not read
     as the last frame's scrolled up ([Bo X][Ana X] -> [Ana X][Ana X]); each re-named entry
