@@ -57,3 +57,7 @@ paths:
   meeting by one job per busy user, not by every frame queued.
   - Accepted: latency still grows with the number of busy users; each needs an admin token.
   - Tests: `api/tests/test_screen_fair_pool.py`.
+- `screen.cpu_wait` counts wait plus work, and also the event loop's own lag: a 77 s max with
+  jobs measured in ms was the api pod starved of CPU (XERK-2798). Its CPU request was 10m with
+  no limit; on a saturated node CFS weights it near zero (Prometheus: 0.03-0.07 cores while the
+  node sat at 100%). Keep the request in ArgoCD `ai/tenir/deployment.yaml` at what a meeting needs.

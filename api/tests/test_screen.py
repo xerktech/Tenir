@@ -804,6 +804,108 @@ def test_a_small_window_frame_is_split_but_a_caption_crop_never_is() -> None:
     assert asyncio.run(crop()).lines == () and dense == [300, 148]
 
 
+def test_a_dense_teams_caption_crops_halves_are_read_at_once() -> None:
+    """XERK-2798: a dense Teams crop's two halves went to tenir-ocr one after the other, so
+    the crop cost two engines' time in a row (1.8 s p50 in a real meeting)."""
+    in_flight: list[int] = []
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        if Image.open(io.BytesIO(request.content)).size[1] > 200:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await asyncio.sleep(0.02)
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    asyncio.run(_mock_ocr(handler).read(_jpeg(679, 240), split_once=True))
+    assert peak == 2
+
+
+def test_an_oversized_crops_strips_are_still_read_one_at_a_time() -> None:
+    """Only a dense crop's two halves go at once: a crop over the pixel cap reading all its
+    strips together put dozens of requests ahead of every other crop (XERK-2798 QA)."""
+    in_flight: list[int] = []
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await asyncio.sleep(0.005)
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    asyncio.run(_mock_ocr(handler).read(_jpeg(1400, 2000), split_once=True))
+    assert peak == 1
+
+
+def test_a_failed_half_cancels_the_other_halfs_request() -> None:
+    """A half that fails drops the frame; the other half's request must not hold an engine."""
+    cancelled = False
+    halves = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal cancelled, halves
+        if Image.open(io.BytesIO(request.content)).size[1] > 200:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        halves += 1
+        if halves == 2:
+            return httpx.Response(503)
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    async def run() -> None:
+        with pytest.raises(OcrError):
+            await _mock_ocr(handler).read(_jpeg(679, 240), split_once=True)
+        await asyncio.sleep(0)
+        # Inside the loop: asyncio.run cancels leftover tasks on exit, which would pass anyway.
+        assert cancelled
+
+    asyncio.run(run())
+
+
+def test_full_frames_leave_ocr_engines_free_for_caption_crops() -> None:
+    """XERK-2798: idle windows' full frames, strip after strip, kept all of tenir-ocr's
+    engines busy and every caption crop queued behind them. At most two strips are in flight
+    across frames, and a dense Teams crop's halves never wait for those slots."""
+    from api.screen import ocr as ocr_mod
+
+    in_flight: list[int] = []
+    peak = 0
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        w, h = Image.open(io.BytesIO(request.content)).size
+        if w == 679:  # the caption crop: too dense whole, its halves read
+            return httpx.Response(200, json={"lines": [], "too_dense": h > 200})
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await release.wait()  # full strips hold their slots until the crop is read
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    async def run() -> None:
+        client = _mock_ocr(handler)
+        frames = [asyncio.create_task(client.read(_jpeg(1000, 1200), full=True)) for _ in range(4)]
+        while len(in_flight) < ocr_mod.FULL_FRAME_REQUESTS:
+            await asyncio.sleep(0.005)
+        # Every full-frame slot is taken: a crop that waited for one would time out here.
+        await asyncio.wait_for(client.read(_jpeg(679, 240), split_once=True), timeout=5)
+        release.set()
+        await asyncio.gather(*frames)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
+    assert peak == ocr_mod.FULL_FRAME_REQUESTS == 2
+
+
 def test_a_dense_teams_caption_crop_is_halved_once_and_both_halves_read() -> None:
     """XERK-2652: a real 679x240 Teams pane crop holding 11-12 lines plus avatars came back
     too_dense every time and the whole frame was dropped. A Teams crop is halved once; a
