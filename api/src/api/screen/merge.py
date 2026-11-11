@@ -100,6 +100,9 @@ _HELD = 0.5
 # only when it was on screen this recently: at 1 fps a new line and a repeat of her next entry
 # can't both be said between two snapshots, but after dropped frames they can (XERK-2716).
 _SAID_BETWEEN_MS = 3_000
+# A line's text read this long before it changed is one the speaker said as a finished
+# entry, not a word-by-word step of a live one (one frame each at 1 fps; ``_split_grown``).
+_HELD_MS = 2_000
 # A new entry Teams shows between two known ones (XERK-2727): costs more than a misread, so a
 # row that is one keeps that pairing (and ``_grew_over_twin``).
 _INSERTED = -1.5
@@ -239,6 +242,9 @@ class _Line:
     # The line last shown right above it in its block (``_merged_above``, XERK-2734): the
     # entry's rows, as Teams showed them, not merely the speaker's lines above it.
     above: _Line | None = None
+    # Earlier texts it held for ``_HELD_MS`` before changing (``_split_grown``, XERK-2796):
+    # evidence that a row reading one of them is this line, not a clipped repeat of it.
+    held: tuple[str, ...] = ()
 
     @property
     def final(self) -> bool:
@@ -914,6 +920,68 @@ def _shown(blocks: list[CaptionBlock]) -> list[_Shown]:
     ][-_MAX_SHOWN:]
 
 
+def _hold(line: _Line, ts: int) -> None:
+    """Note ``line``'s text before it changes, if it read so for ``_HELD_MS``."""
+    if ts - line.changed_ms >= _HELD_MS:
+        line.held = (*line.held[-3:], line.text)
+
+
+def _split_grown(
+    shown: list[_Shown],
+    tail: list[_Line],
+    aligned: list[int | None],
+    revised: dict[int, int],
+    ts: int,
+) -> set[int]:
+    """Rows whose known line took the speaker's next entry as growth while OCR missed the row
+    (XERK-2796): [yes.] then [yes I think so too.] for a frame or more grew the live "yes."
+    into the next entry. Once both rows show, the row below reads the line's text but is
+    new (or the line, unshown, is skipped), so the next entry was stored twice and "yes."
+    lost. Each such row is paired with that line in ``aligned`` (``_merge`` revises the line
+    back to it) and the row below stays new.
+
+    Only when the line once held the row's text for ``_HELD_MS`` (``_Line.held``): a real
+    repeat of an entry whose upper copy is OCR-clipped for a frame ([Thank you][Thank you so
+    much.]) reads alike, and was cut for good (QA). Accepted (operator's call): a repeat
+    clipped to a text the first copy paused on for ``_HELD_MS`` (or any text, at 2 s+ frame
+    gaps) is still cut; on screen it reads exactly like the miss. Only for a line first seen
+    within ``_REVISE_MS`` of its last change (a repeat a minute later was cut; from first
+    sight, a "yes." shown 27 s+ before growing was not split, QA), and below every aligned row:
+    a row above a match is a glitch (``_align``)."""
+    out: set[int] = set()
+    floor = max((a for a in aligned if a is not None), default=-1)
+    for i in range(len(shown) - 1):
+        row, nxt = shown[i], shown[i + 1]
+        if aligned[i + 1] is not None or (i + 1) in revised or i in revised:
+            continue
+        if aligned[i] is None:
+            if any(a is not None for a in aligned[i:]):
+                continue
+            ks = [k for k in range(floor + 1, len(tail)) if tail[k].norm == nxt.norm]
+            if len(ks) != 1:
+                continue
+            k = ks[0]
+        elif aligned[i] == floor:
+            k = floor
+        else:
+            continue
+        line = tail[k]
+        if line.carried or ts - line.changed_ms > _REVISE_MS or nxt.norm != line.norm:
+            continue
+        if not _same_speaker(row.speaker, line.speaker):
+            continue
+        had, now = _words(line.text), _words(row.text)
+        if (
+            now
+            and len(now) < len(had)
+            and had[: len(now)] == now
+            and any(_words(t) == now for t in line.held)
+        ):
+            aligned[i] = k
+            out.add(i)
+    return out
+
+
 class CaptionMerger:
     def __init__(
         self,
@@ -1100,6 +1168,7 @@ class CaptionMerger:
 
     def _merge(self, blocks: list[CaptionBlock], ts: int) -> list[Segment]:
         shown, tail, aligned, revised, misreads = self._match(blocks, ts)
+        split = _split_grown(shown, tail, aligned, revised, ts)
         self._grow_now = {}
         self._grows = []
         # The known line each row re-reads, revises or misreads, for ``_apply_grows``.
@@ -1138,7 +1207,9 @@ class CaptionMerger:
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker
-                if (
+                if i in split:
+                    self._revise(line, line_shown, ts, out)
+                elif (
                     line_shown.block in revised_blocks
                     and line_shown.norm != line.norm
                     and not line.carried  # the ended meeting's segment (XERK-2615)
@@ -1404,6 +1475,7 @@ class CaptionMerger:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
             # words); a line above it changes only by OCR jitter, so it keeps its text.
             if bottom or grew:
+                _hold(line, ts)
                 line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
             return
         # The alignment placed this re-read on a stored line that now reads longer: it was
@@ -1855,6 +1927,7 @@ class CaptionMerger:
         """A rewritten entry's row replaces the known line it revises, stored or not."""
         if shown.norm == line.norm or line.carried:
             return
+        _hold(line, ts)
         line.text, line.norm, line.changed_ms = shown.text, shown.norm, ts
         line.pending, line.rewrite_until = None, 0
         if line.segment is not None:
