@@ -507,19 +507,25 @@ def _drop_tile_labels(ocr: OcrResult) -> OcrResult:
 def _drop_pane_buttons(ocr: OcrResult) -> OcrResult:
     """``ocr`` minus the caption pane's own buttons ("Go to current"): a box reading exactly
     one, unpunctuated, that starts well right of the caption text column. A spoken "go to
-    current." or a wrapped line reading just that starts at the column and stays (QA)."""
-    text = [b for b in ocr.lines if _initials(b.text, any_case=True) is None]
-    if not text:
+    current." or a wrapped line reading just that starts at the column and stays (QA).
+    The column is measured without the candidates: with one caption row, the button's own
+    box was the column's median and never sat right of it (QA)."""
+
+    def candidate(b: OcrLine) -> bool:
+        t = b.text.strip()
+        return norm_name(t) in _CAPTION_PANE_UI and not t.endswith((".", "?", "!"))
+
+    if not any(candidate(b) for b in ocr.lines):
         return ocr
+    text = [
+        b for b in ocr.lines if not candidate(b) and _initials(b.text, any_case=True) is None
+    ]
+    if not text:  # the button alone: nothing it could be a spoken line of
+        return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not candidate(b)))
     edge, row_h, _ = _text_column(text)
 
     def button(b: OcrLine) -> bool:
-        t = b.text.strip()
-        return (
-            norm_name(t) in _CAPTION_PANE_UI
-            and not t.endswith((".", "?", "!"))
-            and b.box[0] > edge + 2 * row_h
-        )
+        return candidate(b) and b.box[0] > edge + 2 * row_h
 
     return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not button(b)))
 
