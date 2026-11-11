@@ -130,8 +130,15 @@ paths:
     "Do you have something?"); 5 of 25 real duplicates (2026-11-10). Needs `_CUT_WORDS` (3)+
     words and half the draft's, else "We need to." after "we need to fix the cluster..." was
     folded into it. Unpunctuated, the cut row aligns as a misread instead (draft kept).
+    - The draft must be one entry (no later line `head`): `_revisions` tries the full run
+      before `own`, so a new entry opening like her entry before last overwrote it and the
+      "reach the newest line" guard never fired (QA).
+    - Only the draft's last line may lose words: dropping a whole row left it known but
+      unshown, and the entry above's rewrite re-stored rows (QA fuzz seed 78).
     Tests: `test_an_entry_teams_cuts_back_as_it_finalises_is_stored_once`,
-    `test_a_short_new_line_opening_like_the_last_is_not_a_cut_back`.
+    `test_a_short_new_line_opening_like_the_last_is_not_a_cut_back`,
+    `test_a_new_entry_opening_like_her_entry_before_last_is_not_a_cut_back`,
+    `test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice`.
   - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
     known "sounds good" is a repeat, not a revision (QA: the reply was lost).
   - Aligned rows of a revised block take new words only once two frames read them alike

@@ -2794,6 +2794,49 @@ def test_a_short_new_line_opening_like_the_last_is_not_a_cut_back(draft: str, ne
     ]
 
 
+def _stored_at(frames: list[tuple[int, list[CaptionBlock]]]) -> list[tuple[str | None, str]]:
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    stored: dict[str, Segment] = {}
+    for t, frame in frames:
+        for seg in m.feed(frame, t):
+            stored[seg.segment_id] = seg
+    for seg in m.flush(frames[-1][0] + 70_000):
+        stored[seg.segment_id] = seg
+    rows = sorted(stored.values(), key=lambda s: s.start_ms)
+    return [(s.speaker, s.text) for s in rows if s.text]
+
+
+def test_a_new_entry_opening_like_her_entry_before_last_is_not_a_cut_back() -> None:
+    """XERK-2774 QA: with her last two entries off screen, the draft ran on into "sounds
+    good" and a new entry opening like the first was taken for its cut-back, overwriting it."""
+    first = [blk("Ana", "okay so lets start the meeting"), blk("Ana", "sounds good")]
+    frames = [*[first] * 3, [blk("Ana", "Okay so lets start")]]
+    frames += [[blk("Ana", "Okay so lets start with the demo")]] * 3
+    assert _stored_at([(t * 1000, f) for t, f in enumerate(frames)]) == [
+        ("Ana", "okay so lets start the meeting"),
+        ("Ana", "sounds good"),
+        ("Ana", "Okay so lets start with the demo"),
+    ]
+
+
+def test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice() -> None:
+    """XERK-2774 QA (fuzz seed 78): a cut dropping the draft's last row left it known but
+    unshown, and the entry above's rewrite on the next frame re-stored rows."""
+    above = "design logs um we so change or"
+    frames = [
+        (1000, [blk("Cy", "contract contract me same same", above, "enable we we we or or or")]),
+        (5400, [blk(None, "enable we we we or or or", header=False),
+                blk("Cy", "code so the check so task then", "the")]),
+        (5900, [blk(None, above, "enable we we we or or or", header=False),
+                blk("Cy", "Code so the check?")]),
+        (6900, [blk(None, "um we change need enable, we", "or.", header=False),
+                blk("Cy", "Code so the check?")]),
+    ]
+    rows = _stored_at(frames)
+    assert sum(text == "Code so the check?" for _, text in rows) <= 1, rows
+    assert len(rows) <= 6, rows
+
+
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
     """Only a recent line of the same speaker the box no longer shows can be revised: the
     same words from someone else, or after the revision window, are new lines."""
