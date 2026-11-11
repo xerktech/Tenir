@@ -67,7 +67,6 @@ _TAIL = 20
 # most: otherwise an older run of the same words ("yes", "thanks", "yes") could be matched
 # instead, swallowing the new line.
 _MATCH = 3.0
-_END = ".,?! "  # end punctuation a finalised entry may gain or change (``_score``)
 _GLITCH = -1.0
 # A glitch is normally a misread of a known line in the same place (a garbled or half-cut top
 # line): that pairing is a substitution and costs _GLITCH. A shown line with no known line to
@@ -246,6 +245,9 @@ class _Line:
     # Earlier texts it held for ``_HELD_MS`` before changing (``_split_grown``, XERK-2796):
     # evidence that a row reading one of them is this line, not a clipped repeat of it.
     held: tuple[str, ...] = ()
+    # The row the alignment last paired with it (its norm; "" until one): a line whose row
+    # since read otherwise (grown, re-laid) is stale, not re-punctuated (``_score``).
+    read: str = ""
 
     @property
     def final(self) -> bool:
@@ -273,13 +275,16 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     if not _same_speaker(shown.speaker, known.speaker):
         return 0.0
     a, b = shown.norm, known.norm
-    if a == b or (a.rstrip(_END) == b.rstrip(_END) and len(_words(a)) >= _CUT_WORDS):
-        # Re-punctuated at the end: Teams punctuates an entry as it finalises it, after it
+    words = _words(a)
+    if a == b or (
+        words == _words(b) == _words(known.read or b) and len(words) >= _CUT_WORDS
+    ):
+        # Same words, re-punctuated: Teams punctuates an entry as it finalises it, after it
         # was stored ("let's go to Cy" -> "...Cy."). Only a ratio match, it lost to
         # storing the whole box again once the live entry below was rewritten (XERK-2774).
-        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz). Not
-        # by words alone: "Yes, we can." (her "Yes." rewritten) paired a stale "yes we can."
-        # of hers below it and the rewrite was lost (XERK-2799's shape).
+        # Not a short one: "Yes??" is as often her next entry after "Yes." (QA fuzz). Nor a
+        # line whose row last read otherwise: "Yes, we can." (her "Yes." rewritten) paired
+        # "yes we can.", stale since its row grew, and the rewrite was lost (XERK-2799).
         return _MATCH
     if growable and a.startswith(b):
         return _MATCH - 0.5  # the line growing
@@ -818,8 +823,7 @@ def _revise_runs(
                     break
             if found is not None:
                 break
-        # Only for her first start: a later one is taken only as a split (above).
-        if found is not None and q == qs[0] and found[0] == own < end and first == 0:
+        if found is not None and found[0] == own < end and first == 0:
             # The panel's top run claimed only her entry above her next one. That entry may
             # have scrolled off, the run a later entry re-laid ("Yes." / "Yes we can ship
             # it." -> "Yes we can ship it, after the" / "review."): a short entry's few words
@@ -1336,6 +1340,7 @@ class CaptionMerger:
             if at is not None:
                 line = tail[at]
                 line.seen_ms = ts
+                line.read = line_shown.norm
                 if line.speaker is None:
                     line.speaker = speaker
                 speaker = line.speaker or speaker

@@ -5191,6 +5191,31 @@ def test_a_short_entry_still_shown_and_rewritten_is_revised_in_place(
     ]
 
 
+@pytest.mark.parametrize("gap", [1000, 3000])
+def test_a_rewrite_re_punctuated_like_her_stale_line_still_revises_her_short_entry(
+    gap: int,
+) -> None:
+    """XERK-2774 QA: as above, with the rewrite differing from her stale "yes we can." (a
+    row since grown) only in end punctuation. Matched as a re-punctuation of that line, the
+    rewrite of "Yes." was lost and "tests pass." stored twice. That match needs the line's
+    row to have last read with the same words."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = [blk("Bo", "Yes we can ship it, after the", "review."), blk("Bo", *grown)]
+    cy = blk("Cy", "can you share the screen.")
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+    ] + [[blk("Bo", "Yes we can?"), *relaid, cy]] * 4
+    assert _gapped_run(frames, gap) == [
+        ("Bo", "Yes we can?"),
+        ("Bo", "Yes we can ship it, after the"),
+        ("Bo", "review."),
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
 @pytest.mark.parametrize(
     ("frames", "kept"),
     [

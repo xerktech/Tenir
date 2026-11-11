@@ -40,11 +40,15 @@ paths:
   `test_a_new_entry_after_dropped_frames_does_not_overwrite_her_last_one`,
   `test_a_later_draft_start_never_skips_her_first_draft_line`.
 - Real Teams frames (sampler, XERK-2774), two more causes of a box stored again:
-  - `_score` pairs a row differing from a known line only in end punctuation as exact: a
-    stored entry Teams re-punctuates ("go to Cy" -> "go to Cy.") was only a ratio match, under
-    the cost of leaving the rewritten live entry unshown. Not any punctuation: "Yes, we can."
-    (her "Yes." rewritten) paired a stale "yes we can." of hers and the rewrite was lost
-    (`test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`, XERK-2799).
+  - `_score` pairs a row with the same words as a known line as exact: a stored entry Teams
+    re-punctuates ("go to Cy" -> "go to Cy.") was only a ratio match, under the cost of
+    leaving the rewritten live entry unshown.
+    - Only while the line's row last read with the same words (`_Line.read`): "Yes, we can."
+      (her "Yes." rewritten) paired "yes we can.", stale since its row grew, and the rewrite
+      was lost (XERK-2799's shape). Narrowing to end punctuation instead still lost it ("Yes
+      we can?") and gave back mid-line re-punctuation (QA fuzz). Tests:
+      `test_a_short_entry_still_shown_and_rewritten_is_revised_in_place`,
+      `test_a_rewrite_re_punctuated_like_her_stale_line_still_revises_her_short_entry`.
   - `_update` takes growth that adds punctuation at the join ("All right" -> "All right,
     let's..."). Not by words alone: a re-flowed row then overwrote "pods." with the row above
     (`_simulate_teams` seed 125). Test: `test_an_entry_punctuated_as_it_grows_is_stored_once`.
