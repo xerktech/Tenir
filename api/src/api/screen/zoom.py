@@ -449,8 +449,13 @@ def _active_tile(img, tiles: list[tuple[str, OcrLine]]) -> str | None:
 
 @dataclass
 class CaptionBlock:
+<<<<<<< HEAD
     # The roster name the header matched, or the header's own name when an avatar vouches
     # for it (Teams; Zoom only for a dim name row); None for any other unmatched header and for the header-less block of
+=======
+    # The roster name the header matched, or (Teams) the header's own name when an avatar
+    # vouches for it; None for any other unmatched header and for the header-less block of
+>>>>>>> origin/main
     # lines continuing from above the crop.
     speaker: str | None
     has_header: bool
@@ -543,7 +548,9 @@ def parse_caption_crop(
     )
     if live or any(b.has_header and b.speaker for b in blocks):
         return blocks
-    if not any(b.has_header for b in blocks):
+    # Without pixels a trailing empty header is the position rule's guess (XERK-2794), so it
+    # vouches for nothing; with them it is a dim name row, which does (QA).
+    if not any(b.has_header and not (dim is None and pending_header(blocks, b)) for b in blocks):
         return []
     # Only unmatched headers. Without pixels, or with no text row to compare brightness
     # against, the position rule's header stands. Otherwise a dim row that reads as a
@@ -746,6 +753,13 @@ def _is_round(ink: np.ndarray) -> bool:
     return ends <= 0.9 * mid
 
 
+def pending_header(blocks: list[CaptionBlock], block: CaptionBlock) -> bool:
+    """``block`` is the crop's last row read as the next entry's header before its text
+    (no speaker, no text, no avatar): it vouches for no crop, or slide text over a name
+    would start a meeting (XERK-2794 QA)."""
+    return block is blocks[-1] and block.speaker is None and not block.lines and not block.avatar
+
+
 def caption_blocks(
     rows: list[str],
     roster: Roster,
@@ -809,6 +823,17 @@ def caption_blocks(
                 and (
                     i in named
                     or (has_next and not len(roster))
+                    # No roster, last row: a name where a header can sit (after a finished
+                    # line) is the next entry's header, its text not shown yet. Read as text
+                    # it was stored as speech for good (XERK-2794). It verifies no crop
+                    # (``pending_header``): slide text over a name started meetings (QA).
+                    or (
+                        0 < i
+                        and not has_next
+                        and not len(roster)
+                        and unknown_headers is not None
+                        and unknown_headers(i)
+                    )
                     or (
                         unknown_headers is not None
                         and has_next
@@ -821,6 +846,7 @@ def caption_blocks(
             # An avatar beside the header vouches that it names a speaker, so it keeps that
             # name though the roster lacks it: a meeting whose window isn't on screen fills
             # no roster, and every row was stored with no speaker (XERK-2791).
+<<<<<<< HEAD
             # Never one that reads near a roster name: it may be that speaker misread, and a
             # new name re-stored their whole entry (XERK-2802 QA). Unnamed, it merges as before.
             name = clean_tile_name(row) or row
@@ -829,6 +855,9 @@ def caption_blocks(
                 if i in marked and not roster.near(name)
                 else None
             )
+=======
+            named_by = roster.display(row) if i in marked else None
+>>>>>>> origin/main
             blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
             continue
         if not blocks:

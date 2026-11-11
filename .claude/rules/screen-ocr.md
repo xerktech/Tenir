@@ -33,3 +33,15 @@ paths:
   so exact-text `_dedupe` kept both and a doubled header misattributed lines (real Paddle, QA).
   `_drop_rereads` dedupes by box overlap.
   Test: `test_a_line_both_halves_read_differently_is_kept_once`.
+- tenir-ocr serves requests in no order, so the api reserves engines for caption crops
+  (XERK-2798): at most `ocr.FULL_FRAME_REQUESTS` (2 of tenir-ocr's 4 `OCR_WORKERS`) full-frame
+  strips are in flight process-wide; crops never take that semaphore. Idle windows' full frames
+  otherwise held all four engines and crops waited (1.8 s p50 in a real Teams meeting).
+  - A dense Teams crop's two halves are read at once; a failed half cancels the other.
+    Only those two: an oversized crop's strips stay one at a time, or one frame queued ~30
+    requests ahead of every other crop (QA).
+  - Raise `FULL_FRAME_REQUESTS` only together with `OCR_WORKERS` in ArgoCD `ai/tenir/ocr.yaml`.
+  - Tests: `test_full_frames_leave_ocr_engines_free_for_caption_crops`,
+    `test_a_dense_teams_caption_crops_halves_are_read_at_once`,
+    `test_an_oversized_crops_strips_are_still_read_one_at_a_time`,
+    `test_a_failed_half_cancels_the_other_halfs_request`.

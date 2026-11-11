@@ -326,6 +326,55 @@ def test_without_a_roster_a_name_line_is_an_unverified_header() -> None:
     ]
 
 
+def test_without_a_roster_or_pixels_a_trailing_name_after_a_finished_line_is_a_header() -> None:
+    # XERK-2794: the next entry's name shown before its text was stored as speech.
+    blocks = parse_caption_crop(crop("Mark Hale", "We can start now.", "Tom Adams"), Roster())
+    assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [
+        (None, True, ["We can start now."]),
+        (None, True, []),
+    ]
+
+
+def test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting() -> None:
+    # QA on XERK-2794: a trailing name with no header above it verified a docs page.
+    rows = ("Fixed a crash on start.", "Improved sync speed.", "Known Issues")
+    assert parse_caption_crop(crop(*rows), Roster()) == []
+
+
+def test_a_dim_trailing_name_still_starts_a_meeting_and_keeps_the_text_above() -> None:
+    # QA on XERK-2794: the no-pixel guard also refused a dim name row, and once the panel
+    # scrolled the first entry's text was never stored.
+    first = [("so that is where the budget stands", False), ("Shad Tischer", True)]
+    then = [("Shad Tischer", True), ("we shipped it on friday", False)]
+
+    async def run() -> list[str]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "zoom"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ros = await t.ensure_roster()
+        ts = 0
+        for rows in [first] * 4 + [then] * 4:
+            ocr, jpeg = panel_crop(*rows)
+            live = t.conversation_id is not None
+            await t.on_caption(parse_caption_crop(ocr, ros, live=live, jpeg=jpeg), ts)
+            ts += 4000
+        await t.end(ts + 70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [s.text for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    assert asyncio.run(run()) == ["so that is where the budget stands", "we shipped it on friday"]
+
+
 def test_ocr_pieces_on_one_row_are_joined_and_noise_dropped() -> None:
     result = OcrResult(
         700,
@@ -754,6 +803,108 @@ def test_a_small_window_frame_is_split_but_a_caption_crop_never_is() -> None:
         return await _mock_ocr(refuse).read(_jpeg(1600, 400), full=False)
 
     assert asyncio.run(crop()).lines == () and dense == [300, 148]
+
+
+def test_a_dense_teams_caption_crops_halves_are_read_at_once() -> None:
+    """XERK-2798: a dense Teams crop's two halves went to tenir-ocr one after the other, so
+    the crop cost two engines' time in a row (1.8 s p50 in a real meeting)."""
+    in_flight: list[int] = []
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        if Image.open(io.BytesIO(request.content)).size[1] > 200:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await asyncio.sleep(0.02)
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    asyncio.run(_mock_ocr(handler).read(_jpeg(679, 240), split_once=True))
+    assert peak == 2
+
+
+def test_an_oversized_crops_strips_are_still_read_one_at_a_time() -> None:
+    """Only a dense crop's two halves go at once: a crop over the pixel cap reading all its
+    strips together put dozens of requests ahead of every other crop (XERK-2798 QA)."""
+    in_flight: list[int] = []
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await asyncio.sleep(0.005)
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    asyncio.run(_mock_ocr(handler).read(_jpeg(1400, 2000), split_once=True))
+    assert peak == 1
+
+
+def test_a_failed_half_cancels_the_other_halfs_request() -> None:
+    """A half that fails drops the frame; the other half's request must not hold an engine."""
+    cancelled = False
+    halves = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal cancelled, halves
+        if Image.open(io.BytesIO(request.content)).size[1] > 200:
+            return httpx.Response(200, json={"lines": [], "too_dense": True})
+        halves += 1
+        if halves == 2:
+            return httpx.Response(503)
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    async def run() -> None:
+        with pytest.raises(OcrError):
+            await _mock_ocr(handler).read(_jpeg(679, 240), split_once=True)
+        await asyncio.sleep(0)
+        # Inside the loop: asyncio.run cancels leftover tasks on exit, which would pass anyway.
+        assert cancelled
+
+    asyncio.run(run())
+
+
+def test_full_frames_leave_ocr_engines_free_for_caption_crops() -> None:
+    """XERK-2798: idle windows' full frames, strip after strip, kept all of tenir-ocr's
+    engines busy and every caption crop queued behind them. At most two strips are in flight
+    across frames, and a dense Teams crop's halves never wait for those slots."""
+    from api.screen import ocr as ocr_mod
+
+    in_flight: list[int] = []
+    peak = 0
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peak
+        w, h = Image.open(io.BytesIO(request.content)).size
+        if w == 679:  # the caption crop: too dense whole, its halves read
+            return httpx.Response(200, json={"lines": [], "too_dense": h > 200})
+        in_flight.append(1)
+        peak = max(peak, len(in_flight))
+        await release.wait()  # full strips hold their slots until the crop is read
+        in_flight.pop()
+        return httpx.Response(200, json={"lines": [], "too_dense": False})
+
+    async def run() -> None:
+        client = _mock_ocr(handler)
+        frames = [asyncio.create_task(client.read(_jpeg(1000, 1200), full=True)) for _ in range(4)]
+        while len(in_flight) < ocr_mod.FULL_FRAME_REQUESTS:
+            await asyncio.sleep(0.005)
+        # Every full-frame slot is taken: a crop that waited for one would time out here.
+        await asyncio.wait_for(client.read(_jpeg(679, 240), split_once=True), timeout=5)
+        release.set()
+        await asyncio.gather(*frames)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
+    assert peak == ocr_mod.FULL_FRAME_REQUESTS == 2
 
 
 def test_a_dense_teams_caption_crop_is_halved_once_and_both_halves_read() -> None:
@@ -5846,6 +5997,99 @@ def test_a_new_entry_under_a_shown_twin_of_its_start_is_a_new_line() -> None:
     )
     assert [text for _, text in stored] == ["OK.", "yes.", "yes I think so too."]
 
+
+@pytest.mark.parametrize("missed", [1, 2, 3, 5])
+@pytest.mark.parametrize(
+    ("first", "next_entry"),
+    [("yes.", "yes I think so too."), ("yes", "yes I think so too."), ("So", "So let me share.")],
+)
+def test_a_new_entry_read_while_ocr_missed_the_row_above_is_stored_once(
+    missed: int, first: str, next_entry: str
+) -> None:
+    """XERK-2796: OCR missed the "yes." row for a few frames, so the live "yes." line grew into
+    Ana's next entry "yes I think so too.". Once both rows showed, "yes." read as a cut-short
+    re-read of it (or as nothing) and the next entry was stored again: OK., yes I think so
+    too., yes., yes I think so too. The line goes back to the row's text instead."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", first), 4),
+            (_entries("OK.", next_entry), missed),
+            (_entries("OK.", first, next_entry), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", first), ("Ana", next_entry)]
+
+
+@pytest.mark.parametrize("grown", [False, True])
+@pytest.mark.parametrize("clipped", [1, 3])
+@pytest.mark.parametrize(
+    ("said", "cut"), [("Thank you so much.", "Thank you"), ("I agree.", "I")]
+)
+def test_a_repeated_entry_ocr_clipped_on_a_frame_keeps_both_copies(
+    said: str, cut: str, clipped: int, grown: bool
+) -> None:
+    """QA (XERK-2796): Ana says the same entry twice and OCR clips the upper copy's end on the
+    frames the repeat appears. That reads like the miss above, and reverting the line cut it
+    for good ("Thank you"). Only a text the line held for ``_HELD_MS`` is reverted to; a live
+    entry passes through each word-by-word prefix for one frame."""
+    words = said.split()
+    build = [(_entries("OK.", " ".join(words[:k])), 1) for k in range(1, len(words))] if grown else []
+    stored, _ = _entry_run(
+        [
+            *build,
+            (_entries("OK.", said), 4),
+            (_entries("OK.", cut, said), clipped),
+            (_entries("OK.", said, said), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
+
+
+def test_another_speakers_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
+    """XERK-2796: the entry Ana's live line grew into while her row was OCR-missed is Bo's
+    (his header was missed too). Once both show, her line goes back to "yes." and his row is
+    his own line."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too."), 3),
+            ([*_entries("OK.", "yes."), blk("Bo", "yes I think so too.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Bo", "yes I think so too.")]
+
+
+@pytest.mark.parametrize("first_for", [4, 8, 28])
+def test_a_finished_entry_grown_while_ocr_missed_the_row_above_is_stored_once(
+    first_for: int,
+) -> None:
+    """XERK-2796: shown 5+ frames before the miss, "yes." is stored and grows through
+    ``_apply_grows`` (``_revise``), which must note its held text too; shown 4, it grows as
+    the live line (``_update``)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), first_for),
+            (_entries("OK.", "yes I think so too."), 3),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
+    """QA (XERK-2796): Ana paused on "Thank you", finished the entry, and said it again over
+    half a minute later with the upper copy clipped to "Thank you" for a frame. Only a line
+    first seen within ``_REVISE_MS`` is reverted: this one is a repeat, kept whole."""
+    said = "Thank you so much."
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "Thank you"), 3),
+            (_entries("OK.", said), 35),
+            (_entries("OK.", "Thank you", said), 1),
+            (_entries("OK.", said, said), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
 
 @pytest.mark.parametrize(
     ("header", "speaker"),
