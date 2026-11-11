@@ -53,7 +53,8 @@ paths:
   - The words-only match needs `_CUT_WORDS`+ words: "Yes??" after "Yes." is as often her next
     entry, and matched by words its draft went to the entry after and was lost (QA fuzz).
     Test: `test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last`.
-  - The real meeting replays at 0 duplicate rows (main: 3 of 3+ words, more shorter ones).
-    `_simulate` (1000 x 4) and `_simulate_teams` (200 x 2) are identical to main per seed.
-  - Still open: another speaker's entry Teams orders above her live entry ("OK" / Bo / "OK.")
-    stores it twice: a header row can't stay unpaired above a match (`_UNPAIRED`).
+  - The real meeting replays at 0 duplicate rows with its roster seeded, 1 without (main: 2
+    and 3); `_simulate` (1000 x 4) and `_simulate_teams` (200 x 2) identical to main per seed.
+  - Still open: a split below another speaker's re-punctuated short entry ("Cy" -> "Cy.")
+    stores the draft twice (XERK-2805); a short entry Teams reorders around a live entry
+    stores a line twice (XERK-2806). Both on main too.
