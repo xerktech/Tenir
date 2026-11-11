@@ -6398,3 +6398,41 @@ def test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole(
         2000,
     )
     assert said in rows and clip not in rows
+
+
+def test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole() -> None:
+    """QA fuzz (XERK-2804, tf seed 146, its frames): Ana's entry, read whole once, is clipped
+    to "Sounds" on the frame her next entry first shows, reading its words unpunctuated. On
+    that frame it reads like the ticket's re-punctuated return; split, the entry was stored
+    as "Sounds" for good. Only an unfinished line (no closing ".?!") is read inexactly."""
+    said = "Sounds good ok go cluster api pods."
+    nxt = ("Sounds good ok go cluster api pods sounds", "good.")
+    frames = [
+        (2240, _entries("Sounds good.", "Sounds good ok.", "sounds")),
+        (4335, _entries("Sounds good.", "Sounds good ok.", said)),
+        (6396, _entries("Sounds good.", "Sounds good ok.", "Sounds", said.lower()[:-1])),
+        (8454, [blk(None, "Sounds good ok."), blk("Ana", said), blk("Ana", *nxt), blk("Cy", "right")]),
+        (10430, [blk(None, said), blk("Ana", *nxt), blk("Cy", "Right."), blk("Bo", "thanks")]),
+        (12418, [blk("Cy", "Right."), blk("Bo", "Thanks.")]),
+    ]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, str] = {}
+    for t, blocks in frames:
+        for seg in m.feed(blocks, t):
+            final[seg.segment_id] = seg.text
+    for seg in m.flush(72_418):
+        final[seg.segment_id] = seg.text
+    assert said in final.values() and "Sounds" not in final.values()
+
+
+def test_another_speakers_row_over_the_grown_entry_never_splits_it() -> None:
+    """XERK-2804: Ana's live "yes." grew into her next entry while OCR missed its row; Bo's
+    "yes." shown above it is his own line, never her held text (``_splits`` speaker check)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            ([blk("Ana", "OK."), blk("Bo", "yes."), blk("Ana", "yes I think so too.")], 6),
+        ]
+    )
+    assert ("Bo", "yes.") in stored and ("Ana", "yes I think so too") in stored
