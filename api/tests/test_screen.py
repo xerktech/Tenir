@@ -2864,7 +2864,7 @@ REWRITES = {
     "rewrapped": (
         [
             blk(
-                "Ravi",
+                "Eli",
                 "Copy OK let me do this because I",
                 "have to",
                 "at least I will understand.",
@@ -2873,7 +2873,7 @@ REWRITES = {
         ],
         [
             blk(
-                "Ravi",
+                "Eli",
                 "Copy. OK, let me do this because",
                 "I have to do it in prod as well, so",
                 "at least I will understand.",
@@ -2882,31 +2882,31 @@ REWRITES = {
         ],
     ),
     "grown": (
-        [blk("Pelin", "Whenever like we need to do it", "like"), blk("Ravi", "Oh.")],
+        [blk("Pelin", "Whenever like we need to do it", "like"), blk("Eli", "Oh.")],
         [
             blk("Pelin", "Whenever, like we need to do it", "like with the keto."),
-            blk("Ravi", "Oh."),
+            blk("Eli", "Oh."),
         ],
     ),
     "split": (
-        [blk("Ravi", "No no no I'm not")],
-        [blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")],
+        [blk("Eli", "No no no I'm not")],
+        [blk("Eli", "No, no, no.", "I'm not gonna enable the kDa in")],
     ),
     "split_no_match": (
-        [blk("Ravi", "Oh I guess are we missing the")],
-        [blk("Ravi", "Oh, I guess.", "Are we missing the cedar in test")],
+        [blk("Eli", "Oh I guess are we missing the")],
+        [blk("Eli", "Oh, I guess.", "Are we missing the cedar in test")],
     ),
     "split_punctuated": (
-        [blk("Ravi", "Alright that's it that's all it was")],
-        [blk("Ravi", "Alright, that's it.", "That's all it was.")],
+        [blk("Eli", "Alright that's it that's all it was")],
+        [blk("Eli", "Alright, that's it.", "That's all it was.")],
     ),
     "entry_above_grew": (
         [
-            blk("Ravi", "We need to do this"),
+            blk("Eli", "We need to do this"),
             blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
         ],
         [
-            blk("Ravi", "We need to do this.", "You see the demo website."),
+            blk("Eli", "We need to do this.", "You see the demo website."),
             blk("Malcolm", "Are you gonna do it or want me", "to do it?"),
         ],
     ),
@@ -2944,12 +2944,12 @@ def test_a_rewritten_entry_keeps_the_drafts_segment_ids() -> None:
     m = CaptionMerger(start_ms=0, stable_ms=3000)
     out = []
     for t in range(5):
-        out += m.feed([blk("Ravi", "No no no I'm not")], t * 1000)
+        out += m.feed([blk("Eli", "No no no I'm not")], t * 1000)
     (draft,) = out
     said_until = draft.end_ms  # the merger re-emits the same Segment object, changed
     out = []
     for t in range(5, 10):
-        out += m.feed([blk("Ravi", "No, no, no.", "I'm not gonna enable the kDa in")], t * 1000)
+        out += m.feed([blk("Eli", "No, no, no.", "I'm not gonna enable the kDa in")], t * 1000)
     out += m.flush(20_000)
     assert [(s.segment_id == draft.segment_id, s.text) for s in out] == [
         (True, "No, no, no."),
@@ -3056,6 +3056,206 @@ def test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice() -> None:
     assert len(rows) <= 6, rows
 
 
+def test_an_entry_punctuated_as_it_grows_is_stored_once() -> None:
+    """XERK-2774 (real Teams frames, 2026-11-11): Teams added a comma where the entry grew
+    ("All right" -> "All right, let's..."). Refused as growth, the line was stored short; the
+    real meeting's next frame aligned that row to nothing and stored the box again, and here
+    the entry below was stored twice ("Let's go to" / "Let's go to Cy")."""
+    frames = [
+        (0, [blk("Bo", "That's about it."), blk("Ana", "OK."), blk("Ana", "All right")]),
+        (2000, [blk("Ana", "OK."), blk("Ana", "All right, let's wrap it up today."),
+                blk("Ana", "Let's go to")]),
+        (3000, [blk("Ana", "OK."), blk("Ana", "All right, let's wrap it up today."),
+                blk("Ana", "Let's go to Cy")]),
+        (5000, [blk("Ana", "All right, let's wrap it up today."), blk("Ana", "Let's go to Cy"),
+                blk("Cy", "Morning all")]),
+    ]
+    assert _stored_at(frames) == [
+        ("Bo", "That's about it."),
+        ("Ana", "OK."),
+        ("Ana", "All right, let's wrap it up today."),
+        ("Ana", "Let's go to Cy"),
+        ("Cy", "Morning all"),
+    ]
+
+
+def test_an_entry_teams_splits_in_two_as_it_finalises_is_stored_once() -> None:
+    """XERK-2774 (real Teams frames): Teams finalised Cy's live entry by punctuating it and
+    splitting its tail off into a new entry, while re-punctuating Ana's stored one above
+    ("Let's go to Cy" -> "...Cy."). Only a ratio match, Ana's row lost to storing the box
+    again; and "Hi, good morning." keeps 3 of the draft's 7 words, under the cut-back's half,
+    though the rest open Cy's next entry."""
+    frames = [
+        (0, [blk("Ana", "Let's go to Cy")]),
+        (2000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Hi good morning")]),
+        (3000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Hi good morning so yesterday we had")]),
+        (5000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Hi, good morning."),
+                blk("Cy", "So yesterday we had a demo")]),
+        (6000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Hi, good morning."),
+                blk("Cy", "So yesterday we had a demo with the team")]),
+    ]
+    assert _stored_at(frames) == [
+        ("Ana", "Let's go to Cy."),
+        ("Cy", "Hi, good morning."),
+        ("Cy", "So yesterday we had a demo with the team"),
+    ]
+
+
+def test_an_entry_finalised_with_a_period_before_it_is_stored_keeps_the_period() -> None:
+    """XERK-2774 (real Teams frames): Teams ended Ana's live line with a period before it was
+    stored ("Let's go to Cy" -> "Let's go to Cy."). Refused as growth, the line kept its old
+    text; on the real capture the next frames' rows then matched it only by ratio and the box
+    was stored again (2 rows). These synthetic frames don't reproduce that duplicate, only
+    the period that is now kept."""
+    ok = blk("Ana", "OK.")
+    intro = blk("Ana", "All right, let's get it going today.")
+    frames = [
+        (0, [ok, intro, blk("Ana", "Let's go to")]),
+        (1000, [ok, intro, blk("Ana", "Let's go to Cy")]),
+        (3000, [intro, blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah hi good morning")]),
+        (4000, [intro, blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah hi good morning so we")]),
+        (6000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah. Hi, good morning."),
+                blk("Cy", "So we merged the fix")]),
+        (7000, [blk("Ana", "Let's go to Cy."), blk("Cy", "Yeah. Hi, good morning."),
+                blk("Cy", "So we merged the fix yesterday")]),
+    ]
+    rows = _stored_at(frames)
+    assert [r for r in rows if "go to" in r[1]] == [("Ana", "Let's go to Cy.")], rows
+
+
+def test_a_split_entry_with_no_known_row_left_on_screen_is_stored_once() -> None:
+    """XERK-2774 (real Teams frames): the frame Teams split Ana's entry showed no row the
+    merger knew (all scrolled off), so her draft was looked for from her oldest recent line
+    ("About red"), matched nothing, and both halves were stored beside the draft."""
+    frames = [
+        (0, [blk("Ana", "Is there another color here?"), blk("Ana", "Maybe purple?"),
+             blk("Ana", "About red.")]),
+        (2000, [blk("Ana", "About red."), blk("Bo", "Yeah, I will check it."),
+                blk("Ana", "No that's")]),
+        (3000, [blk("Ana", "About red."), blk("Bo", "Yeah, I will check it."),
+                blk("Ana", "No that's fine I mean I don't")]),
+        (5000, [blk("Ana", "No, that's fine."), blk("Ana", "I mean, I don't."),
+                blk("Ana", "Maybe it looks")]),
+        (6000, [blk("Ana", "No, that's fine."), blk("Ana", "I mean, I don't."),
+                blk("Ana", "Maybe it looks different for you")]),
+    ]
+    assert _stored_at(frames) == [
+        ("Ana", "Is there another color here?"),
+        ("Ana", "Maybe purple?"),
+        ("Ana", "About red."),
+        ("Bo", "Yeah, I will check it."),
+        ("Ana", "No, that's fine."),
+        ("Ana", "I mean, I don't."),
+        ("Ana", "Maybe it looks different for you"),
+    ]
+
+
+def test_a_new_entry_after_dropped_frames_does_not_overwrite_her_last_one() -> None:
+    """XERK-2774 QA: with nothing aligned, a later draft start offered her 3-word last row,
+    and a new entry sharing 2 of its words overwrote it by coverage. A later start is taken
+    only as a split now."""
+    old = ["Then enable go that the", "overlay we pods?"]
+    new = ["We need what me, pods asking", "what, second um uh asking and", "me."]
+    frames = [
+        (1000, [blk(None, "build need.", header=False), blk("Bo", *old)]),
+        (14100, [blk("Bo", *new)]),
+    ]
+    assert _stored_at(frames) == [(None, "build need."), *(("Bo", r) for r in old + new)]
+
+
+def test_a_later_draft_start_never_skips_her_first_draft_line() -> None:
+    """XERK-2774 QA (fuzz seed 132): a re-wrap read with nothing aligned took its draft from
+    her second unshown line, and the first ("did cluster code right locally") was lost."""
+    draft = [
+        "did cluster code right locally",
+        "the push overlay fix process",
+        "again itself test locally do",
+        "repeat again overlay check",
+    ]
+    above = blk(None, "overlay repeat overlay check,", "like.", header=False)
+    frames = [
+        (1000, [above, blk("Bo", "change fix there locally")]),
+        (1700, [above, blk("Bo", "change fix there locally we")]),
+        (10600, [blk(None, *draft, header=False)]),
+        (13100, [blk(None, "locally, the push overlay fix", "process again itself, test",
+                     "locally do repeat, again", "overlay check?", header=False)]),
+    ]
+    assert ("Bo", "did cluster code right locally") in _stored_at(frames)
+
+
+def test_a_finished_entry_is_not_taken_for_a_split() -> None:
+    """XERK-2774 QA: Ana's entry finished long before a new pair of her entries opened like
+    it; taken for Teams splitting it, the pair overwrote it. A split needs a changing draft."""
+    frames = [[blk("Ana", "I think we are done here")]] * 2
+    frames += [[blk("Ana", "I think we are done here.")]] * 15
+    frames += [[blk("Ana", "I think."), blk("Ana", "We are done here then")]] * 4
+    rows = _stored_at([(t * 1000, f) for t, f in enumerate(frames)])
+    assert rows[0] == ("Ana", "I think we are done here."), rows
+
+
+def test_a_word_moved_up_with_a_comma_above_her_next_line_is_a_rewrite_not_growth() -> None:
+    """XERK-2774 QA (fuzz seed 84): Teams re-laid Ana's three rows as two, moving "or" up
+    with a comma. Taken as punctuated growth of her first row, the second row kept too few
+    of the draft's words to claim it, and both stale rows were stored too."""
+    bo = blk("Bo", "build or can itself what check")
+    rows = [
+        "we cluster design can second locally",
+        "locally or so repeat deploy cluster",
+        "cluster so or uh",
+    ]
+    frames = [
+        (0, [bo, blk("Ana", rows[0])]),
+        (500, [bo, blk("Ana", rows[0], "locally")]),
+        (1300, [bo, blk("Ana", rows[0], "locally or so")]),
+        (2700, [bo, blk("Ana", *rows[:2])]),
+        (3500, [bo, blk("Ana", *rows[:2], "cluster")]),
+        (4300, [bo, blk("Ana", *rows[:2], "cluster so or")]),
+        (4800, [bo, blk("Ana", *rows)]),
+    ]
+    rewrite = blk("Ana", "We cluster design can second locally, or", "repeat api cluster, or uh?")
+    frames += [(5300 + 500 * k, [bo, rewrite]) for k in range(8)]
+    assert _stored_at(frames) == [
+        ("Bo", "build or can itself what check"),
+        ("Ana", "We cluster design can second locally, or"),
+        ("Ana", "repeat api cluster, or uh?"),
+    ]
+
+
+def test_a_split_of_her_live_entry_keeps_the_like_one_she_just_finished() -> None:
+    """XERK-2774 QA fuzz: Cy's new entry opened with the words of the one she had just
+    finished, then Teams split it. Taken from the finished one as the draft, the split
+    overwrote it. A split is only of her newest line."""
+    frames = [(t, [blk("Cy", "cluster fix the")]) for t in (0, 500)]
+    frames += [(t, [blk("Cy", "Cluster, fix, the.")]) for t in (1000, 1500, 2000)]
+    frames += [
+        (2500, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster")]),
+        (3000, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster fix")]),
+        (3500, [blk("Cy", "Cluster, fix, the."), blk("Cy", "cluster fix the")]),
+    ]
+    split = [blk("Cy", "Cluster?"), blk("Cy", "Fix the fix locally.")]
+    frames += [(t, split) for t in (4000, 4500, 5000, 6000)]
+    rows = _stored_at(frames)
+    assert rows[0] == ("Cy", "Cluster, fix, the."), rows
+    assert ("Cy", "Cluster?") in rows, rows
+
+
+def test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last() -> None:
+    """XERK-2774 QA fuzz: "Yes??" (her live "yes? yes" finalised) matched her "Yes." above
+    by words alone, so her next entry took the live draft and the entry was lost. Short
+    entries repeat too often for words alone to say it is the same one."""
+    above = blk(None, "check, push same? then need.", "me.", header=False)
+    frames = [(0, [above, blk("Ana", "Yes.")]), (500, [above, blk("Ana", "Yes.")])]
+    frames += [
+        (1000, [blk("Ana", "Yes."), blk("Ana", "yes")]),
+        (1700, [blk("Ana", "Yes."), blk("Ana", "yes? yes")]),
+    ]
+    grow = ["Yes", "Yes second", "Yes second cluster", "Yes second cluster will."]
+    frames += [(2200 + 500 * k, [blk("Ana", "Yes??"), blk("Ana", w)]) for k, w in enumerate(grow)]
+    frames += [(4200 + 500 * k, [blk("Ana", "Yes??"), blk("Ana", grow[-1])]) for k in range(3)]
+    yes = [w for _, w in _stored_at(frames) if w.startswith("Yes")]
+    assert len(yes) == 3, yes
+
+
 def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
     """Only a recent line of the same speaker the box no longer shows can be revised: the
     same words from someone else, or after the revision window, are new lines."""
@@ -3083,7 +3283,7 @@ def test_a_new_entry_like_an_old_one_is_not_a_rewrite() -> None:
     ("first", "then"),
     [
         ([blk("Ana", "sounds good")], [blk("Ana", "okay", "sounds good"), blk("Cy", "yes")]),
-        ([blk("Ravi", "Yes.")], [blk("Ravi", "OK.", "Yes."), blk("Bo", "great")]),
+        ([blk("Eli", "Yes.")], [blk("Eli", "OK.", "Yes."), blk("Bo", "great")]),
     ],
 )
 def test_a_repeat_below_a_new_line_after_dropped_frames_is_not_a_rewrite(
@@ -3379,7 +3579,7 @@ def test_a_rewrap_moving_a_word_onto_a_matched_row_keeps_it() -> None:
             header=False,
         )
     ]
-    stored = _teams_entry(draft, final, before=[[blk("Ravi", "so")]])
+    stored = _teams_entry(draft, final, before=[[blk("Eli", "so")]])
     words = " ".join(_words(text) for _, text in stored)
     assert "the how right in overlay" in words, stored
 
@@ -3400,7 +3600,7 @@ def test_ocr_jitter_on_a_rewritten_entrys_matched_row_is_not_stored(misread_top:
     draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
     final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
-    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames = [[blk("Eli", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, misread_top, *final[1:], header=False)]]
     frames += [[blk(None, *final, header=False)]] * 5
     for t, frame in enumerate(frames):
@@ -3429,7 +3629,7 @@ def test_a_one_frame_misread_of_a_rewritten_row_is_never_stored(glitched: str) -
     draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
     final = ["Yes so so enable should like we", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
-    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames = [[blk("Eli", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, glitched, *final[1:], header=False)]]
     frames += [[blk(None, *final, header=False)]] * 5
     for t, frame in enumerate(frames):
@@ -4231,7 +4431,7 @@ def test_a_misread_held_for_confirmation_lapses_on_a_clean_read() -> None:
     final = ["Yes the pods need enable should we", "the cluster is up now,", "right in overlay."]
     misread = "Yes pods need enable should we"
     stored: dict[str, str] = {}
-    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames = [[blk("Eli", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, misread, *final[1:], header=False)]]
     frames += [[blk(None, *final, header=False)]] * 3
     frames += [[blk(None, misread, *final[1:], header=False)]]
@@ -4259,7 +4459,7 @@ def test_one_noisy_frame_after_a_rewrite_only_delays_it(noisy: str) -> None:
     draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
     final = ["Yes so enable should like we the", "cluster not need pods it, the how", "right in overlay."]
     stored: dict[str, str] = {}
-    frames = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    frames = [[blk("Eli", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     frames += [[blk(None, *final, header=False)]]
     frames += [[blk(None, noisy, *final[1:], header=False)]]
     frames += [[blk(None, *final, header=False)]] * 8
@@ -4278,7 +4478,7 @@ def _rewrite_run(frames: list[list[str]]) -> tuple[dict[str, str], list[list[str
     draft = ["yes so so enable should like we", "the cluster not need pods it the", "how right right in overlay"]
     stored: dict[str, str] = {}
     emitted: list[list[str]] = []
-    feed = [[blk("Ravi", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
+    feed = [[blk("Eli", "so")]] * 5 + [[blk(None, *draft, header=False)]] * 5
     feed += [[blk(None, *rows, header=False)] for rows in frames]
     for t, frame in enumerate(feed):
         segs = m.feed(frame, t * 1000)
@@ -4332,7 +4532,7 @@ def test_a_rewrite_dropping_leading_words_is_taken_where_no_crop_cuts(where: str
 
     def frame(rows: list[str]) -> list[CaptionBlock]:
         if where == "under its header":
-            return [blk("Ravi", *rows)]
+            return [blk("Eli", *rows)]
         return [blk("Mia", "earlier words from mia here"), blk(None, *rows, header=False)]
 
     m = CaptionMerger(start_ms=0, stable_ms=3000)
@@ -5014,6 +5214,31 @@ def test_a_short_entry_still_shown_and_rewritten_is_revised_in_place(
     ] + [[blk("Bo", "Yes." if flicker else "Yes, we can."), *relaid, cy]] * 3
     assert _gapped_run(frames, gap) == [
         ("Bo", "Yes, we can."),
+        ("Bo", "Yes we can ship it, after the"),
+        ("Bo", "review."),
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
+@pytest.mark.parametrize("gap", [1000, 3000])
+def test_a_rewrite_re_punctuated_like_her_stale_line_still_revises_her_short_entry(
+    gap: int,
+) -> None:
+    """XERK-2774 QA: as above, with the rewrite differing from her stale "yes we can." (a
+    row since grown) only in end punctuation. Matched as a re-punctuation of that line, the
+    rewrite of "Yes." was lost and "tests pass." stored twice. That match needs the line's
+    row to have last read with the same words."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = [blk("Bo", "Yes we can ship it, after the", "review."), blk("Bo", *grown)]
+    cy = blk("Cy", "can you share the screen.")
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+    ] + [[blk("Bo", "Yes we can?"), *relaid, cy]] * 4
+    assert _gapped_run(frames, gap) == [
+        ("Bo", "Yes we can?"),
         ("Bo", "Yes we can ship it, after the"),
         ("Bo", "review."),
         *[("Bo", row) for row in grown],

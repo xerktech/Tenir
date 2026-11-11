@@ -16,8 +16,9 @@ paths:
 - `/ws/screen` messages stay outside the `/ws` `ClientMessage`/`ServerMessage` unions: adding
   them there widens the web/mobile switch types for a socket those clients never open.
 - Per-source rules load with their files: `screen-merge`, `screen-merge-grow`,
-  `screen-merge-split`, `screen-zoom`, `screen-teams`, `screen-teams-pane`, `screen-ocr`,
-  `screen-delivery`, `screen-utterances`, `screen-device-tokens`. Only cross-cutting bullets belong here.
+  `screen-merge-finalise`, `screen-merge-split`, `screen-zoom`, `screen-teams`,
+  `screen-teams-pane`, `screen-ocr`, `screen-delivery`, `screen-utterances`,
+  `screen-device-tokens`. Only cross-cutting bullets belong here.
 - schema.sql: a column added to a table this repo already created needs its own
   `ALTER ... ADD COLUMN IF NOT EXISTS`, even a table created in the same PR's earlier commit.
 - Full frames are decoded only at the OCR'd size and ≤3840x2400 px: a 2.6 MB JPEG decoded to

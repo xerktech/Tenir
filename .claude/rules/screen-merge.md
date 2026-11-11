@@ -125,19 +125,8 @@ paths:
   (case/punctuation stripped, `_REVISED` coverage); matches upsert those segments (same ids).
   - Revising must reach the newest recent known line: else "okay", Bo, "okay so lets start"
     folds Ana's new line into her old one.
-  - Rows reading exactly the draft's first words pass coverage too (`_cut_back`, XERK-2774):
-    Teams finalising an entry cuts its live tail ("do you have something and then like" ->
-    "Do you have something?"); 5 of 25 real duplicates (2026-11-10). Needs `_CUT_WORDS` (3)+
-    words and half the draft's, else "We need to." after "we need to fix the cluster..." was
-    folded into it. Unpunctuated, the cut row aligns as a misread instead (draft kept).
-    - Only the draft's last line may lose words: dropping a whole row left it known but
-      unshown and re-stored rows (QA fuzz seed 78). It also refuses a draft running on into
-      her later entries, which let a new entry opening like her entry before last overwrite
-      it past the "reach the newest line" guard (QA).
-    Tests: `test_an_entry_teams_cuts_back_as_it_finalises_is_stored_once`,
-    `test_a_short_new_line_opening_like_the_last_is_not_a_cut_back`,
-    `test_a_new_entry_opening_like_her_entry_before_last_is_not_a_cut_back`,
-    `test_a_cut_dropping_a_whole_row_of_the_draft_stores_nothing_twice`.
+  - How Teams finalising an entry (cut back, split, re-punctuated) is told from a new one:
+    `screen-merge-finalise.md` (XERK-2774).
   - A run's claims are a prefix of its rows: [okay, sounds good] after a dropped frame over a
     known "sounds good" is a repeat, not a revision (QA: the reply was lost).
   - Aligned rows of a revised block take new words only once two frames read them alike
