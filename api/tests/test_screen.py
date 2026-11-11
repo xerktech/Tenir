@@ -5775,3 +5775,97 @@ def test_a_fold_never_takes_a_reflow_or_an_older_line(seed: int, noise: float) -
     line lost a word moved up onto the row above (a re-flow, ``_reflow``'s). Seed 191: the
     bottom row paired with an older line it starts like, not the row above the folded one."""
     assert _simulate_teams(seed, noise=noise)[2] == 0
+
+
+@pytest.mark.parametrize("missed", [1, 2, 3, 5])
+@pytest.mark.parametrize(
+    ("first", "next_entry"),
+    [("yes.", "yes I think so too."), ("yes", "yes I think so too."), ("So", "So let me share.")],
+)
+def test_a_new_entry_read_while_ocr_missed_the_row_above_is_stored_once(
+    missed: int, first: str, next_entry: str
+) -> None:
+    """XERK-2796: OCR missed the "yes." row for a few frames, so the live "yes." line grew into
+    Ana's next entry "yes I think so too.". Once both rows showed, "yes." read as a cut-short
+    re-read of it (or as nothing) and the next entry was stored again: OK., yes I think so
+    too., yes., yes I think so too. The line goes back to the row's text instead."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", first), 4),
+            (_entries("OK.", next_entry), missed),
+            (_entries("OK.", first, next_entry), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", first), ("Ana", next_entry)]
+
+
+@pytest.mark.parametrize("grown", [False, True])
+@pytest.mark.parametrize("clipped", [1, 3])
+@pytest.mark.parametrize(
+    ("said", "cut"), [("Thank you so much.", "Thank you"), ("I agree.", "I")]
+)
+def test_a_repeated_entry_ocr_clipped_on_a_frame_keeps_both_copies(
+    said: str, cut: str, clipped: int, grown: bool
+) -> None:
+    """QA (XERK-2796): Ana says the same entry twice and OCR clips the upper copy's end on the
+    frames the repeat appears. That reads like the miss above, and reverting the line cut it
+    for good ("Thank you"). Only a text the line held for ``_HELD_MS`` is reverted to; a live
+    entry passes through each word-by-word prefix for one frame."""
+    words = said.split()
+    build = [(_entries("OK.", " ".join(words[:k])), 1) for k in range(1, len(words))] if grown else []
+    stored, _ = _entry_run(
+        [
+            *build,
+            (_entries("OK.", said), 4),
+            (_entries("OK.", cut, said), clipped),
+            (_entries("OK.", said, said), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
+
+
+def test_another_speakers_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
+    """XERK-2796: the entry Ana's live line grew into while her row was OCR-missed is Bo's
+    (his header was missed too). Once both show, her line goes back to "yes." and his row is
+    his own line."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too."), 3),
+            ([*_entries("OK.", "yes."), blk("Bo", "yes I think so too.")], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Bo", "yes I think so too.")]
+
+
+@pytest.mark.parametrize("first_for", [4, 8, 28])
+def test_a_finished_entry_grown_while_ocr_missed_the_row_above_is_stored_once(
+    first_for: int,
+) -> None:
+    """XERK-2796: shown 5+ frames before the miss, "yes." is stored and grows through
+    ``_apply_grows`` (``_revise``), which must note its held text too; shown 4, it grows as
+    the live line (``_update``)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), first_for),
+            (_entries("OK.", "yes I think so too."), 3),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
+    """QA (XERK-2796): Ana paused on "Thank you", finished the entry, and said it again over
+    half a minute later with the upper copy clipped to "Thank you" for a frame. Only a line
+    first seen within ``_REVISE_MS`` is reverted: this one is a repeat, kept whole."""
+    said = "Thank you so much."
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "Thank you"), 3),
+            (_entries("OK.", said), 35),
+            (_entries("OK.", "Thank you", said), 1),
+            (_entries("OK.", said, said), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
