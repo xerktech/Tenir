@@ -49,6 +49,13 @@ paths:
     punctuated row, or carrying avatar evidence (initials in its box or a circle beside it).
     Punctuation alone lost "Acme Global Partners" mid-caption when absent, and when present
     merged a new speaker after an unfinished line into the last one (both QA, real OCR).
+  - With no roster, the last row, name-shaped, where a header can sit (after a punctuated row or
+    with avatar evidence, never alone) is a pending header (XERK-2794): the next entry's header
+    shows before its text, and read as text it was stored as speech for good. A mid-panel name
+    row is a header anyway once a row follows; a finished caption tail gets Teams' "." and is
+    text again. Accepted: a name-shaped tail never punctuated ("Hi Hank Ives") is lost. Tests:
+    `test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header`,
+    `test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored`.
   - Mis-cased avatars ("So Sean O'Neil") strip only off a box starting left of the caption text
     right under it (`_strip_header_boxes`); "Hi Hank Ives" mid-caption starts where the text
     does. Not a median column: slide rows link into the panel and shift it. All initials, 2+.

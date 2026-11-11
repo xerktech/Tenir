@@ -766,6 +766,16 @@ def caption_blocks(
                 and (
                     i in named
                     or (has_next and not len(roster))
+                    # No roster, last row under another: a name where a header can sit
+                    # (after a finished line) is the next entry's header, its text not shown
+                    # yet. Read as text it was stored as speech for good (XERK-2794).
+                    or (
+                        0 < i
+                        and not has_next
+                        and not len(roster)
+                        and unknown_headers is not None
+                        and unknown_headers(i)
+                    )
                     or (
                         unknown_headers is not None
                         and has_next

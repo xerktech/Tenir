@@ -672,6 +672,60 @@ def test_without_a_roster_a_directory_name_line_is_an_unverified_header() -> Non
     assert [(b.speaker, b.has_header, b.lines) for b in blocks] == [(None, True, ["Okay."])]
 
 
+def test_without_a_roster_a_trailing_name_after_a_finished_line_is_a_pending_header() -> None:
+    # XERK-2794: the next entry's header shows before its text. Read as caption text it was
+    # stored as speech under the previous speaker, and never re-read once its text arrived.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line("Tom Adams", 60, 52, 200, 68),
+        ),
+        Roster(),
+    )
+    assert blocks_of(blocks) == [(None, True, ["We can start now."]), (None, True, [])]
+
+
+@pytest.mark.parametrize(
+    ("rows", "caption"),
+    [
+        # After an unfinished line it is the caption going on ("I spoke with" / "John Smith").
+        (["Mark Hale", "I spoke with", "John Smith"], ["I spoke with", "John Smith"]),
+        # Alone in a live crop: nothing says a header sits there (as before XERK-2794).
+        (["Kunal Shah"], ["Kunal Shah"]),
+    ],
+)
+def test_without_a_roster_a_trailing_name_where_no_header_sits_stays_caption(
+    rows: list[str], caption: list[str]
+) -> None:
+    ocr = result(*(line(t, 60, 4 + 24 * i, 60 + 9 * len(t), 20 + 24 * i) for i, t in enumerate(rows)))
+    blocks = teams.parse_caption_crop(ocr, Roster(), live=True)
+    assert [ln for b in blocks for ln in b.lines] == caption
+
+
+_HEADER_BEFORE_TEXT = [
+    ("Mark Hale", "circle"),
+    ("We can start now.", None),
+    ("Tom Adams", "circle"),
+    ("Hello there everyone", None),
+    ("and welcome to the call.", None),
+    ("Mark Hale", "circle"),
+    ("Thanks Tom.", None),
+]
+
+
+@pytest.mark.parametrize("window", [99, 3])
+def test_without_a_roster_or_pixels_a_header_shown_before_its_text_is_never_stored(window) -> None:
+    # XERK-2794: on origin/main "Tom Adams" and "Mark Hale" were stored as speech.
+    stored = _scrolled_meeting(_HEADER_BEFORE_TEXT, window, jpeg=False, named=())
+    assert [text for _, text in stored] == [
+        "We can start now.",
+        "Hello there everyone",
+        "and welcome to the call.",
+        "Thanks Tom.",
+    ]
+
+
 # --- real OCR of rendered Teams windows (XERK-2609) ----------------------------------------
 # Boxes tenir-ocr (Paddle, HEAD ocr/) read off synthetic Teams windows rendered by the
 # XERK-2608 QA kit: full frames through the api's strip reader, crops from the client's band.
@@ -1956,7 +2010,9 @@ def test_a_speaker_whose_avatar_is_missed_merges_into_the_one_before() -> None:
     )
 
 
-def _scrolled_meeting(rows: list[tuple[str, str | None]], window: int, *, jpeg: bool = True):  # type: ignore[no-untyped-def]
+def _scrolled_meeting(  # type: ignore[no-untyped-def]
+    rows: list[tuple[str, str | None]], window: int, *, jpeg: bool = True, named=None
+):
     """Stored (speaker, text) after ``rows`` arrive one by one in a panel showing at most
     ``window`` rows (the oldest scroll off the top)."""
     import asyncio
@@ -1977,7 +2033,7 @@ def _scrolled_meeting(rows: list[tuple[str, str | None]], window: int, *, jpeg: 
             end_ms=60_000,
         )
         ros = await t.ensure_roster()
-        for n in _NAMED:
+        for n in _NAMED if named is None else named:
             ros.add(n)
         ts = 0
         blocks: list = []
