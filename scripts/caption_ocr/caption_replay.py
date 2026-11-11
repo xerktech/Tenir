@@ -190,6 +190,7 @@ async def replay(platform: str, frames: list[Frame], *, ocr: OcrClient | None = 
                 active=tracker.active,
                 live=tracker.conversation_id is not None,
                 jpeg=f.jpeg,
+                heard=tracker.heard,
             )
             await tracker.on_caption(blocks, ts)
     if cid := await tracker.end(last):

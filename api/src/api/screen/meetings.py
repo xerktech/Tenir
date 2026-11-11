@@ -220,6 +220,8 @@ class MeetingTracker:
         # of each, compared once when it is first heard (``_as_heard``).
         self._heard: Counter[str] = Counter()
         self._likes: dict[str, list[str]] = {}
+        # ``heard``'s roster, rebuilt only when the names it holds change.
+        self._heard_roster: tuple[tuple[str, ...], Roster] = ((), Roster())
         self.active: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
@@ -327,6 +329,35 @@ class MeetingTracker:
             and (self.roster is None or name not in self.roster)
         )
 
+    @property
+    def heard(self) -> Roster:
+        """The off-roster speakers heard this meeting under their own spelling (those
+        ``_as_heard`` keeps as read), for the caption parser (XERK-2805): on a frame where OCR
+        found no avatar every header was nameless, and Teams splitting an entry on that frame
+        stored it twice. A spelling taken for another's misread is left out."""
+        order = {n: i for i, n in enumerate(self._likes)}
+        names = tuple(
+            n for n, count in self._heard.items() if count and self._misread_of(n, order) is None
+        )
+        if self._heard_roster[0] != names:
+            roster = Roster()
+            for n in names:
+                roster.add(n)
+            self._heard_roster = (names, roster)
+        return self._heard_roster[1]
+
+    def _misread_of(self, name: str, order: dict[str, int]) -> str | None:
+        """The spelling ``name`` (heard at least once) is a misread of, or None (``_as_heard``)."""
+        count = self._heard[name]
+        like = self._likes[name]
+        if count < _HEARD_OWN or any(self._heard[n] >= count * _HEARD_SHARE for n in like):
+            # A tie goes to the spelling heard first: two new like names on one frame
+            # each took the other's and swapped (QA).
+            over = [n for n in like if (self._heard[n], -order[n]) > (count, -order[name])]
+            if over:
+                return max(over, key=lambda n: (self._heard[n], -order[n]))
+        return None
+
     def _as_heard(self, blocks: list[CaptionBlock]) -> list[CaptionBlock]:
         """Off-roster speakers under the spelling most read for them (XERK-2791). The merger
         tells speakers apart by exact name, so one frame misreading a header ("Omar Patcl")
@@ -357,16 +388,11 @@ class MeetingTracker:
             count = self._heard[name]
             if count == 0:
                 continue  # past the cap: kept as read
-            like = self._likes[name]
-            if count < _HEARD_OWN or any(self._heard[n] >= count * _HEARD_SHARE for n in like):
-                # A tie goes to the spelling heard first: two new like names on one frame
-                # each took the other's and swapped (QA).
-                over = [n for n in like if (self._heard[n], -order[n]) > (count, -order[name])]
-                if over:
-                    as_read[name] = max(over, key=lambda n: (self._heard[n], -order[n]))
-                    continue
+            if (misread_of := self._misread_of(name, order)) is not None:
+                as_read[name] = misread_of
+                continue
             if self.merger is not None:
-                for n in like:
+                for n in self._likes[name]:
                     if self._heard[n] < min(count, _HEARD_OWN):
                         self.merger.rename(n, name)
         if not as_read:

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from api.config import settings
 from api.screen import teams
 from api.screen import ws as screen_ws
-from api.screen.meetings import meetings
+from api.screen.meetings import MeetingTracker, meetings
 from api.screen.ocr import OcrResult
 from api.screen.zoom import Roster
 from test_screen import envelope, line, ocr_of, screen, tiny_jpeg, unique_jpeg, wait_handled
@@ -1900,7 +1900,14 @@ def _tracked(
                 ros.add(name)
             for blocks, count in frames[meeting::meetings] if meetings > 1 else frames:
                 for _ in range(count):
-                    await t.on_caption(blocks, ts)
+                    if isinstance(blocks, OcrResult):
+                        # An OCR'd crop: parsed as ``ws`` does, with the speakers heard so far.
+                        parsed = teams.parse_caption_crop(
+                            blocks, ros, live=t.conversation_id is not None, heard=t.heard
+                        )
+                        await t.on_caption(parsed, ts)
+                    else:
+                        await t.on_caption(blocks, ts)
                     ts += 1000
             cid = await t.end(ts)
             ts += 70_000
@@ -1932,6 +1939,126 @@ def test_an_off_roster_name_misread_on_one_frame_is_stored_once() -> None:
             (panel("Omar Patel", "sure I can do it."), 6),
         ]
     ) == [("Omar Patel", "we need the fix today."), ("Grace Huang", "sure I can do it.")]
+
+
+def test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard() -> None:
+    """XERK-2805: OCR found no avatar on one frame of a real meeting, so every off-roster
+    header was nameless. A header reading a speaker heard this meeting is still theirs."""
+    crop = result(
+        line("Okay, let's start.", 65, 4, 300, 24),
+        line("Diego Alvarez", 65, 30, 170, 50),
+        line("Sure, I have them right here.", 65, 54, 400, 74),
+    )
+    names = roster("Priya Raman")
+    assert [b.speaker for b in teams.parse_caption_crop(crop, names, live=True)] == [None, None]
+    heard = roster("Diego Alvarez")
+    assert [b.speaker for b in teams.parse_caption_crop(crop, names, live=True, heard=heard)] == [
+        None,
+        "Diego Alvarez",
+    ]
+    # Only a header: caption text reading like a heard name stays text.
+    text = result(line("Diego Alvarez", 65, 4, 170, 24), line("PR Priya Raman", 18, 30, 140, 50))
+    assert teams.parse_caption_crop(text, names, heard=roster("Diego Alvarez"), live=True)[
+        0
+    ].lines == ["Diego Alvarez"]
+
+
+def test_the_tracker_hears_each_speaker_under_the_spelling_it_stores() -> None:
+    """XERK-2805: ``heard`` names nameless headers, so it holds the spellings ``_as_heard``
+    keeps (one frame is enough for a new name) and never a misread of another; per meeting."""
+    import asyncio
+
+    from api.persistence import InMemoryConversationStore, ScreenMeta
+    from api.screen.meetings import Cadence
+    from api.screen.zoom import CaptionBlock
+
+    def panel(omar: str, grace: str | None = None) -> list[CaptionBlock]:
+        blocks = [CaptionBlock(omar, True, ["we need the fix today."], avatar=True)]
+        if grace:
+            blocks.append(CaptionBlock(grace, True, ["sure I can do it."], avatar=True))
+        return blocks
+
+    async def run() -> None:
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "teams"),
+            store=InMemoryConversationStore(),
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        await t.ensure_roster()
+        assert t.heard.names == []
+        for k in range(5):
+            await t.on_caption(panel("Omar Patel"), k * 1000)
+        await t.on_caption(panel("Omar Patcl", "Grace Huang"), 5000)
+        assert sorted(t.heard.names) == ["Grace Huang", "Omar Patel"]
+        assert t.heard.match("Omar Patcl") == "Omar Patel"
+        await t.end(70_000)
+        assert t.heard.names == []
+
+    asyncio.run(run())
+
+
+def test_an_entry_split_on_a_frame_no_avatar_was_found_on_is_stored_as_if_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XERK-2805 (real shape, 2026-11-11; text synthetic): Teams split Cy's live entry in two
+    on the one frame OCR found no avatar on, so its headers had no name. Paired with nothing
+    under a named header, the split was stored beside a draft re-read as its second half.
+    Named after the speakers heard so far, that frame stores what it would have with avatars."""
+
+    def panel(*entries: tuple[str, list[str]], avatars: bool = True) -> OcrResult:
+        rows, y = [], 4
+        for who, texts in entries:
+            initials = "".join(w[0] for w in who.split())
+            head = f"{initials} {who}" if avatars else who
+            rows.append(line(head, 18 if avatars else 63, y, 170, y + 18))
+            for text in texts:
+                rows.append(line(text, 63, y + 20, 460, y + 44))
+                y += 24
+            y += 26
+        return result(*rows)
+
+    bo, cy = "Bo Lindqvist", "Cy Okafor"
+
+    def said(avatars: bool) -> list[tuple[OcrResult, int]]:
+        return [
+            (panel((bo, ["All right."]), (bo, ["Dana."]), (cy, ["hi good morning"])), 2),
+            (
+                panel(
+                    (bo, ["All right."]),
+                    (bo, ["Dana."]),
+                    (cy, ["hi good morning so yesterday we had"]),
+                ),
+                1,
+            ),
+            (
+                panel(
+                    (bo, ["Dana."]),
+                    (cy, ["Hi, good morning."]),
+                    (cy, ["So yesterday we had a demo meeting with"]),
+                    avatars=avatars,
+                ),
+                1,
+            ),
+            (
+                panel(
+                    (bo, ["Dana."]),
+                    (cy, ["Hi, good morning."]),
+                    (cy, ["So yesterday we had a demo meeting with Raj to", "discuss"]),
+                ),
+                5,
+            ),
+        ]
+
+    named = _tracked(said(True), names=("Priya Raman",))
+    assert _tracked(said(False), names=("Priya Raman",)) == named
+    # Without the speakers heard (as before), the nameless frame stores the split twice.
+    monkeypatch.setattr(MeetingTracker, "heard", property(lambda self: Roster()))
+    assert _tracked(said(False), names=("Priya Raman",)) != named
 
 
 def test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines() -> None:

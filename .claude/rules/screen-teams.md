@@ -100,6 +100,14 @@ paths:
       Tests: `test_off_roster_names_are_compared_once_each`,
       `test_a_frame_brings_in_at_most_a_few_new_spellings`,
       `test_off_roster_names_are_unified_off_the_event_loop`.
+    - The spellings it keeps also name a header no avatar vouches for (`MeetingTracker.heard` ->
+      `parse_caption_crop(heard=)`, XERK-2805): OCR found no avatar on 6 frames of a real
+      meeting, every header was nameless, and Teams splitting an entry on one stored it twice.
+      Only the unknown-header branch of `caption_blocks` uses it; roster matching and the
+      no-roster position rules (`len(roster)`) never see these names. Tests:
+      `test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard`,
+      `test_an_entry_split_on_a_frame_no_avatar_was_found_on_is_stored_as_if_named`,
+      `test_the_tracker_hears_each_speaker_under_the_spelling_it_stores`.
     - Per meeting (cleared in `end`). Tests:
       `test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines`,
       `test_a_long_running_speakers_name_misread_on_three_frames_is_stored_once`,
