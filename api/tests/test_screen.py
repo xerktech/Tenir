@@ -6262,23 +6262,17 @@ def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
     [
         # Teams re-punctuated the next entry the frame the row came back.
         [(_entries("OK.", "yes.", "yes I think so too."), 6)],
-        # The next entry was still growing when the row came back.
-        [
-            (_entries("OK.", "yes I think so"), 1),
-            (_entries("OK.", "yes.", "yes I think so too"), 1),
-            (_entries("OK.", "yes.", "yes I think so too."), 6),
-        ],
         # OCR clipped the next entry's row that frame.
         [
             (_entries("OK.", "yes.", "yes I think so"), 1),
             (_entries("OK.", "yes.", "yes I think so too."), 6),
         ],
     ],
-    ids=["re-punctuated", "still-growing", "clipped"],
+    ids=["re-punctuated", "clipped"],
 )
 def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: list) -> None:
-    """XERK-2804: the row below the missed one read the grown line re-punctuated, grown on or
-    clipped, so ``_split_grown`` never paired it and the next entry was stored twice."""
+    """XERK-2804: the row below the missed one read the grown line re-punctuated or clipped,
+    so ``_split_grown`` never paired it and the next entry was stored twice."""
     stored, _ = _entry_run(
         [
             (_entries("OK.", "yes."), 4),
@@ -6287,6 +6281,26 @@ def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: l
         ]
     )
     assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+def test_an_older_one_word_line_does_not_stop_the_split() -> None:
+    """QA (XERK-2804): with no row aligned above, the line to split was any known line the row
+    below starts with; Cy's earlier "Yes." matched too and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Cy", "Yes.")], 3),
+            ([blk("Cy", "Yes."), blk("Ana", "OK.")], 3),
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            (_entries("yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert stored == [
+        ("Cy", "Yes."),
+        ("Ana", "OK."),
+        ("Ana", "yes."),
+        ("Ana", "yes I think so too."),
+    ]
 
 
 def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
@@ -6303,10 +6317,25 @@ def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() ->
     assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
 
 
+def _gap_run(frames: list[tuple[list[CaptionBlock], int]], gap: int) -> list[str]:
+    """``_entry_run`` at ``gap`` ms between frames; returns every segment's last text."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, object] = {}
+    t = 0
+    for blocks, count in frames:
+        for _ in range(count):
+            for seg in m.feed(blocks, t):
+                final[seg.segment_id] = seg
+            t += gap
+    for seg in m.flush(t + 60_000):
+        final[seg.segment_id] = seg
+    return [s.text for s in sorted(final.values(), key=lambda s: s.start_ms) if s.text]
+
+
 def test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow() -> None:
-    """XERK-2804: ``_reflow`` changed a stored line's text without its ``changed_ms``, so a
-    rewrite within ``_HELD_MS`` noted the re-flowed text as held (evidence ``_split_grown``
-    cuts a repeat back to)."""
+    """XERK-2804: ``_reflow`` changes a stored line's text but not its ``changed_ms`` (the
+    growth window), so a rewrite within ``_HELD_MS`` noted the re-flowed text as held
+    (evidence ``_split_grown`` cuts a repeat back to)."""
     from api.screen.merge import _hold
 
     m = CaptionMerger(start_ms=0, stable_ms=3000)
@@ -6317,7 +6346,55 @@ def test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow() -> None:
     m.feed([blk("Ana", *final)], 6000)
     m.feed([blk("Ana", *final)], 7000)  # two reads agree: the re-flow lands
     line = next(ln for ln in m._lines if ln.text == final[0])
-    assert line.final and line.changed_ms == 7000
-    assert line.held == (draft[0],)
+    assert line.final and line.changed_ms < 7000
     _hold(line, 8000)  # a rewrite one frame later
-    assert line.held == (draft[0],)
+    assert final[0] not in line.held
+    _hold(line, 9000)  # shown 2 s
+    assert line.held[-1] == final[0]
+
+
+def test_a_one_frame_glyph_long_after_a_late_reflow_is_never_stored() -> None:
+    """QA (XERK-2804): a re-flow moving a stored line's ``changed_ms`` reopened its growth
+    window (``_EXTEND_MS``), and a stray glyph read once 30 s+ after it was said was stored."""
+    d = ["so after the review I can", "do the second task the."]
+    f = ["so after the review I", "can do the second task, the API contract"]
+    rows = _gap_run(
+        [
+            ([blk("Ana", *d)], 1),
+            ([blk("Ana", *d), blk("Bo", "Right.")], 2),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 13),
+            ([blk("Ana", f[0], f[1] + " l"), blk("Bo", "Right.")], 1),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 6),
+        ],
+        2000,
+    )
+    assert rows == [*f, "Right."]
+
+
+@pytest.mark.parametrize(
+    ("said", "clip", "nxt"),
+    [
+        # The next entry extends her finished one: never the line grown while missed.
+        ("Thank you all.", "Thank you", "Thank you all, and see you next week."),
+        # The row below holds no more words than the clipped row.
+        ("Thank you all so much.", "Thank you all", "Thank you all."),
+    ],
+    ids=["extends", "not-longer"],
+)
+def test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole(
+    said: str, clip: str, nxt: str
+) -> None:
+    """QA (XERK-2804): a finished entry, its row clipped on the one frame her next entry first
+    shows, then scrolled up: reverted to the clipped text, it was cut for good. At 2 s frame
+    gaps every word-by-word prefix of it is held."""
+    words = said.split()
+    rows = _gap_run(
+        [
+            *[(_entries("OK.", " ".join(words[:k])), 1) for k in range(1, len(words) + 1)],
+            (_entries("OK.", said), 3),
+            (_entries("OK.", clip, nxt), 1),
+            ([blk("Ana", nxt), blk("Bo", "Great.")], 6),
+        ],
+        2000,
+    )
+    assert said in rows and clip not in rows

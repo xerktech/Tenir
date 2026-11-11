@@ -401,13 +401,19 @@ paths:
   - Accepted (operator's call): a repeat clipped to a text the first copy paused on 2 s+ (or
     any text at 2 s+ frame gaps) is still cut ("Thank you so much." -> "Thank you"); on
     screen it reads exactly like the miss. Only lines changed within `_REVISE_MS`.
-  - The row below need only share the grown line's words up to the shorter of the two
-    (XERK-2804): Teams re-punctuates or grows the next entry, or OCR clips its row, on the frame
-    the missed row returns. It must still hold more words than the row it splits off.
+  - The row below may read the grown line re-punctuated or clipped (its words a prefix of the
+    line's), holding more words than the row it splits off (XERK-2804).
+    - Never the line grown on (the next entry still growing): a finished entry clipped on the
+      frame her next entry, extending it, first shows was cut for good (QA). Accepted: a next
+      entry still growing when the row returns is stored twice, as main.
+    - With no row aligned, the line is the one known line the whole split test passes for:
+      matching on the row below alone, an older "Yes." matched too and nothing split (QA).
   - A next entry wrapped onto 2+ rows: its later rows pair with the lines after the grown one
-    when they read them exactly (XERK-2804); left new, its second row was stored twice.
-  - `_reflow` moves `changed_ms` and notes `held` for a stored line too, as `_revise` does: left
-    at the old time, a rewrite within `_HELD_MS` noted the re-flowed text as held (XERK-2804).
+    when they read them exactly (XERK-2804); left new, its second row was stored twice. Still
+    stored twice (as main): that second row growing or re-wrapped as the row returns.
+  - `_hold` counts from a `_reflow` too (`_Line.reflowed_ms`): else a rewrite within `_HELD_MS`
+    of it noted the re-flowed text as held. Never move a stored line's `changed_ms` there: it
+    reopens `_EXTEND_MS` and a one-frame stray glyph 30 s+ on was stored (QA).
   - Tests: `test_a_new_entry_read_while_ocr_missed_the_row_above_is_stored_once`,
     `test_a_finished_entry_grown_while_ocr_missed_the_row_above_is_stored_once`,
     `test_a_repeated_entry_ocr_clipped_on_a_frame_keeps_both_copies`,
@@ -415,7 +421,10 @@ paths:
     `test_another_speakers_entry_read_while_ocr_missed_the_row_above_is_stored_once`,
     `test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly`,
     `test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once`,
-    `test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow`.
+    `test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow`,
+    `test_an_older_one_word_line_does_not_stop_the_split`,
+    `test_a_one_frame_glyph_long_after_a_late_reflow_is_never_stored`,
+    `test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole`.
 - Growth of stored Teams entries (`_grow`, `_apply_grows`, `_merged_above`; XERK-2721,
   XERK-2734): see `screen-merge-grow.md`.
 - A tracker carries its ended meeting's last lines into the next merger (`carried`, XERK-2615):
