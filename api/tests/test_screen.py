@@ -4939,6 +4939,179 @@ def test_an_entry_scrolled_off_is_never_claimed_by_a_later_one() -> None:
     assert len(final.values()) == len(set(final.values()))  # no row stored twice
 
 
+def _gapped_run(frames: list[list[CaptionBlock]], gap: int) -> list[tuple]:
+    """Feed one frame every ``gap`` ms, flush; the stored (speaker, text) rows in order."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, Segment] = {}
+    for k, blocks in enumerate(frames):
+        for seg in m.feed(blocks, k * gap):
+            final[seg.segment_id] = seg
+    for seg in m.flush(len(frames) * gap + 60_000):
+        final[seg.segment_id] = seg
+    rows = sorted(final.values(), key=lambda s: s.start_ms)
+    return [(s.speaker, s.text) for s in rows if s.text]
+
+
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize(
+    ("short", "draft", "said", "grown", "tail"),
+    [
+        pytest.param(
+            "Yes.",
+            "yes we can.",
+            "Yes we can ship it.",
+            ("Yes we can ship it friday if the", "tests pass."),
+            ("Yes we can ship it, after the", "review."),
+            id="yes",
+        ),
+        pytest.param(
+            "Okay.",
+            "okay so the build.",
+            "Okay so the build is green.",
+            ("Okay so the build is green on the", "staging cluster."),
+            ("Okay so the build is green, after the", "review."),
+            id="okay",
+        ),
+    ],
+)
+def test_a_short_entry_scrolled_off_above_her_next_starting_with_its_words_is_kept(
+    gap: int, short: str, draft: str, said: str, grown: tuple, tail: tuple
+) -> None:
+    """XERK-2799: Bo says "Yes." then entries starting "Yes we can ...". Once "Yes." scrolls
+    off and the next entry is re-laid, the top run's draft cut at her next entry was "Yes."
+    alone: its one word passed coverage inside the re-laid row, so every Bo segment shifted up
+    an entry and "Yes." was lost. Gaps up to ``_SAID_BETWEEN_MS``, the 3 s gate."""
+    frames = [
+        [blk("Bo", short), blk("Bo", draft)],
+        [blk("Bo", short), blk("Bo", said), blk("Bo", draft)],
+        [blk("Bo", short), blk("Bo", said), blk("Bo", *grown)],
+    ] + [[blk("Bo", *tail), blk("Bo", *grown), blk("Cy", "can you share the screen.")]] * 4
+    assert _gapped_run(frames, gap) == [
+        ("Bo", short),
+        *[("Bo", row) for row in tail],
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize("flicker", [False, True])
+def test_a_short_entry_still_shown_and_rewritten_is_revised_in_place(
+    gap: int, flicker: bool
+) -> None:
+    """QA (XERK-2799): "Yes." still at the panel's top and rewritten ("Yes, we can."), above
+    her next entry re-laid. She shows as many header blocks as she has entries, so nothing
+    scrolled off and the top row revises "Yes." (as main). Switching to her next entry kept
+    "Yes." and stored "tests pass." twice. ``flicker``: the rewrite shows on one frame only."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = [blk("Bo", "Yes we can ship it, after the", "review."), blk("Bo", *grown)]
+    cy = blk("Cy", "can you share the screen.")
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+        [blk("Bo", "Yes, we can."), *relaid, cy],
+    ] + [[blk("Bo", "Yes." if flicker else "Yes, we can."), *relaid, cy]] * 3
+    assert _gapped_run(frames, gap) == [
+        ("Bo", "Yes, we can."),
+        ("Bo", "Yes we can ship it, after the"),
+        ("Bo", "review."),
+        *[("Bo", row) for row in grown],
+        ("Cy", "can you share the screen."),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("frames", "kept"),
+    [
+        pytest.param(
+            [
+                [blk("Bo", "Okay.")],
+                [blk("Bo", "Okay.")],
+                [blk("Bo", "Okay."), blk("Bo", "okay, after")],
+                [
+                    blk("Bo", "Okay, after the review we merge."),
+                    blk("Bo", "okay, after the review we"),
+                    blk("Cy", "Yes."),
+                ],
+                [
+                    blk("Bo", "Okay, after the review we merge."),
+                    blk("Bo", "okay, after the review we merge that works"),
+                    blk("Cy", "Yes."),
+                ],
+                [
+                    blk("Bo", "okay, after the review we merge that works", "for"),
+                    blk("Cy", "Yes."),
+                    blk("Cy", "yes we"),
+                ],
+            ]
+            + [
+                [
+                    blk("Bo", "Okay, after the review we merge that works", "for me."),
+                    blk("Cy", "Yes."),
+                    blk("Cy", "yes we can ship"),
+                ]
+            ]
+            * 4,
+            "Okay, after the review we merge.",
+            id="latest-whole-entry",  # fuzz seed 891: both pair whole, the shown one is later
+        ),
+        pytest.param(
+            [
+                [blk("Bo", "yes")],
+                [blk("Bo", "Yes."), blk("Bo", "yes,")],
+                [blk("Bo", "Yes, I will share."), blk("Bo", "yes, i will")],
+                [blk("Bo", "Yes, I will share."), blk("Bo", "yes, i will share"), blk("Cy", "ok")],
+            ]
+            + [[blk("Bo", "yes, i will share can", "you"), blk("Cy", "Okay so.")]] * 4,
+            "Yes, I will share.",
+            id="two-entries-off",  # fuzz seed 570: a stale "yes" draft above it scrolled too
+        ),
+    ],
+)
+def test_the_entry_a_top_run_re_lays_is_the_latest_it_pairs_whole(
+    frames: list[list[CaptionBlock]], kept: str
+) -> None:
+    """QA fuzz (XERK-2799): the top run of a scrolled panel may pair every word of more than
+    one of her stored entries (a stale draft, or the entry it grew from). Taking the one
+    pairing most words, or only her next one, overwrote a shown entry with the live one."""
+    stored = [text for _, text in _gapped_run(frames, 1000)]
+    assert kept in stored
+
+
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize("flicker", [False, True])
+@pytest.mark.parametrize("misread", ["merged", "unmatched-mid", "headerless-mid", "unmatched-low"])
+def test_a_short_entry_rewritten_under_a_misread_header_is_never_kept_beside_it(
+    gap: int, flicker: bool, misread: str
+) -> None:
+    """QA (XERK-2799): "Yes." still shown and rewritten ("Yes, we can.") while OCR misreads a
+    lower block's header (no roster match, no header, or its rows run into the block above).
+    Counting her header blocks then saw an entry scrolled off and switched, keeping "Yes."
+    beside its rewrite. The switch must pair strictly more of the whole panel's words."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = ("Yes we can ship it, after the", "review.")
+    cy = blk("Cy", "can you share the screen.")
+    if misread == "merged":
+        lower = [blk("Bo", *relaid, *grown)]
+    elif misread == "unmatched-mid":
+        lower = [blk(None, *relaid), blk("Bo", *grown)]
+    elif misread == "headerless-mid":
+        lower = [blk(None, *relaid, header=False), blk("Bo", *grown)]
+    else:
+        lower = [blk("Bo", *relaid), blk(None, *grown)]
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+        [blk("Bo", "Yes, we can."), *lower, cy],
+    ]
+    after = [blk("Bo", "Yes."), blk("Bo", *relaid), blk("Bo", *grown), cy]
+    frames += [after if flicker else frames[-1]] * 3
+    stored = [text for _, text in _gapped_run(frames, gap)]
+    assert not ("Yes." in stored and "Yes, we can." in stored)
+
+
 @pytest.mark.parametrize("missed", [0, 1])
 def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(missed: int) -> None:
     """QA (XERK-2720): one frame of OCR missing one of Ana's blocks just before her entry grows
@@ -6091,6 +6264,7 @@ def test_a_paused_entry_repeated_long_after_keeps_both_copies() -> None:
     )
     assert stored == [("Ana", "OK."), ("Ana", said), ("Ana", said)]
 
+
 @pytest.mark.parametrize(
     ("header", "speaker"),
     [("Bo Chen", "Bo Chen"), ("jsmith", "jsmith"), ("Raman, Priya (Guest)", "Raman, Priya")],
@@ -6171,3 +6345,210 @@ def test_a_header_reading_near_a_roster_name_is_never_named_by_its_avatar() -> N
         ["John Kim", "we shipped it"], _roster("Kim"), avatars={0}, avatars_decide=True
     )
     assert block.speaker == "John Kim"
+
+
+@pytest.mark.parametrize(
+    "back",
+    [
+        # Teams re-punctuated the next entry the frame the row came back.
+        [(_entries("OK.", "yes.", "yes I think so too."), 6)],
+        # OCR clipped the next entry's row that frame.
+        [
+            (_entries("OK.", "yes.", "yes I think so"), 1),
+            (_entries("OK.", "yes.", "yes I think so too."), 6),
+        ],
+    ],
+    ids=["re-punctuated", "clipped"],
+)
+def test_the_row_below_a_missed_row_need_not_read_the_grown_line_exactly(back: list) -> None:
+    """XERK-2804: the row below the missed one read the grown line re-punctuated or clipped,
+    so ``_split_grown`` never paired it and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            *back,
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", "yes I think so too.")]
+
+
+@pytest.mark.parametrize(
+    "live",
+    ["yes we ship at 3", "yes मुझे लगता है", "yes I think so too "],
+    ids=["digit", "vowel-sign", "trailing-space"],
+)
+def test_a_live_line_ending_on_any_letter_digit_or_mark_is_unfinished(live: str) -> None:
+    """XERK-2804 (QA): an unfinished line is one ending on a letter, digit or combining mark
+    (Hindi ends most words on a vowel sign, which ``isalnum`` rejects), trailing space aside;
+    its re-punctuated row below splits it."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", live), 3),
+            (_entries("OK.", "yes.", live.rstrip() + "."), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", live.rstrip() + ".")]
+
+
+def test_an_older_one_word_line_does_not_stop_the_split() -> None:
+    """QA (XERK-2804): with no row aligned above, the line to split was any known line the row
+    below starts with; Cy's earlier "Yes." matched too and the next entry was stored twice."""
+    stored, _ = _entry_run(
+        [
+            ([blk("Cy", "Yes.")], 3),
+            ([blk("Cy", "Yes."), blk("Ana", "OK.")], 3),
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            (_entries("yes.", "yes I think so too."), 6),
+        ]
+    )
+    assert stored == [
+        ("Cy", "Yes."),
+        ("Ana", "OK."),
+        ("Ana", "yes."),
+        ("Ana", "yes I think so too."),
+    ]
+
+
+def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() -> None:
+    """XERK-2804: the live "yes." grew into a two-row entry while OCR missed its row. Once
+    both show, the entry's second row pairs with the line it re-reads, not stored again."""
+    nxt = ["yes I think so too, and we", "should ship it."]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", *nxt)], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
+
+
+def _gap_run(frames: list[tuple[list[CaptionBlock], int]], gap: int) -> list[str]:
+    """``_entry_run`` at ``gap`` ms between frames; returns every segment's last text."""
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, object] = {}
+    t = 0
+    for blocks, count in frames:
+        for _ in range(count):
+            for seg in m.feed(blocks, t):
+                final[seg.segment_id] = seg
+            t += gap
+    for seg in m.flush(t + 60_000):
+        final[seg.segment_id] = seg
+    return [s.text for s in sorted(final.values(), key=lambda s: s.start_ms) if s.text]
+
+
+def test_a_reflowed_stored_line_s_text_is_held_only_from_the_reflow() -> None:
+    """XERK-2804: ``_reflow`` changes a stored line's text but not its ``changed_ms`` (the
+    growth window), so a rewrite within ``_HELD_MS`` noted the re-flowed text as held
+    (evidence ``_split_grown`` cuts a repeat back to)."""
+    from api.screen.merge import _hold
+
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    draft = ["so after the review I can", "do the second task the."]
+    final = ["so after the review I", "can do the second task, the API contract"]
+    for t in range(6):
+        m.feed([blk("Ana", *draft)], t * 1000)
+    m.feed([blk("Ana", *final)], 6000)
+    m.feed([blk("Ana", *final)], 7000)  # two reads agree: the re-flow lands
+    line = next(ln for ln in m._lines if ln.text == final[0])
+    assert line.final and line.changed_ms < 7000
+    _hold(line, 8000)  # a rewrite one frame later
+    assert final[0] not in line.held
+    _hold(line, 9000)  # shown 2 s
+    assert line.held[-1] == final[0]
+
+
+def test_a_one_frame_glyph_long_after_a_late_reflow_is_never_stored() -> None:
+    """QA (XERK-2804): a re-flow moving a stored line's ``changed_ms`` reopened its growth
+    window (``_EXTEND_MS``), and a stray glyph read once 30 s+ after it was said was stored."""
+    d = ["so after the review I can", "do the second task the."]
+    f = ["so after the review I", "can do the second task, the API contract"]
+    rows = _gap_run(
+        [
+            ([blk("Ana", *d)], 1),
+            ([blk("Ana", *d), blk("Bo", "Right.")], 2),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 13),
+            ([blk("Ana", f[0], f[1] + " l"), blk("Bo", "Right.")], 1),
+            ([blk("Ana", *f), blk("Bo", "Right.")], 6),
+        ],
+        2000,
+    )
+    assert rows == [*f, "Right."]
+
+
+@pytest.mark.parametrize(
+    ("said", "clip", "nxt"),
+    [
+        # The next entry extends her finished one: never the line grown while missed.
+        ("Thank you all.", "Thank you", "Thank you all, and see you next week."),
+        # The row below holds no more words than the clipped row.
+        ("Thank you all so much.", "Thank you all", "Thank you all."),
+    ],
+    ids=["extends", "not-longer"],
+)
+def test_a_finished_entry_clipped_as_her_next_entry_shows_is_kept_whole(
+    said: str, clip: str, nxt: str
+) -> None:
+    """QA (XERK-2804): a finished entry, its row clipped on the one frame her next entry first
+    shows, then scrolled up: reverted to the clipped text, it was cut for good. At 2 s frame
+    gaps every word-by-word prefix of it is held."""
+    words = said.split()
+    rows = _gap_run(
+        [
+            *[(_entries("OK.", " ".join(words[:k])), 1) for k in range(1, len(words) + 1)],
+            (_entries("OK.", said), 3),
+            (_entries("OK.", clip, nxt), 1),
+            ([blk("Ana", nxt), blk("Bo", "Great.")], 6),
+        ],
+        2000,
+    )
+    assert said in rows and clip not in rows
+
+
+@pytest.mark.parametrize(
+    "end", [".", "…", '."', "。", "？", "؟", " 🙂", " ❤️", " 1️⃣", " \u2139\ufe0f", " 1\u20e3"]
+)
+def test_a_finished_entry_clipped_over_her_next_entrys_first_frame_is_kept_whole(
+    end: str,
+) -> None:
+    """QA fuzz (XERK-2804, tf seed 146, its frames): Ana's entry, read whole once, is clipped
+    to "Sounds" on the frame her next entry first shows, reading its words unpunctuated. On
+    that frame it reads like the ticket's re-punctuated return; split, the entry was stored
+    as "Sounds" for good. Only an unfinished line (ending on a letter or digit) is read
+    inexactly: a closing mark outside ".?!" ("。", "…") was cut too (QA)."""
+    said = "Sounds good ok go cluster api pods" + end
+    cut = said.lower()[: -len(end)]  # her next entry's first frame: the words, unpunctuated
+    nxt = ("Sounds good ok go cluster api pods sounds", "good.")
+    frames = [
+        (2240, _entries("Sounds good.", "Sounds good ok.", "sounds")),
+        (4335, _entries("Sounds good.", "Sounds good ok.", said)),
+        (6396, _entries("Sounds good.", "Sounds good ok.", "Sounds", cut)),
+        (8454, [blk(None, "Sounds good ok."), blk("Ana", said), blk("Ana", *nxt), blk("Cy", "right")]),
+        (10430, [blk(None, said), blk("Ana", *nxt), blk("Cy", "Right."), blk("Bo", "thanks")]),
+        (12418, [blk("Cy", "Right."), blk("Bo", "Thanks.")]),
+    ]
+    m = CaptionMerger(start_ms=0, stable_ms=3000)
+    final: dict[str, str] = {}
+    for t, blocks in frames:
+        for seg in m.feed(blocks, t):
+            final[seg.segment_id] = seg.text
+    for seg in m.flush(72_418):
+        final[seg.segment_id] = seg.text
+    assert said in final.values() and "Sounds" not in final.values()
+
+
+def test_another_speakers_row_over_the_grown_entry_never_splits_it() -> None:
+    """XERK-2804: Ana's live "yes." grew into her next entry while OCR missed its row; Bo's
+    "yes." shown above it is his own line, never her held text (``_splits`` speaker check)."""
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", "yes I think so too"), 3),
+            ([blk("Ana", "OK."), blk("Bo", "yes."), blk("Ana", "yes I think so too.")], 6),
+        ]
+    )
+    assert ("Bo", "yes.") in stored and ("Ana", "yes I think so too") in stored
