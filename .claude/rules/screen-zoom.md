@@ -51,6 +51,22 @@ paths:
     the name row, not the threshold. One speaker, one dark-theme meeting: re-measure on others.
   - That meeting showed only the panel, never the legacy one-line `Name: text` overlay, so
     off-roster overlay lines still start nothing (accepting any `Word:` would start docs pages).
+  - A dim display-name row with the avatar beside it names its speaker off the roster
+    (`avatars` into `caption_blocks`, XERK-2802), unified per meeting by `_as_heard` like
+    Teams'. A dim row alone stays unnamed: a docs grey line reads the same. Not yet measured on
+    a real sampler window with off-roster speakers (`caption_replay.py --rows`): do so.
+  - Never one reading near a roster name (`Roster.near`, shared with Teams): "Tirn Mahler"
+    misses `match` at 0.857, and a new name made the merger store Tim's entry again (QA).
+    Unnamed it merges as before. A one-word header cut from a roster first name is near
+    ("Chris", "Ti": duplicates, QA); a short roster word starting the header's isn't (roster
+    "Jo" left "John Smith" unnamed). Accepted: off-roster "Tim" beside "Tim Mahler", "Liam Wu"
+    beside "Li Wu" stay unnamed; "Tirn" for "Tim Mahler" is still a new name.
+  - Accepted: a docs grey line with a disc/emoji beside it (the open start gap below) is now
+    stored under its text as speaker, not None.
+  - Tests: `test_an_off_roster_zoom_speaker_beside_an_avatar_is_named`,
+    `test_an_off_roster_zoom_speaker_s_lines_are_stored_under_their_name`,
+    `test_a_roster_speaker_s_name_misread_beside_an_avatar_names_no_new_speaker`,
+    `test_a_header_reading_near_a_roster_name_is_never_named_by_its_avatar`.
   - Still open: a grey Title Case docs line ("Last Updated") or an all-Title-Case page with no
     roster starts a meeting; so does a filled disc / emoji beside a grey docs line.
   - The avatar is only visible because the client keeps `AVATAR_ROOM` px left of the box

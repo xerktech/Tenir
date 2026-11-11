@@ -112,6 +112,8 @@ paths:
       - Names past `_LIKE_MAX_CHARS` are left out: `Roster.match` has no length cap (QA: 200
         crafted 64-char names cost a 50-header crop 3.2 s).
         Accepted: a real speaker named past 32 chars gets no such naming (as before).
+      - Teams only: Zoom's `parse_caption_crop` ignores `heard` (a dim row with no avatar may be
+        a docs grey line, XERK-2802), though `_as_heard` now fills it on Zoom too.
       - `_as_heard` never counts such a header as a reading: a slide headed with one of two
         like names, dropped for a minute, outread the other and took their speech (QA).
       - Accepted: a slide heading below a real avatar'd entry in one crop is stored as that heard
