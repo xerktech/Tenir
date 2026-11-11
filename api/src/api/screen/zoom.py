@@ -496,7 +496,9 @@ def parse_caption_crop(
     )
     if live or any(b.has_header and b.speaker for b in blocks):
         return blocks
-    if not any(b.has_header and not pending_header(blocks, b) for b in blocks):
+    # Without pixels a trailing empty header is the position rule's guess (XERK-2794), so it
+    # vouches for nothing; with them it is a dim name row, which does (QA).
+    if not any(b.has_header and not (dim is None and pending_header(blocks, b)) for b in blocks):
         return []
     # Only unmatched headers. Without pixels, or with no text row to compare brightness
     # against, the position rule's header stands. Otherwise a dim row that reads as a

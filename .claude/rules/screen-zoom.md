@@ -23,8 +23,10 @@ paths:
     name-shaped first line ("Sounds Good"), a one-word name. Each was stored as speech (QA).
   - Without pixels and a roster, the last row after a finished line is an empty header (shared
     with Teams, XERK-2794) that verifies no crop: a docs page over a Title Case row started one.
+    With pixels a trailing dim name row still verifies: refusing it lost the text above (QA).
     Tests: `test_without_a_roster_or_pixels_a_trailing_name_after_a_finished_line_is_a_header`,
-    `test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting`.
+    `test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting`,
+    `test_a_dim_trailing_name_still_starts_a_meeting_and_keeps_the_text_above`.
   - Tests: `test_an_off_roster_name_under_an_unpunctuated_entry_is_a_header_not_speech`,
     `test_an_off_roster_name_on_the_crop_s_last_row_is_never_stored_as_speech`.
 - Not live, a Zoom crop needs a header (XERK-2693): a roster match, or off the roster a dim

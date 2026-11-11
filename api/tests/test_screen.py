@@ -340,6 +340,40 @@ def test_without_pixels_a_docs_page_over_a_title_case_row_starts_no_meeting() ->
     assert parse_caption_crop(crop(*rows), Roster()) == []
 
 
+def test_a_dim_trailing_name_still_starts_a_meeting_and_keeps_the_text_above() -> None:
+    # QA on XERK-2794: the no-pixel guard also refused a dim name row, and once the panel
+    # scrolled the first entry's text was never stored.
+    first = [("so that is where the budget stands", False), ("Shad Tischer", True)]
+    then = [("Shad Tischer", True), ("we shipped it on friday", False)]
+
+    async def run() -> list[str]:
+        store = InMemoryConversationStore()
+        t = MeetingTracker(
+            "default",
+            "user-1",
+            ScreenMeta("tesoro", "Tesoro", "zoom"),
+            store=store,
+            account_exists=lambda _: True,
+            cadence=Cadence(0.2, 1.0, 10.0),
+            stable_ms=3000,
+            end_ms=60_000,
+        )
+        ros = await t.ensure_roster()
+        ts = 0
+        for rows in [first] * 4 + [then] * 4:
+            ocr, jpeg = panel_crop(*rows)
+            live = t.conversation_id is not None
+            await t.on_caption(parse_caption_crop(ocr, ros, live=live, jpeg=jpeg), ts)
+            ts += 4000
+        await t.end(ts + 70_000)
+        (summary,) = store.list("default")
+        conv = store.get("default", summary.id)
+        assert conv is not None
+        return [s.text for s in sorted(conv.segments, key=lambda s: s.start_ms)]
+
+    assert asyncio.run(run()) == ["so that is where the budget stands", "we shipped it on friday"]
+
+
 def test_ocr_pieces_on_one_row_are_joined_and_noise_dropped() -> None:
     result = OcrResult(
         700,
