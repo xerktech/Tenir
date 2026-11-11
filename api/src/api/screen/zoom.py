@@ -458,6 +458,10 @@ class CaptionBlock:
     # Teams: the header is drawn beside a speaker avatar (pixels or OCR'd initials). An
     # unmatched header with one is a speaker; one without may be a slide heading (XERK-2614).
     avatar: bool = False
+    # Named only after a speaker the tracker heard this meeting (``heard``, XERK-2805): no
+    # roster match or avatar vouches for it, so it verifies no crop (a slide's heading may
+    # read as their name).
+    heard: bool = False
 
 
 def row_groups(lines: tuple[OcrLine, ...]) -> list[list[OcrLine]]:
@@ -483,8 +487,11 @@ def parse_caption_crop(
     active: str | None = None,
     live: bool = False,
     jpeg: bytes | None = None,
+    heard: Roster | None = None,
 ) -> list[CaptionBlock]:
-    """Split a caption-box crop into speaker blocks (``live``: Teams only).
+    """Split a caption-box crop into speaker blocks (``live`` and ``heard``: Teams only;
+    Zoom takes ``heard`` for the shared call in ``ws`` and ignores it: a Zoom dim row with no
+    avatar may be a docs grey line, so it stays unnamed, XERK-2802).
 
     Zoom's caption panel puts the speaker's name on its own line at the top of the crop (the
     client adds it, XERK-2506). A speaker not on the roster (a screen share shows only a strip
@@ -618,9 +625,7 @@ class _Pixels:
     ink: np.ndarray  # rows x columns
 
 
-def _grey_pixels(
-    jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]
-) -> _Pixels | None:
+def _grey_pixels(jpeg: bytes | None, ocr: OcrResult, groups: list[list[OcrLine]]) -> _Pixels | None:
     """The crop's pixels, None when they can't be read (no image, a size OCR didn't read, a
     box that isn't finite)."""
     if not jpeg or not all(math.isfinite(v) for g in groups for ln in g for v in ln.box):
@@ -657,9 +662,7 @@ _AVATAR_CENTRE = (0.25, 1.35)
 _AVATAR_BELOW = 0.3
 
 
-def _has_avatar(
-    px: _Pixels, group: list[OcrLine], below: list[OcrLine] | None = None
-) -> bool:
+def _has_avatar(px: _Pixels, group: list[OcrLine], below: list[OcrLine] | None = None) -> bool:
     """A round patch of ink left of this row's first box: Zoom's avatar beside a speaker's
     name line, astride it and ``below`` (the next row, its first text line; XERK-2705). A docs
     page's grey meta line or heading has bare page (or a bullet, an outline icon: not filled
@@ -765,6 +768,7 @@ def caption_blocks(
     avatars: set[int] | None = None,
     avatars_decide: bool = False,
     name_rows: set[int] | None = None,
+    heard: Roster | None = None,
 ) -> list[CaptionBlock]:
     """Group caption rows into speaker blocks; ``name_like`` is the platform's name shape.
 
@@ -785,7 +789,10 @@ def caption_blocks(
 
     ``name_rows`` (Zoom, from pixels): rows drawn as speaker names. A name-shaped one is a
     header whatever follows it: the last row (no text shown yet), another name-shaped row
-    ("Sounds Good"), a one-word display name ("Shad")."""
+    ("Sounds Good"), a one-word display name ("Shad").
+
+    ``heard``: off-roster speakers the tracker has named this meeting (XERK-2805). An unknown
+    header with no avatar beside it that reads as one of them is theirs."""
     marked = avatars or set()
     named = name_rows or set()
     blocks: list[CaptionBlock] = []
@@ -843,13 +850,23 @@ def caption_blocks(
             # no roster, and every row was stored with no speaker (XERK-2791).
             # Never one that reads near a roster name: it may be that speaker misread, and a
             # new name re-stored their whole entry (XERK-2802 QA). Unnamed, it merges as before.
+            # Without an avatar, a header reading a speaker this meeting already named that way
+            # (``heard``, the tracker's) is still theirs (XERK-2805): one frame where OCR found
+            # no avatar left every header nameless, and Teams splitting an entry on it stored
+            # the entry twice.
             name = clean_tile_name(row) or row
-            named_by = (
-                roster.display(name)
-                if i in marked and not roster.near(name)
-                else None
+            if i in marked:
+                named_by = None if roster.near(name) else roster.display(name)
+            else:
+                named_by = heard.match(name, prefer=active) if heard is not None else None
+            blocks.append(
+                CaptionBlock(
+                    named_by,
+                    True,
+                    avatar=i in marked,
+                    heard=named_by is not None and i not in marked,
+                )
             )
-            blocks.append(CaptionBlock(named_by, True, avatar=i in marked))
             continue
         if not blocks:
             blocks.append(CaptionBlock(None, False))

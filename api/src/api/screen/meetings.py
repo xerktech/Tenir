@@ -166,6 +166,9 @@ _HEARD_OWN = 3
 _HEARD_SHARE = 10
 
 
+# ``MeetingTracker.heard`` while no meeting is live: never added to.
+_NO_ONE_HEARD = Roster()
+
 # Names longer than this (normalized) are never unified: OCR text is attacker-controlled, and
 # difflib is quadratic in length. Real display names are shorter.
 _LIKE_MAX_CHARS = 32
@@ -220,6 +223,8 @@ class MeetingTracker:
         # of each, compared once when it is first heard (``_as_heard``).
         self._heard: Counter[str] = Counter()
         self._likes: dict[str, list[str]] = {}
+        # ``heard``'s roster, rebuilt only when the names it holds change.
+        self._heard_roster: tuple[tuple[str, ...], Roster] = ((), Roster())
         self.active: str | None = None
         self.conversation_id: str | None = None
         self.merger: CaptionMerger | None = None
@@ -327,6 +332,44 @@ class MeetingTracker:
             and (self.roster is None or name not in self.roster)
         )
 
+    @property
+    def heard(self) -> Roster:
+        """The off-roster speakers heard this meeting under their own spelling (those
+        ``_as_heard`` keeps as read), for the caption parser (XERK-2805): on a frame where OCR
+        found no avatar every header was nameless, and Teams splitting an entry on that frame
+        stored it twice. A spelling taken for another's misread is left out, and so is one
+        past ``_LIKE_MAX_CHARS`` (crafted names: ``Roster.match`` has no length cap).
+
+        Empty while no meeting is live: an ended meeting's panel left on screen re-fills
+        ``_heard``, and a slide heading reading as one of those names then started a meeting
+        (QA)."""
+        if self.conversation_id is None:
+            return _NO_ONE_HEARD
+        order = {n: i for i, n in enumerate(self._likes)}
+        names = tuple(
+            n
+            for n, count in self._heard.items()
+            if count and len(n) <= _LIKE_MAX_CHARS and self._misread_of(n, order) is None
+        )
+        if self._heard_roster[0] != names:
+            roster = Roster()
+            for n in names:
+                roster.add(n)
+            self._heard_roster = (names, roster)
+        return self._heard_roster[1]
+
+    def _misread_of(self, name: str, order: dict[str, int]) -> str | None:
+        """The spelling ``name`` (heard at least once) is a misread of, or None (``_as_heard``)."""
+        count = self._heard[name]
+        like = self._likes[name]
+        if count < _HEARD_OWN or any(self._heard[n] >= count * _HEARD_SHARE for n in like):
+            # A tie goes to the spelling heard first: two new like names on one frame
+            # each took the other's and swapped (QA).
+            over = [n for n in like if (self._heard[n], -order[n]) > (count, -order[name])]
+            if over:
+                return max(over, key=lambda n: (self._heard[n], -order[n]))
+        return None
+
     def _as_heard(self, blocks: list[CaptionBlock]) -> list[CaptionBlock]:
         """Off-roster speakers under the spelling most read for them (XERK-2791). The merger
         tells speakers apart by exact name, so one frame misreading a header ("Omar Patcl")
@@ -340,7 +383,10 @@ class MeetingTracker:
         outreads a rarer like one, the merger's held lines move to it: keeping the
         first reading named a speaker by a misread for the whole meeting (QA). Roster names
         and "Speaker N" labels ("Speaker 1" reads like "Speaker 2") are left as they are."""
-        names = sorted({b.speaker for b in blocks if self._off_roster(b.speaker)})
+        # A header named after a heard speaker (``CaptionBlock.heard``) is not a reading of
+        # them: counted, a slide headed with one of two like names, dropped frame after frame,
+        # outread the other and took their speech (XERK-2805 QA).
+        names = sorted({b.speaker for b in blocks if not b.heard and self._off_roster(b.speaker)})
         new = 0
         for name in names:
             if name not in self._likes and len(self._likes) < _MAX_ROSTER and new < _NEW_PER_FRAME:
@@ -357,16 +403,11 @@ class MeetingTracker:
             count = self._heard[name]
             if count == 0:
                 continue  # past the cap: kept as read
-            like = self._likes[name]
-            if count < _HEARD_OWN or any(self._heard[n] >= count * _HEARD_SHARE for n in like):
-                # A tie goes to the spelling heard first: two new like names on one frame
-                # each took the other's and swapped (QA).
-                over = [n for n in like if (self._heard[n], -order[n]) > (count, -order[name])]
-                if over:
-                    as_read[name] = max(over, key=lambda n: (self._heard[n], -order[n]))
-                    continue
+            if (misread_of := self._misread_of(name, order)) is not None:
+                as_read[name] = misread_of
+                continue
             if self.merger is not None:
-                for n in like:
+                for n in self._likes[name]:
                     if self._heard[n] < min(count, _HEARD_OWN):
                         self.merger.rename(n, name)
         if not as_read:
@@ -394,7 +435,9 @@ class MeetingTracker:
         if (
             self.meta.platform == "teams"
             and self.merger is not None
-            and not any(b.has_header and (b.speaker or b.avatar) for b in blocks)
+            # A header named only after a heard speaker vouches for nothing (XERK-2805 QA):
+            # a slide heading reading as their name was stored as their speech.
+            and not any(b.has_header and ((b.speaker and not b.heard) or b.avatar) for b in blocks)
             and not await CPU_POOL.run(self.user, self.merger.knows_any, blocks, ts)
         ):
             # No header the roster or an avatar vouches for, and re-reading no recent line:

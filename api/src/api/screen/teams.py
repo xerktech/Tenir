@@ -782,6 +782,7 @@ def parse_caption_crop(
     active: str | None = None,
     live: bool = False,
     jpeg: bytes | None = None,
+    heard: Roster | None = None,
 ) -> list[CaptionBlock]:
     """Split a Teams caption-panel crop into speaker blocks.
 
@@ -794,7 +795,9 @@ def parse_caption_crop(
     A header-less block above a header stays too: an older entry scrolled up.
 
     With the crop's ``jpeg``, avatars found in its pixels decide every header the roster
-    doesn't match (``_pixel_avatars``, XERK-2614); without it, the row's position does."""
+    doesn't match (``_pixel_avatars``, XERK-2614); without it, the row's position does.
+    ``heard`` names a header no avatar vouches for that reads as a speaker the tracker has
+    already named this meeting (``MeetingTracker.heard``, XERK-2805)."""
     rows: list[str] = []
     headed: list[bool] = []
     ocr = _drop_pane_buttons(_drop_tile_initials(ocr))
@@ -865,7 +868,12 @@ def parse_caption_crop(
         cleaned = clean_name(row)
         # A header's "(Guest)" suffix goes; a caption ending in parentheses stays caption.
         header = cleaned != row and is_teams_name(cleaned)
-        known = not len(roster) or roster.match(cleaned) or avatar
+        known = (
+            not len(roster)
+            or roster.match(cleaned)
+            or avatar
+            or (heard is not None and heard.match(cleaned))
+        )
         rows.append(cleaned if header and known else row)
     blocks = caption_blocks(
         rows,
@@ -875,6 +883,7 @@ def parse_caption_crop(
         unknown_headers=headed.__getitem__,
         avatars=avatar_rows,
         avatars_decide=bool(pixels),
+        heard=heard,
     )
     if not any(b.lines for b in blocks):
         return []

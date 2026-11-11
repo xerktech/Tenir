@@ -100,6 +100,31 @@ paths:
       Tests: `test_off_roster_names_are_compared_once_each`,
       `test_a_frame_brings_in_at_most_a_few_new_spellings`,
       `test_off_roster_names_are_unified_off_the_event_loop`.
+    - The spellings it keeps also name a header no avatar vouches for (`MeetingTracker.heard` ->
+      `parse_caption_crop(heard=)`, XERK-2805): OCR found no avatar on 6 frames of a real
+      meeting, every header was nameless, and Teams splitting an entry on one stored it twice.
+      Only the unknown-header branch of `caption_blocks` uses it; roster matching and the
+      no-roster position rules (`len(roster)`) never see these names.
+      - Such a header (`CaptionBlock.heard`) vouches for no crop: counted as a speaker, a slide
+        heading reading as their name was stored as their speech mid-meeting (QA).
+      - `heard` is empty while no meeting is live: an ended meeting's panel re-fills `_heard`,
+        and a slide carrying one of its names started a phantom meeting (QA).
+      - Names past `_LIKE_MAX_CHARS` are left out: `Roster.match` has no length cap (QA: 200
+        crafted 64-char names cost a 50-header crop 3.2 s).
+        Accepted: a real speaker named past 32 chars gets no such naming (as before).
+      - Teams only: Zoom's `parse_caption_crop` ignores `heard` (a dim row with no avatar may be
+        a docs grey line, XERK-2802), though `_as_heard` now fills it on Zoom too.
+      - `_as_heard` never counts such a header as a reading: a slide headed with one of two
+        like names, dropped for a minute, outread the other and took their speech (QA).
+      - Accepted: a slide heading below a real avatar'd entry in one crop is stored as that heard
+        speaker's speech; before, the same slide text was stored with no speaker (XERK-2614).
+      - Tests: `test_a_header_no_avatar_vouches_for_names_a_speaker_already_heard`,
+      `test_a_slide_headed_with_one_of_two_like_names_never_takes_the_others_speech`,
+      `test_a_slide_heading_reading_as_a_heard_speaker_is_not_stored_as_speech`,
+      `test_a_guest_header_no_avatar_vouches_for_is_named_after_a_heard_speaker`,
+      `test_a_header_reading_like_two_heard_speakers_goes_to_the_active_one`,
+      `test_an_entry_split_on_a_frame_no_avatar_was_found_on_is_stored_as_if_named`,
+      `test_the_tracker_hears_each_speaker_under_the_spelling_it_stores`.
     - Per meeting (cleared in `end`). Tests:
       `test_a_misread_on_a_speakers_first_frame_names_none_of_their_lines`,
       `test_a_long_running_speakers_name_misread_on_three_frames_is_stored_once`,
