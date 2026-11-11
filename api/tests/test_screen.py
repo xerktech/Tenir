@@ -5071,6 +5071,39 @@ def test_the_entry_a_top_run_re_lays_is_the_latest_it_pairs_whole(
     assert kept in stored
 
 
+@pytest.mark.parametrize("gap", [1000, 2000, 3000])
+@pytest.mark.parametrize("flicker", [False, True])
+@pytest.mark.parametrize("misread", ["merged", "unmatched-mid", "headerless-mid", "unmatched-low"])
+def test_a_short_entry_rewritten_under_a_misread_header_is_never_kept_beside_it(
+    gap: int, flicker: bool, misread: str
+) -> None:
+    """QA (XERK-2799): "Yes." still shown and rewritten ("Yes, we can.") while OCR misreads a
+    lower block's header (no roster match, no header, or its rows run into the block above).
+    Counting her header blocks then saw an entry scrolled off and switched, keeping "Yes."
+    beside its rewrite. The switch must pair strictly more of the whole panel's words."""
+    grown = ("Yes we can ship it friday if the", "tests pass.")
+    relaid = ("Yes we can ship it, after the", "review.")
+    cy = blk("Cy", "can you share the screen.")
+    if misread == "merged":
+        lower = [blk("Bo", *relaid, *grown)]
+    elif misread == "unmatched-mid":
+        lower = [blk(None, *relaid), blk("Bo", *grown)]
+    elif misread == "headerless-mid":
+        lower = [blk(None, *relaid, header=False), blk("Bo", *grown)]
+    else:
+        lower = [blk("Bo", *relaid), blk(None, *grown)]
+    frames = [
+        [blk("Bo", "Yes."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", "yes we can.")],
+        [blk("Bo", "Yes."), blk("Bo", "Yes we can ship it."), blk("Bo", *grown)],
+        [blk("Bo", "Yes, we can."), *lower, cy],
+    ]
+    after = [blk("Bo", "Yes."), blk("Bo", *relaid), blk("Bo", *grown), cy]
+    frames += [after if flicker else frames[-1]] * 3
+    stored = [text for _, text in _gapped_run(frames, gap)]
+    assert not ("Yes." in stored and "Yes, we can." in stored)
+
+
 @pytest.mark.parametrize("missed", [0, 1])
 def test_a_grown_entry_is_stored_once_after_ocr_missed_a_block_for_a_frame(missed: int) -> None:
     """QA (XERK-2720): one frame of OCR missing one of Ana's blocks just before her entry grows
