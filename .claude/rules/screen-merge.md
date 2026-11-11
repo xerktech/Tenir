@@ -169,6 +169,13 @@ paths:
     - Only a line seen within `_SAID_BETWEEN_MS` cuts: at 1 fps a new line plus a repeat of her
       next entry can't both be said between snapshots; after dropped frames they can ("yes." /
       "yes I think so too." stays a new line). Same frames, no gap: it is the entry growing.
+    - Stays 3 s although real Teams gaps run past it (XERK-2724, v0.6.169 Teams meeting:
+      `caption_gap.teams` n=33 p50 2052 p95 4115 max 4149 ms; caption OCR p50 1.8 s). At 3 s
+      ~1 gap in 10 reads as dropped frames and stores a grown entry twice. 5 s fixed that, but
+      lost lines at 3-5 s gaps (QA fuzz, kit x2724g): a short entry claimed by her next one
+      starting with its words (XERK-2799, already lost at <= 3 s on main), and [sounds good]
+      x2 -> [okay / sounds good] via `_claims(lead=)`. A duplicate is the lesser harm. Faster
+      snapshots (XERK-2798) shrink the duplicates; don't re-widen without fixing both losses.
     - Measured per seed vs main (after XERK-2716): Zoom `_simulate`, `_simulate_teams` and kit
       zf.py identical; kit x2716 tf.py "both" (200 seeds) extra words 8635 -> 7212, lost
       5566 -> 5602 (late words now stored after the next entry; main's copies masked them).
