@@ -14,8 +14,9 @@ import logging
 import threading
 import time
 import uuid
+from array import array
 from collections import deque
-from collections.abc import Awaitable, Callable, Hashable
+from collections.abc import Awaitable, Callable, Hashable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from api.contract import ScreenCadence, ScreenNotice, ScreenNoticeKind
 from api.metrics import metrics
 from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_store, stale
 from api.screen import turma
-from api.screen.merge import CaptionMerger, MergeBudget, OverBudget, _Line
+from api.screen.merge import _SAID_BETWEEN_MS, CaptionMerger, MergeBudget, OverBudget, _Line
 from api.screen.zoom import CaptionBlock, FullFrame, Roster
 
 log = logging.getLogger("api.screen")
@@ -187,6 +188,12 @@ class MeetingTracker:
         self.merger: CaptionMerger | None = None
         # The ts last handed to the open meeting's merger, for the frame-gap metric (XERK-2722).
         self._fed_ts: int | None = None
+        # The open meeting's own gaps, summarised in its end log line (XERK-2724): /metrics
+        # keeps them only in memory and every deploy restarts the pod, so a meeting read
+        # there later was usually gone. The log line reaches Loki and outlives the pod.
+        self._gaps: array[int] = array("q")
+        # Gaps past ``_MAX_GAPS``, reported so a capped summary doesn't read as whole.
+        self._gaps_dropped = 0
         # The stored lines of the meeting that last ended here (XERK-2615), see on_caption.
         self._ended_lines: list[_Line] = []
         # Alignment work this window may spend (XERK-2730), shared by all its mergers: after a
@@ -341,6 +348,10 @@ class MeetingTracker:
             # platform, from real meetings rather than modelling it (XERK-2722). Only after
             # a feed that returned: a frame the merger never took is not a snapshot it saw.
             metrics.observe(f"screen.caption_gap.{self.meta.platform}", ts - self._fed_ts)
+            if len(self._gaps) < _MAX_GAPS:
+                self._gaps.append(ts - self._fed_ts)
+            else:
+                self._gaps_dropped += 1
         self._fed_ts = ts
         if self.conversation_id is None:
             if merger.new_lines == 0:
@@ -410,7 +421,14 @@ class MeetingTracker:
         conversation_id = self.conversation_id
         await self._store(self.merger.flush(max(now_ms, self.last_ts)))
         await self._io(lambda: self.store.finish(self.household, conversation_id, status="ready"))
-        log.info("screen meeting ended: %s", conversation_id)
+        log.info(
+            "screen meeting ended: %s (%s, caption gaps %s)",
+            conversation_id,
+            self.meta.platform,
+            gap_summary(self._gaps, dropped=self._gaps_dropped),
+        )
+        self._gaps = array("q")
+        self._gaps_dropped = 0
         metrics.incr("screen.meetings_ended")
         # Post it to the Turma hub now rather than on the delivery loop's next poll.
         turma.wake()
@@ -422,6 +440,31 @@ class MeetingTracker:
         self.active = None
         await self._send(self.cadence.message(meeting=False, org_site_key=self.meta.org_site_key))
         return conversation_id
+
+
+# A meeting's gaps kept for its end log line: 3 h of one window at 1 Hz, ~90 KB as int64.
+_MAX_GAPS = 3 * 3600
+
+
+def gap_summary(gaps: Iterable[int], *, dropped: int = 0) -> str:
+    """``n=… p50=… p95=… max=… over_3s=…`` (ms) for a meeting's caption frame gaps.
+
+    ``over_3s`` counts gaps past merge's revise-in-place window (``_SAID_BETWEEN_MS``): the
+    share that decides whether that window needs retuning (XERK-2724). ``dropped`` counts
+    gaps past the cap, left out of the summary.
+    """
+    ordered = sorted(gaps)
+    tail = f" dropped={dropped}" if dropped else ""
+    if not ordered:
+        return "n=0" + tail
+
+    def pct(p: int) -> int:
+        # Nearest rank, as the /metrics summaries compute it.
+        return ordered[max(0, min(len(ordered) - 1, round(p / 100 * len(ordered)) - 1))]
+
+    over = sum(1 for g in ordered if g > _SAID_BETWEEN_MS)
+    summary = f"n={len(ordered)} p50={pct(50)} p95={pct(95)} max={ordered[-1]} over_3s={over}"
+    return summary + tail
 
 
 def now_ms() -> int:

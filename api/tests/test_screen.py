@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import struct
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from api.config import settings
 from api.metrics import metrics
 from api.persistence import InMemoryConversationStore, ScreenMeta
 from api.persistence.models import Segment, alias_key
+from api.screen import meetings as meetings_mod
 from api.screen import ws as screen_ws
 from api.screen import zoom
 from api.screen.meetings import Cadence, MeetingTracker, meetings
@@ -1146,6 +1148,64 @@ def test_a_clock_held_flat_meters_no_zero_gaps() -> None:
         gap = metrics.snapshot()["latency_ms"]["screen.caption_gap.zoom"]
         assert (gap["count"], gap["p50_ms"]) == (1, 1000)
 
+    asyncio.run(run())
+
+
+def test_a_meeting_logs_its_own_caption_gaps_when_it_ends(caplog: pytest.LogCaptureFixture) -> None:
+    """XERK-2724: /metrics lost a meeting's gaps on every deploy; its end log line keeps them."""
+
+    async def run() -> None:
+        t = _tracker(InMemoryConversationStore())
+        t.meta = ScreenMeta("tesoro", "Tesoro", "teams")
+        for ts, text in (
+            (0, "hello there"),
+            (1000, "hello there friend"),
+            (5000, "hello there friend of"),
+        ):
+            await t.on_caption([blk("Ana Ruiz", text)], ts)
+        with caplog.at_level(logging.INFO, logger="api.screen"):
+            await t.end(70_000)
+        assert "(teams, caption gaps n=2 p50=1000 p95=4000 max=4000 over_3s=1)" in caplog.text
+        # The next meeting on this window reports only its own gaps.
+        caplog.clear()
+        await t.on_caption([blk("Ana Ruiz", "a whole new meeting")], 100_000)
+        with caplog.at_level(logging.INFO, logger="api.screen"):
+            await t.end(170_000)
+        assert "caption gaps n=0" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_a_meeting_gap_summary_counts_past_3s_and_says_when_capped(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """XERK-2724: ``over_3s`` is strictly past the 3 s gate, and gaps past the cap are
+    reported as dropped rather than silently left out."""
+    assert meetings_mod.gap_summary([3000, 3001]).endswith("over_3s=1")
+
+    async def run() -> None:
+        monkeypatch.setattr(meetings_mod, "_MAX_GAPS", 2)
+        t = _tracker(InMemoryConversationStore())
+        for ts, text in (
+            (0, "hello there"),
+            (1000, "hello there friend"),
+            (2000, "hello there friend of"),
+            (8000, "hello there friend of mine"),
+        ):
+            await t.on_caption([blk(None, text, header=False)], ts)
+        with caplog.at_level(logging.INFO, logger="api.screen"):
+            await t.end(70_000)
+        assert "caption gaps n=2 p50=1000 p95=1000 max=1000 over_3s=0 dropped=1)" in caplog.text
+        # The next meeting on this window doesn't inherit the last one's dropped count.
+        caplog.clear()
+        await t.on_caption([blk(None, "a whole new meeting", header=False)], 100_000)
+        await t.on_caption([blk(None, "a whole new meeting today", header=False)], 101_000)
+        with caplog.at_level(logging.INFO, logger="api.screen"):
+            await t.end(170_000)
+        assert "caption gaps n=1 p50=1000 p95=1000 max=1000 over_3s=0)" in caplog.text
+
+    # The real cap holds a long meeting whole: 3 h at 1 frame a second.
+    assert meetings_mod._MAX_GAPS >= 3 * 3600
     asyncio.run(run())
 
 
