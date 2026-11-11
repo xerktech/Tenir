@@ -1058,12 +1058,40 @@ def _split_grown(
                 or aligned[n] is not None
                 or n in revised
                 or at in taken
-                or tail[at].norm != below.norm
                 or not _same_speaker(below.speaker, tail[at].speaker)
+                or not _rereads_below(shown, n, tail, at)
             ):
                 break
             aligned[n] = at
     return out
+
+
+def _rereads_below(shown: list[_Shown], n: int, tail: list[_Line], at: int) -> bool:
+    """Whether ``shown[n]``, a later row of the next entry ``_split_grown`` splits off, reads
+    ``tail[at]`` (the line it wrapped onto while OCR missed the row above).
+
+    Exactly, or (XERK-2807) with the words the row above lost against its line in front (Teams
+    re-wrapped the entry as the missed row came back) and words added after (still growing).
+    Left new, either was stored twice. Only the frame's bottom row as the newest line: words
+    move down, never appear in the middle; anything else is another line."""
+    below, line = shown[n], tail[at]
+    if line.norm == below.norm:
+        return True
+    # Only the bottom row takes a new text (``_update``): paired, a middle row's moved word
+    # was lost.
+    if n != len(shown) - 1 or at != len(tail) - 1:
+        return False
+    above, was = _words(shown[n - 1].text), _words(tail[at - 1].text)
+    if was[: len(above)] != above:
+        return False
+    lead, had, now = was[len(above) :], _words(line.text), _words(below.text)
+    if not had or now[: len(lead) + len(had)] != lead + had:
+        return False
+    return True
+
+
+# Marks a live Teams line pauses on mid-entry, never one it finishes on (``_unfinished``).
+_LEADS_ON = frozenset(",;:-\u2013\u2014\u3001\uff0c\uff1a\uff1b")
 
 
 def _unfinished(text: str) -> bool:
@@ -1071,8 +1099,12 @@ def _unfinished(text: str) -> bool:
     marks after it (Hindi "है" ends on a vowel sign), not on punctuation or a symbol: a live
     entry, not one Teams finished (``_splits``). An emoji is finished: "❤️" ends on a
     variation selector and "1️⃣" on an enclosing keycap (both marks); counted as unfinished,
-    such a line was cut (QA)."""
+    such a line was cut (QA). A line ending on a mark that leads on (comma, dash, colon,
+    semicolon, "、") is live too (XERK-2807): read as finished, its re-punctuated or clipped
+    return was not split and the next entry was stored twice."""
     end = text.rstrip()
+    if end and end[-1] in _LEADS_ON:
+        return True
     while end and unicodedata.category(end[-1])[0] == "M":
         if end[-1] in "\ufe0e\ufe0f" or unicodedata.category(end[-1]) == "Me":
             return False
