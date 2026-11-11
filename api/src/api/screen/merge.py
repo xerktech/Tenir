@@ -89,6 +89,10 @@ _NEW = -0.1
 # first seen this recently can be revised: Teams rewrites an entry seconds after it ends.
 _REVISED = 0.6
 _REVISE_MS = 30_000
+# Teams finalising an entry may cut its live tail back ("do you have something and then like"
+# -> "Do you have something?", XERK-2774): rows reading exactly the draft's first words revise
+# it when they hold at least this many words and half the draft's.
+_CUT_WORDS = 3
 # A re-flowed entry (XERK-2715): a line its rows skip is a stale copy when they hold this share
 # of its words where it sat (Teams may also fix one of them).
 _HELD = 0.5
@@ -772,7 +776,7 @@ def _claims(
     # A stutter ("so so so") counts once: Teams drops repeats when it re-lays an entry, and
     # counting each copy failed coverage, so the whole box was stored again (XERK-2746).
     said = sum(1 for n, (w, _) in enumerate(draft) if not n or draft[n - 1][0] != w)
-    if not claims or len(pairs) < _REVISED * said:
+    if not claims or (len(pairs) < _REVISED * said and not _cut_back(draft, mine)):
         return None
     if folded is not None:
         # Draft word positions that pair with a word of a row that claimed a line.
@@ -789,6 +793,25 @@ def _claims(
             if j > first and j not in claims.values() and at and at <= paired:
                 folded.append((j, claimed))
     return claims
+
+
+def _cut_back(draft: list[tuple[str, int]], mine: list[tuple[str, int]]) -> bool:
+    """Whether the rows read exactly the draft's leading words, dropping the rest of its last
+    line: Teams cut the entry's live tail back as it finalised it (XERK-2774). The rows keep
+    ``_CUT_WORDS``+ words and half the draft's, so a short new line opening like an older one
+    ("okay" after "okay so lets start") stays new.
+
+    Only the draft's last line may lose words: a cut dropping a whole row left it known but
+    unshown, and the rows were stored again (QA). That also keeps a draft running on into her
+    later entries from being cut to a new entry opening like her first, which overwrote it
+    past the "reach the newest line" guard (QA)."""
+    words = [w for w, _ in mine]
+    return (
+        len(words) >= max(_CUT_WORDS, len(draft) / 2)
+        and len(words) < len(draft)
+        and [w for w, _ in draft[: len(words)]] == words
+        and draft[len(words)][1] == draft[-1][1]
+    )
 
 
 def _junction(words: list[str], above: list[str], below: list[str]) -> bool:
