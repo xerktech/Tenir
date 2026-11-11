@@ -163,6 +163,10 @@ paths:
   - `_update` takes growth that adds punctuation at the join ("All right" -> "All right,
     let's..."). Not by words alone: a re-flowed row then overwrote "pods." with the row above
     (`_simulate_teams` seed 125). Test: `test_an_entry_punctuated_as_it_grows_is_stored_once`.
+    - Only on her last line: above her next one it is Teams re-laying the entry, moving a word
+      up ("...locally" -> "...locally, or"); taken as growth, the rows below kept too few of
+      the draft's words to claim it and its stale lines were stored (QA fuzz seed 84). Test:
+      `test_a_word_moved_up_with_a_comma_above_her_next_line_is_a_rewrite_not_growth`.
   - The words-only match needs `_CUT_WORDS`+ words: "Yes??" after "Yes." is as often her next
     entry, and matched by words its draft went to the entry after and was lost (QA fuzz).
     Test: `test_a_short_entry_punctuated_otherwise_is_not_a_re_read_of_her_last`.

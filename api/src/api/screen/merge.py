@@ -1531,13 +1531,18 @@ class CaptionMerger:
             line.pending = None
         if shown.norm == line.norm:
             return
+        said_on = any(
+            _same_speaker(ln.speaker, line.speaker) for ln in self._lines[self._index(line) + 1 :]
+        )
         # Teams may punctuate the join as the line grows ("All right" -> "All right, gentle
         # it out"): refused, the line was stored short and the next frame re-stored the box
         # (XERK-2774). Only punctuation added right after the known text: matching by words
         # let a re-flowed row ("pods." -> "pods itself ... pods") overwrite a row (fuzz).
-        grew = any(
-            shown.norm.startswith(line.norm + mark + " ") for mark in ("", ",", ".", "?", "!")
-        )
+        # Only on her last line: above her next one it is a rewrite moving a word up
+        # ("...locally" -> "...locally, or"), and taken as growth the rows below kept too few
+        # of the draft's words to claim it, so its stale lines were stored too (QA).
+        marks = ("", ",", ".", "?", "!") if not said_on else ("",)
+        grew = any(shown.norm.startswith(line.norm + mark + " ") for mark in marks)
         if not line.final:
             # Only the bottom line is still being spoken (the ASR may rewrite its last
             # words); a line above it changes only by OCR jitter, so it keeps its text.
@@ -1557,9 +1562,6 @@ class CaptionMerger:
         # one frame it shows it, and waiting lost those last words (``_simulate`` noise+drops).
         seg = line.segment
         assert seg is not None
-        said_on = any(
-            _same_speaker(ln.speaker, line.speaker) for ln in self._lines[self._index(line) + 1 :]
-        )
         if (
             grew
             and ts - line.changed_ms <= _EXTEND_MS

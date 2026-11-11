@@ -3163,6 +3163,34 @@ def test_a_finished_entry_is_not_taken_for_a_split() -> None:
     assert rows[0] == ("Ana", "I think we are done here."), rows
 
 
+def test_a_word_moved_up_with_a_comma_above_her_next_line_is_a_rewrite_not_growth() -> None:
+    """XERK-2774 QA (fuzz seed 84): Teams re-laid Ana's three rows as two, moving "or" up
+    with a comma. Taken as punctuated growth of her first row, the second row kept too few
+    of the draft's words to claim it, and both stale rows were stored too."""
+    bo = blk("Bo", "build or can itself what check")
+    rows = [
+        "we cluster design can second locally",
+        "locally or so repeat deploy cluster",
+        "cluster so or uh",
+    ]
+    frames = [
+        (0, [bo, blk("Ana", rows[0])]),
+        (500, [bo, blk("Ana", rows[0], "locally")]),
+        (1300, [bo, blk("Ana", rows[0], "locally or so")]),
+        (2700, [bo, blk("Ana", *rows[:2])]),
+        (3500, [bo, blk("Ana", *rows[:2], "cluster")]),
+        (4300, [bo, blk("Ana", *rows[:2], "cluster so or")]),
+        (4800, [bo, blk("Ana", *rows)]),
+    ]
+    rewrite = blk("Ana", "We cluster design can second locally, or", "repeat api cluster, or uh?")
+    frames += [(5300 + 500 * k, [bo, rewrite]) for k in range(8)]
+    assert _stored_at(frames) == [
+        ("Bo", "build or can itself what check"),
+        ("Ana", "We cluster design can second locally, or"),
+        ("Ana", "repeat api cluster, or uh?"),
+    ]
+
+
 def test_a_split_of_her_live_entry_keeps_the_like_one_she_just_finished() -> None:
     """XERK-2774 QA fuzz: Cy's new entry opened with the words of the one she had just
     finished, then Teams split it. Taken from the finished one as the draft, the split
