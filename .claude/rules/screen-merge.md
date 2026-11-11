@@ -401,7 +401,8 @@ paths:
   - Accepted (operator's call): a repeat clipped to a text the first copy paused on 2 s+ (or
     any text at 2 s+ frame gaps) is still cut ("Thank you so much." -> "Thank you"); on
     screen it reads exactly like the miss. Only lines changed within `_REVISE_MS`.
-  - The row below may read an unfinished grown line (no closing ".?!") re-punctuated or
+  - The row below may read an unfinished grown line (ending on a letter or digit, any script;
+    a mark list missed "。", "…", '."' and those lines were cut, QA) re-punctuated or
     clipped (its words a prefix of the line's), holding more than the row it splits off
     (XERK-2804). A finished line must read exactly: clipped over her next entry's first
     frame (its words, unpunctuated) it reads alike, and was cut for good (QA fuzz seed 146).

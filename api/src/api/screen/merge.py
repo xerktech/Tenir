@@ -1021,7 +1021,7 @@ def _split_grown(
     The row below need not read an unfinished grown line exactly (XERK-2804): its words may
     be the line's re-punctuated, or cut short (OCR clipped the row that frame), as long as it
     holds more words than the row above. Never the line's words grown on, nor a finished
-    line's (".?!") read inexactly: her finished entry, clipped as her next entry opening with
+    line's (ending on a mark, not a letter or digit) read inexactly: her finished entry, clipped as her next entry opening with
     its words first shows, reads alike on that frame, and was cut for good (QA).
     Rows of its block below it that read the line's next lines exactly pair with them (a
     two-row next entry): left new, its second row was stored again beside the line.
@@ -1080,11 +1080,13 @@ def _splits(row: _Shown, nxt: _Shown, line: _Line, ts: int) -> bool:
         and any(_words(t) == now for t in line.held)
         and (
             nxt.norm == line.norm
-            # Unfinished (no closing ".?!"), the row below may read the line re-punctuated
-            # or clipped, holding more than ``row``. A finished line clipped as her next
-            # entry, opening with its words, first shows reads alike and was cut (QA).
+            # Unfinished (ending on a letter or digit, any script), the row below may read
+            # the line re-punctuated or clipped, holding more than ``row``. A finished line
+            # clipped as her next entry, opening with its words, first shows reads alike and
+            # was cut (QA). Any closing mark counts ("。", "…", '."'): a list of marks missed
+            # some, and those lines were cut (QA).
             or (
-                not line.text.rstrip().endswith((".", "?", "!"))
+                line.text.rstrip()[-1:].isalnum()
                 and len(now) < len(got) <= len(had)
                 and had[: len(got)] == got
             )
