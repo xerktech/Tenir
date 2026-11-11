@@ -6426,6 +6426,67 @@ def test_a_two_row_entry_read_while_ocr_missed_the_row_above_is_stored_once() ->
     assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", nxt[0]), ("Ana", nxt[1])]
 
 
+@pytest.mark.parametrize(
+    "back",
+    [
+        ["yes I think so too, and we", "should ship it today."],
+        ["yes I think so too, and", "we should ship it."],
+        ["yes I think so too, and", "we should ship it today."],
+    ],
+    ids=["grown", "re-wrapped", "both"],
+)
+def test_a_two_row_entry_changing_as_the_missed_row_returns_is_stored_once(
+    back: list[str],
+) -> None:
+    """XERK-2807: the second row of the entry "yes." grew into grew (Ana talking on) or
+    took a word re-wrapped down from the row above as the missed row came back. Only an exact
+    read paired it, so the entry was stored twice."""
+    nxt = ["yes I think so too, and we", "should ship it"]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", *back)], 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), *(("Ana", row) for row in back)]
+
+
+def test_a_row_below_holding_words_the_row_above_never_lost_is_a_new_line() -> None:
+    """XERK-2807: a later row pairs with the next entry's line only when its extra words in
+    front are the ones the row above lost; other words in front make it another line."""
+    nxt = ["yes I think so too, and we", "should ship it"]
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            ([blk("Ana", "OK."), blk("Ana", *nxt)], 3),
+            ([blk("Ana", "OK."), blk("Ana", "yes."), blk("Ana", nxt[0], "so should ship it.")], 6),
+        ]
+    )
+    assert ("Ana", "so should ship it.") in stored
+
+
+@pytest.mark.parametrize(
+    "live", ["yes I think so too,", "yes I think so too -", "yes the plan is:", "yes we can; then"]
+)
+def test_a_live_line_pausing_on_a_comma_dash_or_colon_is_unfinished(live: str) -> None:
+    """XERK-2807: a live line ending on a mark that leads on read as finished, so its
+    re-punctuated return was never split and the next entry was stored twice."""
+    from api.screen.merge import _unfinished
+
+    assert _unfinished(live)
+    assert _unfinished("はい、") and not _unfinished("❤️") and not _unfinished("yes.")
+    back = live.rstrip(",-: ") + "."
+    stored, _ = _entry_run(
+        [
+            (_entries("OK.", "yes."), 4),
+            (_entries("OK.", live), 3),
+            (_entries("OK.", "yes.", back), 6),
+        ]
+    )
+    assert stored == [("Ana", "OK."), ("Ana", "yes."), ("Ana", back)]
+
+
 def _gap_run(frames: list[tuple[list[CaptionBlock], int]], gap: int) -> list[str]:
     """``_entry_run`` at ``gap`` ms between frames; returns every segment's last text."""
     m = CaptionMerger(start_ms=0, stable_ms=3000)
