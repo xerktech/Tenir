@@ -512,6 +512,116 @@ def test_a_leading_token_that_is_not_the_speakers_initials_stays_text(glued: str
     assert [(b.speaker, b.lines) for b in blocks] == [("Mark Hale", [glued])]
 
 
+@pytest.mark.parametrize(
+    ("speaker", "names"),
+    [("Tom Adams", ("Tom Adams", "Mark Hale")), ("Tom Adams", ()), ("Adams, Tom", ("Adams, Tom",))],
+)
+def test_avatar_initials_misread_by_one_letter_are_stripped(speaker: str, names: tuple) -> None:
+    # Real Teams OCR read Tom Adams' circle "TA" as "LA" (XERK-2792); "Adams, Tom" draws "TA".
+    blocks = teams.parse_caption_crop(
+        result(
+            line(speaker, 56, 4, 200, 20),
+            line("LA Thank you.", 10, 26, 300, 46),
+            line("and the rest of it", 56, 48, 300, 68),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["Thank you.", "and the rest of it"]]
+
+
+@pytest.mark.parametrize("names", [("Tom Adams", "Mark Hale"), ()])
+def test_the_go_to_current_button_is_not_caption_text(names: tuple) -> None:
+    # Teams' "Go to current" button level with a header joined its row, so the header read
+    # as text under the previous speaker (XERK-2792, real Teams OCR: header x 60, button 402).
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line("Tom Adams", 60, 52, 200, 68),
+            line("Go to current", 402, 52, 520, 68),
+            line("All right thank", 60, 74, 300, 94),
+        ),
+        roster(*names),
+    )
+    assert [b.lines for b in blocks] == [["We can start now."], ["All right thank"]]
+    if names:
+        assert [b.speaker for b in blocks] == ["Mark Hale", "Tom Adams"]
+
+
+@pytest.mark.parametrize(
+    ("speaker", "glued"),
+    [
+        ("Tom Adams", "AI is the plan."),  # shares a letter, but not in the circle's place
+        ("Tom Adams", "IT is down."),
+        ("Priya", "PA system is on."),  # one-word name: no two-letter circle to misread
+    ],
+)
+def test_a_two_capital_word_not_one_letter_off_the_circle_stays_text(
+    speaker: str, glued: str
+) -> None:
+    blocks = teams.parse_caption_crop(
+        result(line(speaker, 56, 4, 200, 20), line(glued, 10, 26, 300, 46)), roster(speaker)
+    )
+    assert [b.lines for b in blocks] == [[glued]]
+
+
+@pytest.mark.parametrize("spoken", ["go to current.", "Go to current"])
+def test_go_to_current_spoken_at_the_text_column_stays(spoken: str) -> None:
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("I think we should just", 60, 26, 300, 46),
+            line(spoken, 60, 48, 200, 68),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [["I think we should just", spoken]]
+
+
+@pytest.mark.parametrize("button", ["Go to current", "Go to current ↓"])
+def test_only_the_whole_button_text_is_dropped(button: str) -> None:
+    # Right of the text column, as the button sits: only its exact, unpunctuated text goes.
+    blocks = teams.parse_caption_crop(
+        result(
+            line("Mark Hale", 60, 4, 200, 20),
+            line("We can start now.", 60, 26, 300, 46),
+            line(button, 402, 26, 520, 46),
+            line("and then", 60, 48, 200, 68),
+            line("Go to current events", 402, 48, 600, 68),
+            line("and also", 60, 70, 200, 90),
+            line("Go to current.", 402, 70, 520, 90),
+        ),
+        roster("Mark Hale"),
+    )
+    assert [b.lines for b in blocks] == [
+        ["We can start now.", "and then Go to current events", "and also Go to current."]
+    ]
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_the_button_alone_in_a_crop_is_no_caption(live: bool) -> None:
+    # No text box to measure a column from: the button can't be a spoken line beside it.
+    ocr = result(line("Go to current", 300, 40, 420, 60))
+    assert teams.parse_caption_crop(ocr, Roster(), live=live) == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [line("caption line 0", 60, 26, 300, 46)],  # one caption row: the column is that row
+        [line("MH Yes we can.", 10, 26, 300, 46)],  # its avatar glued on
+        [],  # the button alone under the header
+    ],
+)
+def test_the_button_is_dropped_beside_a_single_caption_row(rows: list) -> None:
+    ocr = result(line("Mark Hale", 60, 4, 200, 20), *rows, line("Go to current", 300, 58, 420, 74))
+    blocks = teams.parse_caption_crop(ocr, roster("Mark Hale"), live=True)
+    assert all("Go to current" not in " ".join(b.lines) for b in blocks)
+    assert [ln for b in blocks for ln in b.lines] == [
+        teams._strip_glued_initials(r.text, "Mark Hale", Roster()) for r in rows
+    ]
+
+
 def test_capital_caption_words_that_are_not_the_speakers_initials_stay_text() -> None:
     blocks = teams.parse_caption_crop(
         result(
