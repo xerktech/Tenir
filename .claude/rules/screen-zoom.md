@@ -67,8 +67,40 @@ paths:
     `test_an_off_roster_zoom_speaker_s_lines_are_stored_under_their_name`,
     `test_a_roster_speaker_s_name_misread_beside_an_avatar_names_no_new_speaker`,
     `test_a_header_reading_near_a_roster_name_is_never_named_by_its_avatar`.
+  - Zoom's default avatar draws the speaker's initials, and OCR reads them into the text row
+    beside it: "HB Sure, I can..." under "Hana Bauer" was stored (real meeting,
+    XERK-2803). `_drop_initials` drops a leading token equal to a display-name row's initials
+    (on that row, under it, or a row of its own) only when its row starts in the avatar
+    column, half a row height left of the other rows' text column.
+    - The column is the start most other rows share, not their median: of two rows a median
+      is the mean, and one row boxed from a later word moved it onto a spoken "OK" (QA).
+    - Never by text alone: Oliver King's "OK", Priya Raman's "PR is merged" were deleted (QA).
+    - A box over the initials and the name is cut to the text column: their bright ink made
+      the name read as text, and off the roster the crop was dropped (QA, real tenir-ocr).
+    - Initials found so are never the avatar itself (to name or vouch). Tried and refused on
+      real-OCR synthetic crops (QA): by text + column, a docs glossary's "PR" left of "Pull
+      Request" named a speaker and started a meeting; confirmed by a filled patch under the
+      token, real merged boxes missed their disc (fills overlap the glossary's).
+      So off the roster a merged initials+name box's speaker stays unnamed, as on main (its
+      height over the circle hides it from `_has_avatar`). Tune on real crops (XERK-2820).
+    - Never cut that box to a row height read off other rows: real OCR pads the text row as
+      much, so a one-entry crop cut nothing (QA).
+    - A name row that lost initials vouches by the Title Case rule only if it read dim with
+      them (`untrimmed`, `dim_before`), as main decided: a glossary's white "PR" kept main's
+      row bright, and dropped, the grey term started a meeting main didn't; refusing every
+      trimmed row lost light-theme starts, whose white initials are panel-coloured (QA).
+    - Test: `test_a_glossary_acronym_left_of_its_term_names_no_speaker`,
+      `test_a_light_theme_merged_initials_name_still_starts_a_meeting`,
+      `test_a_merged_initials_name_below_another_entry_is_a_header_not_speech` (the x cut).
+    - Zoom's `_simulate` never calls the parser: it can't measure parse changes.
+    - Tests: `test_zooms_initials_avatar_read_into_a_row_is_neither_name_nor_speech`,
+      `test_a_speaker_saying_their_own_initials_keeps_them`,
+      `test_any_initials_zoom_may_draw_are_dropped_from_the_avatar_column`.
   - Still open: a grey Title Case docs line ("Last Updated") or an all-Title-Case page with no
     roster starts a meeting; so does a filled disc / emoji beside a grey docs line.
+    - Prod, 2026-11-04..11 (pre-XERK-2802): 5 of 12 stored Zoom meetings were shares with no
+      named speaker (settings pages, task lists, role tables).
+      The header row that vouched isn't stored; telling which rule passed needs sampler crops.
   - The avatar is only visible because the client keeps `AVATAR_ROOM` px left of the box
     (`desktop/tenir_capture/caption_box.py`): cut at the glyphs, avatars darker than
     `BOX_WHITE` (Zoom's blue/green) never reached the api (QA).
