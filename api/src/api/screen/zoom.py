@@ -21,7 +21,7 @@ import math
 import re
 import unicodedata
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 
 import numpy as np
@@ -511,6 +511,7 @@ def parse_caption_crop(
     groups = [
         g for g in row_groups(ocr.lines) if _is_caption_row(_row_text(g))
     ]  # minus noise rows with fewer than two letters or digits, and the toolbar
+    groups, untrimmed = _drop_initials(groups)
     rows = [_row_text(g) for g in groups]
     px = _grey_pixels(jpeg, ocr, groups)
     dim = _dim_rows(px, groups)
@@ -565,11 +566,92 @@ def parse_caption_crop(
     # ("Last Updated") still vouches: telling it from a name needs real crops (XERK-2705).
     if px is None or dim is None:
         return blocks
+    # A name row that lost initials by position vouches by the Title Case rule only if it read
+    # dim with them, as on main: a docs glossary's white "PR" left of a grey "Pull Request"
+    # kept the row bright, and dropped, the grey term started a meeting main didn't (QA). A
+    # light theme's white initials are panel-coloured, so main read that row dim and started.
+    dim_before = (
+        _dim_rows(px, [untrimmed.get(id(g), g) for g in groups]) if untrimmed else dim
+    ) or set()
     vouched = any(
-        i in avatars or (row in dim_names and is_name_like(_name_form(row)))
+        i in avatars
+        or (
+            row in dim_names
+            and is_name_like(_name_form(row))
+            and (id(groups[i]) not in untrimmed or i in dim_before)
+        )
         for i, row in enumerate(rows)
     )
     return blocks if vouched else []
+
+
+def _initials(name: str) -> set[str]:
+    """What Zoom's default avatar may draw for ``name``: its first and last words' initials,
+    or every word's ("Hana Bauer" -> "HB"; "Raman, Priya (Guest)" -> "RP"; "jsmith" -> "J")."""
+    every = "".join(w[0] for w in _name_form(name).split() if w[0].isalpha()).upper()
+    return {every, every[0] + every[-1]} if len(every) > 1 else {every} - {""}
+
+
+def _drop_initials(
+    groups: list[list[OcrLine]],
+) -> tuple[list[list[OcrLine]], dict[int, list[OcrLine]]]:
+    """``groups`` minus Zoom's default avatar, the speaker's initials in a coloured circle
+    astride their name line and its first text row, which OCR reads into whichever row it
+    meets: "HB Sure, I can..." under "Hana Bauer" was stored (XERK-2803, real
+    meeting), and "HB Hana Bauer" or a row of its own would be too.
+
+    A leading token goes only when it is exactly the initials of a display-name row it sits
+    on or under AND its row starts in the avatar column, left of the other rows' text
+    column: spoken words start at that column, so Oliver King saying "OK" keeps it (QA).
+
+    Initials found so are never taken as the avatar itself (to name or vouch for a speaker):
+    a docs glossary's "PR" left of "Pull Request" has the same shape, and named a speaker
+    and started a meeting main didn't (QA). Telling the disc from page text needs real crops.
+    Also returns, by ``id`` of the kept row, each row that lost initials from its own name
+    ("HB Hana Bauer") as it was before."""
+    starts = [g[0].box[0] for g in groups]
+    keep: list[list[OcrLine]] = []
+    untrimmed: dict[int, list[OcrLine]] = {}
+    for i, g in enumerate(groups):
+        head, _, rest = _row_text(g).partition(" ")
+        name = _row_text(keep[-1]) if keep else ""
+        on_name = bool(rest) and _is_display_name(rest) and head in _initials(rest)
+        under_name = bool(name) and _is_display_name(name) and head in _initials(name)
+        column = _text_column(g, starts[:i] + starts[i + 1 :])
+        if (on_name or under_name) and column is not None:
+            if not rest:
+                continue  # the initials read as a row of their own
+            before, g = g, _without_first_token(g, column)
+            if not _is_caption_row(_row_text(g)):
+                continue
+            if on_name:
+                untrimmed[id(g)] = before
+        keep.append(g)
+    return keep, untrimmed
+
+
+def _text_column(group: list[OcrLine], others: list[float]) -> float | None:
+    """The crop's text column (the left edge most other rows start within half a row height
+    of, leftmost on a tie) when ``group`` starts left of it by that much, as a box starting
+    on the avatar does; else None. Not a median: of two rows it is their mean, and one row
+    OCR boxed from a later word moved it onto a speaker's spoken "OK" (QA)."""
+    if not others:
+        return None
+    x0, y0, _, y1 = group[0].box
+    tol = 0.5 * max(y1 - y0, 1.0)
+    column = min(others, key=lambda c: (-sum(abs(o - c) <= tol for o in others), c))
+    return column if x0 <= column - tol else None
+
+
+def _without_first_token(group: list[OcrLine], column: float) -> list[OcrLine]:
+    first = group[0]
+    _, _, rest = first.text.strip().partition(" ")
+    if not rest.strip():
+        return group[1:]  # its own box goes whole
+    # One box over the avatar and the name: start it at the text column, or the initials'
+    # bright ink made a dim name row read as text (QA, real OCR).
+    box = (max(first.box[0], column), *first.box[1:])
+    return [replace(first, text=rest.strip(), box=box), *group[1:]]
 
 
 def _name_form(text: str) -> str:

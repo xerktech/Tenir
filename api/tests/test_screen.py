@@ -9,6 +9,7 @@ import json
 import logging
 import struct
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -6503,6 +6504,167 @@ def test_an_off_roster_zoom_speaker_beside_an_avatar_is_named(header: str, speak
         )
         blocks = parse_caption_crop(ocr, roster, jpeg=jpeg)
         assert [(b.speaker, b.lines) for b in blocks][-1] == (speaker, ["we shipped it"])
+
+
+_SAID = "Sure, I can take that one"
+
+
+def _initials_crop(
+    name: str, text: str, shape: str, *, light: bool = False
+) -> tuple[OcrResult, bytes]:
+    """``panel_crop`` of ``name`` over ``text`` with Zoom's default avatar as real crops draw
+    it: a 26 px circle astride the name and its text row (centred 4 px below the name box,
+    ``_with_disc``), the initials white on it, and OCR reading them in the avatar column as
+    ``shape`` says: "text-row" their own box joined into the text row (the real 2026-11-11
+    meeting), "merged" one box over the circle and the name (real tenir-ocr pads it past the
+    circle, QA), "own-row" a row of their own between the two."""
+    ocr, jpeg = panel_crop((name, True, False), (text, False), light=light)
+    named, said = ocr.lines
+    # Joined into the text row, the circle sits lower: OCR boxes the letters on it, and
+    # that box overlaps the text row (the real meeting's "HB Yeah, ...").
+    centre = said.box[1] + 4 if shape == "text-row" else named.box[3] + 4
+    d = 26
+    img = Image.open(io.BytesIO(_with_disc((ocr, jpeg), centre, d))).convert("RGB")
+    initials = "".join(w[0] for w in name.split()).upper()
+    font = ImageFont.load_default(size=13)
+    ImageDraw.Draw(img).text((19, centre - 7), initials, font=font, fill="white")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    if shape == "merged":
+        # Real tenir-ocr pads the text row as much (QA: 36 px each), so no row height read
+        # off the other rows trims the merged box back to the name.
+        x0, y0, x1, y1 = named.box
+        box = (14.0, min(y0, centre - d / 2 - 4), x1, max(y1, centre + d / 2 + 4))
+        tall = box[3] - box[1]
+        padded = (said.box[0], said.box[3] - tall + 4, said.box[2], said.box[3] + 4)
+        lines = (OcrLine(f"{initials} {name}", box), OcrLine(said.text, padded))
+    elif shape == "own-row":
+        y = named.box[3] - 2  # under the name, above the text row: rows of their own
+        lines = (named, OcrLine(initials, (17.0, y, 34.0, y + 15)), said)
+    else:
+        lines = (named, OcrLine(initials, (17.0, centre - 7, 34.0, centre + 7)), said)
+    return OcrResult(ocr.width, ocr.height, lines), buf.getvalue()
+
+
+@pytest.mark.parametrize("shape", ["text-row", "merged", "own-row"])
+def test_zooms_initials_avatar_read_into_a_row_is_neither_name_nor_speech(shape: str) -> None:
+    """Zoom's default avatar is the speaker's initials in a coloured circle, astride the name
+    line and its first text row: OCR read "HB" into the text row and a real meeting stored it
+    as speech (XERK-2803). One box over the initials and the name kept their bright ink and
+    the name no longer read dim: off the roster the crop was dropped (QA, real OCR).
+
+    Off the roster the speaker is named only when ``_has_avatar`` sees the circle, and a
+    name row that lost initials vouches for no start on its own, as on main: by the initials
+    alone a docs glossary's terms were named or started meetings (QA; XERK-2820 tunes that
+    on real crops). The initials are gone from the name and the text either way."""
+    for roster in (Roster(), _roster("Hana Bauer")):
+        ocr, jpeg = _initials_crop("Hana Bauer", _SAID, shape)
+        (block,) = parse_caption_crop(ocr, roster, live=True, jpeg=jpeg)
+        assert block.lines == [_SAID]
+        assert block.speaker in ((None, "Hana Bauer") if not roster else ("Hana Bauer",))
+        if roster or shape != "merged":
+            assert parse_caption_crop(ocr, roster, jpeg=jpeg) == [block]
+
+
+def test_a_merged_initials_name_below_another_entry_is_a_header_not_speech() -> None:
+    """Below the top only a dim row is an off-roster header: a box over the bright initials
+    and the name read as text, and "Hana Bauer" was stored as Ana's speech."""
+    ocr, jpeg = _initials_crop("Hana Bauer", _SAID, "merged")
+    top, top_jpeg = panel_crop(("Ana Lopez", True), ("and then we", False))
+    above, below = Image.open(io.BytesIO(top_jpeg)), Image.open(io.BytesIO(jpeg))
+    img = Image.new("RGB", (above.width, above.height + below.height))
+    img.paste(above, (0, 0))
+    img.paste(below, (0, above.height))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    dy = above.height
+    moved = [OcrLine(ln.text, (ln.box[0], ln.box[1] + dy, ln.box[2], ln.box[3] + dy)) for ln in ocr.lines]
+    crop = OcrResult(img.width, img.height, (*top.lines, *moved))
+    blocks = parse_caption_crop(crop, _roster("Ana Lopez"), live=True, jpeg=buf.getvalue())
+    assert [b.lines for b in blocks] == [["and then we"], [_SAID]]
+
+
+def test_a_light_theme_merged_initials_name_still_starts_a_meeting() -> None:
+    """QA: on a light panel the white initials are panel-coloured, so main read the merged
+    "HB Hana Bauer" row dim and started the meeting; refusing every trimmed row's Title
+    Case vouch stopped it. A trimmed row vouches when it read dim with its initials."""
+    ocr, jpeg = _initials_crop("Hana Bauer", _SAID, "merged", light=True)
+    blocks = parse_caption_crop(ocr, Roster(), jpeg=jpeg)
+    assert [b.lines for b in blocks] == [[_SAID]]
+
+
+@pytest.mark.parametrize(
+    ("name", "initials"), [("Mary Ann Lee", "ML"), ("Mary Ann Lee", "MAL"), ("jsmith", "J")]
+)
+def test_any_initials_zoom_may_draw_are_dropped_from_the_avatar_column(
+    name: str, initials: str
+) -> None:
+    ocr, jpeg = _initials_crop(name, _SAID, "text-row")
+    named, own, said = ocr.lines
+    ocr = OcrResult(ocr.width, ocr.height, (named, replace(own, text=initials), said))
+    (block,) = parse_caption_crop(ocr, _roster(name), jpeg=jpeg)
+    assert block.lines == [_SAID]
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("Oliver King", "OK so we ship it"),
+        ("Oliver King", "OK"),
+        ("Priya Raman", "PR is merged now"),
+        ("Bo Chen", "BC is the one we picked"),
+        ("Ian", "I think so"),
+    ],
+)
+def test_a_speaker_saying_their_own_initials_keeps_them(name: str, text: str) -> None:
+    """QA: matched by text alone, "OK" from Oliver King was deleted, and an entry of just "OK"
+    was lost. Spoken words start at the text column; only the avatar's sit left of it, so
+    real OCR boxing a spoken "PR" a few px left of the column keeps it too (QA)."""
+    ocr, jpeg = panel_crop((name, True), (text, False))
+    named, said = ocr.lines
+    early = OcrLine(said.text, (said.box[0] - 4, *said.box[1:]))
+    for crop in (ocr, OcrResult(ocr.width, ocr.height, (named, early))):
+        for pixels in (jpeg, None):
+            (block,) = parse_caption_crop(crop, _roster(name), jpeg=pixels)
+            assert (block.speaker, block.lines) == (name, [text])
+
+
+@pytest.mark.parametrize("light", [False, True])
+@pytest.mark.parametrize("term", ["Pull Request", "pull request"])
+def test_a_glossary_acronym_left_of_its_term_names_no_speaker(term: str, light: bool) -> None:
+    """QA: a docs glossary puts "PR" left of a grey "Pull Request" on bare page, the shape of
+    initials beside a name. Taken as the avatar it named the term; dropped, the grey term
+    vouched for a start. Main starts nothing here (the acronym's ink keeps the row bright)."""
+    ocr, jpeg = panel_crop(
+        (term, True, False), ("a proposed change to the code", False), light=light
+    )
+    named, said = ocr.lines
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    ink = (20, 20, 20) if light else (240, 240, 240)
+    ImageDraw.Draw(img).text((12, named.box[1]), "PR", font=ImageFont.load_default(size=20), fill=ink)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    acronym = OcrLine("PR", (12.0, named.box[1], 40.0, named.box[3]))
+    ocr = OcrResult(ocr.width, ocr.height, (acronym, named, said))
+    # Dropped as initials, the grey Title Case term started a meeting main didn't (QA).
+    assert parse_caption_crop(ocr, Roster(), jpeg=buf.getvalue()) == []
+
+
+def test_the_text_column_is_where_most_rows_start() -> None:
+    """A row OCR boxes from a later word (starting right of the column) never moves the
+    column: taken as the rows' rightmost start, "OK" at the column read as the avatar."""
+    ocr, jpeg = panel_crop(("Oliver King", True), ("OK so we ship it", False), ("it", False))
+    late = OcrLine("and then the rest", (300.0, *ocr.lines[2].box[1:2], 520.0, ocr.lines[2].box[3]))
+    ocr = OcrResult(ocr.width, ocr.height, (*ocr.lines[:2], late))
+    (block,) = parse_caption_crop(ocr, _roster("Oliver King"), jpeg=None)
+    assert block.lines == ["OK so we ship it", "and then the rest"]
+
+
+def test_a_row_left_with_one_char_once_the_initials_go_is_noise() -> None:
+    ocr, jpeg = _initials_crop("Hana Bauer", "a", "text-row")
+    ocr = OcrResult(ocr.width, ocr.height, (*ocr.lines, OcrLine(_SAID, (50.0, 80.0, 400.0, 100.0))))
+    blocks = parse_caption_crop(ocr, _roster("Hana Bauer"), jpeg=None)
+    assert [b.lines for b in blocks] == [[_SAID]]
 
 
 def test_an_off_roster_zoom_name_with_no_avatar_stays_unnamed() -> None:
