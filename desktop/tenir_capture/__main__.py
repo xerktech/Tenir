@@ -25,6 +25,7 @@ from tenir_capture.config import (
     token_path,
 )
 from tenir_capture.frames import too_old
+from tenir_capture.logship import LogShipper
 
 log = logging.getLogger("tenir_capture")
 
@@ -143,29 +144,36 @@ def main(argv: list[str] | None = None) -> int:
     from tenir_capture import win
     from tenir_capture.runner import Runner, TokenRejected
 
-    platform = win.WindowsPlatform()
-    log.info("tenir-capture %s, server %s", __version__, cfg.server)
-    minimum = min_version(cfg)
-    if too_old(__version__, minimum):
-        platform.notify(
-            "Tenir capture",
-            f"This capture client ({__version__}) is older than the server needs "
-            f"({minimum}). Download the latest tenir-desktop exe from Tenir's releases.",
-        )
-        return EXIT_OUTDATED
-    runner = Runner(cfg, token, platform)
+    # Ship this run's lines to the api from here on (XERK-2875); the runner sends them.
+    shipper = LogShipper(redact=[w.title for w in cfg.windows])
+    log.addHandler(shipper)
     try:
-        runner.run()
-    except TokenRejected as exc:
-        platform.notify(
-            "Tenir capture", f"Tenir refused the device token ({exc}). Run tenir-capture --pair."
-        )
-        return EXIT_TOKEN
-    except KeyboardInterrupt:
-        pass
+        platform = win.WindowsPlatform()
+        log.info("tenir-capture %s, server %s", __version__, cfg.server)
+        minimum = min_version(cfg)
+        if too_old(__version__, minimum):
+            platform.notify(
+                "Tenir capture",
+                f"This capture client ({__version__}) is older than the server needs "
+                f"({minimum}). Download the latest tenir-desktop exe from Tenir's releases.",
+            )
+            return EXIT_OUTDATED
+        runner = Runner(cfg, token, platform, logs=shipper)
+        try:
+            runner.run()
+        except TokenRejected as exc:
+            platform.notify(
+                "Tenir capture",
+                f"Tenir refused the device token ({exc}). Run tenir-capture --pair.",
+            )
+            return EXIT_TOKEN
+        except KeyboardInterrupt:
+            pass
+        finally:
+            runner.close()
+        return 0
     finally:
-        runner.close()
-    return 0
+        log.removeHandler(shipper)
 
 
 if __name__ == "__main__":

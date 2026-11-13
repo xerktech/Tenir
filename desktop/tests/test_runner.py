@@ -555,3 +555,77 @@ def test_a_failing_window_logs_one_traceback_not_one_per_tick(zoom_frame, caplog
         clock["t"] = 70
         r.step(Sink())
     assert len([rec for rec in caplog.records if rec.levelno >= logging.ERROR]) == 2
+
+
+def test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_titles(
+    zoom_frame,
+) -> None:
+    import logging
+
+    from tenir_capture.logship import LogShipper
+
+    got: queue.Queue = queue.Queue()
+
+    def handler(ws: ServerConnection) -> None:
+        for raw in ws:
+            if isinstance(raw, str):
+                got.put(json.loads(raw))
+                ws.send(json.dumps({"type": "error", "message": "expected a binary frame"}))
+
+    shipper = LogShipper(redact=["Horizon 3", "Horizon 1"])
+    lg = logging.getLogger("tenir_capture")
+    level = lg.level
+    lg.setLevel(logging.INFO)  # main() sets INFO on the root; pytest leaves WARNING
+    lg.addHandler(shipper)
+    try:
+        platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+        with server(handler) as url:
+            r = runner(url, platform, logs=shipper, ship_every=0.05)
+            t, errors = run_in_thread(r)
+            lines: list[dict] = []
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not any(
+                "capturing" in x["message"] for x in lines
+            ):
+                try:
+                    lines += got.get(timeout=1)["lines"]
+                except queue.Empty:
+                    pass
+            # The server's error answer is not shipped back (it would loop forever).
+            time.sleep(0.3)
+            while not got.empty():
+                lines += got.get()["lines"]
+            r.stop.set()
+            t.join(timeout=5)
+    finally:
+        lg.removeHandler(shipper)
+        lg.setLevel(level)
+    assert not errors
+    messages = [x["message"] for x in lines]
+    assert "Org C: capturing" in messages
+    assert "Org A: paused (no visible window matches)" in messages
+    assert not any("server:" in m for m in messages)
+    assert not any("Horizon" in m for m in messages)
+
+
+def test_a_log_batch_that_fails_to_send_is_kept_for_the_next_socket() -> None:
+    import logging
+
+    from tenir_capture.logship import LogShipper
+
+    class Closed:
+        def send(self, data: object) -> None:
+            raise ConnectionError("gone")
+
+    shipper = LogShipper()
+    r = runner("http://x", FakePlatform([], None), logs=shipper)
+    shipper.emit(logging.LogRecord("tenir_capture", 20, "", 0, "Org C: capturing", None, None))
+    try:
+        r.ship_logs(Closed())  # type: ignore[arg-type]
+    except ConnectionError:
+        pass
+    else:
+        raise AssertionError("the send error must reach the session loop")
+    sink = Sink()
+    r.ship_logs(sink)  # type: ignore[arg-type]
+    assert "Org C: capturing" in sink.sent[0]

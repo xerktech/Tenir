@@ -11,7 +11,8 @@
     { "$ref": "#/$defs/ScreenFrameHeader" },
     { "$ref": "#/$defs/ScreenCadence" },
     { "$ref": "#/$defs/ScreenNotice" },
-    { "$ref": "#/$defs/ScreenRegion" }
+    { "$ref": "#/$defs/ScreenRegion" },
+    { "$ref": "#/$defs/ScreenLog" }
   ],
 
   "$defs": {
@@ -420,6 +421,40 @@
           "maximum": 1,
           "description": "Share of the frame's height to send, ending at the pane's lowest text: the newest few entries, under tenir-ocr's 16-box cap."
         }
+      }
+    },
+
+    "ScreenLog": {
+      "title": "ScreenLog",
+      "description": "Client -> server on /ws/screen (XERK-2875), a text frame. A batch of the capture client's own log lines (its lifecycle lines and warnings), so a failing meeting can be diagnosed without the meeting PC. The api logs each line tagged with the device and never answers it; lines past the per-device rate are dropped. Lines carry org names, never window titles, OCR text, caption text or frame content.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "lines"],
+      "properties": {
+        "type": { "const": "screen.log" },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/ScreenLogLine" }
+        },
+        "dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Lines the client dropped since its last batch (its buffer was full, e.g. while disconnected)."
+        }
+      }
+    },
+
+    "ScreenLogLine": {
+      "title": "ScreenLogLine",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "level", "message"],
+      "properties": {
+        "ts": { "type": "integer", "description": "When the client logged it (ms epoch)." },
+        "level": { "title": "ScreenLogLevel", "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
+        "message": { "type": "string", "maxLength": 2000 }
       }
     }
   }

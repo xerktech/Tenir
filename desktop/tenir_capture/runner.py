@@ -29,8 +29,10 @@ from tenir_capture.frames import (
     parse_server,
     resolve,
 )
+from tenir_capture.logship import SERVER_LOGGER, LogShipper
 
 log = logging.getLogger("tenir_capture")
+server_log = logging.getLogger(SERVER_LOGGER)  # the api's error replies: never shipped back
 
 # The api refuses binary frames over 4 MB (API_SCREEN_MAX_FRAME_BYTES).
 MAX_FRAME_BYTES = 4_000_000
@@ -84,6 +86,8 @@ class Runner:
     tick: float = 0.2
     refresh_every: float = 2.0
     stop: threading.Event = field(default_factory=threading.Event)
+    logs: LogShipper | None = None  # the client's log lines, sent to the api as screen.log
+    ship_every: float = 2.0
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -164,7 +168,7 @@ class Runner:
                 w.plan.finder.region = msg.region
                 log.info("%s: caption pane %s", w.spec.org_name, msg.region or "gone")
         elif msg.kind == "error":
-            log.warning("server: %s", msg.text)
+            server_log.warning("server: %s", msg.text)
 
     # -- sending --------------------------------------------------------------------------
 
@@ -202,6 +206,16 @@ class Runner:
                 sent += 1
         return sent
 
+    def ship_logs(self, ws: ClientConnection) -> None:
+        """Send one batch of buffered log lines; a failed send puts them back."""
+        if self.logs is None or (payload := self.logs.batch()) is None:
+            return
+        try:
+            ws.send(payload)
+        except Exception:
+            self.logs.requeue(payload)
+            raise
+
     def _receive(self, ws: ClientConnection, done: threading.Event) -> None:
         try:
             for raw in ws:
@@ -224,8 +238,12 @@ class Runner:
         receiver = threading.Thread(target=self._receive, args=(ws, done), daemon=True)
         receiver.start()
         try:
+            next_ship = self.clock()
             while not self.stop.is_set() and not done.is_set():
                 self.step(ws)
+                if self.clock() >= next_ship:
+                    self.ship_logs(ws)
+                    next_ship = self.clock() + self.ship_every
                 self.stop.wait(self.tick)
         except ConnectionClosed:
             pass  # a send raced the server's close; its close code decides below

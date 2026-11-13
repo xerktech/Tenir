@@ -14,7 +14,8 @@ export type TenirWsMessages =
   | ScreenFrameHeader
   | ScreenCadence
   | ScreenNotice
-  | ScreenRegion;
+  | ScreenRegion
+  | ScreenLog;
 export type ClientMessage = SessionStart | SessionEnd | Ping;
 /**
  * Which microphone the client is currently capturing from.
@@ -38,6 +39,7 @@ export type ServerMessage =
   | Pong
   | ErrorMessage;
 export type ScreenNoticeKind = "captions_off";
+export type ScreenLogLevel = "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
 
 /**
  * Client -> server. Opens a live session before any audio frames are sent.
@@ -323,4 +325,27 @@ export interface ScreenRegion {
    * Share of the frame's height to send, ending at the pane's lowest text: the newest few entries, under tenir-ocr's 16-box cap.
    */
   cropHeight?: number;
+}
+/**
+ * Client -> server on /ws/screen (XERK-2875), a text frame. A batch of the capture client's own log lines (its lifecycle lines and warnings), so a failing meeting can be diagnosed without the meeting PC. The api logs each line tagged with the device and never answers it; lines past the per-device rate are dropped. Lines carry org names, never window titles, OCR text, caption text or frame content.
+ */
+export interface ScreenLog {
+  type: "screen.log";
+  /**
+   * @minItems 1
+   * @maxItems 50
+   */
+  lines: [ScreenLogLine, ...ScreenLogLine[]];
+  /**
+   * Lines the client dropped since its last batch (its buffer was full, e.g. while disconnected).
+   */
+  dropped?: number;
+}
+export interface ScreenLogLine {
+  /**
+   * When the client logged it (ms epoch).
+   */
+  ts: number;
+  level: ScreenLogLevel;
+  message: string;
 }

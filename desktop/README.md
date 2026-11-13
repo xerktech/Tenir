@@ -37,7 +37,9 @@ speakers. Design and wire format: [`docs/meeting-captions.md`](../docs/meeting-c
    "Tenir capture". If Windows answers "Access is denied", run it from an elevated prompt.
    `--uninstall-startup` removes the task.
 
-Logs go to `%APPDATA%\Tenir\logs\capture.log`. Exit codes: 2 bad or missing config or token,
+Logs go to `%APPDATA%\Tenir\logs\capture.log`; the INFO and warning lines are also sent to
+the Tenir server's log (tagged `client`, with org names, never window titles or captions), so a
+failed meeting can be diagnosed there. Exit codes: 2 bad or missing config or token,
 3 device token refused (run `--pair` again), 4 client older than the server's minimum.
 
 ## What it does
