@@ -230,3 +230,25 @@ def test_a_pip_installed_logon_task_prefers_pythonw(
         [str(tmp_path / "pythonw.exe"), "-m", "tenir_capture"],
         [str(tmp_path / "python.exe")],
     ]
+
+
+def test_a_run_ships_its_log_lines_through_the_runner_and_unhooks_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_win: FakeWin
+) -> None:
+    import logging
+
+    from tenir_capture import runner
+    from tenir_capture.logship import LogShipper
+
+    monkeypatch.setenv("TENIR_DEVICE_TOKEN", "tok")
+    seen: list[LogShipper | None] = []
+
+    def run(self) -> None:
+        seen.append(self.logs)
+        assert self.logs in logging.getLogger("tenir_capture").handlers
+
+    monkeypatch.setattr(runner.Runner, "run", run)
+    path = write_config(tmp_path, "http://127.0.0.1:9")
+    assert cli.main(["--config", str(path)]) == 0
+    assert isinstance(seen[0], LogShipper)
+    assert seen[0] not in logging.getLogger("tenir_capture").handlers

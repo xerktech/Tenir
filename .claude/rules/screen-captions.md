@@ -52,6 +52,13 @@ paths:
   mount) and pull with `kubectl cp`; it saves client meeting screenshots, so set it for one
   meeting, then unset it and delete the files. `orgSiteKey` is client input: it is slugged.
   Tests: `test_screen_samples.py`.
+  - Set `API_SCREEN_SAMPLE_ORGS` to the org being tuned: unscoped, the operator's daily Teams
+    meetings fill the 2000-frame cap before the Zoom meeting starts (XERK-2820).
+  - "No captions showing" with captions on: the `screen captions off:` log line counts caption
+    crops received (before OCR), OCR failures, and crops yielding no block. 0 received = the
+    client found no box; all empty = the parser refused each (sample that org's next meeting).
+    Received minus the other two = crops that yielded blocks or whose parse raised (logged).
+    Tests: `test_crops_failing_ocr_on_the_socket_are_counted_in_the_captions_off_line`.
 - CPU work on frames (pane finding, parsing, merging) goes through `CPU_POOL.run(user, ...)`
   (`meetings.FairPool`, XERK-2737), never `run_in_executor`: jobs queue per user (household,
   owner) and users take turns, so crafted frames from several device tokens slow a live
@@ -62,6 +69,10 @@ paths:
   jobs measured in ms was the api pod starved of CPU (XERK-2798). Its CPU request was 10m with
   no limit; on a saturated node CFS weights it near zero (Prometheus: 0.03-0.07 cores while the
   node sat at 100%). Keep the request in ArgoCD `ai/tenir/deployment.yaml` at what a meeting needs.
+- Client log lines (`screen.log`, `client_log.py`, XERK-2875) are client input: one token bucket
+  per user, never per device token (mint/flood/revoke bypassed it, QA), and every line logged
+  pays for itself, the "lines dropped" notice too (free, `dropped` bought a line per message).
+  Validated strict from the raw text (lax took `"1"` for an int). Tests: `test_screen_client_log.py`.
 - Client-sent strings (`orgSiteKey`, `orgName`, window titles) go into log lines with `%r`, never
   `%s`: a device token may send newlines and forge log lines (XERK-2879). Tests:
   `test_a_site_key_cannot_forge_a_frame_failed_log_line` and its siblings.

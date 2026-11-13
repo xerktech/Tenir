@@ -469,6 +469,39 @@ class ScreenRegion(BaseModel):
     )
 
 
+class ScreenLogLevel(StrEnum):
+    DEBUG = 'DEBUG'
+    INFO = 'INFO'
+    WARNING = 'WARNING'
+    ERROR = 'ERROR'
+    CRITICAL = 'CRITICAL'
+
+
+class ScreenLogLine(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    ts: int = Field(..., description='When the client logged it (ms epoch).')
+    level: ScreenLogLevel = Field(..., title='ScreenLogLevel')
+    message: constr(max_length=2000)
+
+
+class ScreenLog(BaseModel):
+    """
+    Client -> server on /ws/screen (XERK-2875), a text frame. A batch of the capture client's own log lines (its lifecycle lines and warnings), so a failing meeting can be diagnosed without the meeting PC. The api logs each line tagged with the user and device and never answers it; lines past the per-user rate are dropped. Lines carry org names, never window titles, OCR text, caption text or frame content.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['screen.log']
+    lines: list[ScreenLogLine] = Field(..., max_length=50, min_length=1)
+    dropped: conint(ge=0) | None = Field(
+        None,
+        description='Lines the client dropped since its last batch (its buffer was full, e.g. while disconnected).',
+    )
+
+
 class TenirWsMessages(
     RootModel[
         ClientMessage
@@ -477,6 +510,7 @@ class TenirWsMessages(
         | ScreenCadence
         | ScreenNotice
         | ScreenRegion
+        | ScreenLog
     ]
 ):
     root: (
@@ -486,6 +520,7 @@ class TenirWsMessages(
         | ScreenCadence
         | ScreenNotice
         | ScreenRegion
+        | ScreenLog
     ) = Field(
         ...,
         description='Single source of truth for the tenir WebSocket message contract between the clients (TS) and the FastAPI api (Python). TS types and Pydantic models are generated from this file; do not hand-edit the generated outputs. Audio is sent as raw BINARY WebSocket frames (16kHz, signed 16-bit little-endian, mono PCM); every JSON frame below is a control or result message.',

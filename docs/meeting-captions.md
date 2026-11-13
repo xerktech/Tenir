@@ -148,7 +148,7 @@ match nothing, which the probe reports as "no visible window matches".
 
 The capture client (XERK-2506) streams to `/ws/screen`; the api OCRs, parses and stores. Code in
 `api/src/api/screen/`, contract in `contract/ws-messages.schema.json` (`ScreenFrameHeader`,
-`ScreenCadence`, `ScreenNotice`, `ScreenRegion`).
+`ScreenCadence`, `ScreenNotice`, `ScreenRegion`, `ScreenLog`).
 
 **Wire format: hybrid.** The spike sends only caption-box crops, but speaker validation needs
 the tile names and the active-speaker border, which are outside the crop. So frames carry
@@ -186,6 +186,27 @@ newest frame waits for OCR; a newer one replaces it (`screen.frames_dropped`).
 window's meeting starts it sends that window `API_SCREEN_MEETING_FPS` (1), and the idle rate
 again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (30).
 
+**Client logs** (`screen.log`, XERK-2875). The capture client sends its own INFO+ log lines
+(capturing, paused, cadence, caption pane, connect failures, warnings) as text frames, so a
+meeting that stored nothing can be diagnosed without the meeting PC. The api logs each line on
+`api.screen.client` as `client <household>/<user> device <jti-prefix>: [<LEVEL>] <client time>
+"<message>"` (in Loki beside the api's own `api.screen` lines) and never answers it. The client
+time matters: lines buffered through an outage arrive after it.
+- Client: a bounded buffer (200 lines, oldest dropped and counted in `dropped`), at most one
+  50-line batch every 2 s; logging never waits on the socket. Window titles (configured and
+  resolved, any case) are masked; the client reads no text, so lines hold org names, never
+  OCR or caption text. Tracebacks are shipped too; a line past 2000 chars keeps its head and
+  its tail (the exception line).
+- The client never ships the api's own `error` replies back: an api without `screen.log`
+  answers each batch with one, which would otherwise become the next batch.
+- Api: device tokens are client input. The batch is validated strictly (50 lines of 2000
+  chars); a text frame over 256 kB (UTF-8) is refused unparsed. One token bucket per user,
+  shared by all their device tokens and sockets: a 200-line burst refilled at 1 line/s; excess
+  is dropped (`screen.client_log_dropped`) and a notice counts it once the rate recovers. Every
+  logged line pays, the notice too. The message is quoted with `"`, `\` and control
+  characters escaped, so a line can't forge another log line or another user's prefix.
+- Buckets live in the api process (fine at one worker, as revoke).
+
 **Sampling real frames.** `API_SCREEN_SAMPLE_DIR` (empty: off) saves every frame the socket
 reads, as `<dir>/<platform>-<org>-<hash>/<ts>-<run>-<n>-<region>.jpg` plus a `.json` with its
 OCR lines, up to `API_SCREEN_SAMPLE_MAX` (2000) frames and 1 GB per process, on its own thread
@@ -193,6 +214,8 @@ OCR lines, up to `API_SCREEN_SAMPLE_MAX` (2000) frames and 1 GB per process, on 
 failed writes in a row and warns once if a write stalls. It exists to re-tune the parsers' pixel
 thresholds on real crops (XERK-2705). The files are screenshots of client meetings: turn it on
 for one meeting, copy them off, delete them and turn it off. Never commit them.
+`API_SCREEN_SAMPLE_ORGS` (comma-separated `orgSiteKey`s, exact; empty: every org) limits it to
+the org being tuned, so other clients' meetings don't fill the cap (XERK-2820).
 
 **Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a
 `screen`-scoped token for the caller (`API_AUTH_DEVICE_TOKEN_TTL_SECONDS`, 365 days). It opens
@@ -360,6 +383,8 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   it: a captioned meeting that goes quiet isn't "captions off". The cost: captions turned off
   mid-meeting, or a next meeting without them, is warned ~12 min in, not 2 (OCR can't tell
   silence from captions off).
+- **Logs**: `%APPDATA%\Tenir\logs\capture.log` locally, and the INFO+ lines over the
+  socket to the api's log (`screen.log`, *Screen ingest* above).
 - **Version gate**: `GET /status` carries `clients.desktop.minVersion`
   (`API_DESKTOP_MIN_VERSION`); an older client notifies and exits, an unreachable `/status`
   doesn't block start.
