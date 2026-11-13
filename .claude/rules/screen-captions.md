@@ -62,3 +62,6 @@ paths:
   jobs measured in ms was the api pod starved of CPU (XERK-2798). Its CPU request was 10m with
   no limit; on a saturated node CFS weights it near zero (Prometheus: 0.03-0.07 cores while the
   node sat at 100%). Keep the request in ArgoCD `ai/tenir/deployment.yaml` at what a meeting needs.
+- Client-sent strings (`orgSiteKey`, `orgName`, window titles) go into log lines with `%r`, never
+  `%s`: a device token may send newlines and forge log lines (XERK-2879). Tests:
+  `test_a_site_key_cannot_forge_a_frame_failed_log_line` and its siblings.

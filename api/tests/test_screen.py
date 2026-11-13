@@ -1496,6 +1496,48 @@ def test_store_failure_on_a_frame_keeps_the_socket(screen, monkeypatch: pytest.M
     assert metrics.snapshot()["counters"]["screen.frame_errors"] == 1
 
 
+# A forged log line a device could inject through its window's site key (XERK-2879).
+FORGED_SITE = "tesoro\nERROR api.screen forged line"
+
+
+def test_a_site_key_cannot_forge_a_frame_failed_log_line(
+    screen, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """orgSiteKey is client input: logged with %r, its newline can't start a line of its own."""
+    from api.main import app
+
+    store, ocr, token, admin = screen
+
+    def boom(*a, **k):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(store, "speaker_aliases", boom)
+    with caplog.at_level("ERROR", logger="api.screen"):
+        with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+            jpeg = ocr.register(unique_jpeg(1), crop("Priya Raman", "hello there"))
+            ws.send_bytes(envelope(header(int(time.time() * 1000), "caption", FORGED_SITE), jpeg))
+            wait_handled(1)
+    (rec,) = [r for r in caplog.records if r.message.startswith("screen frame failed")]
+    assert "\n" not in rec.getMessage()
+    assert repr(FORGED_SITE) in rec.getMessage()
+
+
+def test_a_site_key_cannot_forge_a_meeting_started_log_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> None:
+        t = _tracker(InMemoryConversationStore())
+        t.meta = ScreenMeta(FORGED_SITE, "Tesoro", "teams")
+        with caplog.at_level(logging.INFO, logger="api.screen"):
+            await t.on_caption([blk("Ana Ruiz", "hello there")], 0)
+
+    asyncio.run(run())
+    (rec,) = [r for r in caplog.records if r.message.startswith("screen meeting started")]
+    assert "\n" not in rec.getMessage()
+    assert repr(FORGED_SITE) in rec.getMessage()
+
+
 def test_meeting_start_for_a_deleted_account_closes_the_socket(screen) -> None:
     from api.auth import get_user_store
     from api.main import app

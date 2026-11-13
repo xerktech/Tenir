@@ -280,7 +280,7 @@ class TurmaDelivery:
                 await self._set(household, cid, "sent", note)
                 self._backoff.pop(cid, None)
                 metrics.incr("turma.meetings_sent")
-                log.info("meeting %s delivered to turma (%s)", cid, conv.org_site_key)
+                log.info("meeting %s delivered to turma (%r)", cid, conv.org_site_key)
                 self._titled.discard(cid)
                 return "sent"
             reason = _hub_error(resp)
