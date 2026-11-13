@@ -1065,11 +1065,22 @@ def test_ocr_client_is_built_from_settings(monkeypatch: pytest.MonkeyPatch) -> N
         (struct.pack(">I", 99) + b"{}", "bad header length"),
         (envelope({"type": "screen.frame"}, tiny_jpeg()), "bad frame header"),
         (envelope(header(1, "caption"), b"PNG..."), "not a JPEG"),
+        # XERK-2881: a control char in the site key (NUL breaks Postgres TEXT) is refused.
+        (envelope(header(1, "caption", "tes\x00oro"), tiny_jpeg()), "bad frame header"),
+        (envelope(header(1, "caption", "tesoro\n"), tiny_jpeg()), "bad frame header"),
+        (envelope(header(1, "caption", "tes\x7foro"), tiny_jpeg()), "bad frame header"),
+        (envelope(header(1, "caption", "tes\x85oro"), tiny_jpeg()), "bad frame header"),
     ],
 )
 def test_bad_frames_are_refused(data: bytes, error: str) -> None:
     with pytest.raises(screen_ws.FrameError, match=error):
         screen_ws.split_frame(data)
+
+
+@pytest.mark.parametrize("site", ["tesoro", "Site.Key 1", "café-ü", "x" * 128])
+def test_printable_site_keys_are_accepted(site: str) -> None:
+    head, _ = screen_ws.split_frame(envelope(header(1, "caption", site), tiny_jpeg()))
+    assert head.orgSiteKey == site
 
 
 # --- device tokens -------------------------------------------------------------------------
@@ -1496,8 +1507,10 @@ def test_store_failure_on_a_frame_keeps_the_socket(screen, monkeypatch: pytest.M
     assert metrics.snapshot()["counters"]["screen.frame_errors"] == 1
 
 
-# A forged log line a device could inject through its window's site key (XERK-2879).
-FORGED_SITE = "tesoro\nERROR api.screen forged line"
+# A forged log line a device could inject through its window's site key (XERK-2879). The
+# contract refuses control chars (XERK-2881), but U+2028 passes it and splits a line in many log
+# viewers, so the %r logging still has to hold.
+FORGED_SITE = "tesoro\u2028ERROR api.screen forged line"
 
 
 def test_a_site_key_cannot_forge_a_frame_failed_log_line(
@@ -1519,7 +1532,7 @@ def test_a_site_key_cannot_forge_a_frame_failed_log_line(
             ws.send_bytes(envelope(header(int(time.time() * 1000), "caption", FORGED_SITE), jpeg))
             wait_handled(1)
     (rec,) = [r for r in caplog.records if r.message.startswith("screen frame failed")]
-    assert "\n" not in rec.getMessage()
+    assert "\u2028" not in rec.getMessage()
     assert repr(FORGED_SITE) in rec.getMessage()
 
 
@@ -1534,7 +1547,7 @@ def test_a_site_key_cannot_forge_a_meeting_started_log_line(
 
     asyncio.run(run())
     (rec,) = [r for r in caplog.records if r.message.startswith("screen meeting started")]
-    assert "\n" not in rec.getMessage()
+    assert "\u2028" not in rec.getMessage()
     assert repr(FORGED_SITE) in rec.getMessage()
 
 

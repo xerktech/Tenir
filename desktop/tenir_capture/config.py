@@ -18,6 +18,8 @@ from urllib.parse import urlsplit, urlunsplit
 PLATFORMS = ("zoom", "teams")
 # The short org label Turma resolves in POST /api/orgs/<org>/meetings (XERK-2638).
 ORG_LABEL = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
+# The ScreenFrameHeader orgSiteKey pattern: no C0/DEL/C1 control characters (XERK-2881).
+CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 class ConfigError(ValueError):
@@ -75,7 +77,10 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
 def _org(w: dict, where: str) -> str:
     """The window's org: its Turma label ("org"), else a legacy Turma site key ("orgSiteKey")."""
     if "org" not in w and "orgSiteKey" in w:
-        return _text(w, "orgSiteKey", where, 128)
+        key = _text(w, "orgSiteKey", where, 128)
+        if CONTROL_CHAR.search(key):
+            raise ConfigError(f"{where}: orgSiteKey must not contain control characters")
+        return key
     label = _text(w, "org", where, 128)
     if not ORG_LABEL.fullmatch(label):
         raise ConfigError(
