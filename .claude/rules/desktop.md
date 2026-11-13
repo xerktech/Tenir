@@ -49,5 +49,5 @@ paths:
     `tenir_capture`: an api refusing `screen.log` answers every batch with an error, and
     shipped, that error was the next batch, forever. Test:
     `test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_titles`.
-  - Never log a window title or any screen text: lines leave the PC. Titles from `capture.json`
-    are masked as a backstop only.
+  - Never log a window title or any screen text: lines leave the PC. Configured and resolved
+    titles are masked (any case, as `resolve()` matches) as a backstop only.

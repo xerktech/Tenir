@@ -327,7 +327,7 @@ export interface ScreenRegion {
   cropHeight?: number;
 }
 /**
- * Client -> server on /ws/screen (XERK-2875), a text frame. A batch of the capture client's own log lines (its lifecycle lines and warnings), so a failing meeting can be diagnosed without the meeting PC. The api logs each line tagged with the device and never answers it; lines past the per-device rate are dropped. Lines carry org names, never window titles, OCR text, caption text or frame content.
+ * Client -> server on /ws/screen (XERK-2875), a text frame. A batch of the capture client's own log lines (its lifecycle lines and warnings), so a failing meeting can be diagnosed without the meeting PC. The api logs each line tagged with the user and device and never answers it; lines past the per-user rate are dropped. Lines carry org names, never window titles, OCR text, caption text or frame content.
  */
 export interface ScreenLog {
   type: "screen.log";

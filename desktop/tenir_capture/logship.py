@@ -7,13 +7,15 @@ socket. Logging never waits on the network: a full buffer drops its oldest line 
 next batch says how many went.
 
 The client reads no text off the screen, so its lines hold org names, never OCR or caption
-text. Configured window titles are masked anyway, in case an exception message carries one.
+text. Window titles (configured and resolved, any case) are masked anyway, in case an
+exception message carries one.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from collections import deque
 
@@ -32,19 +34,32 @@ class LogShipper(logging.Handler):
     def __init__(self, redact: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(level=logging.INFO)
         self.setFormatter(logging.Formatter("%(message)s"))
-        # Longest first, so a title containing another is masked whole.
-        self._redact = sorted({t for t in redact if t}, key=len, reverse=True)
+        self._titles: set[str] = set()
+        self._pattern: re.Pattern[str] | None = None
+        for title in redact:
+            self.mask(title)
         self._lines: deque[dict] = deque()
         self._dropped = 0
         self._mu = threading.Lock()
+
+    def mask(self, title: str) -> None:
+        """Mask this window title in every later line (the runner adds each resolved title)."""
+        if not title or title in self._titles:
+            return
+        self._titles.add(title)
+        # Longest first, so a title containing another is masked whole; any case, as resolve().
+        alts = sorted(self._titles, key=len, reverse=True)
+        self._pattern = re.compile("|".join(map(re.escape, alts)), re.IGNORECASE)
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.name == SERVER_LOGGER or record.name.startswith(SERVER_LOGGER + "."):
             return
         try:
             text = self.format(record)
-            for title in self._redact:
-                text = text.replace(title, MASK)
+            if (pattern := self._pattern) is not None:
+                text = pattern.sub(MASK, text)
+            # A lone surrogate made the api refuse the whole batch (QA).
+            text = text.encode("utf-8", "replace").decode("utf-8")
             line = {
                 "ts": int(record.created * 1000),
                 "level": record.levelname

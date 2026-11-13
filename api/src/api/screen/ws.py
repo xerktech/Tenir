@@ -463,7 +463,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 lanes[lane_key].put(header, jpeg)
                 continue
             text = frame.get("text") or ""
-            if len(text) > MAX_TEXT_BYTES:
+            if len(text) > MAX_TEXT_BYTES or len(text.encode("utf-8", "replace")) > MAX_TEXT_BYTES:
                 await error("text frame too large")
                 continue
             try:
@@ -475,7 +475,8 @@ async def screen_ws(ws: WebSocket) -> None:
                 await send(Pong(type="pong", t=t if isinstance(t, int) else None))
             elif isinstance(msg, dict) and msg.get("type") == "screen.log":
                 try:
-                    batch = ScreenLog.model_validate(msg)
+                    # Strict: the schema's integers and strings, never "1" for 1 (QA).
+                    batch = ScreenLog.model_validate_json(text, strict=True)
                 except ValidationError as exc:
                     await error(f"bad screen.log: {exc.errors()[0]['msg']}")
                     continue

@@ -109,6 +109,8 @@ class Runner:
             if title != w.title or (w.capture is not None and not w.capture.alive()):
                 self._stop_capture(w)
                 w.title = title
+                if title is not None and self.logs is not None:
+                    self.logs.mask(title)
                 if title is not None:
                     try:
                         w.capture = self.platform.capture(title)

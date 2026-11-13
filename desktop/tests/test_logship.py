@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from tenir_capture import logship
 from tenir_capture.logship import LogShipper
@@ -36,14 +37,35 @@ def test_info_and_warnings_ship_debug_and_the_servers_own_errors_do_not() -> Non
     assert shipper.batch() is None
 
 
-def test_configured_window_titles_are_masked_and_lines_capped() -> None:
+def test_window_titles_are_masked_in_any_case_and_lines_capped() -> None:
     shipper = LogShipper(redact=["Horizon 3", "Horizon 3 - Org C client", ""])
     lg = logger_with(shipper)
-    lg.warning("capture failed on Horizon 3 - Org C client and Horizon 3")
+    lg.warning("capture failed on Horizon 3 - Org C client and HORIZON 3")
+    shipper.mask("Zoom Meeting - Client Corp")  # a resolved title, added by the runner
+    lg.warning("WGC refused 'zoom meeting - client corp'")
     lg.info("x" * 5000)
     lines = json.loads(shipper.batch() or "")["lines"]
     assert lines[0]["message"] == "capture failed on <window> and <window>"
-    assert len(lines[1]["message"]) == logship.MAX_LINE
+    assert lines[1]["message"] == "WGC refused '<window>'"
+    assert len(lines[2]["message"]) == logship.MAX_LINE
+
+
+def test_a_lone_surrogate_is_replaced_so_the_api_takes_the_batch() -> None:
+    shipper = LogShipper()
+    logger_with(shipper).warning("bad \ud800 char")
+    (line,) = json.loads(shipper.batch() or "")["lines"]
+    line["message"].encode("utf-8")  # strict: would raise on a surrogate
+
+
+def test_batches_fit_the_contract_the_api_validates() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[2] / "contract" / "ws-messages.schema.json").read_text()
+    )["$defs"]
+    assert logship.BATCH <= schema["ScreenLog"]["properties"]["lines"]["maxItems"]
+    message = schema["ScreenLogLine"]["properties"]["message"]
+    assert logship.MAX_LINE <= message["maxLength"]
+    levels = set(schema["ScreenLogLine"]["properties"]["level"]["enum"])
+    assert {"INFO", "WARNING", "ERROR", "CRITICAL"} <= levels
 
 
 def test_a_traceback_ships_with_its_line() -> None:
@@ -72,17 +94,19 @@ def test_a_full_buffer_drops_its_oldest_lines_and_says_how_many() -> None:
 def test_a_batch_that_failed_to_send_goes_back_ahead_of_newer_lines() -> None:
     shipper = LogShipper()
     lg = logger_with(shipper)
-    lg.info("old")
+    lg.info("old 1")
+    lg.info("old 2")
     payload = shipper.batch()
     assert payload is not None
     lg.info("new")
     shipper.requeue(payload)
-    assert [x["message"] for x in json.loads(shipper.batch() or "")["lines"]] == ["old", "new"]
+    got = [x["message"] for x in json.loads(shipper.batch() or "")["lines"]]
+    assert got == ["old 1", "old 2", "new"]
     # Requeued into a full buffer: what doesn't fit is counted, not kept.
     for i in range(logship.BUFFER):
         lg.info("fill %d", i)
     shipper.requeue(payload)
-    assert json.loads(shipper.batch() or "")["dropped"] == 1
+    assert json.loads(shipper.batch() or "")["dropped"] == 2
 
 
 def test_a_line_that_fails_to_format_never_reaches_the_caller() -> None:

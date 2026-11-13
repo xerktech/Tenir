@@ -572,13 +572,13 @@ def test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_tit
                 got.put(json.loads(raw))
                 ws.send(json.dumps({"type": "error", "message": "expected a binary frame"}))
 
-    shipper = LogShipper(redact=["Horizon 3", "Horizon 1"])
+    shipper = LogShipper()  # no configured titles: the runner masks the ones it resolves
     lg = logging.getLogger("tenir_capture")
     level = lg.level
     lg.setLevel(logging.INFO)  # main() sets INFO on the root; pytest leaves WARNING
     lg.addHandler(shipper)
     try:
-        platform = FakePlatform(["Horizon 3"], zoom_frame(caption=True))
+        platform = FakePlatform(["Zoom - Horizon 3 desktop"], zoom_frame(caption=True))
         with server(handler) as url:
             r = runner(url, platform, logs=shipper, ship_every=0.05)
             t, errors = run_in_thread(r)
@@ -591,6 +591,8 @@ def test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_tit
                     lines += got.get(timeout=1)["lines"]
                 except queue.Empty:
                     pass
+            # A title resolved at run time is masked in any case.
+            lg.warning("WGC lost 'zoom - horizon 3 DESKTOP'")
             # The server's error answer is not shipped back (it would loop forever).
             time.sleep(0.3)
             while not got.empty():
@@ -605,7 +607,8 @@ def test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_tit
     assert "Org C: capturing" in messages
     assert "Org A: paused (no visible window matches)" in messages
     assert not any("server:" in m for m in messages)
-    assert not any("Horizon" in m for m in messages)
+    assert not any("horizon" in m.casefold() for m in messages)
+    assert "WGC lost '<window>'" in messages
 
 
 def test_a_log_batch_that_fails_to_send_is_kept_for_the_next_socket() -> None:

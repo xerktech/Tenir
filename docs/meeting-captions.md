@@ -189,17 +189,22 @@ again when it ends. Full frames every `API_SCREEN_FULL_FRAME_SECONDS` (30).
 **Client logs** (`screen.log`, XERK-2875). The capture client sends its own INFO+ log lines
 (capturing, paused, cadence, caption pane, connect failures, warnings) as text frames, so a
 meeting that stored nothing can be diagnosed without the meeting PC. The api logs each line on
-`api.screen.client` as `client <household>/<user> device <jti-prefix>: [<LEVEL>] <message>`
-(in Loki beside the api's own `api.screen` lines) and never answers it.
+`api.screen.client` as `client <household>/<user> device <jti-prefix>: [<LEVEL>] <client time>
+"<message>"` (in Loki beside the api's own `api.screen` lines) and never answers it. The client
+time matters: lines buffered through an outage arrive after it.
 - Client: a bounded buffer (200 lines, oldest dropped and counted in `dropped`), at most one
-  50-line batch every 2 s; logging never waits on the socket. Configured window titles are
-  masked; the client reads no text, so lines hold org names, never OCR or caption text.
+  50-line batch every 2 s; logging never waits on the socket. Window titles (configured and
+  resolved, any case) are masked; the client reads no text, so lines hold org names, never
+  OCR or caption text. Tracebacks are shipped too (file paths only).
 - The client never ships the api's own `error` replies back: an api without `screen.log`
   answers each batch with one, which would otherwise become the next batch.
-- Api: device tokens are client input. The contract caps a batch (50 lines of 2000 chars), a
-  text frame over 256 kB is refused unparsed, and each device token gets a 200-line burst
-  refilled at 1 line/s (excess dropped, `screen.client_log_dropped`, and logged once the rate
-  recovers). Control characters are escaped, so a line can't forge a second log line.
+- Api: device tokens are client input. The batch is validated strictly (50 lines of 2000
+  chars); a text frame over 256 kB (UTF-8) is refused unparsed. One token bucket per user,
+  shared by all their device tokens and sockets: a 200-line burst refilled at 1 line/s; excess
+  is dropped (`screen.client_log_dropped`) and a notice counts it once the rate recovers. Every
+  logged line pays, the notice too. The message is quoted with `"`, `\` and control
+  characters escaped, so a line can't forge another log line or another user's prefix.
+- Buckets live in the api process (fine at one worker, as revoke).
 
 **Sampling real frames.** `API_SCREEN_SAMPLE_DIR` (empty: off) saves every frame the socket
 reads, as `<dir>/<platform>-<org>-<hash>/<ts>-<run>-<n>-<region>.jpg` plus a `.json` with its
