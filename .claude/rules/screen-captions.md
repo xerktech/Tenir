@@ -57,6 +57,8 @@ paths:
   - "No captions showing" with captions on: the `screen captions off:` log line counts caption
     crops received (before OCR), OCR failures, and crops yielding no block. 0 received = the
     client found no box; all empty = the parser refused each (sample that org's next meeting).
+    Received minus the other two = crops that yielded blocks or whose parse raised (logged).
+    Tests: `test_crops_failing_ocr_on_the_socket_are_counted_in_the_captions_off_line`.
 - CPU work on frames (pane finding, parsing, merging) goes through `CPU_POOL.run(user, ...)`
   (`meetings.FairPool`, XERK-2737), never `run_in_executor`: jobs queue per user (household,
   owner) and users take turns, so crafted frames from several device tokens slow a live
