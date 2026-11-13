@@ -41,6 +41,7 @@ Server → client: `session.ready`, `caption.partial`, `caption.final`, `cue`,
 `pong`, `error`.
 
 `/ws/screen` (meeting-caption capture, XERK-2505) is a separate socket: the client sends
-binary frames (`>I` header length + `ScreenFrameHeader` JSON + JPEG) and `ping`; the server
+binary frames (`>I` header length + `ScreenFrameHeader` JSON + JPEG), `ping` and `screen.log`
+(its own log lines, never answered); the server
 sends `screen.cadence`, `screen.notice`, `screen.region`, `pong`, `error`. Its messages are top-level defs, outside the `/ws`
 `ClientMessage`/`ServerMessage` unions, so the web and mobile clients are unaffected.

@@ -69,3 +69,7 @@ paths:
   jobs measured in ms was the api pod starved of CPU (XERK-2798). Its CPU request was 10m with
   no limit; on a saturated node CFS weights it near zero (Prometheus: 0.03-0.07 cores while the
   node sat at 100%). Keep the request in ArgoCD `ai/tenir/deployment.yaml` at what a meeting needs.
+- Client log lines (`screen.log`, `client_log.py`, XERK-2875) are client input: one token bucket
+  per user, never per device token (mint/flood/revoke bypassed it, QA), and every line logged
+  pays for itself, the "lines dropped" notice too (free, `dropped` bought a line per message).
+  Validated strict from the raw text (lax took `"1"` for an int). Tests: `test_screen_client_log.py`.

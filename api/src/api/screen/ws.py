@@ -28,12 +28,13 @@ from api.contract import (
     Pong,
     ScreenCadence,
     ScreenFrameHeader,
+    ScreenLog,
     ScreenNotice,
     ScreenRegion,
 )
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
-from api.screen import samples, teams, teams_pane, zoom
+from api.screen import client_log, samples, teams, teams_pane, zoom
 from api.screen.meetings import (
     CPU_POOL,
     AccountGone,
@@ -56,6 +57,9 @@ _MAX_HEADER = 4096
 _PARSERS = {Platform.zoom: zoom, Platform.teams: teams}
 
 _ocr: OcrClient | None = None
+# A text frame (ping, screen.log) past this is refused unparsed: 50 log lines of 2000
+# characters, JSON-escaped, fit well under it.
+MAX_TEXT_BYTES = 256_000
 # Windows (orgSiteKeys) one socket may feed: the capture PC watches four. Bounds the lanes,
 # and the decoded frames they hold, that one device token can open.
 MAX_WINDOWS = 8
@@ -463,15 +467,32 @@ async def screen_ws(ws: WebSocket) -> None:
                     lanes[lane_key] = _Lane(handle)
                 lanes[lane_key].put(header, jpeg)
                 continue
+            text = frame.get("text") or ""
+            if len(text) > MAX_TEXT_BYTES or len(text.encode("utf-8", "replace")) > MAX_TEXT_BYTES:
+                await error("text frame too large")
+                continue
             try:
-                msg = json.loads(frame.get("text") or "")
+                msg = json.loads(text)
             except ValueError:
                 msg = None
             if isinstance(msg, dict) and msg.get("type") == "ping":
                 t = msg.get("t")
                 await send(Pong(type="pong", t=t if isinstance(t, int) else None))
+            elif isinstance(msg, dict) and msg.get("type") == "screen.log":
+                try:
+                    # Strict: the schema's integers and strings, never "1" for 1 (QA).
+                    batch = ScreenLog.model_validate_json(text, strict=True)
+                except ValidationError as exc:
+                    await error(f"bad screen.log: {exc.errors()[0]['msg']}")
+                    continue
+                client_log.accept(
+                    batch,
+                    household=principal.household,
+                    user_id=principal.user_id,
+                    device=principal.token_id or principal.user_id,
+                )
             else:
-                await error("expected a binary frame or ping")
+                await error("expected a binary frame, ping or screen.log")
     except WebSocketDisconnect:
         # The client went away mid-send (even before the first cadence): a normal end,
         # not an ASGI error; the finally below still cleans up.
