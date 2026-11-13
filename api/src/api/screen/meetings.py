@@ -543,7 +543,7 @@ class MeetingTracker:
         self._stored_people = set()
         metrics.incr("screen.meetings_started")
         log.info(
-            "screen meeting started: %s (%s, %s)",
+            "screen meeting started: %s (%r, %s)",
             conversation_id,
             self.meta.org_site_key,
             self.meta.platform,

@@ -380,7 +380,7 @@ async def screen_ws(ws: WebSocket) -> None:
         except Exception:
             # A store blip must not drop the socket: the window keeps streaming and the
             # next frame retries (a failed meeting start is retried by the next caption).
-            log.exception("screen frame failed (%s)", header.orgSiteKey)
+            log.exception("screen frame failed (%r)", header.orgSiteKey)
             metrics.incr("screen.frame_errors")
 
     lanes: dict[tuple[str, str], _Lane] = {}

@@ -73,3 +73,6 @@ paths:
   per user, never per device token (mint/flood/revoke bypassed it, QA), and every line logged
   pays for itself, the "lines dropped" notice too (free, `dropped` bought a line per message).
   Validated strict from the raw text (lax took `"1"` for an int). Tests: `test_screen_client_log.py`.
+- Client-sent strings (`orgSiteKey`, `orgName`, window titles) go into log lines with `%r`, never
+  `%s`: a device token may send newlines and forge log lines (XERK-2879). Tests:
+  `test_a_site_key_cannot_forge_a_frame_failed_log_line` and its siblings.

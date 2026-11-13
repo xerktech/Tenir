@@ -798,3 +798,18 @@ def test_a_failed_title_is_asked_once_even_across_retries(clock) -> None:
         clock["now"] += 3600
     assert len(hub.requests) == 3 and asked == ["c1"]
     assert d._titled == set()  # forgotten once delivered
+
+
+def test_a_site_key_cannot_forge_the_delivered_log_line(clock, caplog) -> None:
+    """The site key comes from the capture client: logged with %r (XERK-2879)."""
+    store = InMemoryConversationStore()
+    site = "acme\nERROR api.screen forged line"
+    store.create("default", "c1", owner="u1", screen=ScreenMeta(site, "Acme", "zoom"))
+    store.add_segment("default", "c1", Segment("s0", "hello there", 0, 900, speaker="Ana"))
+    store.set_meeting_title("default", "c1", "Weekly sync")
+    store.finish("default", "c1")
+    d = _delivery(store, Hub(_ok()), clock)
+    with caplog.at_level("INFO", logger="api.screen.turma"):
+        assert asyncio.run(d.run_once()) == 1
+    (rec,) = [r for r in caplog.records if "delivered to turma" in r.getMessage()]
+    assert "\n" not in rec.getMessage() and repr(site) in rec.getMessage()
