@@ -284,11 +284,7 @@ def _score(shown: _Shown, known: _Line, budget: MergeBudget, *, growable: bool) 
     r = budget.ratio(a, b, _SAME_LINE)
     if r >= _SAME_LINE:
         return 2 * r
-    if (
-        growable
-        and len(a) > len(b)
-        and budget.ratio(a[: len(b)], b, _MISREAD_LIKE) >= _MISREAD_LIKE
-    ):
+    if growable and len(a) > len(b) and budget.ratio(a[: len(b)], b, _MISREAD_LIKE) >= _MISREAD_LIKE:
         # A live line that grew while snapshots were dropped and is misread on top: its
         # known start still lines up. A weak match, but better than a duplicate.
         return _MATCH - 1.5
@@ -386,7 +382,8 @@ def _reread_below(shown: list[_Shown], i: int, tail: list[_Line], k: int) -> boo
     below = sum(1 for s in shown[i:] if _twin(s, known))
     after = sum(1 for ln in tail[k + 1 :] if ln.norm == known.norm)
     return below > after and any(
-        ln.norm == known.norm and ln.speaker == known.speaker and not ln.carried for ln in tail[:k]
+        ln.norm == known.norm and ln.speaker == known.speaker and not ln.carried
+        for ln in tail[:k]
     )
 
 
@@ -802,12 +799,7 @@ def _revise_runs(
                     continue
                 score = []
                 if c := _claims(
-                    shown,
-                    rows,
-                    tail,
-                    cands[q:e],
-                    budget,
-                    folded,
+                    shown, rows, tail, cands[q:e], budget, folded,
                     # A later start never skips rows: a garbled re-read above a repeat
                     # ("~kay" / "okay") let the repeat claim the old line (Zoom fuzz).
                     lead=fresh and recent and not later,
@@ -836,13 +828,7 @@ def _revise_runs(
                 alt_folded: list[tuple[int, tuple[int, ...]]] = []
                 alt_score: list[int] = []
                 alt = _claims(
-                    shown,
-                    rows,
-                    tail,
-                    cands[s0:s1],
-                    budget,
-                    alt_folded,
-                    lead=fresh and recent,
+                    shown, rows, tail, cands[s0:s1], budget, alt_folded, lead=fresh and recent,
                     score=alt_score,
                 )
                 if alt and alt_score[0] > score[0]:
@@ -1403,13 +1389,8 @@ class CaptionMerger:
         self._grows = []
         # The known line each row re-reads, revises or misreads, for ``_apply_grows``.
         row_known = [
-            tail[a]
-            if a is not None
-            else tail[revised[k]]
-            if k in revised
-            else tail[misreads[k]]
-            if k in misreads
-            else None
+            tail[a] if a is not None else tail[revised[k]] if k in revised else
+            tail[misreads[k]] if k in misreads else None
             for k, a in enumerate(aligned)
         ]
         # Whether shown[0] is the crop's top row: _shown keeps only the bottom _MAX_SHOWN.
@@ -2156,7 +2137,9 @@ class CaptionMerger:
         if (
             len(near_rows) == 2
             # Not the block's bottom line: a live one changes every frame as it grows (QA).
-            and any(ln.changed_ms > line.seen_ms and ln is not lines[-1] for ln in lines[k : k + 2])
+            and any(
+                ln.changed_ms > line.seen_ms and ln is not lines[-1] for ln in lines[k : k + 2]
+            )
             and _junction(words, near_rows[0], near_rows[1])
         ):
             return True

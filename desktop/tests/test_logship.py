@@ -50,6 +50,31 @@ def test_window_titles_are_masked_in_any_case_and_lines_capped() -> None:
     assert len(lines[2]["message"]) == logship.MAX_LINE
 
 
+def test_a_deep_traceback_keeps_its_exception_line() -> None:
+    shipper = LogShipper()
+    lg = logger_with(shipper)
+
+    try:
+        raise ValueError("the cause")
+    except ValueError:
+        # A deep stack, made long by the message (Python folds repeated frames).
+        lg.exception("Org A: frame skipped %s", "." * 3000)
+    (line,) = json.loads(shipper.batch() or "")["lines"]
+    msg = line["message"]
+    assert len(msg) == logship.MAX_LINE
+    assert msg.startswith("Org A: frame skipped") and msg.endswith("ValueError: the cause")
+
+
+def test_resolved_titles_are_bounded_newest_kept_configured_always() -> None:
+    shipper = LogShipper(redact=["Horizon 3"])
+    lg = logger_with(shipper)
+    for i in range(logship.MAX_RESOLVED + 5):
+        shipper.mask(f"Teams call {i:03d}")
+    lg.info("Horizon 3 / Teams call 000 / Teams call %03d", logship.MAX_RESOLVED + 4)
+    (line,) = json.loads(shipper.batch() or "")["lines"]
+    assert line["message"] == "<window> / Teams call 000 / <window>"
+
+
 def test_a_lone_surrogate_is_replaced_so_the_api_takes_the_batch() -> None:
     shipper = LogShipper()
     logger_with(shipper).warning("bad \ud800 char")

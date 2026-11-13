@@ -195,7 +195,8 @@ time matters: lines buffered through an outage arrive after it.
 - Client: a bounded buffer (200 lines, oldest dropped and counted in `dropped`), at most one
   50-line batch every 2 s; logging never waits on the socket. Window titles (configured and
   resolved, any case) are masked; the client reads no text, so lines hold org names, never
-  OCR or caption text. Tracebacks are shipped too (file paths only).
+  OCR or caption text. Tracebacks are shipped too; a line past 2000 chars keeps its head and
+  its tail (the exception line).
 - The client never ships the api's own `error` replies back: an api without `screen.log`
   answers each batch with one, which would otherwise become the next batch.
 - Api: device tokens are client input. The batch is validated strictly (50 lines of 2000

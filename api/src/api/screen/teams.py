@@ -140,7 +140,9 @@ _COUNTED = re.compile(r"^(.*?)\s*\(\d+\)$")
 _INITIALS = re.compile(r"^(?:[^\W\d_] ?){1,3}$")
 # A name may end in "." only after an initial ("Bo L.", "Tolkien, J.R.R."), a dotted degree
 # ("Ph.D.") or Jr./Sr.; otherwise it's a sentence ("Sure.", "Thanks Bo.").
-_NAME_END = re.compile(r"\s(?:(?:[^\W\d_]\.)+|[^\W\d_]{1,2}\.(?:[^\W\d_]{1,2}\.)+|[JS]r\.)$")
+_NAME_END = re.compile(
+    r"\s(?:(?:[^\W\d_]\.)+|[^\W\d_]{1,2}\.(?:[^\W\d_]{1,2}\.)+|[JS]r\.)$"
+)
 # An avatar circle is about two text rows tall; a taller box than this beside a name is the
 # avatar even when OCR misreads its letters.
 _AVATAR_TALL = 1.4
@@ -183,11 +185,8 @@ def is_teams_name(text: str) -> bool:
     if is_name_like(text):
         return True
     last, sep, first = text.partition(",")
-    return (
-        bool(sep)
-        and "," not in first
-        and is_name_like(last.strip())
-        and is_name_like(first.strip())
+    return bool(sep) and "," not in first and is_name_like(last.strip()) and is_name_like(
+        first.strip()
     )
 
 
@@ -257,13 +256,17 @@ def _is_sentence(text: str) -> bool:
     (an unpunctuated interim: "okay so"). Short presence and status lines under a pane name or
     tile label ("In a call", "Out of office") are none of these."""
     text = text.strip()
-    return len(text.split()) >= 4 or text.endswith((".", "?", "!")) or text[:1].islower()
+    return (
+        len(text.split()) >= 4 or text.endswith((".", "?", "!")) or text[:1].islower()
+    )
 
 
 def _is_name_row(text: str) -> bool:
     """A tile label or a caption header, its avatar initials read into the box or not."""
     name = clean_name(text)
-    return is_teams_name(clean_name(_strip_avatar_token(name, Roster()))) and not _is_sentence(name)
+    return is_teams_name(clean_name(_strip_avatar_token(name, Roster()))) and not _is_sentence(
+        name
+    )
 
 
 def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
@@ -312,9 +315,12 @@ def _caption_lines(lines: list[OcrLine], height: int) -> set[int]:
         stacks.setdefault(find(i), []).append(ln)
     out: set[int] = set()
     for stack in stacks.values():
-        if any(_is_sentence(ln.text) and not is_teams_name(clean_name(ln.text)) for ln in stack):
+        if any(
+            _is_sentence(ln.text) and not is_teams_name(clean_name(ln.text)) for ln in stack
+        ):
             out.update(id(ln) for ln in stack)
     return out | _under_avatar_headers(low, lines)
+
 
 
 # How far under a speaker header's top its first caption row starts, in header heights. Real
@@ -512,7 +518,9 @@ def _drop_pane_buttons(ocr: OcrResult) -> OcrResult:
 
     if not any(candidate(b) for b in ocr.lines):
         return ocr
-    text = [b for b in ocr.lines if not candidate(b) and _initials(b.text, any_case=True) is None]
+    text = [
+        b for b in ocr.lines if not candidate(b) and _initials(b.text, any_case=True) is None
+    ]
     if not text:  # the button alone: nothing it could be a spoken line of
         return OcrResult(ocr.width, ocr.height, tuple(b for b in ocr.lines if not candidate(b)))
     edge, row_h, _ = _text_column(text)
@@ -823,9 +831,7 @@ def parse_caption_crop(
     # "Speaker N" headers are Teams' own speaker labels: they match as speakers of their own
     # (on a copy, so they never join the meeting's roster of participants).
     labels = {
-        raw
-        for g in row_groups(ocr.lines)
-        if _SPEAKER_LABEL.match(raw := " ".join(b.text for b in g))
+        raw for g in row_groups(ocr.lines) if _SPEAKER_LABEL.match(raw := " ".join(b.text for b in g))
     }
     if labels:
         roster = roster.copy()

@@ -100,6 +100,8 @@ def test_a_malformed_log_batch_is_refused_and_logs_nothing(
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         ws.receive_text()
         ws.send_text(json.dumps(msg))
+        # A ping behind it: a batch wrongly accepted gets the pong first, never a hang (QA).
+        ws.send_text(json.dumps({"type": "ping"}))
         reply = json.loads(ws.receive_text())
     assert reply["code"] == "bad_request" and reply["message"].startswith("bad screen.log")
     assert client_lines(caplog) == []

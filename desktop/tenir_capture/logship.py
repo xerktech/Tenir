@@ -24,6 +24,12 @@ BUFFER = 200
 # Contract (ScreenLog): at most 50 lines a message, 2000 characters a line.
 BATCH = 50
 MAX_LINE = 2000
+# A longer line keeps this much of its head and the rest from its tail: a deep traceback's
+# last line (the exception) is the part a diagnosis needs (QA).
+HEAD = 500
+CUT = " … "
+# Resolved window titles kept for masking (newest): a retitling window must not grow it forever.
+MAX_RESOLVED = 32
 # The server's error replies are logged here and not shipped: an api that refuses screen.log
 # would otherwise answer every batch with an error that becomes the next batch.
 SERVER_LOGGER = "tenir_capture.server"
@@ -34,22 +40,25 @@ class LogShipper(logging.Handler):
     def __init__(self, redact: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(level=logging.INFO)
         self.setFormatter(logging.Formatter("%(message)s"))
-        self._titles: set[str] = set()
+        self._configured = tuple(t for t in redact if t)
+        self._resolved: deque[str] = deque(maxlen=MAX_RESOLVED)
         self._pattern: re.Pattern[str] | None = None
-        for title in redact:
-            self.mask(title)
+        self._compile()
         self._lines: deque[dict] = deque()
         self._dropped = 0
         self._mu = threading.Lock()
 
     def mask(self, title: str) -> None:
         """Mask this window title in every later line (the runner adds each resolved title)."""
-        if not title or title in self._titles:
+        if not title or title in self._configured or title in self._resolved:
             return
-        self._titles.add(title)
+        self._resolved.append(title)
+        self._compile()
+
+    def _compile(self) -> None:
         # Longest first, so a title containing another is masked whole; any case, as resolve().
-        alts = sorted(self._titles, key=len, reverse=True)
-        self._pattern = re.compile("|".join(map(re.escape, alts)), re.IGNORECASE)
+        alts = sorted({*self._configured, *self._resolved}, key=len, reverse=True)
+        self._pattern = re.compile("|".join(map(re.escape, alts)), re.IGNORECASE) if alts else None
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.name == SERVER_LOGGER or record.name.startswith(SERVER_LOGGER + "."):
@@ -65,7 +74,9 @@ class LogShipper(logging.Handler):
                 "level": record.levelname
                 if record.levelname in ("INFO", "WARNING", "ERROR", "CRITICAL")
                 else "ERROR",
-                "message": text[:MAX_LINE],
+                "message": text
+                if len(text) <= MAX_LINE
+                else text[:HEAD] + CUT + text[-(MAX_LINE - HEAD - len(CUT)) :],
             }
         except Exception:  # noqa: BLE001 — a log line must never break the caller
             self.handleError(record)
