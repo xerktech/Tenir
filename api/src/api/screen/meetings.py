@@ -324,7 +324,7 @@ class MeetingTracker:
             self._captions_off_at = ts + CAPTIONS_OFF_REPEAT_MS
             metrics.incr("screen.captions_off")
             log.warning(
-                "screen captions off: %s (%s), %d caption crops received, %d OCR failed, "
+                "screen captions off: %r (%s), %d caption crops received, %d OCR failed, "
                 "%d with no speaker block",
                 self.meta.org_site_key,
                 self.meta.platform,

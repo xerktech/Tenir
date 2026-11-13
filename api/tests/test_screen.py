@@ -7026,7 +7026,7 @@ def test_the_captions_off_warning_logs_whether_crops_came_and_were_refused(caplo
         asyncio.run(run())
     (line,) = [r.getMessage() for r in caplog.records if "captions off" in r.getMessage()]
     assert line == (
-        "screen captions off: tesoro (zoom), 3 caption crops received, 1 OCR failed, "
+        "screen captions off: 'tesoro' (zoom), 3 caption crops received, 1 OCR failed, "
         "2 with no speaker block"
     )
 
