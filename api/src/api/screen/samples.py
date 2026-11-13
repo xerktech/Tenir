@@ -60,6 +60,13 @@ def _slug(value: str) -> str:
     return f"{re.sub(r'[^A-Za-z0-9_-]', '_', value)[:48]}-{tag}"
 
 
+def wanted(orgs: str, org_site_key: str) -> bool:
+    """Whether a frame of ``org_site_key`` is sampled under ``API_SCREEN_SAMPLE_ORGS``
+    (comma-separated keys, exact match; empty samples every org)."""
+    keys = {k.strip() for k in orgs.split(",") if k.strip()}
+    return not keys or org_site_key in keys
+
+
 def submit(
     root: str, limit: int, header: ScreenFrameHeader, jpeg: bytes, result: OcrResult, ts: int
 ) -> bool:

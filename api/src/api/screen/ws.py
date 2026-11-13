@@ -306,6 +306,8 @@ async def screen_ws(ws: WebSocket) -> None:
                 raise
             log.warning("screen OCR failed: %s", exc)
             metrics.incr("screen.ocr_errors")
+            if header.region.value != "full" and not closing.is_set():
+                tracker_for(header).crop_received(ocr_failed=True)
             if pane_task is not None:
                 pane, pane_read = await pane_task
                 if pane_read and not closing.is_set():
@@ -322,7 +324,9 @@ async def screen_ws(ws: WebSocket) -> None:
         pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
-        if settings.screen_sample_dir:
+        if settings.screen_sample_dir and samples.wanted(
+            settings.screen_sample_orgs, header.orgSiteKey
+        ):
             # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
             # forget on the sampler's own thread: a stalled volume never holds up this frame.
             samples.submit(
@@ -351,6 +355,7 @@ async def screen_ws(ws: WebSocket) -> None:
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)
                 else:
+                    tracker.crop_received()
                     roster = await tracker.ensure_roster()
                     blocks = await CPU_POOL.run(
                         tracker.user,

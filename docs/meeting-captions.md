@@ -193,6 +193,8 @@ OCR lines, up to `API_SCREEN_SAMPLE_MAX` (2000) frames and 1 GB per process, on 
 failed writes in a row and warns once if a write stalls. It exists to re-tune the parsers' pixel
 thresholds on real crops (XERK-2705). The files are screenshots of client meetings: turn it on
 for one meeting, copy them off, delete them and turn it off. Never commit them.
+`API_SCREEN_SAMPLE_ORGS` (comma-separated `orgSiteKey`s, exact; empty: every org) limits it to
+the org being tuned, so other clients' meetings don't fill the cap (XERK-2820).
 
 **Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a
 `screen`-scoped token for the caller (`API_AUTH_DEVICE_TOKEN_TTL_SECONDS`, 365 days). It opens

@@ -7000,3 +7000,96 @@ def test_another_speakers_row_over_the_grown_entry_never_splits_it() -> None:
         ]
     )
     assert ("Bo", "yes.") in stored and ("Ana", "yes I think so too") in stored
+
+
+def test_the_captions_off_warning_logs_whether_crops_came_and_were_refused(caplog) -> None:
+    # XERK-2820: a Zoom meeting with captions on raised "no captions" and stored nothing.
+    # The log tells a client sending no crops from OCR failing or the parser refusing them.
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        async def notify(msg: object) -> None:
+            pass
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        await t.on_full(meeting, 0)
+        t.crop_received(ocr_failed=True)  # never reaches on_caption
+        for ts in (1_000, 2_000):
+            t.crop_received()
+            await t.on_caption([], ts)  # a crop the parser refused
+        await t.on_full(meeting, mt.CAPTIONS_OFF_MS)
+        await t.on_full(meeting, mt.CAPTIONS_OFF_MS + 1)
+
+    with caplog.at_level(logging.WARNING, logger="api.screen"):
+        asyncio.run(run())
+    (line,) = [r.getMessage() for r in caplog.records if "captions off" in r.getMessage()]
+    assert line == (
+        "screen captions off: 'tesoro' (zoom), 3 caption crops received, 1 OCR failed, "
+        "2 with no speaker block"
+    )
+
+
+def test_the_captions_off_crop_counts_restart_once_the_warning_clears(caplog) -> None:
+    # A meeting gone long enough clears the warning; the next one's line counts only its crops.
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        async def notify(msg: object) -> None:
+            pass
+
+        t = _tracker(InMemoryConversationStore())
+        t.notify = notify
+        meeting = parse_full_frame(_toolbar_frame())
+        idle = parse_full_frame(OcrResult(1280, 720, ()))
+        await t.on_full(meeting, 0)
+        t.crop_received(ocr_failed=True)
+        await t.on_caption([], 1_000)
+        await t.on_full(idle, mt.MEETING_SEEN_MS + 1)  # toolbar long gone: cleared
+        start = mt.MEETING_SEEN_MS + 2
+        await t.on_full(meeting, start)
+        await t.on_full(meeting, start + 1)
+        await t.on_full(meeting, start + mt.CAPTIONS_OFF_MS + 1)
+
+    with caplog.at_level(logging.WARNING, logger="api.screen"):
+        asyncio.run(run())
+    (line,) = [r.getMessage() for r in caplog.records if "captions off" in r.getMessage()]
+    assert line.endswith("0 caption crops received, 0 OCR failed, 0 with no speaker block")
+
+
+def test_crops_failing_ocr_on_the_socket_are_counted_in_the_captions_off_line(
+    screen, caplog, monkeypatch
+) -> None:
+    # XERK-2820 QA: a crop failing OCR never reaches the tracker's caption path; uncounted, the
+    # line read "0 crops" and blamed the client for sending none.
+    from api.main import app
+    from api.screen import meetings as mt
+    from api.screen import ws as wsmod
+
+    monkeypatch.setattr(wsmod, "_MAX_CLOCK_SKEW_MS", 10**12)  # frames minutes apart, sent now
+    _, ocr, token, _ = screen
+    base = int(time.time() * 1000)
+
+    def send(ws, i: int, ts: int, region: str) -> None:
+        n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+        jpeg = unique_jpeg(40_000 + i)
+        ocr.register(jpeg, _toolbar_frame())
+        ws.send_bytes(envelope(header(ts, region), jpeg))
+        wait_handled(n + 1)
+
+    with caplog.at_level(logging.WARNING, logger="api.screen"):
+        with TestClient(app) as client, client.websocket_connect(
+            f"/ws/screen?token={token}"
+        ) as ws:
+            ws.receive_text()
+            send(ws, 0, base, "full")
+            ocr.fail = True
+            send(ws, 1, base + 1_000, "caption")
+            send(ws, 2, base + 2_000, "caption")
+            ocr.fail = False
+            send(ws, 3, base + 3_000, "caption")
+            send(ws, 4, base + mt.CAPTIONS_OFF_MS + 10, "full")
+            send(ws, 5, base + mt.CAPTIONS_OFF_MS + 20, "full")
+    lines = [r.getMessage() for r in caplog.records if "captions off" in r.getMessage()]
+    assert lines and "3 caption crops received, 2 OCR failed" in lines[0]
