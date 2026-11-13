@@ -588,6 +588,9 @@ class Settings(BaseSettings):
     # default: the frames are screenshots of client meetings. Never commit what it saves.
     screen_sample_dir: str = ""
     screen_sample_max: int = 2000
+    # XERK-2820: comma-separated orgSiteKeys to sample (empty: every org). Scopes sampling to the
+    # one client meeting being tuned: other orgs' meetings would fill the cap with their frames.
+    screen_sample_orgs: str = ""
     # Oldest Windows capture client (desktop/, XERK-2506) this server works with, as x.y.z;
     # published on GET /status. A client older than this refuses to start and tells the
     # operator to update. Empty: any version.

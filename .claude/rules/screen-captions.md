@@ -52,6 +52,11 @@ paths:
   mount) and pull with `kubectl cp`; it saves client meeting screenshots, so set it for one
   meeting, then unset it and delete the files. `orgSiteKey` is client input: it is slugged.
   Tests: `test_screen_samples.py`.
+  - Set `API_SCREEN_SAMPLE_ORGS` to the org being tuned: unscoped, the operator's daily Teams
+    meetings fill the 2000-frame cap before the Zoom meeting starts (XERK-2820).
+  - "No captions showing" with captions on: the `screen captions off:` log line counts caption
+    crops received (before OCR), OCR failures, and crops yielding no block. 0 received = the
+    client found no box; all empty = the parser refused each (sample that org's next meeting).
 - CPU work on frames (pane finding, parsing, merging) goes through `CPU_POOL.run(user, ...)`
   (`meetings.FairPool`, XERK-2737), never `run_in_executor`: jobs queue per user (household,
   owner) and users take turns, so crafted frames from several device tokens slow a live

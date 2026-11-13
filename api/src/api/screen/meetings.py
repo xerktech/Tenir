@@ -249,6 +249,12 @@ class MeetingTracker:
         self._meeting_seen_ms: int | None = None
         self._captions_off_at: int | None = None
         self._caption_seen_ms: int | None = None
+        # Caption crops read while the warning is pending, and how many yielded no block
+        # (XERK-2820): logged with the warning, they tell a client sending no crops from a
+        # parser refusing every crop it gets.
+        self._crops_read = 0
+        self._crops_unread = 0
+        self._crops_empty = 0
         self._stored_people: set[str] = set()
         # Final lines not yet written. The merger counts a line final once, so a failed or
         # cancelled write must be retried from here, never re-derived (it would dedup away).
@@ -311,11 +317,21 @@ class MeetingTracker:
             or (caption is not None and ts - caption <= MEETING_SEEN_MS)
         ):
             self._captions_off_at = None
+            self._crops_read = self._crops_unread = self._crops_empty = 0
         elif self._captions_off_at is None:
             self._captions_off_at = ts + CAPTIONS_OFF_MS
         elif ts >= self._captions_off_at:
             self._captions_off_at = ts + CAPTIONS_OFF_REPEAT_MS
             metrics.incr("screen.captions_off")
+            log.warning(
+                "screen captions off: %s (%s), %d caption crops received, %d OCR failed, "
+                "%d with no speaker block",
+                self.meta.org_site_key,
+                self.meta.platform,
+                self._crops_read,
+                self._crops_unread,
+                self._crops_empty,
+            )
             await self._send(
                 ScreenNotice(
                     type="screen.notice",
@@ -416,7 +432,15 @@ class MeetingTracker:
             replace(b, speaker=as_read[b.speaker]) if b.speaker in as_read else b for b in blocks
         ]
 
+    def crop_received(self, *, ocr_failed: bool = False) -> None:
+        """Count a caption crop for the captions-off log line, before OCR and parsing: a crop
+        failing either never reaches ``on_caption`` and must not read as "the client sent
+        none" (XERK-2820 QA)."""
+        self._crops_read += 1
+        self._crops_unread += ocr_failed
+
     async def on_caption(self, blocks: list[CaptionBlock], ts: int) -> None:
+        self._crops_empty += not blocks
         try:
             await self._on_caption(blocks, ts)
         except OverBudget:

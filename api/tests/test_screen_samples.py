@@ -260,3 +260,31 @@ def test_a_restart_never_reuses_a_samples_file_name(
     nan = OcrResult(10, 10, (OcrLine("x", (0.0, float("nan"), 1.0, 1.0)),))
     assert samples.save(str(tmp_path), 9, _header(), b"j", nan, 7) is False
     assert len(list(tmp_path.rglob("*.jpg"))) == len(list(tmp_path.rglob("*.json"))) == 1
+
+
+def test_only_the_listed_orgs_are_sampled() -> None:
+    # XERK-2820: scope sampling to the client meeting being tuned, not every org's frames.
+    assert samples.wanted("", "codehunter")
+    assert samples.wanted(" tesoroxp , tesoro", "tesoro")
+    assert not samples.wanted("tesoroxp", "codehunter")
+    assert not samples.wanted("tesoroxp", "tesoro")  # exact keys, never a prefix
+    assert not samples.wanted("tesoro", "tesoroxp")
+
+
+def test_frames_of_an_org_not_listed_are_not_sampled(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.main import app
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    monkeypatch.setattr(settings, "screen_sample_orgs", "someone-else")
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        replay(client, ws, ocr, FIXTURE["frames"][:3], base)
+    _wait_idle()
+    assert not root.exists()
