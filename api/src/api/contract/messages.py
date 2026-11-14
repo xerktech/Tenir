@@ -392,11 +392,18 @@ class ScreenFrameHeader(BaseModel):
     windowTitle: constr(max_length=512) = Field(
         ..., description='Title of the captured window.'
     )
-    orgSiteKey: constr(min_length=1, max_length=128) = Field(
+    orgSiteKey: constr(
+        pattern=r'^[^\x00-\x1F\x7F-\x9F]*$', min_length=1, max_length=128
+    ) = Field(
         ...,
-        description='Turma site key of the org this window belongs to; one meeting at a time per site key.',
+        description='Turma site key of the org this window belongs to; one meeting at a time per site key. No control characters (XERK-2881): Postgres TEXT rejects NUL, so one would fail every frame.',
     )
-    orgName: constr(min_length=1, max_length=200)
+    orgName: constr(
+        pattern=r'^[^\x00-\x1F\x7F-\x9F]*$', min_length=1, max_length=200
+    ) = Field(
+        ...,
+        description='Display name of the org. No control characters, like orgSiteKey.',
+    )
     platform: Platform = Field(
         ...,
         description='Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser.',

@@ -76,3 +76,8 @@ paths:
 - Client-sent strings (`orgSiteKey`, `orgName`, window titles) go into log lines with `%r`, never
   `%s`: a device token may send newlines and forge log lines (XERK-2879). Tests:
   `test_a_site_key_cannot_forge_a_frame_failed_log_line` and its siblings.
+- A frame's `orgSiteKey` refuses control and format chars (`screen.has_control_chars`, Cc/Cf),
+  the same rule as the history `?org=` filter: a key it refuses could never be selected, and
+  a NUL failed every frame in Postgres (XERK-2881). `orgName` refuses only C0/DEL/C1 (contract
+  pattern): ZWJ emoji and Persian ZWNJ are real names. The desktop config mirrors both.
+  Tests: `test_bad_frames_are_refused`, `test_an_org_name_may_hold_format_chars`.

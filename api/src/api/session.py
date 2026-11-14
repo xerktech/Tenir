@@ -1270,7 +1270,7 @@ class Session:
             metrics.incr("cue.fact_check.errors")
             return False
         if conflict:
-            log.info("session %s cue %r contradicted: %s", self.session_id, cue.title, conflict)
+            log.info("session %s cue %r contradicted: %r", self.session_id, cue.title, conflict)
             metrics.incr("cue.fact_check_drops")
             return True
         return False
