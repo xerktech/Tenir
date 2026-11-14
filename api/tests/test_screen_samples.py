@@ -288,3 +288,81 @@ def test_frames_of_an_org_not_listed_are_not_sampled(
         replay(client, ws, ocr, FIXTURE["frames"][:3], base)
     _wait_idle()
     assert not root.exists()
+
+
+def test_full_frames_with_no_meeting_on_screen_are_not_sampled(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-2820: an idle Zoom window sends a full frame every 30 s; sampled, they filled the
+    # cap in hours. A caption crop outside a meeting (a false start) is still kept.
+    from api.main import app
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    idle = {"region": "full", "width": 1280, "height": 720, "lines": []}
+    # The crop goes last: it starts a meeting, and full frames during one are sampled.
+    frames = [{**idle, "t": 0}, {**idle, "t": 1_000}, {**FIXTURE["frames"][1], "t": 2_000}]
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, frame in enumerate(frames):
+            replay(client, ws, ocr, [frame], base, start=i)
+            _wait_idle()
+    (d,) = root.iterdir()
+    regions = [json.loads(p.read_text())["region"] for p in d.glob("*.json")]
+    assert regions == ["caption"]
+
+
+def test_teams_full_frames_are_sampled_with_no_meeting_signal(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Teams full frames never report a meeting (XERK-2820 QA): gated like Zoom's, none were kept.
+    from api.main import app
+    from test_screen import envelope, header, unique_jpeg, wait_handled
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+        jpeg = unique_jpeg(70_000)
+        ocr.register(jpeg, OcrResult(1280, 720, ()))
+        ws.send_bytes(envelope({**header(base, "full"), "platform": "teams"}, jpeg))
+        wait_handled(n + 1)
+    _wait_idle()
+    (d,) = root.iterdir()
+    assert d.name.startswith("teams-tesoro-") and len(list(d.glob("*.jpg"))) == 1
+
+
+def test_a_full_frame_is_sampled_under_its_own_ts(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Full frames are sampled after the tracker clamps a ts that went back; the sample keeps
+    # the frame's own, as crops do (XERK-2820 QA).
+    from api.main import app
+    from test_screen import _toolbar_frame, envelope, header, unique_jpeg, wait_handled
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, ts in enumerate((base + 5_000, base)):
+            n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+            jpeg = unique_jpeg(80_000 + i)
+            ocr.register(jpeg, _toolbar_frame())
+            ws.send_bytes(envelope(header(ts, "full"), jpeg))
+            wait_handled(n + 1)
+            _wait_idle()
+    (d,) = root.iterdir()
+    assert sorted(json.loads(p.read_text())["ts"] for p in d.glob("*.json")) == [base, base + 5_000]

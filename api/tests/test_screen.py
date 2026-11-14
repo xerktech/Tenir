@@ -7200,3 +7200,20 @@ def test_crops_failing_ocr_on_the_socket_are_counted_in_the_captions_off_line(
             send(ws, 5, base + mt.CAPTIONS_OFF_MS + 20, "full")
     lines = [r.getMessage() for r in caplog.records if "captions off" in r.getMessage()]
     assert lines and "3 caption crops received, 2 OCR failed" in lines[0]
+
+
+def test_a_meeting_is_on_screen_while_live_or_for_ten_minutes_after_its_toolbar() -> None:
+    # XERK-2820: gates full-frame sampling. A live meeting counts with no toolbar ever seen.
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        t = _tracker(InMemoryConversationStore())
+        assert not t.meeting_on_screen(0)
+        t.conversation_id = "11111111-1111-4111-8111-111111111111"
+        assert t.meeting_on_screen(0)
+        t.conversation_id = None
+        await t.on_full(parse_full_frame(_toolbar_frame()), 1_000)
+        assert t.meeting_on_screen(1_000 + mt.MEETING_SEEN_MS)
+        assert not t.meeting_on_screen(1_000 + mt.MEETING_SEEN_MS + 1)
+
+    asyncio.run(run())
