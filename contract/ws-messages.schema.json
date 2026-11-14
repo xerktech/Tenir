@@ -350,7 +350,13 @@
           "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
           "description": "Turma site key of the org this window belongs to; one meeting at a time per site key. No control characters (XERK-2881): Postgres TEXT rejects NUL, so one would fail every frame."
         },
-        "orgName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "orgName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+          "description": "Display name of the org. No control characters, like orgSiteKey."
+        },
         "platform": {
           "type": "string",
           "enum": ["zoom", "teams"],

@@ -1070,6 +1070,12 @@ def test_ocr_client_is_built_from_settings(monkeypatch: pytest.MonkeyPatch) -> N
         (envelope(header(1, "caption", "tesoro\n"), tiny_jpeg()), "bad frame header"),
         (envelope(header(1, "caption", "tes\x7foro"), tiny_jpeg()), "bad frame header"),
         (envelope(header(1, "caption", "tes\x85oro"), tiny_jpeg()), "bad frame header"),
+        (envelope({**header(1, "caption"), "orgName": "Tes\x00oro"}, tiny_jpeg()), "bad frame"),
+        # Format chars pass the contract pattern, but the history org filter refuses them, so a
+        # meeting stored under one could never be selected (XERK-2881).
+        (envelope(header(1, "caption", "tes\u202eoro"), tiny_jpeg()), "control characters"),
+        (envelope(header(1, "caption", "tes\u200boro"), tiny_jpeg()), "control characters"),
+        (envelope({**header(1, "caption"), "orgName": "Tes\ufeffo"}, tiny_jpeg()), "control"),
     ],
 )
 def test_bad_frames_are_refused(data: bytes, error: str) -> None:
@@ -1486,6 +1492,17 @@ def test_only_the_meeting_owners_aliases_rename_its_speakers(screen) -> None:
         newest = client.get("/conversations").json()[0]
         detail = client.get(f"/conversations/{newest['id']}").json()
         assert "K" in detail["participants"] and "kunal@tesoroxp.com" not in detail["participants"]
+
+
+def test_a_refused_frame_header_is_counted(screen) -> None:
+    from api.main import app
+
+    store, ocr, token, admin = screen
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        ws.send_bytes(envelope(header(1, "caption", "tes\x00oro"), tiny_jpeg()))
+        assert json.loads(ws.receive_text())["type"] == "error"
+    assert metrics.snapshot()["counters"]["screen.frames_refused"] == 1
 
 
 def test_store_failure_on_a_frame_keeps_the_socket(screen, monkeypatch: pytest.MonkeyPatch) -> None:

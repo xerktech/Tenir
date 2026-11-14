@@ -65,7 +65,11 @@ def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
             "orgSiteKey",
         ),
         (
-            {"windows": [{"title": "t", "orgSiteKey": "a\x00b", "orgName": "n", "platform": "zoom"}]},
+            {
+                "windows": [
+                    {"title": "t", "orgSiteKey": "a\x00b", "orgName": "n", "platform": "zoom"}
+                ]
+            },
             "control characters",
         ),
         ({"windows": [{**GOOD["windows"][0], "orgName": "x" * 201}]}, "longer than 200"),

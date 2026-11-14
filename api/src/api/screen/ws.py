@@ -34,7 +34,7 @@ from api.contract import (
 )
 from api.metrics import metrics
 from api.persistence import ScreenMeta, get_conversation_store
-from api.screen import client_log, samples, teams, teams_pane, zoom
+from api.screen import client_log, has_control_chars, samples, teams, teams_pane, zoom
 from api.screen.meetings import (
     CPU_POOL,
     AccountGone,
@@ -183,6 +183,10 @@ def split_frame(data: bytes) -> tuple[ScreenFrameHeader, bytes]:
         )
     except ValidationError as exc:
         raise FrameError(f"bad frame header: {exc.errors()[0]['msg']}") from exc
+    # The contract pattern refuses C0/DEL/C1; format chars (bidi overrides, zero-width) are
+    # refused here too, matching the history org filter (XERK-2881).
+    if has_control_chars(header.orgSiteKey) or has_control_chars(header.orgName):
+        raise FrameError("bad frame header: org must not contain control characters")
     jpeg = data[_HEADER_LEN.size + n :]
     if not jpeg.startswith(b"\xff\xd8"):
         raise FrameError("frame image is not a JPEG")
@@ -453,6 +457,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 try:
                     header, jpeg = split_frame(data)
                 except FrameError as exc:
+                    metrics.incr("screen.frames_refused")
                     await error(str(exc))
                     continue
                 metrics.incr("screen.frames")
