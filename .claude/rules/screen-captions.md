@@ -81,3 +81,6 @@ paths:
   a NUL failed every frame in Postgres (XERK-2881). `orgName` refuses only C0/DEL/C1 (contract
   pattern): ZWJ emoji and Persian ZWNJ are real names. The desktop config mirrors both.
   Tests: `test_bad_frames_are_refused`, `test_an_org_name_may_hold_format_chars`.
+- `split_frame` also strips bidi embeddings/overrides/isolates from `orgName` (an unbalanced
+  U+202E reversed the history badge) and refuses a name with nothing visible (XERK-2883).
+  Tests: `test_bidi_controls_are_stripped_from_the_org_name`, `test_unrenderable_org_fields_are_refused`.

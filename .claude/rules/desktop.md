@@ -51,3 +51,8 @@ paths:
     `test_the_clients_log_lines_reach_the_server_as_screen_log_without_window_titles`.
   - Never log a window title or any screen text: lines leave the PC. Configured and resolved
     titles are masked (any case, as `resolve()` matches) as a backstop only.
+- `config.parse` refuses every org value the api's `split_frame` refuses (control chars, nothing
+  visible, unpaired surrogates; XERK-2883): the api answers each frame with an error only the
+  log sees, so the window recorded nothing. Change both sides together.
+  Tests: `test_org_values_the_api_refuses_are_config_errors`,
+  `test_a_title_with_an_unpaired_surrogate_still_encodes_as_valid_json`.

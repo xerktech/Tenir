@@ -1082,6 +1082,34 @@ def test_bad_frames_are_refused(data: bytes, error: str) -> None:
         screen_ws.split_frame(data)
 
 
+def test_bidi_controls_are_stripped_from_the_org_name() -> None:
+    # XERK-2883: an unbalanced U+202E would render the badge (and what follows it) reversed.
+    name = "\u202eAcme\u202a \u2066Co\u2069 \U0001f469\u200d\U0001f4bb\u200c\u200f"
+    parsed, _ = screen_ws.split_frame(
+        envelope({**header(1, "caption"), "orgName": name}, tiny_jpeg())
+    )
+    assert parsed.orgName == "Acme Co \U0001f469\u200d\U0001f4bb\u200c\u200f"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("orgName", "\u202e\u2067 ", "no visible"),
+        ("orgName", "   ", "no visible"),
+        ("orgName", "\u200b\u200f", "no visible"),
+        ("orgName", "A\x00B", "bad frame header"),
+        ("orgName", "A\x1b[31mB", "bad frame header"),
+        ("orgSiteKey", "a\x00b", "bad frame header"),
+        ("orgSiteKey", "\u202etesoro", "org must not contain control"),
+    ],
+)
+def test_unrenderable_org_fields_are_refused(field: str, value: str, error: str) -> None:
+    # XERK-2883: a blank badge, a NUL Postgres can't store, or a key the org filter refuses.
+    data = envelope({**header(1, "caption"), field: value}, tiny_jpeg())
+    with pytest.raises(screen_ws.FrameError, match=error):
+        screen_ws.split_frame(data)
+
+
 @pytest.mark.parametrize("site", ["tesoro", "Site.Key 1", "café-ü", "org❤️", "x" * 128])
 def test_printable_site_keys_are_accepted(site: str) -> None:
     head, _ = screen_ws.split_frame(envelope(header(1, "caption", site), tiny_jpeg()))
@@ -1539,7 +1567,8 @@ FORGED_SITE = "tesoro\u2028ERROR api.screen forged line"
 def test_a_site_key_cannot_forge_a_frame_failed_log_line(
     screen, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """orgSiteKey is client input: logged with %r, its newline can't start a line of its own."""
+    """orgSiteKey is client input: one holding a newline is refused before the lane (XERK-2883),
+    so it never reaches the frame-failed line (logged with %r regardless, XERK-2879)."""
     from api.main import app
 
     store, ocr, token, admin = screen

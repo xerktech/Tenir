@@ -75,6 +75,9 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}: {key} must be a non-empty string")
     value = value.strip()
+    # A "\ud800" escape decodes to a lone surrogate the api's JSON parser refuses on every frame.
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        raise ConfigError(f"{where}: {key} holds an unpaired surrogate")
     if len(value) > max_len:
         raise ConfigError(f"{where}: {key} is longer than {max_len} characters")
     return value
@@ -84,6 +87,9 @@ def _org_name(w: dict, where: str) -> str:
     name = _text(w, "orgName", where, 200)
     if CONTROL_CHAR.search(name):
         raise ConfigError(f"{where}: orgName must not contain control characters")
+    # Bidi controls the api strips are Cf too, so they never count as visible.
+    if not any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in name):
+        raise ConfigError(f"{where}: orgName has no visible characters")
     return name
 
 
