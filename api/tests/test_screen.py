@@ -1075,7 +1075,6 @@ def test_ocr_client_is_built_from_settings(monkeypatch: pytest.MonkeyPatch) -> N
         # meeting stored under one could never be selected (XERK-2881).
         (envelope(header(1, "caption", "tes\u202eoro"), tiny_jpeg()), "control characters"),
         (envelope(header(1, "caption", "tes\u200boro"), tiny_jpeg()), "control characters"),
-        (envelope({**header(1, "caption"), "orgName": "Tes\ufeffo"}, tiny_jpeg()), "control"),
     ],
 )
 def test_bad_frames_are_refused(data: bytes, error: str) -> None:
@@ -1083,10 +1082,17 @@ def test_bad_frames_are_refused(data: bytes, error: str) -> None:
         screen_ws.split_frame(data)
 
 
-@pytest.mark.parametrize("site", ["tesoro", "Site.Key 1", "café-ü", "x" * 128])
+@pytest.mark.parametrize("site", ["tesoro", "Site.Key 1", "café-ü", "org❤️", "x" * 128])
 def test_printable_site_keys_are_accepted(site: str) -> None:
     head, _ = screen_ws.split_frame(envelope(header(1, "caption", site), tiny_jpeg()))
     assert head.orgSiteKey == site
+
+
+@pytest.mark.parametrize("name", ["Dev team 👨\u200d💻", "می\u200cخواهم Co", "Co\u00adop"])
+def test_an_org_name_may_hold_format_chars(name: str) -> None:
+    """Only the key is matched by the history filter; a display name keeps ZWJ/ZWNJ."""
+    frame = envelope({**header(1, "caption"), "orgName": name}, tiny_jpeg())
+    assert screen_ws.split_frame(frame)[0].orgName == name
 
 
 # --- device tokens -------------------------------------------------------------------------

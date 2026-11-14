@@ -183,9 +183,10 @@ def split_frame(data: bytes) -> tuple[ScreenFrameHeader, bytes]:
         )
     except ValidationError as exc:
         raise FrameError(f"bad frame header: {exc.errors()[0]['msg']}") from exc
-    # The contract pattern refuses C0/DEL/C1; format chars (bidi overrides, zero-width) are
-    # refused here too, matching the history org filter (XERK-2881).
-    if has_control_chars(header.orgSiteKey) or has_control_chars(header.orgName):
+    # The contract pattern refuses C0/DEL/C1 in the key and name. Format chars (bidi overrides,
+    # zero-width) are refused in the key only, matching the history org filter so a stored
+    # meeting is always selectable (XERK-2881). Names keep them: ZWJ emoji, Persian ZWNJ.
+    if has_control_chars(header.orgSiteKey):
         raise FrameError("bad frame header: org must not contain control characters")
     jpeg = data[_HEADER_LEN.size + n :]
     if not jpeg.startswith(b"\xff\xd8"):
