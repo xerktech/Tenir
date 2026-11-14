@@ -179,7 +179,10 @@ about one strip-read in six to the caption crops at the meeting cadence.
 
 **Frames.** Binary: 4-byte big-endian header length, `ScreenFrameHeader` JSON
 (`windowTitle`, `orgSiteKey`, `orgName`, `platform`, `ts`, `region`), then the JPEG. Frames
-are held in memory only; nothing but derived text is stored. Per window and region only the
+are held in memory only; nothing but derived text is stored. A header whose `orgSiteKey` holds
+a control or format character, or whose `orgName` holds a control character or nothing visible,
+is refused with `error`; bidi embedding/override/isolate characters are stripped from `orgName`.
+Per window and region only the
 newest frame waits for OCR; a newer one replaces it (`screen.frames_dropped`).
 
 **Cadence.** On connect the server sends the idle default (`API_SCREEN_IDLE_FPS`, 0.2); when a

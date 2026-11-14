@@ -47,6 +47,32 @@ def test_org_is_the_label_and_a_legacy_org_site_key_still_works() -> None:
 
 
 @pytest.mark.parametrize(
+    ("window", "message"),
+    [
+        ({"orgName": "Org\tA"}, "orgName must not contain control"),
+        ({"orgName": "\u200b"}, "orgName has no visible"),
+        ({"orgName": "\u202e\u2067"}, "orgName has no visible"),
+        ({"org": None, "orgSiteKey": "acme\u200b"}, "orgSiteKey must not contain control"),
+        ({"org": None, "orgSiteKey": "acme\u00ad"}, "orgSiteKey must not contain control"),
+        ({"orgName": "Org \ud800"}, "unpaired surrogate"),
+        ({"org": None, "orgSiteKey": "acme\udc00"}, "unpaired surrogate"),
+    ],
+)
+def test_org_values_the_api_refuses_are_config_errors(window: dict, message: str) -> None:
+    # XERK-2883: the api refuses these on every frame, so the window would record nothing.
+    w = {k: v for k, v in {**GOOD["windows"][0], **window}.items() if v is not None}
+    with pytest.raises(ConfigError, match=message):
+        parse({**GOOD, "windows": [w]})
+
+
+def test_org_names_with_joiners_and_marks_still_parse() -> None:
+    names = ["Team \U0001f469\u200d\U0001f4bb", "\u0645\u06cc\u200c\u0631", "\u200fAcme\u200e"]
+    for name in names:
+        w = {**GOOD["windows"][0], "orgName": name}
+        assert parse({**GOOD, "windows": [w]}).windows[0].org_name == name
+
+
+@pytest.mark.parametrize(
     ("change", "message"),
     [
         ({"server": "ftp://x"}, r"http\(s\) URL"),

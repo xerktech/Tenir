@@ -59,6 +59,12 @@ def test_an_encoded_frame_matches_the_screen_frame_header_contract() -> None:
     assert body == b"\xff\xd8jpeg"
 
 
+def test_a_title_with_an_unpaired_surrogate_still_encodes_as_valid_json() -> None:
+    # XERK-2883: the api's strict JSON parser refuses a lone "\ud800" escape.
+    header, _ = split(encode(SPEC, "Meet \ud800ing \U0001f469", "full", 1, b"\xff\xd8"))
+    assert header["windowTitle"] == "Meet \ufffding \U0001f469"
+
+
 def test_caption_crops_go_only_while_a_caption_shows_with_a_full_frame_first() -> None:
     caption = {"on": False}
     plan = WindowPlan(lambda img: img.crop((0, 0, 10, 10)) if caption["on"] else None)

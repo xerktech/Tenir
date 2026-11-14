@@ -14,6 +14,7 @@ import json
 import logging
 import struct
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -53,6 +54,11 @@ log = logging.getLogger("api.screen")
 _MAX_CLOCK_SKEW_MS = 60_000
 _HEADER_LEN = struct.Struct(">I")
 _MAX_HEADER = 4096
+# Bidi embeddings, overrides and isolates (U+202A-202E, U+2066-2069). An org name is shown
+# inline in web and Android badges, so an unbalanced U+202E would reorder the name and the
+# text after it; nothing a real org name means is lost by dropping them (XERK-2883). The
+# zero-width joiners and LRM/RLM marks stay: emoji and Persian names need ZWJ/ZWNJ.
+_BIDI_CONTROLS = dict.fromkeys([*range(0x202A, 0x202F), *range(0x2066, 0x206A)])
 # Layout parser per meeting app: participants/title from full frames, blocks from crops.
 _PARSERS = {Platform.zoom: zoom, Platform.teams: teams}
 
@@ -186,6 +192,18 @@ def split_frame(data: bytes) -> tuple[ScreenFrameHeader, bytes]:
     jpeg = data[_HEADER_LEN.size + n :]
     if not jpeg.startswith(b"\xff\xd8"):
         raise FrameError("frame image is not a JPEG")
+    # A control or format char in the site key leaves its meetings unfilterable (the history
+    # org filter refuses them) and a NUL fails the Postgres insert; neither is in a real key.
+    if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in header.orgSiteKey):
+        raise FrameError("bad frame header: orgSiteKey has control characters")
+    if any(unicodedata.category(ch) == "Cc" for ch in header.orgName):
+        raise FrameError("bad frame header: orgName has control characters")
+    org_name = header.orgName.translate(_BIDI_CONTROLS)
+    # Format chars (ZWJ, ZWSP, LRM, ...) stay in a name but can't make it visible alone.
+    if not any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in org_name):
+        raise FrameError("bad frame header: orgName has no visible characters")
+    if org_name != header.orgName:
+        header = header.model_copy(update={"orgName": org_name})
     return header, jpeg
 
 

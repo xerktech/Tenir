@@ -76,10 +76,13 @@ def fit_full(img: Image.Image) -> Image.Image:
 
 def encode(spec: WindowSpec, title: str, region: str, ts_ms: int, image: bytes) -> bytes:
     """One binary frame: 4-byte big-endian header length, header JSON, then the JPEG."""
+    # A Win32 title may hold an unpaired surrogate; sent as a "\ud800" escape, the api's JSON
+    # parser refused every frame of the window (XERK-2883). It becomes U+FFFD instead.
+    title = title[:512].encode("utf-16", "surrogatepass").decode("utf-16", "replace")
     header = json.dumps(
         {
             "type": "screen.frame",
-            "windowTitle": title[:512],
+            "windowTitle": title,
             "orgSiteKey": spec.org_site_key,
             "orgName": spec.org_name,
             "platform": spec.platform,

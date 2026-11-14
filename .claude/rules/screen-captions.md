@@ -76,3 +76,7 @@ paths:
 - Client-sent strings (`orgSiteKey`, `orgName`, window titles) go into log lines with `%r`, never
   `%s`: a device token may send newlines and forge log lines (XERK-2879). Tests:
   `test_a_site_key_cannot_forge_a_frame_failed_log_line` and its siblings.
+- `split_frame` strips bidi embeddings/overrides/isolates from `orgName` (an unbalanced U+202E
+  reversed the history badge) and refuses Cc in it, Cc/Cf in `orgSiteKey`, and names with
+  nothing visible (XERK-2883). ZWJ/ZWNJ/LRM/RLM stay: emoji and Persian names need them.
+  Tests: `test_bidi_controls_are_stripped_from_the_org_name`, `test_unrenderable_org_fields_are_refused`.

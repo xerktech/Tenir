@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -67,15 +68,33 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}: {key} must be a non-empty string")
     value = value.strip()
+    # A "\ud800" escape decodes to a lone surrogate the api's JSON parser refuses on every frame.
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        raise ConfigError(f"{where}: {key} holds an unpaired surrogate")
     if len(value) > max_len:
         raise ConfigError(f"{where}: {key} is longer than {max_len} characters")
     return value
 
 
+def _org_name(w: dict, where: str) -> str:
+    """The api refuses an orgName with a control char or nothing visible on every frame."""
+    name = _text(w, "orgName", where, 200)
+    if any(unicodedata.category(ch) == "Cc" for ch in name):
+        raise ConfigError(f"{where}: orgName must not contain control characters")
+    # Bidi controls the api strips are Cf too, so they never count as visible.
+    if not any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in name):
+        raise ConfigError(f"{where}: orgName has no visible characters")
+    return name
+
+
 def _org(w: dict, where: str) -> str:
     """The window's org: its Turma label ("org"), else a legacy Turma site key ("orgSiteKey")."""
     if "org" not in w and "orgSiteKey" in w:
-        return _text(w, "orgSiteKey", where, 128)
+        key = _text(w, "orgSiteKey", where, 128)
+        # The api refuses a site key holding a control or format char on every frame.
+        if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in key):
+            raise ConfigError(f"{where}: orgSiteKey must not contain control characters")
+        return key
     label = _text(w, "org", where, 128)
     if not ORG_LABEL.fullmatch(label):
         raise ConfigError(
@@ -108,7 +127,7 @@ def parse(data: object) -> Config:
             WindowSpec(
                 title=_text(w, "title", where, 512),
                 org_site_key=_org(w, where),
-                org_name=_text(w, "orgName", where, 200),
+                org_name=_org_name(w, where),
                 platform=platform,
             )
         )
