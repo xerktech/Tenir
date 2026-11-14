@@ -246,9 +246,19 @@ def test_a_run_ships_its_log_lines_through_the_runner_and_unhooks_after(
     def run(self) -> None:
         seen.append(self.logs)
         assert self.logs in logging.getLogger("tenir_capture").handlers
+        logging.getLogger("tenir_capture").warning("Org B: paused; failed on Desk 1")
 
     monkeypatch.setattr(runner.Runner, "run", run)
     path = write_config(tmp_path, "http://127.0.0.1:9")
+    # One title equal to its org name (production), one that names neither.
+    cfg = json.loads(path.read_text())
+    cfg["windows"] = [
+        {"title": "Org B", "orgSiteKey": "b", "orgName": "Org B", "platform": "zoom"},
+        {"title": "Desk 1", "orgSiteKey": "c", "orgName": "Org C", "platform": "zoom"},
+    ]
+    path.write_text(json.dumps(cfg))
     assert cli.main(["--config", str(path)]) == 0
     assert isinstance(seen[0], LogShipper)
+    shipped = [x["message"] for x in json.loads(seen[0].batch() or "")["lines"]]
+    assert "Org B: paused; failed on <window>" in shipped
     assert seen[0] not in logging.getLogger("tenir_capture").handlers
