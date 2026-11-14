@@ -145,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     from tenir_capture.runner import Runner, TokenRejected
 
     # Ship this run's lines to the api from here on (XERK-2875); the runner sends them.
-    shipper = LogShipper(redact=[w.title for w in cfg.windows])
+    shipper = LogShipper(
+        redact=[w.title for w in cfg.windows], orgs=[w.org_name for w in cfg.windows]
+    )
     log.addHandler(shipper)
     try:
         platform = win.WindowsPlatform()
