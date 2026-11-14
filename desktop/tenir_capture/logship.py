@@ -8,7 +8,8 @@ next batch says how many went.
 
 The client reads no text off the screen, so its lines hold org names, never OCR or caption
 text. Window titles (configured and resolved, any case) are masked anyway, in case an
-exception message carries one.
+exception message carries one. A title found inside an org name is left alone: org names ship
+anyway, and masking one hid which org a line was about ("<window>: paused").
 """
 
 from __future__ import annotations
@@ -37,10 +38,13 @@ MASK = "<window>"
 
 
 class LogShipper(logging.Handler):
-    def __init__(self, redact: list[str] | tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, redact: list[str] | tuple[str, ...] = (), orgs: list[str] | tuple[str, ...] = ()
+    ) -> None:
         super().__init__(level=logging.INFO)
         self.setFormatter(logging.Formatter("%(message)s"))
-        self._configured = tuple(t for t in redact if t)
+        self._orgs = tuple(o.casefold() for o in orgs if o)
+        self._configured = tuple(t for t in redact if t and not self._in_org(t))
         self._resolved: deque[str] = deque(maxlen=MAX_RESOLVED)
         self._pattern: re.Pattern[str] | None = None
         self._compile()
@@ -50,10 +54,14 @@ class LogShipper(logging.Handler):
 
     def mask(self, title: str) -> None:
         """Mask this window title in every later line (the runner adds each resolved title)."""
-        if not title or title in self._configured or title in self._resolved:
+        if not title or title in self._configured or title in self._resolved or self._in_org(title):
             return
         self._resolved.append(title)
         self._compile()
+
+    def _in_org(self, title: str) -> bool:
+        t = title.casefold()
+        return any(t in o for o in self._orgs)
 
     def _compile(self) -> None:
         # Longest first, so a title containing another is masked whole; any case, as resolve().

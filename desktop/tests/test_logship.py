@@ -50,6 +50,17 @@ def test_window_titles_are_masked_in_any_case_and_lines_capped() -> None:
     assert len(lines[2]["message"]) == logship.MAX_LINE
 
 
+def test_a_title_inside_an_org_name_is_not_masked_so_lines_say_which_org() -> None:
+    # Production: titles equal to org names turned "Org B: paused" into "<window>: paused".
+    shipper = LogShipper(redact=["Org B", "org", "Horizon 3"], orgs=["Org B", "Org C Corp"])
+    lg = logger_with(shipper)
+    shipper.mask("ORG C")  # resolved, inside an org name in another case
+    shipper.mask("Org C Corp - Zoom")
+    lg.warning("Org B: paused; Org C Corp: paused on Org C Corp - Zoom; Horizon 3 lost")
+    (line,) = json.loads(shipper.batch() or "")["lines"]
+    assert line["message"] == "Org B: paused; Org C Corp: paused on <window>; <window> lost"
+
+
 def test_a_deep_traceback_keeps_its_exception_line() -> None:
     shipper = LogShipper()
     lg = logger_with(shipper)
