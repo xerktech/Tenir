@@ -337,11 +337,18 @@ async def screen_ws(ws: WebSocket) -> None:
             settings.screen_sample_orgs, header.orgSiteKey
         )
 
+        sample_ts = ts  # the frame's own ts: full frames are sampled after tracker.clock
+
         def submit_sample() -> None:
             # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
             # forget on the sampler's own thread: a stalled volume never holds up this frame.
             samples.submit(
-                settings.screen_sample_dir, settings.screen_sample_max, header, jpeg, result, ts
+                settings.screen_sample_dir,
+                settings.screen_sample_max,
+                header,
+                jpeg,
+                result,
+                sample_ts,
             )
 
         if sample and header.region.value != "full":
@@ -367,10 +374,13 @@ async def screen_ws(ws: WebSocket) -> None:
                             tracker.user, parser.parse_full_frame, result, jpeg
                         )
                     await tracker.on_full(frame, ts)
-                    if sample and tracker.meeting_on_screen(ts):
-                        # Full frames only while a meeting is on screen (XERK-2820): an idle
-                        # window sends one every 30 s, filling the cap in hours and the
-                        # volume across pod restarts.
+                    if sample and (
+                        header.platform is Platform.teams or tracker.meeting_on_screen(ts)
+                    ):
+                        # Zoom full frames only while a meeting is on screen (XERK-2820): an
+                        # idle window sends one every 30 s, filling the cap in hours and the
+                        # volume across pod restarts. Teams frames never report a meeting
+                        # (no toolbar signal), so its full frames are all kept, as before.
                         submit_sample()
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)

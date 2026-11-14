@@ -215,8 +215,8 @@ failed writes in a row and warns once if a write stalls. It exists to re-tune th
 thresholds on real crops (XERK-2705). The files are screenshots of client meetings: turn it on
 for one meeting, copy them off, delete them and turn it off. Never commit them.
 `API_SCREEN_SAMPLE_ORGS` (comma-separated `orgSiteKey`s, exact; empty: every org) limits it to
-the org being tuned, so other clients' meetings don't fill the cap (XERK-2820). Full frames are saved
-only while that window shows a meeting; caption crops always (a false start is a crop outside
+the org being tuned, so other clients' meetings don't fill the cap (XERK-2820). Zoom full frames are
+saved only while that window shows a meeting (Teams has no such signal: all kept); caption crops always (a false start is a crop outside
 one), so it can stay on until the next meeting without filling the cap with idle frames.
 
 **Auth.** A device token: `POST /auth/device-token` while logged in (built-in or OIDC) mints a

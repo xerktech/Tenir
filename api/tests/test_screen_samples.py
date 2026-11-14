@@ -314,3 +314,28 @@ def test_full_frames_with_no_meeting_on_screen_are_not_sampled(
     (d,) = root.iterdir()
     regions = [json.loads(p.read_text())["region"] for p in d.glob("*.json")]
     assert regions == ["caption"]
+
+
+def test_teams_full_frames_are_sampled_with_no_meeting_signal(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Teams full frames never report a meeting (XERK-2820 QA): gated like Zoom's, none were kept.
+    from api.main import app
+    from test_screen import envelope, header, unique_jpeg, wait_handled
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+        jpeg = unique_jpeg(70_000)
+        ocr.register(jpeg, OcrResult(1280, 720, ()))
+        ws.send_bytes(envelope({**header(base, "full"), "platform": "teams"}, jpeg))
+        wait_handled(n + 1)
+    _wait_idle()
+    (d,) = root.iterdir()
+    assert d.name.startswith("teams-tesoro-") and len(list(d.glob("*.jpg"))) == 1
