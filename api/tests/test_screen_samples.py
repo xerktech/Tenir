@@ -288,3 +288,29 @@ def test_frames_of_an_org_not_listed_are_not_sampled(
         replay(client, ws, ocr, FIXTURE["frames"][:3], base)
     _wait_idle()
     assert not root.exists()
+
+
+def test_full_frames_with_no_meeting_on_screen_are_not_sampled(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-2820: an idle Zoom window sends a full frame every 30 s; sampled, they filled the
+    # cap in hours. A caption crop outside a meeting (a false start) is still kept.
+    from api.main import app
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    idle = {"region": "full", "width": 1280, "height": 720, "lines": []}
+    # The crop goes last: it starts a meeting, and full frames during one are sampled.
+    frames = [{**idle, "t": 0}, {**idle, "t": 1_000}, {**FIXTURE["frames"][1], "t": 2_000}]
+    base = int(time.time() * 1000)
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, frame in enumerate(frames):
+            replay(client, ws, ocr, [frame], base, start=i)
+            _wait_idle()
+    (d,) = root.iterdir()
+    regions = [json.loads(p.read_text())["region"] for p in d.glob("*.json")]
+    assert regions == ["caption"]

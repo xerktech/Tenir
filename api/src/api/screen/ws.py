@@ -333,14 +333,20 @@ async def screen_ws(ws: WebSocket) -> None:
         pane, pane_read = await pane_task if pane_task is not None else (None, False)
         if closing.is_set():
             return  # the account was deleted while OCR ran
-        if settings.screen_sample_dir and samples.wanted(
+        sample = bool(settings.screen_sample_dir) and samples.wanted(
             settings.screen_sample_orgs, header.orgSiteKey
-        ):
+        )
+
+        def submit_sample() -> None:
             # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
             # forget on the sampler's own thread: a stalled volume never holds up this frame.
             samples.submit(
                 settings.screen_sample_dir, settings.screen_sample_max, header, jpeg, result, ts
             )
+
+        if sample and header.region.value != "full":
+            # Caption crops are always kept: a false start is a crop outside any meeting.
+            submit_sample()
         reattached = (tracker := tracker_for(header)).notify is not send
         tracker.notify = send
         try:
@@ -361,6 +367,11 @@ async def screen_ws(ws: WebSocket) -> None:
                             tracker.user, parser.parse_full_frame, result, jpeg
                         )
                     await tracker.on_full(frame, ts)
+                    if sample and tracker.meeting_on_screen(ts):
+                        # Full frames only while a meeting is on screen (XERK-2820): an idle
+                        # window sends one every 30 s, filling the cap in hours and the
+                        # volume across pod restarts.
+                        submit_sample()
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)
                 else:

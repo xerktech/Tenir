@@ -432,6 +432,13 @@ class MeetingTracker:
             replace(b, speaker=as_read[b.speaker]) if b.speaker in as_read else b for b in blocks
         ]
 
+    def meeting_on_screen(self, ts: int) -> bool:
+        """A meeting is live, or its toolbar showed on a full frame within MEETING_SEEN_MS."""
+        seen = self._meeting_seen_ms
+        return self.conversation_id is not None or (
+            seen is not None and ts - seen <= MEETING_SEEN_MS
+        )
+
     def crop_received(self, *, ocr_failed: bool = False) -> None:
         """Count a caption crop for the captions-off log line, before OCR and parsing: a crop
         failing either never reaches ``on_caption`` and must not read as "the client sent

@@ -54,6 +54,9 @@ paths:
   Tests: `test_screen_samples.py`.
   - Set `API_SCREEN_SAMPLE_ORGS` to the org being tuned: unscoped, the operator's daily Teams
     meetings fill the 2000-frame cap before the Zoom meeting starts (XERK-2820).
+  - Full frames are sampled only while `MeetingTracker.meeting_on_screen`; crops always. An
+    idle window's 30 s full frames filled the cap in ~17 h and, per restart, the volume.
+    Test: `test_full_frames_with_no_meeting_on_screen_are_not_sampled`.
   - "No captions showing" with captions on: the `screen captions off:` log line counts caption
     crops received (before OCR), OCR failures, and crops yielding no block. 0 received = the
     client found no box; all empty = the parser refused each (sample that org's next meeting).
