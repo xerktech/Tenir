@@ -19,6 +19,13 @@ from urllib.parse import urlsplit, urlunsplit
 PLATFORMS = ("zoom", "teams")
 # The short org label Turma resolves in POST /api/orgs/<org>/meetings (XERK-2638).
 ORG_LABEL = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
+# The ScreenFrameHeader orgName pattern: no C0/DEL/C1 control characters (XERK-2881).
+CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _has_control_or_format(text: str) -> bool:
+    """What the server refuses in an orgSiteKey: control (Cc) or format (Cf) characters."""
+    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
 
 
 class ConfigError(ValueError):
@@ -77,9 +84,8 @@ def _text(obj: dict, key: str, where: str, max_len: int) -> str:
 
 
 def _org_name(w: dict, where: str) -> str:
-    """The api refuses an orgName with a control char or nothing visible on every frame."""
     name = _text(w, "orgName", where, 200)
-    if any(unicodedata.category(ch) == "Cc" for ch in name):
+    if CONTROL_CHAR.search(name):
         raise ConfigError(f"{where}: orgName must not contain control characters")
     # Bidi controls the api strips are Cf too, so they never count as visible.
     if not any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in name):
@@ -91,8 +97,7 @@ def _org(w: dict, where: str) -> str:
     """The window's org: its Turma label ("org"), else a legacy Turma site key ("orgSiteKey")."""
     if "org" not in w and "orgSiteKey" in w:
         key = _text(w, "orgSiteKey", where, 128)
-        # The api refuses a site key holding a control or format char on every frame.
-        if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in key):
+        if _has_control_or_format(key):
             raise ConfigError(f"{where}: orgSiteKey must not contain control characters")
         return key
     label = _text(w, "org", where, 128)

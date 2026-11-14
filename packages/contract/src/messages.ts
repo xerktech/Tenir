@@ -268,9 +268,12 @@ export interface ScreenFrameHeader {
    */
   windowTitle: string;
   /**
-   * Turma site key of the org this window belongs to; one meeting at a time per site key.
+   * Turma site key of the org this window belongs to; one meeting at a time per site key. No control characters (XERK-2881): Postgres TEXT rejects NUL, so one would fail every frame.
    */
   orgSiteKey: string;
+  /**
+   * Display name of the org. No control characters, like orgSiteKey.
+   */
   orgName: string;
   /**
    * Meeting app in the window: zoom or teams (Microsoft Teams). Each has its own layout parser.

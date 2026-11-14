@@ -126,7 +126,7 @@ def test_a_hung_write_never_holds_up_a_frame_and_later_frames_are_skipped(
 
 def test_a_client_supplied_org_key_never_picks_the_path(tmp_path: Path) -> None:
     root = tmp_path / "s"
-    for key in ("../../etc", "a/b", "a\\b", "a\x00b"):
+    for key in ("../../etc", "a/b", "a\\b", "a:b"):
         assert samples.save(str(root), 10, _header(key), b"\xff\xd8x", _RESULT, 5)
     dirs = sorted(root.iterdir())
     # Each key its own directory, all directly under the root.

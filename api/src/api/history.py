@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import unicodedata
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from api.auth import Principal, current_principal
 from api.auth.deps import principal_from_request
+from api.screen import has_control_chars
 from api.screen.utterances import sentences
 from api.session import is_valid_session_id
 from api.persistence import (
@@ -175,12 +175,6 @@ class OrgOut(BaseModel):
     name: str
 
 
-def _has_control_chars(text: str) -> bool:
-    """Control (Cc) or format (Cf) characters: no org site key holds one, and a NUL 500s
-    Postgres."""
-    return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in text)
-
-
 def _store():
     store = get_conversation_store()
     if store is None:
@@ -256,7 +250,7 @@ def list_conversations(
     offset: int = Query(0, ge=0),
     principal: Principal = Depends(current_principal),
 ) -> list[ConversationSummaryOut]:
-    if org is not None and _has_control_chars(org):
+    if org is not None and has_control_chars(org):
         # A NUL reached psycopg as a 500; no site key holds one.
         raise HTTPException(status_code=422, detail="org must not contain control characters")
     store = _store()

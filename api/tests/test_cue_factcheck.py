@@ -1182,6 +1182,27 @@ def test_a_contradicted_cue_is_dropped_and_never_offered_again(
     asyncio.run(run())
 
 
+def test_a_multi_line_conflict_logs_as_one_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The conflict is LLM output: logged with %r, its newline can't start a forged line
+    (XERK-2881)."""
+    monkeypatch.setattr(settings, "cue_backend", "stub")
+    conflict = "Type Ground\nERROR api.session forged line"
+
+    async def run() -> None:
+        session = await _session([], _Checker(conflict))
+        with caplog.at_level("INFO", logger="api.session"):
+            session._consider_cue(_final("how far is the sun?"))
+            await _drain(session)
+        await session.close()
+
+    asyncio.run(run())
+    (rec,) = [r for r in caplog.records if "contradicted" in r.getMessage()]
+    assert "\n" not in rec.getMessage()
+    assert repr(conflict) in rec.getMessage()
+
+
 @pytest.mark.parametrize(
     "checker",
     [_Checker(None), _Checker(raises=True), _Checker("Type Ground", sleep=0.5)],

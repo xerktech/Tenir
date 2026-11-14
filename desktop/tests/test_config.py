@@ -90,6 +90,23 @@ def test_org_names_with_joiners_and_marks_still_parse() -> None:
             {"windows": [{"title": "t", "orgSiteKey": " ", "orgName": "n", "platform": "zoom"}]},
             "orgSiteKey",
         ),
+        (
+            {
+                "windows": [
+                    {"title": "t", "orgSiteKey": "a\x00b", "orgName": "n", "platform": "zoom"}
+                ]
+            },
+            "control characters",
+        ),
+        (
+            {
+                "windows": [
+                    {"title": "t", "orgSiteKey": "a\u202eb", "orgName": "n", "platform": "zoom"}
+                ]
+            },
+            "control characters",
+        ),
+        ({"windows": [{**GOOD["windows"][0], "orgName": "Tes\x00o"}]}, "orgName must not"),
         ({"windows": [{**GOOD["windows"][0], "orgName": "x" * 201}]}, "longer than 200"),
         ({"windows": [GOOD["windows"][0], GOOD["windows"][0]]}, "own org"),
         (
@@ -128,3 +145,10 @@ def test_the_token_comes_from_the_env_or_the_file_beside_the_config(
     assert load_token(cfg) == "tok-file"
     monkeypatch.setenv("TENIR_DEVICE_TOKEN", "tok-env")
     assert load_token(cfg) == "tok-env"
+
+
+def test_an_org_name_may_hold_format_chars() -> None:
+    """The server refuses only control chars in a name: ZWJ emoji and Persian ZWNJ load."""
+    name = "Dev team \U0001f468\u200d\U0001f4bb"
+    cfg = parse({**GOOD, "windows": [{**GOOD["windows"][0], "orgName": name}]})
+    assert cfg.windows[0].org_name == name
