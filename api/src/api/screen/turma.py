@@ -77,6 +77,9 @@ BACKFILL_SECONDS = 86_400.0
 # A pass the hub could not finish (unreachable, a refusal, an older hub) is asked again this
 # soon instead: a Tenir deployed before the hub would otherwise wait a whole day.
 BACKFILL_RETRY_SECONDS = 900.0
+# How many retries in a row a 401/403 on the list gets. It is an older hub mid-rollout (gone
+# within minutes); past this it is a wrong token, which the daily pass is enough for.
+BACKFILL_AUTH_RETRIES = 4
 REQUEST_TIMEOUT_SECONDS = 30.0
 # The hub's caps (contract-meetings.md): over these it refuses (title/platform) or 413s
 # (segments). Segment and participant text over its caps is cut by the hub itself.
@@ -201,8 +204,12 @@ class TurmaDelivery:
         # the window a re-queued meeting got on the first (XERK-2605 QA).
         self._booted_at: float | None = None
         # When the next transcript back-fill pass is due (0: at the loop's first pass).
-        self._backfill_at = 0.0
-        self._backfill_clean = True  # whether the last pass reached every org
+        self._backfill_at = 0.0  # when the next pass (daily or retry) is due
+        self._daily_at = 0.0  # when the next FULL pass is due
+        # Orgs the last pass could not finish for a reason that may clear by waiting; a retry
+        # pass asks only these, so one stuck org never re-runs every other org's pass.
+        self._retry_orgs: set[str] = set()
+        self._auth_refusals: dict[str, int] = {}  # org -> 401/403s in a row on the list
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -318,30 +325,44 @@ class TurmaDelivery:
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
-    async def backfill_transcripts(self) -> int:
-        """Send again every delivered meeting whose transcript the hub says it has not kept;
-        returns how many the hub saved. An unreachable hub ends the pass."""
-        self._backfill_clean = False
+    async def backfill_transcripts(self, only: set[str] | None = None) -> int:
+        """Send again every delivered meeting whose transcript the hub says it has not kept
+        (of the orgs in ``only``, when given); returns how many the hub saved. Orgs left
+        unfinished for a reason that may clear by waiting land in ``_retry_orgs``. An
+        unreachable hub ends the pass, leaving every org not yet done to retry."""
         rows = await asyncio.to_thread(self.store.delivered_meetings)
         by_org: dict[str, dict[str, str]] = {}  # org -> {conversation id: household}
         for household, cid, org in rows:
-            by_org.setdefault(org, {})[cid] = household
+            if only is None or org in only:
+                by_org.setdefault(org, {})[cid] = household
         saved = 0
-        clean = True
+        retry: set[str] = set()
+        self._retry_orgs = retry
+        pending = list(by_org)
         for org, held in by_org.items():
+            pending.remove(org)
             base = f"{self.url}/api/orgs/{quote(org, safe='')}/meetings"
             try:
                 resp = await self.client.get(f"{base}/missing-transcripts", headers=self._auth())
             except httpx.HTTPError as exc:
                 log.info("transcript back-fill: hub unreachable (%s)", type(exc).__name__)
+                retry.update([org, *pending])
                 return saved
             ids = _missing_ids(resp)
             if ids is None:
                 log.info("transcript back-fill skipped an org: %s", _hub_error(resp))
-                # Only a transient answer is worth asking again soon. A 4xx (an old label, an
-                # org no host is in, an older hub) holds until the daily pass.
-                clean = clean and not _transient(resp)
+                # A 401/403 here is an older hub (no such route) while the hub and Tenir roll
+                # out in either order: worth asking again soon. A 404 (an old label, an org no
+                # host is in) or a 400 holds until the daily pass.
+                if resp.status_code in (401, 403):
+                    n = self._auth_refusals.get(org, 0) + 1
+                    self._auth_refusals[org] = n
+                    if n <= BACKFILL_AUTH_RETRIES:
+                        retry.add(org)
+                elif _transient(resp):
+                    retry.add(org)
                 continue
+            self._auth_refusals.pop(org, None)
             for cid in ids:
                 household = held.get(cid)
                 if household is None:
@@ -355,6 +376,7 @@ class TurmaDelivery:
                     resp = await self.client.post(base, content=_encode(body), headers=self._auth())
                 except httpx.HTTPError as exc:
                     log.info("transcript back-fill: hub unreachable (%s)", type(exc).__name__)
+                    retry.update([org, *pending])
                     return saved
                 if resp.status_code == 200 and _ok(resp):
                     answer = resp.json()
@@ -362,25 +384,30 @@ class TurmaDelivery:
                         saved += 1
                         metrics.incr("turma.transcripts_backfilled")
                     elif answer.get("transcriptUnknown") is True:
-                        clean = False  # the hub's store could not tell: ask again soon
+                        retry.add(org)  # the hub's store could not tell: ask again soon
                 else:
                     log.info("transcript of meeting %s not back-filled: %s", cid, _hub_error(resp))
-                    clean = clean and not _transient(resp)
-        self._backfill_clean = clean
+                    if _transient(resp):
+                        retry.add(org)
         if saved:
             log.info("back-filled %d meeting transcript(s) on the turma hub", saved)
         return saved
 
     async def _maybe_backfill(self) -> None:
-        if self.clock() < self._backfill_at:
+        now = self.clock()
+        if now < self._backfill_at:
             return
-        self._backfill_at = self.clock() + BACKFILL_SECONDS
+        full = now >= self._daily_at
+        if full:
+            self._daily_at = now + BACKFILL_SECONDS
+        only = None if full else set(self._retry_orgs)
         try:
-            await self.backfill_transcripts()
-        except Exception:  # a database outage: retried soon, below
+            await self.backfill_transcripts(only)
+        except Exception:  # a database outage: the whole pass is retried soon
             log.exception("turma transcript back-fill failed")
-        if not self._backfill_clean:
-            self._backfill_at = self.clock() + BACKFILL_RETRY_SECONDS
+            self._daily_at = min(self._daily_at, self.clock() + BACKFILL_RETRY_SECONDS)
+        retry_at = self.clock() + BACKFILL_RETRY_SECONDS if self._retry_orgs else float("inf")
+        self._backfill_at = min(self._daily_at, retry_at)
 
     async def _fail(self, household: str, cid: str, reason: str) -> None:
         self._titled.discard(cid)
