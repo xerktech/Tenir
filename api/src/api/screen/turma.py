@@ -77,6 +77,9 @@ BACKFILL_SECONDS = 86_400.0
 # A pass the hub could not finish (unreachable, a refusal, an older hub) is asked again this
 # soon instead: a Tenir deployed before the hub would otherwise wait a whole day.
 BACKFILL_RETRY_SECONDS = 900.0
+# How many retries in a row a 401/403 on the list gets. It is an older hub mid-rollout (gone
+# within minutes); past this it is a wrong token, which the daily pass is enough for.
+BACKFILL_AUTH_RETRIES = 4
 REQUEST_TIMEOUT_SECONDS = 30.0
 # The hub's caps (contract-meetings.md): over these it refuses (title/platform) or 413s
 # (segments). Segment and participant text over its caps is cut by the hub itself.
@@ -206,6 +209,7 @@ class TurmaDelivery:
         # Orgs the last pass could not finish for a reason that may clear by waiting; a retry
         # pass asks only these, so one stuck org never re-runs every other org's pass.
         self._retry_orgs: set[str] = set()
+        self._auth_refusals: dict[str, int] = {}  # org -> 401/403s in a row on the list
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -350,9 +354,15 @@ class TurmaDelivery:
                 # A 401/403 here is an older hub (no such route) while the hub and Tenir roll
                 # out in either order: worth asking again soon. A 404 (an old label, an org no
                 # host is in) or a 400 holds until the daily pass.
-                if _transient(resp) or resp.status_code in (401, 403):
+                if resp.status_code in (401, 403):
+                    n = self._auth_refusals.get(org, 0) + 1
+                    self._auth_refusals[org] = n
+                    if n <= BACKFILL_AUTH_RETRIES:
+                        retry.add(org)
+                elif _transient(resp):
                     retry.add(org)
                 continue
+            self._auth_refusals.pop(org, None)
             for cid in ids:
                 household = held.get(cid)
                 if household is None:

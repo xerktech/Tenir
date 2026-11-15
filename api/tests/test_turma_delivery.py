@@ -1081,3 +1081,33 @@ def test_the_scheduled_retry_pass_goes_through_maybe_backfill(clock) -> None:
     clock["now"] += turma.BACKFILL_RETRY_SECONDS
     asyncio.run(d._maybe_backfill())
     assert hub.gets == ["rolling"]
+
+
+def test_an_unreachable_hub_leaves_every_org_not_yet_asked_to_retry(clock) -> None:
+    store = InMemoryConversationStore()
+    for cid, org in (("c1", "a"), ("c2", "b"), ("c3", "c")):
+        _sent(store, cid, org=org)
+
+    def hub(request):
+        if "/orgs/b/" in request.url.path:
+            raise httpx.ConnectError("down")
+        return BackfillHub({})(request)
+
+    d = _delivery(store, hub, clock)
+    asyncio.run(d.backfill_transcripts())
+    assert d._retry_orgs == {"b", "c"}  # a finished; c was never asked
+
+
+def test_a_401_that_never_clears_stops_retrying_after_a_few_tries(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="badtoken")
+    hub = BackfillHub({"badtoken": httpx.Response(401, json={"error": "unauthorized"})})
+    d = _delivery(store, hub, clock)
+    first = clock["now"]
+    for _ in range(turma.BACKFILL_AUTH_RETRIES + 3):
+        clock["now"] = max(clock["now"], d._backfill_at)
+        if clock["now"] >= first + turma.BACKFILL_SECONDS:
+            break
+        asyncio.run(d._maybe_backfill())
+    assert len(hub.gets) == turma.BACKFILL_AUTH_RETRIES + 1
+    assert d._backfill_at == first + turma.BACKFILL_SECONDS
