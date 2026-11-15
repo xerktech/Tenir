@@ -949,3 +949,36 @@ def test_delivered_meetings_lists_only_sent_screen_meetings() -> None:
     store.create("default", "mic", owner="u1")
     store.finish("default", "mic")
     assert store.delivered_meetings() == [("default", "c1", SITE)]
+
+
+def test_an_unfinished_backfill_is_asked_again_soon_not_a_day_later(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    up = {"ok": False}
+
+    def hub(request):
+        if not up["ok"]:
+            raise httpx.ConnectError("down")
+        return BackfillHub({SITE: []})(request)
+
+    d = _delivery(store, hub, clock)
+    asyncio.run(d._maybe_backfill())
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS
+    up["ok"] = True
+    clock["now"] += turma.BACKFILL_RETRY_SECONDS
+    asyncio.run(d._maybe_backfill())
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_SECONDS
+
+
+def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="a")
+    _sent(store, "c2", org="b")
+    asked: list[str] = []
+
+    def hub(request):
+        asked.append(request.url.path)
+        raise httpx.ConnectError("down")
+
+    assert asyncio.run(_delivery(store, hub, clock).backfill_transcripts()) == 0
+    assert len(asked) == 1  # the second org is not asked into a dead hub

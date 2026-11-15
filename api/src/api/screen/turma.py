@@ -74,6 +74,9 @@ POLL_SECONDS = 10.0
 # How often the transcript back-fill asks the hub again. Daily: a transcript the hub's byte
 # budget evicted is listed again, so this bounds re-sending it to once a day.
 BACKFILL_SECONDS = 86_400.0
+# A pass the hub could not finish (unreachable, a refusal, an older hub) is asked again this
+# soon instead: a Tenir deployed before the hub would otherwise wait a whole day.
+BACKFILL_RETRY_SECONDS = 900.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 # The hub's caps (contract-meetings.md): over these it refuses (title/platform) or 413s
 # (segments). Segment and participant text over its caps is cut by the hub itself.
@@ -199,6 +202,7 @@ class TurmaDelivery:
         self._booted_at: float | None = None
         # When the next transcript back-fill pass is due (0: at the loop's first pass).
         self._backfill_at = 0.0
+        self._backfill_clean = True  # whether the last pass reached every org
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -317,11 +321,13 @@ class TurmaDelivery:
     async def backfill_transcripts(self) -> int:
         """Send again every delivered meeting whose transcript the hub says it has not kept;
         returns how many the hub saved. An unreachable hub ends the pass."""
+        self._backfill_clean = False
         rows = await asyncio.to_thread(self.store.delivered_meetings)
         by_org: dict[str, dict[str, str]] = {}  # org -> {conversation id: household}
         for household, cid, org in rows:
             by_org.setdefault(org, {})[cid] = household
         saved = 0
+        clean = True
         for org, held in by_org.items():
             base = f"{self.url}/api/orgs/{quote(org, safe='')}/meetings"
             try:
@@ -332,6 +338,7 @@ class TurmaDelivery:
             ids = _missing_ids(resp)
             if ids is None:
                 log.info("transcript back-fill skipped an org: %s", _hub_error(resp))
+                clean = False
                 continue
             for cid in ids:
                 household = held.get(cid)
@@ -352,6 +359,9 @@ class TurmaDelivery:
                     metrics.incr("turma.transcripts_backfilled")
                 elif resp.status_code != 200:
                     log.info("transcript of meeting %s not back-filled: %s", cid, _hub_error(resp))
+                    if resp.status_code != 404:  # 404: the hub no longer holds it, nothing to retry
+                        clean = False
+        self._backfill_clean = clean
         if saved:
             log.info("back-filled %d meeting transcript(s) on the turma hub", saved)
         return saved
@@ -362,8 +372,10 @@ class TurmaDelivery:
         self._backfill_at = self.clock() + BACKFILL_SECONDS
         try:
             await self.backfill_transcripts()
-        except Exception:  # a database outage: the next due pass retries
+        except Exception:  # a database outage: retried soon, below
             log.exception("turma transcript back-fill failed")
+        if not self._backfill_clean:
+            self._backfill_at = self.clock() + BACKFILL_RETRY_SECONDS
 
     async def _fail(self, household: str, cid: str, reason: str) -> None:
         self._titled.discard(cid)

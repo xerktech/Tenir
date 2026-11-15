@@ -180,6 +180,8 @@ def test_meeting_delivery_state_round_trips(store) -> None:
     store.set_delivery(HH, a, "sent", None)
     store.set_delivery(HH, b, "failed", "hub answered 400: bad")
     store.set_delivery(HH, mic, "sent", None)
+    # Only sent screen meetings are back-filled (XERK-2965).
+    assert sorted(store.delivered_meetings()) == sorted([(HH, a, "tesoro"), (HH, legacy, "tesoro")])
     assert (store.get(HH, a).delivery_state, store.get(HH, a).delivery_error) == ("sent", None)
     assert store.get(HH, mic).delivery_state is None
     assert store.pending_deliveries() == []
