@@ -962,12 +962,13 @@ def test_an_unfinished_backfill_is_asked_again_soon_not_a_day_later(clock) -> No
         return BackfillHub({SITE: []})(request)
 
     d = _delivery(store, hub, clock)
+    first = clock["now"]
     asyncio.run(d._maybe_backfill())
     assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS
     up["ok"] = True
     clock["now"] += turma.BACKFILL_RETRY_SECONDS
     asyncio.run(d._maybe_backfill())
-    assert d._backfill_at - clock["now"] == turma.BACKFILL_SECONDS
+    assert d._backfill_at == first + turma.BACKFILL_SECONDS  # back on the daily schedule
 
 
 def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
@@ -988,7 +989,10 @@ def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
     ("answer", "retry_soon"),
     [
         (httpx.Response(404, json={"error": "no org has the meeting label"}), False),
-        (httpx.Response(401, json={"error": "unauthorized"}), False),
+        (httpx.Response(400, json={"error": "bad"}), False),
+        # An older hub during a rollout: no such route, so its auth gate answers 401.
+        (httpx.Response(401, json={"error": "unauthorized"}), True),
+        (httpx.Response(403, json={"error": "forbidden"}), True),
         (httpx.Response(503, json={"error": "the transcript store is unreachable"}), True),
         (httpx.Response(429, json={"error": "slow down"}), True),
         (httpx.Response(408, text="timeout"), True),
@@ -1034,3 +1038,46 @@ def test_a_later_permanent_refusal_never_hides_an_earlier_transient_one(clock) -
     asyncio.run(d._maybe_backfill())
     assert hub.gets == ["busy", "oldlabel"]
     assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS
+
+
+def test_a_retry_pass_asks_only_the_orgs_that_could_not_finish(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="rolling")
+    _sent(store, "c2", org="oldlabel")
+    _sent(store, "c3")
+    answers = {"rolling": httpx.Response(401, json={"error": "unauthorized"}),
+               "oldlabel": httpx.Response(404, json={"error": "no org"})}
+    hub = BackfillHub(answers)
+    d = _delivery(store, hub, clock)
+    first = clock["now"]
+    asyncio.run(d._maybe_backfill())
+    assert sorted(hub.gets) == sorted(["rolling", "oldlabel", SITE])
+    # The hub finishes rolling out: the retry asks the one org, and saves its meeting.
+    answers["rolling"] = ["c1"]
+    hub.gets.clear()
+    clock["now"] += turma.BACKFILL_RETRY_SECONDS
+    assert asyncio.run(d.backfill_transcripts(set(d._retry_orgs))) == 1
+    assert hub.gets == ["rolling"]
+    d._retry_orgs = set()
+    clock["now"] += 1
+    hub.gets.clear()
+    asyncio.run(d._maybe_backfill())  # nothing left to retry, not yet a day: no pass
+    assert hub.gets == []
+    clock["now"] = first + turma.BACKFILL_SECONDS
+    asyncio.run(d._maybe_backfill())  # the daily pass asks every org again
+    assert sorted(hub.gets) == sorted(["rolling", "oldlabel", SITE])
+
+
+def test_the_scheduled_retry_pass_goes_through_maybe_backfill(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="rolling")
+    _sent(store, "c2")
+    answers = {"rolling": httpx.Response(401, json={"error": "unauthorized"})}
+    hub = BackfillHub(answers)
+    d = _delivery(store, hub, clock)
+    asyncio.run(d._maybe_backfill())
+    hub.gets.clear()
+    answers["rolling"] = []
+    clock["now"] += turma.BACKFILL_RETRY_SECONDS
+    asyncio.run(d._maybe_backfill())
+    assert hub.gets == ["rolling"]
