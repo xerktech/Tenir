@@ -28,6 +28,14 @@ cluster restart is retried, not given up on at the first 404 — also when the p
 twice. A still-wrong token just fails them again, once per boot. Refusals no fix can change
 (400, 413, nothing to send) stay failed.
 
+Transcript back-fill (XERK-2965): a meeting the hub read before it kept full transcripts
+(Turma XERK-2941) has none there. At the loop's start and then every
+``BACKFILL_SECONDS``, each org Tenir delivered to is asked which of its settled meetings
+have no transcript (``GET .../meetings/missing-transcripts``), and each one still held here
+is POSTed again with ``backfill: true``: the hub saves it as the transcript, changes nothing
+else, and never creates a meeting from it. An older hub answers that GET with a refusal, and
+the org is skipped until the next pass.
+
 A pass looks at EVERY pending meeting: one org's stuck backlog (its 404s or 429s) must never
 hide another org's meetings. After a retryable refusal the rest of that org waits for the
 next pass; an unreachable hub ends the pass (every request would wait out the timeout).
@@ -63,6 +71,9 @@ REQUEUE_ON_BOOT = (
 )
 BASE_DELAY_SECONDS = 5.0
 POLL_SECONDS = 10.0
+# How often the transcript back-fill asks the hub again. Daily: a transcript the hub's byte
+# budget evicted is listed again, so this bounds re-sending it to once a day.
+BACKFILL_SECONDS = 86_400.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 # The hub's caps (contract-meetings.md): over these it refuses (title/platform) or 413s
 # (segments). Segment and participant text over its caps is cut by the hub itself.
@@ -186,6 +197,8 @@ class TurmaDelivery:
         # sooner than a full window after it. Not per meeting: a second restart must not lose
         # the window a re-queued meeting got on the first (XERK-2605 QA).
         self._booted_at: float | None = None
+        # When the next transcript back-fill pass is due (0: at the loop's first pass).
+        self._backfill_at = 0.0
 
     def wake(self) -> None:
         """A meeting just turned ready: try it now rather than on the next poll."""
@@ -261,10 +274,7 @@ class TurmaDelivery:
             resp = await self.client.post(
                 endpoint,
                 content=_encode(body),
-                headers={
-                    "Authorization": f"Bearer {self.token}",
-                    "Content-Type": "application/json",
-                },
+                headers=self._auth(),
             )
         except httpx.HTTPError as exc:
             reason = f"hub unreachable ({type(exc).__name__})"
@@ -301,6 +311,60 @@ class TurmaDelivery:
         log.info("meeting %s not delivered yet (%s); retry in %.0fs", cid, reason, delay)
         return outcome
 
+    def _auth(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+
+    async def backfill_transcripts(self) -> int:
+        """Send again every delivered meeting whose transcript the hub says it has not kept;
+        returns how many the hub saved. An unreachable hub ends the pass."""
+        rows = await asyncio.to_thread(self.store.delivered_meetings)
+        by_org: dict[str, dict[str, str]] = {}  # org -> {conversation id: household}
+        for household, cid, org in rows:
+            by_org.setdefault(org, {})[cid] = household
+        saved = 0
+        for org, held in by_org.items():
+            base = f"{self.url}/api/orgs/{quote(org, safe='')}/meetings"
+            try:
+                resp = await self.client.get(f"{base}/missing-transcripts", headers=self._auth())
+            except httpx.HTTPError as exc:
+                log.info("transcript back-fill: hub unreachable (%s)", type(exc).__name__)
+                return saved
+            ids = _missing_ids(resp)
+            if ids is None:
+                log.info("transcript back-fill skipped an org: %s", _hub_error(resp))
+                continue
+            for cid in ids:
+                household = held.get(cid)
+                if household is None:
+                    continue  # not ours, or deleted here: nothing to send
+                conv = await asyncio.to_thread(self.store.get, household, cid)
+                built = meeting_body(conv) if conv is not None else None
+                if built is None or not built[0]["segments"]:
+                    continue
+                body = {**built[0], "backfill": True}
+                try:
+                    resp = await self.client.post(base, content=_encode(body), headers=self._auth())
+                except httpx.HTTPError as exc:
+                    log.info("transcript back-fill: hub unreachable (%s)", type(exc).__name__)
+                    return saved
+                if resp.status_code == 200 and _ok(resp) and resp.json().get("transcriptSaved") is True:
+                    saved += 1
+                    metrics.incr("turma.transcripts_backfilled")
+                elif resp.status_code != 200:
+                    log.info("transcript of meeting %s not back-filled: %s", cid, _hub_error(resp))
+        if saved:
+            log.info("back-filled %d meeting transcript(s) on the turma hub", saved)
+        return saved
+
+    async def _maybe_backfill(self) -> None:
+        if self.clock() < self._backfill_at:
+            return
+        self._backfill_at = self.clock() + BACKFILL_SECONDS
+        try:
+            await self.backfill_transcripts()
+        except Exception:  # a database outage: the next due pass retries
+            log.exception("turma transcript back-fill failed")
+
     async def _fail(self, household: str, cid: str, reason: str) -> None:
         self._titled.discard(cid)
         self._backoff.pop(cid, None)
@@ -333,6 +397,7 @@ class TurmaDelivery:
                 await self.run_once()
             except Exception:  # a database outage: the next pass retries
                 log.exception("turma meeting delivery pass failed")
+            await self._maybe_backfill()
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -346,6 +411,20 @@ def _ok(resp: httpx.Response) -> bool:
     except ValueError:
         return False
     return isinstance(payload, dict) and payload.get("ok") is True
+
+
+def _missing_ids(resp: httpx.Response) -> list[str] | None:
+    """The hub's ``{meetingIds: [...]}`` answer, else None (a refusal, an older hub, a proxy)."""
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    ids = payload.get("meetingIds") if isinstance(payload, dict) else None
+    if not isinstance(ids, list):
+        return None
+    return [i for i in ids if isinstance(i, str)]
 
 
 _delivery: TurmaDelivery | None = None

@@ -1368,6 +1368,19 @@ class SqlConversationStore:
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
+    def delivered_meetings(  # pragma: no cover - requires a live database
+        self,
+    ) -> list[tuple[str, str, str]]:
+        with self._ensure_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT household, id, org_site_key FROM conversations
+                 WHERE source = 'screen' AND delivery_state = 'sent'
+                   AND org_site_key IS NOT NULL AND org_site_key <> ''
+                """
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def set_delivery(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None
     ) -> None:
