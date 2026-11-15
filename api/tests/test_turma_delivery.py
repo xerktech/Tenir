@@ -990,6 +990,8 @@ def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
         (httpx.Response(404, json={"error": "no org has the meeting label"}), False),
         (httpx.Response(401, json={"error": "unauthorized"}), False),
         (httpx.Response(503, json={"error": "the transcript store is unreachable"}), True),
+        (httpx.Response(429, json={"error": "slow down"}), True),
+        (httpx.Response(408, text="timeout"), True),
         (httpx.Response(200, text="<html>login</html>"), True),
     ],
 )
@@ -1020,3 +1022,15 @@ def test_only_a_transient_resend_answer_is_asked_again_soon(clock, answer, retry
     asyncio.run(d._maybe_backfill())
     wait = turma.BACKFILL_RETRY_SECONDS if retry_soon else turma.BACKFILL_SECONDS
     assert d._backfill_at - clock["now"] == wait
+
+
+def test_a_later_permanent_refusal_never_hides_an_earlier_transient_one(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="busy")  # dict order: asked first
+    _sent(store, "c2", org="oldlabel")
+    hub = BackfillHub({"busy": httpx.Response(503, json={"error": "busy"}),
+                       "oldlabel": httpx.Response(404, json={"error": "no org"})})
+    d = _delivery(store, hub, clock)
+    asyncio.run(d._maybe_backfill())
+    assert hub.gets == ["busy", "oldlabel"]
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS
