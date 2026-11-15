@@ -44,6 +44,8 @@ class Hub:
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":  # the loop's transcript back-fill ask: nothing missing
+            return httpx.Response(200, json={"meetingIds": []})
         self.requests.append(request)
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, Exception):
@@ -813,3 +815,222 @@ def test_a_site_key_cannot_forge_the_delivered_log_line(clock, caplog) -> None:
         assert asyncio.run(d.run_once()) == 1
     (rec,) = [r for r in caplog.records if "delivered to turma" in r.getMessage()]
     assert "\n" not in rec.getMessage() and repr(site) in rec.getMessage()
+
+
+# ---- Transcript back-fill (XERK-2965) -----------------------------------------------------
+
+
+class BackfillHub:
+    """A hub that lists `missing` per org and records each resend."""
+
+    def __init__(self, missing: dict[str, object], post=None) -> None:
+        self.missing = missing
+        self.post = post or (lambda body: httpx.Response(
+            200, json={"ok": True, "duplicate": True, "transcriptSaved": True, "meeting": {}}))
+        self.gets: list[str] = []
+        self.posts: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer tok"
+        org = request.url.path.split("/")[3]
+        if request.method == "GET":
+            assert request.url.path.endswith("/meetings/missing-transcripts")
+            self.gets.append(org)
+            answer = self.missing.get(org, [])
+            if isinstance(answer, httpx.Response):
+                return answer
+            return httpx.Response(200, json={"meetingIds": answer})
+        body = json.loads(request.content)
+        assert request.url.path == f"/api/orgs/{org}/meetings"
+        self.posts.append(body)
+        return self.post(body)
+
+
+def _sent(store, cid, org=SITE, lines=("hello there",)):
+    store.create("default", cid, owner="u1", screen=ScreenMeta(org, "Acme", "zoom"))
+    for i, text in enumerate(lines):
+        store.add_segment("default", cid, Segment(f"s{i}", text, i * 1000, i * 1000 + 900))
+    store.finish("default", cid)
+    store.set_delivery("default", cid, "sent", None)
+
+
+def test_backfill_resends_only_the_meetings_the_hub_lists_and_still_held_here(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", lines=("first words",))
+    _sent(store, "c2")
+    _meeting(store, "c3")  # still pending: never part of the back-fill
+    hub = BackfillHub({SITE: ["c1", "elsewhere", "c3"]})
+    d = _delivery(store, hub, clock)
+
+    assert asyncio.run(d.backfill_transcripts()) == 1
+    assert hub.gets == [SITE]  # one ask per org
+    assert [b["meetingId"] for b in hub.posts] == ["c1"]
+    body = hub.posts[0]
+    assert body["backfill"] is True
+    assert body["segments"][0]["text"] == "first words"
+    assert store.get("default", "c1").delivery_state == "sent"  # untouched
+
+
+def test_backfill_skips_an_org_an_older_hub_refuses_and_goes_on(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="old")
+    _sent(store, "c2", org="new")
+    hub = BackfillHub({"old": httpx.Response(401, json={"error": "unauthorized"}), "new": ["c2"]})
+    d = _delivery(store, hub, clock)
+
+    assert asyncio.run(d.backfill_transcripts()) == 1
+    assert sorted(hub.gets) == ["new", "old"]
+    assert [b["meetingId"] for b in hub.posts] == ["c2"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(200, json={"meetingIds": "c1"}),
+        httpx.Response(200, text="<html>login</html>"),
+        httpx.Response(503, json={"error": "the transcript store is unreachable"}),
+    ],
+)
+def test_backfill_sends_nothing_on_an_answer_that_is_not_a_list(clock, answer) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    hub = BackfillHub({SITE: answer})
+    assert asyncio.run(_delivery(store, hub, clock).backfill_transcripts()) == 0
+    assert hub.posts == []
+
+
+def test_backfill_counts_only_what_the_hub_saved_and_stops_when_unreachable(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    _sent(store, "c2")
+    answers = iter([
+        httpx.Response(200, json={"ok": True, "duplicate": True, "meeting": {}}),
+        httpx.Response(404, json={"error": "no such meeting"}),
+    ])
+    hub = BackfillHub({SITE: ["c1", "c2"]}, post=lambda body: next(answers))
+    assert asyncio.run(_delivery(store, hub, clock).backfill_transcripts()) == 0
+    assert len(hub.posts) == 2
+
+    def down(request):
+        raise httpx.ConnectError("down")
+
+    assert asyncio.run(_delivery(store, down, clock).backfill_transcripts()) == 0
+
+
+def test_backfill_runs_on_the_first_pass_then_once_a_day(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    hub = BackfillHub({SITE: ["c1"]})
+    d = _delivery(store, hub, clock)
+
+    asyncio.run(d._maybe_backfill())
+    asyncio.run(d._maybe_backfill())
+    assert len(hub.gets) == 1
+    clock["now"] += turma.BACKFILL_SECONDS
+    asyncio.run(d._maybe_backfill())
+    assert len(hub.gets) == 2
+
+
+def test_a_database_outage_during_backfill_does_not_kill_the_loop(clock) -> None:
+    store = InMemoryConversationStore()
+
+    def boom():
+        raise RuntimeError("db down")
+
+    store.delivered_meetings = boom  # type: ignore[method-assign]
+    d = _delivery(store, BackfillHub({}), clock)
+    asyncio.run(d._maybe_backfill())  # logged, not raised
+
+
+def test_delivered_meetings_lists_only_sent_screen_meetings() -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    _meeting(store, "c2")
+    store.create("default", "mic", owner="u1")
+    store.finish("default", "mic")
+    assert store.delivered_meetings() == [("default", "c1", SITE)]
+
+
+def test_an_unfinished_backfill_is_asked_again_soon_not_a_day_later(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    up = {"ok": False}
+
+    def hub(request):
+        if not up["ok"]:
+            raise httpx.ConnectError("down")
+        return BackfillHub({SITE: []})(request)
+
+    d = _delivery(store, hub, clock)
+    asyncio.run(d._maybe_backfill())
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS
+    up["ok"] = True
+    clock["now"] += turma.BACKFILL_RETRY_SECONDS
+    asyncio.run(d._maybe_backfill())
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_SECONDS
+
+
+def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="a")
+    _sent(store, "c2", org="b")
+    asked: list[str] = []
+
+    def hub(request):
+        asked.append(request.url.path)
+        raise httpx.ConnectError("down")
+
+    assert asyncio.run(_delivery(store, hub, clock).backfill_transcripts()) == 0
+    assert len(asked) == 1  # the second org is not asked into a dead hub
+
+
+@pytest.mark.parametrize(
+    ("answer", "retry_soon"),
+    [
+        (httpx.Response(404, json={"error": "no org has the meeting label"}), False),
+        (httpx.Response(401, json={"error": "unauthorized"}), False),
+        (httpx.Response(503, json={"error": "the transcript store is unreachable"}), True),
+        (httpx.Response(429, json={"error": "slow down"}), True),
+        (httpx.Response(408, text="timeout"), True),
+        (httpx.Response(200, text="<html>login</html>"), True),
+    ],
+)
+def test_only_a_transient_list_refusal_is_asked_again_soon(clock, answer, retry_soon) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="oldlabel")
+    _sent(store, "c2")
+    d = _delivery(store, BackfillHub({"oldlabel": answer, SITE: []}), clock)
+    asyncio.run(d._maybe_backfill())
+    wait = turma.BACKFILL_RETRY_SECONDS if retry_soon else turma.BACKFILL_SECONDS
+    assert d._backfill_at - clock["now"] == wait
+
+
+@pytest.mark.parametrize(
+    ("answer", "retry_soon"),
+    [
+        (httpx.Response(404, json={"error": "no such meeting"}), False),
+        (httpx.Response(400, json={"error": "bad"}), False),
+        (httpx.Response(503, json={"error": "busy"}), True),
+        (httpx.Response(200, json={"ok": True, "duplicate": True, "transcriptUnknown": True}), True),
+        (httpx.Response(200, json={"ok": True, "duplicate": True}), False),
+    ],
+)
+def test_only_a_transient_resend_answer_is_asked_again_soon(clock, answer, retry_soon) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    d = _delivery(store, BackfillHub({SITE: ["c1"]}, post=lambda body: answer), clock)
+    asyncio.run(d._maybe_backfill())
+    wait = turma.BACKFILL_RETRY_SECONDS if retry_soon else turma.BACKFILL_SECONDS
+    assert d._backfill_at - clock["now"] == wait
+
+
+def test_a_later_permanent_refusal_never_hides_an_earlier_transient_one(clock) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="busy")  # dict order: asked first
+    _sent(store, "c2", org="oldlabel")
+    hub = BackfillHub({"busy": httpx.Response(503, json={"error": "busy"}),
+                       "oldlabel": httpx.Response(404, json={"error": "no org"})})
+    d = _delivery(store, hub, clock)
+    asyncio.run(d._maybe_backfill())
+    assert hub.gets == ["busy", "oldlabel"]
+    assert d._backfill_at - clock["now"] == turma.BACKFILL_RETRY_SECONDS

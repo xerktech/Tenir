@@ -126,6 +126,10 @@ class ConversationStore(Protocol):
         backing off, and a page of stuck ones must not hide the rest. A screen row with no
         state (created before delivery existed) counts as pending."""
         ...
+    def delivered_meetings(self) -> list[tuple[str, str, str]]:
+        """``(household, id, org_site_key)`` of every screen meeting the Turma hub took
+        (``sent``), for the transcript back-fill (XERK-2965)."""
+        ...
     def set_delivery(
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None
     ) -> None: ...
@@ -447,6 +451,17 @@ class InMemoryConversationStore:
             ]
         rows.sort(key=lambda r: (r[0], r[2]))
         return [(h, cid, org) for _, h, cid, org in rows]
+
+    def delivered_meetings(self) -> list[tuple[str, str, str]]:
+        with self._lock:
+            return [
+                (household, conv.id, conv.org_site_key)
+                for household, convs in self._by_household.items()
+                for conv in convs.values()
+                if conv.source == "screen"
+                and conv.delivery_state == "sent"
+                and conv.org_site_key
+            ]
 
     def set_delivery(
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None
