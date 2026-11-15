@@ -338,7 +338,9 @@ class TurmaDelivery:
             ids = _missing_ids(resp)
             if ids is None:
                 log.info("transcript back-fill skipped an org: %s", _hub_error(resp))
-                clean = False
+                # Only a transient answer is worth asking again soon. A 4xx (an old label, an
+                # org no host is in, an older hub) holds until the daily pass.
+                clean = clean and not _transient(resp)
                 continue
             for cid in ids:
                 household = held.get(cid)
@@ -354,13 +356,16 @@ class TurmaDelivery:
                 except httpx.HTTPError as exc:
                     log.info("transcript back-fill: hub unreachable (%s)", type(exc).__name__)
                     return saved
-                if resp.status_code == 200 and _ok(resp) and resp.json().get("transcriptSaved") is True:
-                    saved += 1
-                    metrics.incr("turma.transcripts_backfilled")
-                elif resp.status_code != 200:
+                if resp.status_code == 200 and _ok(resp):
+                    answer = resp.json()
+                    if answer.get("transcriptSaved") is True:
+                        saved += 1
+                        metrics.incr("turma.transcripts_backfilled")
+                    elif answer.get("transcriptUnknown") is True:
+                        clean = False  # the hub's store could not tell: ask again soon
+                else:
                     log.info("transcript of meeting %s not back-filled: %s", cid, _hub_error(resp))
-                    if resp.status_code != 404:  # 404: the hub no longer holds it, nothing to retry
-                        clean = False
+                    clean = clean and not _transient(resp)
         self._backfill_clean = clean
         if saved:
             log.info("back-filled %d meeting transcript(s) on the turma hub", saved)
@@ -423,6 +428,12 @@ def _ok(resp: httpx.Response) -> bool:
     except ValueError:
         return False
     return isinstance(payload, dict) and payload.get("ok") is True
+
+
+def _transient(resp: httpx.Response) -> bool:
+    """An answer that may change by waiting: a 5xx, a 429, or a 200 that is not the hub's
+    own JSON (a proxy or login page)."""
+    return resp.status_code >= 500 or resp.status_code in (408, 429) or resp.status_code == 200
 
 
 def _missing_ids(resp: httpx.Response) -> list[str] | None:

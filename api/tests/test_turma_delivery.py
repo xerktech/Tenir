@@ -982,3 +982,41 @@ def test_an_unreachable_hub_ends_the_backfill_pass(clock) -> None:
 
     assert asyncio.run(_delivery(store, hub, clock).backfill_transcripts()) == 0
     assert len(asked) == 1  # the second org is not asked into a dead hub
+
+
+@pytest.mark.parametrize(
+    ("answer", "retry_soon"),
+    [
+        (httpx.Response(404, json={"error": "no org has the meeting label"}), False),
+        (httpx.Response(401, json={"error": "unauthorized"}), False),
+        (httpx.Response(503, json={"error": "the transcript store is unreachable"}), True),
+        (httpx.Response(200, text="<html>login</html>"), True),
+    ],
+)
+def test_only_a_transient_list_refusal_is_asked_again_soon(clock, answer, retry_soon) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1", org="oldlabel")
+    _sent(store, "c2")
+    d = _delivery(store, BackfillHub({"oldlabel": answer, SITE: []}), clock)
+    asyncio.run(d._maybe_backfill())
+    wait = turma.BACKFILL_RETRY_SECONDS if retry_soon else turma.BACKFILL_SECONDS
+    assert d._backfill_at - clock["now"] == wait
+
+
+@pytest.mark.parametrize(
+    ("answer", "retry_soon"),
+    [
+        (httpx.Response(404, json={"error": "no such meeting"}), False),
+        (httpx.Response(400, json={"error": "bad"}), False),
+        (httpx.Response(503, json={"error": "busy"}), True),
+        (httpx.Response(200, json={"ok": True, "duplicate": True, "transcriptUnknown": True}), True),
+        (httpx.Response(200, json={"ok": True, "duplicate": True}), False),
+    ],
+)
+def test_only_a_transient_resend_answer_is_asked_again_soon(clock, answer, retry_soon) -> None:
+    store = InMemoryConversationStore()
+    _sent(store, "c1")
+    d = _delivery(store, BackfillHub({SITE: ["c1"]}, post=lambda body: answer), clock)
+    asyncio.run(d._maybe_backfill())
+    wait = turma.BACKFILL_RETRY_SECONDS if retry_soon else turma.BACKFILL_SECONDS
+    assert d._backfill_at - clock["now"] == wait
