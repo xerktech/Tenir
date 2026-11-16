@@ -103,4 +103,26 @@ def test_a_solo_stretch_after_an_overlap_starts_after_it() -> None:
     pieces = plan_pieces(p, 8.0)
     (solo,) = [x for x in pieces if not x.separate]
     assert solo.speaker == 3 and solo.end_s == 8.0
-    assert solo.start_s == pytest.approx(5.28)  # mid-pause after speaker 2's 5.0 end
+    # Starts where speaker 2's separated piece (padded) ends: nothing between is uncovered.
+    assert solo.start_s == pytest.approx(5.2)
+
+
+def test_a_speaker_either_side_of_an_overlap_stays_two_pieces() -> None:
+    """QA: A, then B over C, then A again — A's two stretches were joined across the
+    overlap and the joined piece took the whole turn."""
+    p = _probs(100, s0=[(0.0, 2.4), (4.4, 7.4)], s1=[(2.4, 4.4)], s2=[(2.4, 4.4)])
+    pieces = plan_pieces(p, 8.0)
+    solo = [x for x in pieces if not x.separate]
+    assert [x.speaker for x in solo] == [1, 1]
+    assert solo[0].end_s <= 2.4 and solo[1].start_s >= 4.4
+    assert {x.speaker for x in pieces if x.separate} == {2, 3}
+
+
+def test_solo_and_separated_pieces_leave_no_audio_uncovered() -> None:
+    p = _probs(100, s0=[(0.0, 3.0)], s1=[(3.7, 6.0)], s2=[(3.7, 6.0)])
+    pieces = sorted(plan_pieces(p, 8.0), key=lambda x: x.start_s)
+    covered = 0.0
+    for x in pieces:
+        assert x.start_s <= covered + 1e-6, f"gap before {x}"
+        covered = max(covered, x.end_s)
+    assert covered >= 6.0  # through the last speech; trailing silence needs no caption

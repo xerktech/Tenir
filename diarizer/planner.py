@@ -107,24 +107,33 @@ def plan_pieces(probs: np.ndarray, turn_s: float) -> list[Piece]:
     # Sequential (non-separated) intervals: fold short ones into a neighbour of the same
     # timeline, then tile the turn by cutting at gap midpoints.
     seq = [(a, b, k) for (a, b, k), s in zip(flat, sep, strict=True) if not s]
-    seq = _absorb_short(seq)
+    over = [x for x, s in zip(flat, sep, strict=True) if s]
+    seq = _absorb_short(seq, over)
     pieces: list[Piece] = []
     n = probs.shape[0]
-    # A sequential piece grows into the gap up to the middle of the pause before the next
-    # interval of ANY speaker — overlapped ones included. Tiling against sequential
-    # neighbours only stretched a lone solo stretch over the whole turn, overlaps and all,
-    # and every word of the turn was then captioned under that one speaker (QA).
-    timeline = seq + [x for x, s in zip(flat, sep, strict=True) if s]
+    pad = SEPARATE_PAD_S
+    padf = round(pad / FRAME_S)
+    # A sequential piece grows into the gap before the next interval of ANY speaker,
+    # overlapped ones included: to the middle of a pause before a sequential neighbour, or
+    # to where a separated neighbour's padded piece begins (so no audio between them goes
+    # uncaptioned). Tiling against sequential neighbours only stretched a lone solo stretch
+    # over the whole turn, overlaps and all, and every word went to that speaker (QA).
+    timeline = [(c, d, m, False) for c, d, m in seq] + [(c, d, m, True) for c, d, m in over]
     for a, b, k in seq:
-        before = [d for c, d, m in timeline if (c, d, m) != (a, b, k) and c < a]
-        after = [c for c, d, m in timeline if (c, d, m) != (a, b, k) and d > b]
-        prev_end = max(before, default=None)
-        next_start = min(after, default=None)
-        lo = 0 if prev_end is None else (a if prev_end >= a else (prev_end + a) // 2)
-        hi = n if next_start is None else (b if next_start <= b else (b + next_start) // 2)
+        before = [(d, o) for c, d, m, o in timeline if (c, d, m) != (a, b, k) and c < a]
+        after = [(c, o) for c, d, m, o in timeline if (c, d, m) != (a, b, k) and d > b]
+        if not before:
+            lo = 0
+        else:
+            d, o = max(before)
+            lo = a if d >= a else (min(a, d + padf) if o else (d + a) // 2)
+        if not after:
+            hi = n
+        else:
+            c, o = min(after)
+            hi = b if c <= b else (max(b, c - padf) if o else (b + c) // 2)
         pieces.append(Piece(k + 1, lo * FRAME_S, min(turn_s, hi * FRAME_S), False))
 
-    pad = SEPARATE_PAD_S
     for (a, b, k), s, ov in zip(flat, sep, shared, strict=True):
         if s:
             pieces.append(
@@ -146,8 +155,18 @@ def plan_pieces(probs: np.ndarray, turn_s: float) -> list[Piece]:
     return pieces
 
 
-def _absorb_short(seq: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
-    """Merge a too-short sequential interval into its longer neighbour."""
+def _absorb_short(
+    seq: list[tuple[int, int, int]], over: list[tuple[int, int, int]]
+) -> list[tuple[int, int, int]]:
+    """Merge a too-short sequential interval into its longer neighbour, and same-speaker
+    neighbours into one. Never across an overlapped (separated) interval between them:
+    joining A's talk on either side of a B/C overlap made one A interval spanning the
+    overlap, which then took the whole turn (QA)."""
+
+    def blocked(x: tuple[int, int, int], y: tuple[int, int, int]) -> bool:
+        lo, hi = min(x[1], y[1]), max(x[0], y[0])
+        return any(c < hi and d > lo for c, d, _ in over)
+
     min_len = round(MIN_PIECE_S / FRAME_S)
     out = list(seq)
     changed = True
@@ -156,19 +175,23 @@ def _absorb_short(seq: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]
         for i, (a, b, k) in enumerate(out):
             if b - a >= min_len:
                 continue
-            left = out[i - 1] if i > 0 else None
-            right = out[i + 1] if i + 1 < len(out) else None
-            target = max((x for x in (left, right) if x is not None), key=lambda x: x[1] - x[0])
+            near = [
+                x
+                for x in (out[i - 1] if i > 0 else None, out[i + 1] if i + 1 < len(out) else None)
+                if x is not None and not blocked(x, (a, b, k))
+            ]
+            if not near:
+                continue
+            target = max(near, key=lambda x: x[1] - x[0])
             j = out.index(target)
             ta, tb, tk = target
             out[j] = (min(ta, a), max(tb, b), tk)
             del out[i]
             changed = True
             break
-    # Neighbours that now share a speaker are one interval.
     joined: list[tuple[int, int, int]] = []
     for a, b, k in out:
-        if joined and joined[-1][2] == k:
+        if joined and joined[-1][2] == k and not blocked(joined[-1], (a, b, k)):
             joined[-1] = (joined[-1][0], b, k)
         else:
             joined.append((a, b, k))

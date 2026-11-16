@@ -243,3 +243,19 @@ def test_a_body_without_a_length_is_capped_while_read(monkeypatch: pytest.Monkey
 
     r = c.post("/v1/diarize?session=s&offset_ms=0", content=chunks())
     assert r.status_code == 413
+
+
+def test_a_clock_jump_drops_the_scored_history_before_it() -> None:
+    """SortformerStream.start_at: frames scored before a jump must not be read back as if
+    they sat after it (the committed buffer is indexed from its origin)."""
+    from types import SimpleNamespace
+
+    s = server.SortformerStream.__new__(server.SortformerStream)
+    s._mods = SimpleNamespace(n_spk=4)
+    s._lc = 1
+    s._head, s._preds_origin = 10, 0
+    s._preds = np.full((10, 4), 0.9, np.float32)
+    s._buf, s._buf_origin, s.samples = np.zeros(0, np.float32), 0, 10 * FRAME_SAMPLES
+    s.start_at(100 * FRAME_SAMPLES)
+    assert s._preds.shape == (0, 4) and s._preds_origin == s._head == 100
+    assert s.activity(95, 100).max() == 0.0  # nothing committed there
