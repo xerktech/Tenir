@@ -7390,6 +7390,9 @@ def test_the_ground_pick_looks_at_a_bounded_sample(monkeypatch: pytest.MonkeyPat
     rgb = np.random.default_rng(1).integers(0, 256, (1200, 1600, 3), dtype=np.uint8)
     zoom_mod._ground(rgb, [(line("x", 0, 0, 1600, 1200), 1.0)])
     assert seen and max(seen) <= zoom_mod._GROUND_SAMPLE
+    # ...and big enough to hold the pick: at 64 pixels real frames at 0.5x lost the panel or
+    # drifted 5 levels off its ground (QA). Measured sound at 64k.
+    assert max(seen) >= 32_768
 
 
 def test_the_lowest_panel_wins() -> None:
