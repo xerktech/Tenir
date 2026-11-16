@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import planner
 from planner import FRAME_S, Piece, assign_streams, plan_pieces, speaker_intervals
@@ -84,3 +85,22 @@ def test_streams_follow_the_speaker_whose_activity_they_track() -> None:
 def test_flat_streams_still_get_distinct_owners() -> None:
     act = np.array([[1, 1, 0], [0, 1, 1]], float)
     assert sorted(assign_streams(np.ones((2, 3)), act)) == [0, 1]
+
+
+def test_a_solo_stretch_stops_where_an_overlap_begins() -> None:
+    """QA: a lone solo interval was tiled over the whole turn, overlaps included, so every
+    word of the turn went to that speaker."""
+    p = _probs(100, s0=[(0.0, 3.0)], s1=[(3.5, 6.0)], s2=[(5.0, 8.0)])
+    pieces = plan_pieces(p, 8.0)
+    solo = [x for x in pieces if not x.separate]
+    assert [(x.speaker, x.start_s) for x in solo] == [(1, 0.0)]
+    assert solo[0].end_s == pytest.approx(3.28)  # mid-pause before speaker 2, not 8.0
+    assert {x.speaker for x in pieces if x.separate} == {2, 3}
+
+
+def test_a_solo_stretch_after_an_overlap_starts_after_it() -> None:
+    p = _probs(100, s0=[(0.0, 3.0)], s1=[(2.0, 5.0)], s2=[(5.6, 8.0)])
+    pieces = plan_pieces(p, 8.0)
+    (solo,) = [x for x in pieces if not x.separate]
+    assert solo.speaker == 3 and solo.end_s == 8.0
+    assert solo.start_s == pytest.approx(5.28)  # mid-pause after speaker 2's 5.0 end

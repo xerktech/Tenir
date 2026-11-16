@@ -288,7 +288,10 @@ def test_client_posts_the_turn_and_parses_pieces() -> None:
         return await _client(handler).diarize(_tone(1000, _A), 2500)
 
     pieces = asyncio.run(run())
-    assert seen["url"] == "http://diarizer:8000/v1/diarize?session=conv-1&offset_ms=2500"
+    url = httpx.URL(seen["url"])
+    assert url.path == "/v1/diarize"
+    assert url.params["session"] == "conv-1" and url.params["offset_ms"] == "2500"
+    assert len(url.params["epoch"]) == 32
     assert seen["len"] == 32000
     assert pieces == [Piece(1, 0, 400, False, None), Piece(2, 300, 900, True, sep)]
     assert pieces[1].label == "Speaker 2"
@@ -425,3 +428,60 @@ def test_a_piece_whose_decode_fails_loses_only_that_piece() -> None:
         assert [f.speaker for f in finals] == ["Speaker 1"]
 
     asyncio.run(run())
+
+
+def test_a_failing_diarizer_is_skipped_for_a_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA: a blackholed diarizer cost its whole timeout on every turn; finals ran 27 s late."""
+    import api.stt.diarize as diarize_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(diarize_mod.time, "monotonic", lambda: now[0])
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503)
+
+    async def run() -> list:
+        d = _client(handler)
+        out = [await d.diarize(_tone(100, _A), 0)]
+        now[0] += diarize_mod._COOLDOWN_S - 1
+        out.append(await d.diarize(_tone(100, _A), 100))  # still cooling down: not sent
+        now[0] += 2
+        out.append(await d.diarize(_tone(100, _A), 200))  # retried
+        return out
+
+    assert asyncio.run(run()) == [None, None, None]
+    assert len(calls) == 2
+
+
+def test_each_sitting_sends_its_own_epoch() -> None:
+    assert Diarizer("http://d", "c")._epoch != Diarizer("http://d", "c")._epoch
+
+
+def test_a_silent_turn_is_never_split() -> None:
+    """A turn with no speech decodes at most once, whatever the diarizer says."""
+
+    async def run() -> None:
+        engine = AmplitudeEngine()
+        d = FakeDiarizer(
+            lambda pcm, off: [Piece(1, 0, 500, False, None), Piece(2, 500, 1000, False, None)]
+        )
+        t = StreamingTranscriber(
+            engine,
+            partial_interval_ms=100_000,
+            local_agreement=False,
+            vad_adaptive=False,
+            max_segment_ms=1000,
+            diarizer=d,  # type: ignore[arg-type]
+        )
+        await t.push(_sil(1000))
+        await t._jobs.join()
+        assert d.calls and len(engine.decoded) <= 1 and _finals(t) == []
+
+    asyncio.run(run())
+
+
+def test_a_piece_starting_past_the_turn_is_refused() -> None:
+    with pytest.raises(ValueError):
+        parse_pieces({"pieces": [{"speaker": 1, "startMs": 600, "endMs": 900}]}, turn_ms=500)

@@ -183,3 +183,63 @@ def test_an_overlap_too_long_to_separate_comes_back_as_the_mix(
     c, _ = _app(ScriptStream({0: [(0.0, 4.0)], 1: [(0.5, 4.0)]}), sep)
     r = c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(4)).json()
     assert all(p["overlap"] and p["audio"] is None for p in r["pieces"]) and sep.calls == 0
+
+
+def test_a_new_sitting_behind_the_timeline_restarts_the_session() -> None:
+    """QA: a resume with no retained audio restarts the api's clock behind ours; that audio
+    is new speech, and skipping it labelled one speaker's turn from another's frames."""
+    streams: list[ScriptStream] = []
+
+    def make() -> ScriptStream:
+        streams.append(ScriptStream({}))
+        return streams[-1]
+
+    c = TestClient(create_app(Engines(Sessions(make), None), load=False))
+    for off in (0, 5000, 10000):
+        c.post(f"/v1/diarize?session=s&offset_ms={off}&epoch=a", content=_pcm(5))
+    c.post("/v1/diarize?session=s&offset_ms=10000&epoch=b", content=_pcm(5))
+    assert len(streams) == 2
+    assert streams[1].started_at == 160000 and streams[1].fed == [80000]
+
+
+def test_a_late_resend_in_the_same_sitting_is_not_a_restart() -> None:
+    stream = ScriptStream({})
+    c, _ = _app(stream)
+    c.post("/v1/diarize?session=s&offset_ms=0&epoch=a", content=_pcm(2))
+    c.post("/v1/diarize?session=s&offset_ms=0&epoch=a", content=_pcm(1))
+    assert stream.fed == [32000] and stream.started_at is None
+
+
+def test_a_long_jump_moves_the_clock_instead_of_feeding_silence() -> None:
+    """QA: offset_ms=300000 on a live session ran the model over 5 min of zeros (56 s CPU)."""
+    stream = ScriptStream({})
+    c, _ = _app(stream)
+    c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(1))
+    c.post("/v1/diarize?session=s&offset_ms=300000", content=_pcm(1))
+    assert stream.fed == [16000, 16000] and stream.started_at == 16000 * 300
+
+
+def test_offset_and_epoch_are_bounded() -> None:
+    c, _ = _app(ScriptStream({}))
+    assert (
+        c.post(
+            f"/v1/diarize?session=s&offset_ms={server.MAX_OFFSET_MS + 1}", content=_pcm(1)
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post("/v1/diarize?session=s&offset_ms=0&epoch=" + "e" * 65, content=_pcm(1)).status_code
+        == 422
+    )
+
+
+def test_a_body_without_a_length_is_capped_while_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "MAX_BODY", 1000)
+    c, _ = _app(ScriptStream({}))
+
+    def chunks():
+        for _ in range(10):
+            yield bytes(500)
+
+    r = c.post("/v1/diarize?session=s&offset_ms=0", content=chunks())
+    assert r.status_code == 413

@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY diarizer/server.py diarizer/planner.py ./
 
+# Unprivileged: the server needs nothing root owns. The deployment's fsGroup gives this
+# uid the cache volume.
+RUN useradd --uid 10001 --create-home diarizer
+USER 10001
+
 # Weights live in the mounted cache (the deployment's init container fetches them), so a
 # restart never needs the Hub.
 ENV HF_HOME=/cache/huggingface \

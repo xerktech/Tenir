@@ -47,7 +47,16 @@ FRAME_SAMPLES = HOP * SUB  # 80 ms
 # A session idle this long is dropped (a conversation that ended, or one whose api pod
 # went away). Long enough to outlast a paused session.
 SESSION_TTL_S = float(os.environ.get("DIAR_SESSION_TTL_S", "1800"))
-MAX_SESSIONS = int(os.environ.get("DIAR_MAX_SESSIONS", "32"))
+# Past this many live conversations the least recently used is forgotten (its numbering
+# restarts). A session is ~100 KB of state, so the bound is generous on purpose: 32 could
+# evict a conversation still talking (QA).
+MAX_SESSIONS = int(os.environ.get("DIAR_MAX_SESSIONS", "256"))
+# A jump in the timeline up to this long is fed as silence (a turn the api dropped after a
+# timeout). A longer one restarts the clock there, keeping the speakers: feeding minutes of
+# zeros through the model cost 56 s of CPU for one 32 KB request (QA).
+MAX_GAP_S = float(os.environ.get("DIAR_MAX_GAP_S", "10"))
+# offset_ms ceiling: a week of conversation timeline.
+MAX_OFFSET_MS = 7 * 24 * 3600 * 1000
 # Activity kept per session for turns that reach back before the newest commit. A turn
 # is at most the api's segment cap (28 s) plus a merged backlog; 120 s covers both.
 KEEP_FRAMES = int(120 / planner.FRAME_S)
@@ -69,7 +78,8 @@ class Stream(Protocol):
     samples: int  # session samples received so far
 
     def start_at(self, sample: int) -> None:
-        """Begin a fresh stream's timeline at ``sample`` (nothing fed yet)."""
+        """Move the timeline to ``sample`` without feeding the gap. The speakers heard so
+        far are kept; the scored history before the jump is dropped."""
         ...
 
     def feed(self, audio: np.ndarray) -> None: ...
@@ -123,6 +133,7 @@ class SortformerStream:
         self._head = self._preds_origin = sample // FRAME_SAMPLES
         self._buf_origin = self._head * FRAME_SAMPLES
         self._buf = np.zeros(sample - self._buf_origin, np.float32)
+        self._preds = self._preds[:0]
         self.samples = sample
 
     def feed(self, audio: np.ndarray) -> None:
@@ -242,8 +253,12 @@ class SepformerSeparator:
 @dataclass
 class _Session:
     stream: Stream
+    factory: Any = None  # builds a fresh Stream (a new sitting behind our timeline)
     used: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # The api's per-sitting token: a resume sends a new one. A new sitting whose offset is
+    # behind what this session has heard is a timeline the api restarted, not a late turn.
+    epoch: str | None = None
 
 
 class Sessions:
@@ -263,7 +278,7 @@ class Sessions:
             if fresh:
                 while len(self._items) >= MAX_SESSIONS:
                     self._items.popitem(last=False)
-                s = _Session(self._factory())
+                s = _Session(self._factory(), self._factory)
                 self._items[sid] = s
             self._items.move_to_end(sid)
             s.used = now
@@ -290,15 +305,35 @@ def _pcm16(x: np.ndarray) -> str:
 
 
 def diarize_turn(
-    session: _Session, fresh: bool, offset_ms: int, pcm: bytes, separator: Separator | None
+    session: _Session,
+    fresh: bool,
+    offset_ms: int,
+    pcm: bytes,
+    separator: Separator | None,
+    epoch: str | None = None,
 ) -> dict:
-    stream = session.stream
     audio = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
     start = offset_ms * SAMPLE_RATE // 1000
+    if (
+        not fresh
+        and epoch is not None
+        and session.epoch is not None
+        and epoch != session.epoch
+        and start < session.stream.samples
+        and session.factory is not None
+    ):
+        # A resumed sitting whose timeline starts behind ours (the api resumed with no
+        # retained audio): its audio is new speech, not a resend. Skipping it labelled one
+        # person's turn from another's frames (QA). Numbering restarts for the conversation.
+        session.stream = session.factory()
+        fresh = True
+    if epoch is not None:
+        session.epoch = epoch
+    stream = session.stream
     have = stream.samples
-    if fresh and start > 0:
-        # A session we don't know (first turn after a restart): start its timeline here
-        # rather than feeding minutes of made-up silence.
+    if (fresh and start > 0) or start - have > MAX_GAP_S * SAMPLE_RATE:
+        # A session we don't know (first turn after a restart), or a long jump: start the
+        # clock here rather than run the model over made-up silence.
         stream.start_at(start)
         have = start
     if start > have:
@@ -439,20 +474,29 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
     async def diarize(
         request: Request,
         session: str = Query(min_length=1, max_length=128),
-        offset_ms: int = Query(ge=0),
+        offset_ms: int = Query(ge=0, le=MAX_OFFSET_MS),
+        epoch: str | None = Query(None, max_length=64),
     ) -> JSONResponse:
         if state.sessions is None:
             raise HTTPException(503, "model loading")
-        body = await request.body()
-        if len(body) > MAX_BODY:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BODY:
             raise HTTPException(413, "turn too long")
+        # Read with a cap, so a body without (or lying about) its length is refused before
+        # it is buffered whole.
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > MAX_BODY:
+                raise HTTPException(413, "turn too long")
+        body = bytes(buf)
         import anyio
 
         sess, fresh = state.sessions.get(session)
 
         def run() -> dict:
             with sess.lock:
-                return diarize_turn(sess, fresh, offset_ms, body, state.separator)
+                return diarize_turn(sess, fresh, offset_ms, body, state.separator, epoch)
 
         return JSONResponse(await anyio.to_thread.run_sync(run))
 

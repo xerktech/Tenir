@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -18,6 +20,12 @@ import httpx
 from api.metrics import metrics
 
 log = logging.getLogger("api.stt.diarize")
+
+# After a failure the diarizer is skipped for this long (turns caption unlabelled at once).
+# Every turn waits on the diarizer before it decodes, so a hung or blackholed service that
+# is retried per turn adds its whole timeout to each caption; QA measured finals 27 s late
+# and most of them dropped as stale within 20 turns.
+_COOLDOWN_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -42,24 +50,37 @@ class Diarizer:
         self._conversation = conversation_id
         self._timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+        # One token per sitting (this transcriber's life): the service tells a resumed
+        # sitting whose timeline restarted behind its own from a late resend.
+        self._epoch = uuid.uuid4().hex
+        self._skip_until = 0.0
 
     async def diarize(self, pcm: bytes, offset_ms: int) -> list[Piece] | None:
         """Pieces for one turn starting at ``offset_ms`` on the conversation timeline, or
         None when the diarizer is unavailable (the caller then captions the turn whole)."""
+        if time.monotonic() < self._skip_until:
+            metrics.incr("stage.diarize.skipped")
+            return None
         try:
             # Whole-request deadline (httpx's timeout is per phase), as ParakeetEngine._post.
             return await asyncio.wait_for(
                 asyncio.to_thread(self._post, pcm, offset_ms), self._timeout
             )
-        except Exception:
-            log.warning("diarizer unavailable; captioning the turn unlabelled", exc_info=True)
+        except Exception as exc:
+            self._skip_until = time.monotonic() + _COOLDOWN_S
+            log.warning(
+                "diarizer unavailable (%s); captioning unlabelled for %.0f s",
+                type(exc).__name__,
+                _COOLDOWN_S,
+            )
+            log.debug("diarizer failure", exc_info=True)
             metrics.incr("stage.diarize.errors")
             return None
 
     def _post(self, pcm: bytes, offset_ms: int) -> list[Piece]:
         r = self._client.post(
             self._url,
-            params={"session": self._conversation, "offset_ms": offset_ms},
+            params={"session": self._conversation, "offset_ms": offset_ms, "epoch": self._epoch},
             content=pcm,
             headers={"content-type": "application/octet-stream"},
         )

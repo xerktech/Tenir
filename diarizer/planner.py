@@ -110,10 +110,18 @@ def plan_pieces(probs: np.ndarray, turn_s: float) -> list[Piece]:
     seq = _absorb_short(seq)
     pieces: list[Piece] = []
     n = probs.shape[0]
-    for i, (a, b, k) in enumerate(seq):
-        lo = 0 if i == 0 else (seq[i - 1][1] + a) // 2
-        hi = n if i == len(seq) - 1 else (b + seq[i + 1][0]) // 2
-        lo, hi = min(lo, a), max(hi, b)
+    # A sequential piece grows into the gap up to the middle of the pause before the next
+    # interval of ANY speaker — overlapped ones included. Tiling against sequential
+    # neighbours only stretched a lone solo stretch over the whole turn, overlaps and all,
+    # and every word of the turn was then captioned under that one speaker (QA).
+    timeline = seq + [x for x, s in zip(flat, sep, strict=True) if s]
+    for a, b, k in seq:
+        before = [d for c, d, m in timeline if (c, d, m) != (a, b, k) and c < a]
+        after = [c for c, d, m in timeline if (c, d, m) != (a, b, k) and d > b]
+        prev_end = max(before, default=None)
+        next_start = min(after, default=None)
+        lo = 0 if prev_end is None else (a if prev_end >= a else (prev_end + a) // 2)
+        hi = n if next_start is None else (b if next_start <= b else (b + next_start) // 2)
         pieces.append(Piece(k + 1, lo * FRAME_S, min(turn_s, hi * FRAME_S), False))
 
     pad = SEPARATE_PAD_S

@@ -16,6 +16,15 @@ paths:
   - Tests: `test_diarize.py::test_every_turn_reaches_the_diarizer_on_one_timeline`.
 - The session key is the conversation id, so a resume keeps numbering while the pod is up. A
   diarizer restart restarts numbering for live conversations — accepted, not a bug.
+  - A new sitting (`epoch`) whose offset is behind the session's timeline restarts the session:
+    the api resumed with no retained audio. Skipping that audio as "already seen" mislabelled it.
+  - Tests: `diarizer/tests/test_server.py::test_a_new_sitting_behind_the_timeline_restarts_the_session`.
+- After a diarizer failure the api skips it for `_COOLDOWN_S`; never retry per turn — every
+  turn waits on the diarizer, so a hung one stalled captions 27 s within 20 turns (QA).
+- A sequential piece tiles only up to the mid-pause before the next interval of ANY speaker,
+  overlapped ones included; tiling against sequential neighbours gave a lone solo stretch the
+  whole turn (QA). Tests: `test_planner.py::test_a_solo_stretch_stops_where_an_overlap_begins`.
+- Never run the model over a long gap of zeros: jumps over `MAX_GAP_S` move the clock.
 - A one-piece turn must decode exactly as without the diarizer (one whole-turn decode). Only
   multi-speaker turns split, and a split whose pieces all decode blank falls back to the whole turn.
   - Tests: `::test_a_single_speaker_turn_is_decoded_whole_and_labelled`,
