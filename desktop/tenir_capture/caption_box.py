@@ -242,8 +242,14 @@ def with_speaker_line(
 
 def crop_box(img: Image.Image) -> Image.Image | None:
     """Tight crop to the caption box at caption-font scale; None when no caption is on screen."""
+    return crop_caption(crop_band(img), img.height)
+
+
+def crop_caption(region: Image.Image, frame_h: int) -> Image.Image | None:
+    """The caption box in ``region`` (Zoom's band, or the caption panel the api located),
+    found at caption-font scale for a window ``frame_h`` tall; None without a caption."""
     # Find the box at caption-font scale so the pixel thresholds hold for small remote windows.
-    band = upscale_to(crop_band(img), img.height)
+    band = upscale_to(region, frame_h)
     box = find_caption_box(band)
     if not box:
         return None

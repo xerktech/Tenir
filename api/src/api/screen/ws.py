@@ -153,9 +153,10 @@ _PANE_MOVE = 0.01
 
 
 def _same_pane(a: CaptionPane, b: CaptionPane) -> bool:
-    return (
-        max(abs(p - q) for p, q in zip(a.box, b.box, strict=True)) < _PANE_MOVE
-        and abs(a.crop - b.crop) < _PANE_MOVE
+    if (a.crop is None) != (b.crop is None) or a.ground != b.ground:
+        return False
+    return max(abs(p - q) for p, q in zip(a.box, b.box, strict=True)) < _PANE_MOVE and (
+        a.crop is None or b.crop is None or abs(a.crop - b.crop) < _PANE_MOVE
     )
 
 
@@ -397,6 +398,10 @@ async def screen_ws(ws: WebSocket) -> None:
                             tracker.idle_sampled(ts)
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)
+                    elif header.platform is Platform.zoom:
+                        # Zoom's caption panel, located on this or an earlier frame: a new
+                        # socket is told it again (XERK-3027).
+                        await tell_pane(header.orgSiteKey, tracker.panel)
                 else:
                     tracker.crop_received()
                     roster = await tracker.ensure_roster()
@@ -441,6 +446,7 @@ async def screen_ws(ws: WebSocket) -> None:
                 orgSiteKey=org_site_key,
                 box=list(pane.box),
                 cropHeight=pane.crop,
+                ground=list(pane.ground) if pane.ground is not None else None,
             )
         )
         await send(msg)

@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
@@ -7217,3 +7218,240 @@ def test_a_meeting_is_on_screen_while_live_or_for_ten_minutes_after_its_toolbar(
         assert not t.meeting_on_screen(1_000 + mt.MEETING_SEEN_MS + 1)
 
     asyncio.run(run())
+
+
+# --- Zoom's caption panel located on a remote desktop (XERK-3027) ----------------------------
+# Modelled on real 3075x2100 Horizon frames (not committable: they show real people): the panel
+# ground is (17, 21, 24), name rows grey (peak ~164), text rows white, all starting in one
+# column, with an avatar circle left of each name. Dark-theme apps sit beside Zoom.
+
+_DESK = (3075, 2100)
+_ZGROUND = (17, 21, 24)
+_COLUMN = 1090
+_ROW = 30  # a panel row's height and pitch
+_ENTRIES = (
+    ("allan@tesoroxp.com", ("Yeah.",)),
+    (
+        "Tim Mahler",
+        (
+            "That's funny. Anyone else do anything exciting? We were out in the hills",
+            "jumping into the updates here. So the focus kind of collectively remains",
+        ),
+    ),
+)
+
+
+def _desk_frame(
+    entries=_ENTRIES,
+    name_grey: int = 164,
+    ground=_ZGROUND,
+    column: int = _COLUMN,
+    panels: tuple[tuple[int, int], ...] = ((_COLUMN, 1240),),
+) -> tuple[OcrResult, bytes]:
+    """A remote desktop: a dark Azure-like page left, a dark GitHub-like page right (a grey
+    "Name" header over a white row 29 px in, as measured), Zoom's panel between."""
+    img = Image.new("RGB", _DESK, (236, 236, 236))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, 640, 2100), fill=(26, 25, 23))
+    d.rectangle((2430, 0, 3075, 2100), fill=(13, 16, 23))
+    d.rectangle((650, 320, 2420, 1640), fill=ground)
+    lines = [
+        line("Secret Identifier", 70, 690, 200, 714),
+        line("Hide Secret Value", 70, 980, 210, 1004),
+    ]
+    for text, x, y, grey in (
+        ("Name", 2470, 1500, 160),
+        ("vgs-sandbox-routes-42662845315", 2499, 1530, 253),
+    ):
+        d.rectangle((x, y + 6, x + 9 * len(text), y + 20), fill=(grey,) * 3)
+        lines.append(line(text, x, y, x + 9 * len(text), y + 26))
+    for column, y in panels:
+        for name, texts in entries:
+            d.ellipse((column - 50, y + 4, column - 22, y + 32), fill=(170, 150, 130))
+            # Glyphs are a minority of a row's box (thin bars), as real text is.
+            d.rectangle((column, y + 10, column + 9 * len(name), y + 14), fill=(name_grey,) * 3)
+            lines.append(line(name, column, y, column + 9 * len(name), y + 24))
+            y += 24
+            for text in texts:
+                d.rectangle(
+                    (column, y + 12, column + 11 * len(text), y + 17), fill=(255, 255, 255)
+                )
+                lines.append(line(text, column, y, column + 11 * len(text), y + _ROW))
+                y += _ROW
+            y += 8
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return OcrResult(*_DESK, tuple(lines)), buf.getvalue()
+
+
+def _px(frame) -> list[int]:
+    w, h = _DESK
+    return [round(v * s) for v, s in zip(frame.panel.box, (w, h, w, h), strict=True)]
+
+
+def test_zooms_caption_panel_floating_in_a_remote_desktop_is_located() -> None:
+    """The client looked for captions across the whole desktop's centre and found none; the
+    api now tells it where Zoom's panel is, and the colour it is drawn on."""
+    frame = parse_full_frame(*_desk_frame())
+    assert frame.panel is not None and frame.panel.crop is None
+    left, top, right, bottom = _px(frame)
+    # Three rows left of the column for the avatars, a row right of the widest text.
+    assert left == pytest.approx(_COLUMN - 3 * _ROW, abs=2)  # the median row height
+    assert right == pytest.approx(_COLUMN + 11 * len(_ENTRIES[1][1][0]) + _ROW, abs=2)
+    # Grown over the blank panel above and below (newer rows appear there), to its edges.
+    assert top < 1240 and bottom == pytest.approx(1641, abs=2)
+    assert all(abs(c - g) <= 2 for c, g in zip(frame.panel.ground, _ZGROUND, strict=True))
+
+
+def test_the_lowest_panel_entry_needs_only_one_caption_sentence() -> None:
+    entries = (("Shad Tischer", ("Uh, yeah, Friday, as Ariane said, was, you know, the release",)),)
+    assert parse_full_frame(*_desk_frame(entries)).panel is not None
+
+
+_SENTENCE = ("thanks I will take a look at it after this meeting is over",)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "bright names",
+        "no sentence",
+        "names off the column",
+        "light ground",
+        "another dark ground",
+        "chat time",
+        "zoom chat",
+        "zoom chat to someone",
+        "zoom chat to everyone",
+    ],
+)
+def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
+    """Slack draws names white over its messages; short chat lines are no captions; a dark
+    page's grey header sits off its rows' column; a light page isn't Zoom's dark panel. A
+    dark chat built like the panel (QA look-alikes) is told by its ground colour and by a
+    sender row carrying a time or Zoom chat's "From X to Everyone"."""
+    kw: dict = {}
+    if case == "bright names":
+        kw["name_grey"] = 255
+    elif case == "another dark ground":
+        kw["ground"] = (31, 31, 31)
+    elif case == "chat time":
+        kw["entries"] = (("Alice Smith 10:42 AM", _SENTENCE),)
+    elif case == "zoom chat":
+        kw["entries"] = (("From Bob Jones to Everyone", _SENTENCE),)
+    elif case == "zoom chat to someone":  # only the "From X to Y" pattern matches
+        kw["entries"] = (("From Bo to Ana Li", _SENTENCE),)
+    elif case == "zoom chat to everyone":  # only the "to Everyone" pattern matches
+        kw["entries"] = (("Bob Jones to Everyone", _SENTENCE),)
+    elif case == "no sentence":
+        kw["entries"] = (("Tim Mahler", ("Yep.",)), ("Shad Tischer", ("Will do",)))
+    elif case == "light ground":
+        kw["ground"] = (240, 240, 240)
+    result, jpeg = _desk_frame(**kw)
+    if case == "names off the column":
+        result = OcrResult(
+            *_DESK,
+            tuple(
+                replace(ln, box=(ln.box[0] + 29, *ln.box[1:])) if ln.height == 24 else ln
+                for ln in result.lines
+            ),
+        )
+    assert parse_full_frame(result, jpeg).panel is None
+
+
+def test_the_ground_is_the_colour_most_row_pixels_are_near_not_the_exact_commonest() -> None:
+    """QA (real frames at 0.5x): anti-aliasing spreads the ground over near shades, and JPEG
+    undershoot black beside glyphs was the commonest exact colour, so no panel was found."""
+    from api.screen.zoom import _ground
+
+    rgb = np.zeros((20, 200, 3), dtype=np.uint8)
+    rgb[:] = (0, 1, 4)  # 30% undershoot black, more than any one ground shade
+    shades = [(17, 21, 24), (16, 20, 23), (18, 22, 25), (17, 22, 25), (16, 21, 24),
+              (18, 21, 24), (17, 20, 24)]
+    for i, shade in enumerate(shades):  # 10% each
+        rgb[:, 60 + 20 * i : 80 + 20 * i] = shade
+    ground = _ground(rgb, [(line("Tim Mahler", 0, 0, 200, 20), 164.0)])
+    assert ground is not None
+    assert all(abs(c - z) <= 3 for c, z in zip(ground, _ZGROUND, strict=True))
+
+
+def test_the_ground_pick_looks_at_a_bounded_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crafted noisy rows made each candidate scan millions of colours (QA: 6.3 s a frame)."""
+    from api.screen import zoom as zoom_mod
+
+    seen: list[int] = []
+    real_unique = np.unique
+
+    def unique(a, **kw):
+        seen.append(len(a))
+        return real_unique(a, **kw)
+
+    monkeypatch.setattr(zoom_mod.np, "unique", unique)
+    rgb = np.random.default_rng(1).integers(0, 256, (1200, 1600, 3), dtype=np.uint8)
+    zoom_mod._ground(rgb, [(line("x", 0, 0, 1600, 1200), 1.0)])
+    assert seen and max(seen) <= zoom_mod._GROUND_SAMPLE
+    # ...and big enough to hold the pick: at 64 pixels real frames at 0.5x lost the panel or
+    # drifted 5 levels off its ground (QA). Measured sound at 64k.
+    assert max(seen) >= 32_768
+
+
+def test_the_lowest_panel_wins() -> None:
+    """Two panel-shaped stacks: the lower holds the newest entries a frame could show."""
+    frame = parse_full_frame(*_desk_frame(panels=((700, 400), (_COLUMN, 1240))))
+    assert frame.panel is not None and _px(frame)[0] == pytest.approx(_COLUMN - 3 * _ROW, abs=2)
+
+
+def test_a_frame_without_decodable_pixels_locates_no_panel() -> None:
+    result, _ = _desk_frame()
+    assert parse_full_frame(result, None).panel is None
+
+
+def test_the_located_panel_holds_through_a_pause_then_goes_long_after() -> None:
+    from api.screen import meetings as mt
+
+    async def run() -> None:
+        t = _tracker(InMemoryConversationStore())
+        found = parse_full_frame(*_desk_frame())
+        none = parse_full_frame(OcrResult(*_DESK, ()))
+        await t.on_full(found, 0)
+        assert t.panel == found.panel
+        # Not found on a frame (OCR missed it, a window over it): the client keeps the box and
+        # its ground check stops crops while the panel isn't there.
+        await t.on_full(none, mt.MEETING_SEEN_MS)
+        assert t.panel == found.panel
+        await t.on_full(none, mt.MEETING_SEEN_MS + 1)
+        assert t.panel is None
+
+    asyncio.run(run())
+
+
+def test_a_zoom_window_is_told_where_the_panel_is_and_again_after_a_reconnect(screen) -> None:
+    from api.main import app
+
+    _store, ocr, token, _admin = screen
+    found, found_jpeg = _desk_frame()
+    none, none_jpeg = OcrResult(*_DESK, ()), _desk_frame(entries=())[1]
+    ocr.register(found_jpeg, found)
+    ocr.register(none_jpeg, none)
+    base = int(time.time() * 1000)
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()  # idle cadence
+            ws.send_bytes(envelope(header(base, "full"), found_jpeg))
+            wait_handled(1)
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "screen.region" and msg["orgSiteKey"] == "tesoro"
+            assert "cropHeight" not in msg and len(msg["ground"]) == 3
+            assert msg["box"][0] == pytest.approx((_COLUMN - 3 * _ROW) / _DESK[0], abs=0.001)
+            # Not found on the next frame: nothing re-sent, the client keeps the panel.
+            ws.send_bytes(envelope(header(base + 1000, "full"), none_jpeg))
+            wait_handled(2)
+            ws.send_text('{"type":"ping","t":1}')
+            assert json.loads(ws.receive_text()) == {"type": "pong", "t": 1}
+        # A new socket: the client forgot the region; the next full frame tells it again.
+        with client.websocket_connect(f"/ws/screen?token={token}") as ws:
+            ws.receive_text()
+            ws.send_bytes(envelope(header(base + 2000, "full"), none_jpeg))
+            wait_handled(3)
+            again = json.loads(ws.receive_text())
+            assert (again["box"], again["ground"]) == (msg["box"], msg["ground"])

@@ -174,6 +174,28 @@ boxes), opening on a blank row.
 Docked right and popped out both have the heading; the bottom caption panel has neither
 heading nor divider and is not read, so the operator docks Teams captions on the right.
 
+**Zoom: the api locates the caption panel** (`screen.region` with `ground`, no `cropHeight`;
+XERK-3027). On a remote desktop Zoom floats beside other apps, and the client's caption-box
+finder (centred white text) never found its off-centre panel, then cropped UI text crossing the
+desktop's centre (a false meeting from a browser sidebar). Zoom's toolbar can't anchor it:
+hidden while the mouse is idle, it showed on 0 of 21 real full frames of a meeting. On each Zoom
+full frame `zoom.locate_panel` finds the panel by its entries: OCR rows on a dark ground
+starting in one column, a dim display-name row right above a white text row, and a caption
+sentence (6+ words), on Zoom's panel colour (17, 21, 24 within 6 levels), with no chat sender
+row (a time, "From X to Everyone"). The box spans the rows, three row heights left of the column
+for the avatars, and the blank panel ground above and below; `ground` is the colour most pixels
+inside the rows' boxes are within 3 levels of. The tracker keeps the last panel until none has
+been found for 10 min with no meeting live, and every Zoom full frame re-tells it on a new
+socket; an idle tracker swept between sockets loses it, and the next frame showing the panel
+locates it again. The client runs the caption-box finder inside the box at the frame's own
+scale, only while at least 20% of the box is within 3 levels of `ground` (Slack moved over Zoom,
+or Zoom moved, sends nothing until the next full frame relocates it), and never without a region
+(no whole-window fallback, the operator's call). Measured on 21 real Horizon frames (Zoom in two
+places, dark Azure, GitHub, Explorer and Slack beside or over it): the panel was located on all
+17 frames showing it and cropped as avatar, name and text; nothing on the 4 with Slack over
+Zoom; a stale box crops only frames showing the panel there. Main cropped 3 of the 17, one of
+them Explorer's list. Captions start up to a full-frame interval late, as Teams'.
+
 OCR cost stays near the spike's sizing: a full frame (~5 strips) every 30 s per window adds
 about one strip-read in six to the caption crops at the meeting cadence.
 
@@ -367,14 +389,16 @@ It stays dumb: it captures, crops and sends; the api reads and decides.
   substring matching one window) → `org` (or legacy `orgSiteKey`), `orgName`, `platform`. A
   title matching nothing pauses that window (RDM with another tab in front); an ambiguous one is
   refused.
-- **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the
-  bench imports it from there. A real capture showed Zoom's caption panel (avatar, dim name
-  line, text) rather than the synthetic overlay box; `with_speaker_line` keeps the name line
-  in the crop, or the server would get captions with no speaker. The crop also keeps
-  `AVATAR_ROOM` px left of the box: the api needs the avatar circle (XERK-2700). The api
-  reads a name-shaped first row followed by text as a header even when the roster lacks it
-  (header, no speaker): in a screen share only a strip of tiles is visible, and the name was
-  stored as speech.
+- **Crop**: `tenir_capture/caption_box.py` is the spike's `find_caption_box`, moved; the bench
+  imports it from there. It runs only inside the Zoom caption panel the api located
+  (`caption_pane.WindowCrop`, above); until a region arrives a Zoom window sends full frames
+  only. A new socket sends a full frame at once, so the api re-tells the region. A real capture
+  showed Zoom's caption panel (avatar, dim name line, text) rather than the synthetic overlay
+  box; `with_speaker_line` keeps the name line in the crop, or the server would get captions
+  with no speaker. The crop also keeps `AVATAR_ROOM` px left of the box: the api needs the
+  avatar circle (XERK-2700). The api reads a name-shaped first row followed by text as a header
+  even when the roster lacks it (header, no speaker): in a screen share only a strip of tiles is
+  visible, and the name was stored as speech.
 - **Teams crop**: `tenir_capture/caption_pane.py` crops the box the api sent
   (`screen.region`, above); until one arrives, after the api says the pane is gone, or once
   the box isn't mostly black any more, a Teams window sends only its full frames. The region

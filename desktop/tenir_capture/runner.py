@@ -140,7 +140,7 @@ class Runner:
         w.capture = None
         w.plan = WindowPlan(w.plan.finder)  # a new window starts with a full frame
         if isinstance(w.plan.finder, PaneCrop):
-            w.plan.finder.region = None  # a new window: the api locates its pane again
+            w.plan.finder.locate(None)  # a new window: the api locates its pane again
 
     def close(self) -> None:
         for w in self._watched.values():
@@ -167,7 +167,7 @@ class Runner:
         elif msg.kind == "region" and msg.org_site_key is not None:
             w = self._watched.get(msg.org_site_key)
             if w is not None and isinstance(w.plan.finder, PaneCrop):
-                w.plan.finder.region = msg.region
+                w.plan.finder.locate(msg.region, msg.ground)
                 log.info("%s: caption pane %s", w.spec.org_name, msg.region or "gone")
         elif msg.kind == "error":
             server_log.warning("server: %s", msg.text)
@@ -235,7 +235,11 @@ class Runner:
             for w in self._watched.values():
                 w.cadence = None
                 if isinstance(w.plan.finder, PaneCrop):
-                    w.plan.finder.region = None  # the new socket's server says it again
+                    w.plan.finder.locate(None)  # the new socket's server says it again
+                    # ...on a full frame: send one now, not up to fullFrameSeconds later,
+                    # or captions stop that long after every reconnect (XERK-3027 QA).
+                    w.plan.last_full = None
+                    w.plan.next_at = 0.0
         done = threading.Event()
         receiver = threading.Thread(target=self._receive, args=(ws, done), daemon=True)
         receiver.start()
