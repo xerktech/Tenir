@@ -86,6 +86,9 @@ def split(data: bytes) -> dict:
 
 ZOOM = WindowSpec("Horizon 3", "org-c", "Org C", "zoom")
 TEAMS = WindowSpec("Horizon 1", "org-a", "Org A", "teams")
+# What the api sends on a full frame of a Zoom window filling the capture (XERK-3027): the
+# meeting window is the whole frame. Without it a Zoom window sends no caption crops.
+ZOOM_WINDOW = '{"type":"screen.region","orgSiteKey":"org-c","box":[0,0,1,1]}'
 
 
 def runner(url: str, platform: FakePlatform, **kw) -> Runner:
@@ -117,10 +120,13 @@ def test_frames_stream_with_the_token_and_honour_the_servers_cadence(zoom_frame)
     def handler(ws: ServerConnection) -> None:
         auth.append(ws.request.headers.get("Authorization"))
         ws.send(json.dumps({"type": "screen.cadence", "fps": 5, "fullFrameSeconds": 5}))
-        told = False
+        told = zoom_told = False
         for msg in ws:
             h = split(msg)
             got.put(h)
+            if h["orgSiteKey"] == "org-c" and not zoom_told:
+                zoom_told = True
+                ws.send(ZOOM_WINDOW)
             if h["orgSiteKey"] == "org-a" and h["region"] == "full" and not told:
                 # What the api does on a Teams full frame showing the pane.
                 told = True
@@ -148,9 +154,11 @@ def test_frames_stream_with_the_token_and_honour_the_servers_cadence(zoom_frame)
     assert auth == ["Bearer tok"]
     zoom = [h["region"] for h in frames if h["orgSiteKey"] == "org-c"]
     teams = [h["region"] for h in frames if h["orgSiteKey"] == "org-a"]
-    assert zoom[:2] == ["full", "caption"]
+    # Zoom sends only a full frame until the api says where its window is, then crops it.
+    first = zoom.index("caption")
+    assert zoom[0] == "full" and zoom[first - 1] == "full"
     # 5 fps from the server: the caption crops come fast, not at the 0.2 fps default.
-    assert zoom[2:4] == ["caption", "caption"]
+    assert zoom[first : first + 2] == ["caption", "caption"]
     # Teams sends only a full frame until the api says where the pane is, then crops it.
     assert teams[0] == "full" and "caption" in teams
     assert frames[0]["windowTitle"] in ("Horizon 3 - VMware", "Horizon 1")
@@ -164,6 +172,9 @@ def test_minimized_or_retitled_windows_pause_and_the_operator_is_told(zoom_frame
     clock = {"t": 0.0}
     r = runner("http://x", platform, clock=lambda: clock["t"])
     sink = Sink()
+    assert r.step(sink) == 1  # a full frame only: the api hasn't located Zoom yet
+    r.on_message(ZOOM_WINDOW)
+    clock["t"] = 5
     assert r.step(sink) == 2  # full + caption
     platform.minimized.add("Horizon 3")
     clock["t"] = 10
@@ -182,7 +193,11 @@ def test_minimized_or_retitled_windows_pause_and_the_operator_is_told(zoom_frame
     assert r.step(sink) == 0 and cap.stopped
     platform.titles = ["Horizon 3"]
     clock["t"] = 50
-    assert r.step(sink) == 2  # a re-found window starts with a full frame again
+    # A re-found window starts with a full frame again, and forgot where Zoom was.
+    assert r.step(sink) == 1
+    r.on_message(ZOOM_WINDOW)
+    clock["t"] = 55
+    assert r.step(sink) == 2
     # A capture whose window closed under it is restarted on the next refresh.
     platform.captures["Horizon 3"].dead = True
     clock["t"] = 60
@@ -256,6 +271,9 @@ def test_a_reconnect_forgets_the_pane_until_the_api_says_it_again() -> None:
     assert platform.captures["Horizon 1"].stopped is False  # the same window throughout
     # The new socket's api hasn't located the pane: no caption crop.
     assert len(sockets) == 2 and "caption" not in sockets[1]
+    # ...and gets a full frame at once to locate it on, not one fullFrameSeconds after the
+    # last (captions stopped that long after every reconnect, XERK-3027 QA).
+    assert sockets[1][:1] == ["full"]
 
 
 def test_a_window_without_a_frame_yet_sends_nothing() -> None:
@@ -404,8 +422,11 @@ def test_a_faster_cadence_sends_the_next_caption_at_once(zoom_frame) -> None:
     clock = {"t": 0.0}
     r = runner("http://x", platform, clock=lambda: clock["t"])
     sink = Sink()
+    assert r.step(sink) == 1  # a full frame: the api then locates Zoom
+    r.on_message(ZOOM_WINDOW)
+    clock["t"] = 5.0
     assert r.step(sink) == 2
-    clock["t"] = 1.0
+    clock["t"] = 6.0
     assert r.step(sink) == 0  # idle: next crop due at 5 s
     r.on_message('{"type":"screen.cadence","orgSiteKey":"org-c","fps":1,"fullFrameSeconds":30}')
     assert r.step(sink) == 1
@@ -421,6 +442,9 @@ def test_oversized_and_broken_frames_are_skipped_without_stopping_capture(
     r = runner("http://x", platform, clock=lambda: clock["t"])
     monkeypatch.setattr(runner_mod, "MAX_FRAME_BYTES", 100_000)  # full ~250 kB, crop ~20 kB
     sink = Sink()
+    assert r.step(sink) == 0  # the full frame is too big, and no window located yet
+    r.on_message(ZOOM_WINDOW)
+    clock["t"] = 5
     assert r.step(sink) == 1 and split(sink.sent[0])["region"] == "caption"  # m8
     # A window shrunk to a sliver: the finder raises; the frame is skipped, the loop lives.
     platform.captures["Horizon 3"].img = Image.new("RGB", (300, 2))
@@ -534,9 +558,18 @@ def test_any_session_error_reconnects_instead_of_killing_the_client(monkeypatch)
     assert len(sessions) == 2
 
 
-def test_a_failing_window_logs_one_traceback_not_one_per_tick(zoom_frame, caplog) -> None:
+def test_a_failing_window_logs_one_traceback_not_one_per_tick(
+    zoom_frame, caplog, monkeypatch
+) -> None:
     import logging
 
+    from tenir_capture.caption_pane import WindowCrop
+
+    def finder(self, img: Image.Image) -> None:
+        if img.height < 2:
+            raise ValueError("a sliver")
+
+    monkeypatch.setattr(WindowCrop, "__call__", finder)
     platform = FakePlatform(["Horizon 3"], Image.new("RGB", (300, 1)))
     clock = {"t": 0.0}
     r = runner("http://x", platform, clock=lambda: clock["t"])

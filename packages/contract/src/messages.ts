@@ -316,20 +316,27 @@ export interface ScreenNotice {
   kind: ScreenNoticeKind;
 }
 /**
- * Server -> client on /ws/screen (XERK-2608). Where a window's caption pane is, found by the api on a full frame: Teams floats anywhere inside the captured remote-desktop window, so only the OCR'd frame can locate its Live Captions pane. The client crops caption frames from this box until the next screen.region for the window; without box the pane is gone and the window sends no caption crops. Sent when the pane is first found, moves, or disappears, and again after a reconnect. Coordinates are shares (0-1) of the full frame, so they hold whatever size the client scaled it to.
+ * Server -> client on /ws/screen (XERK-2608, XERK-3027). Where a window's captions are, found by the api on a full frame: Teams or Zoom floats anywhere inside the captured remote-desktop window, so only the OCR'd frame can locate them. Teams: its Live Captions pane, with cropHeight. Zoom: its caption panel (located by its entries' look), with ground and without cropHeight; the client finds the newest caption box inside it. The client crops caption frames from this box until the next screen.region for the window; without box the pane or window is gone and the window sends no caption crops. Sent when the pane is first found, moves, or disappears, and again after a reconnect. Coordinates are shares (0-1) of the full frame, so they hold whatever size the client scaled it to.
  */
 export interface ScreenRegion {
   type: "screen.region";
   orgSiteKey: string;
   /**
-   * left, top, right, bottom of the pane below its heading, as shares of the frame's width and height.
+   * left, top, right, bottom of the pane below its heading (Teams) or of the caption panel (Zoom), as shares of the frame's width and height.
    *
    * @minItems 4
    * @maxItems 4
    */
   box?: [number, number, number, number];
   /**
-   * Share of the frame's height to send, ending at the pane's lowest text: the newest few entries, under tenir-ocr's 16-box cap.
+   * Zoom only: the caption panel's ground colour (RGB) on the frame it was located on. The client crops only while the box still mostly shows it, so another window moved over Zoom is never read as captions.
+   *
+   * @minItems 3
+   * @maxItems 3
+   */
+  ground?: [number, number, number];
+  /**
+   * Teams only: share of the frame's height to send, ending at the pane's lowest text: the newest few entries, under tenir-ocr's 16-box cap.
    */
   cropHeight?: number;
 }

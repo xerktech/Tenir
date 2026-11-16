@@ -15,14 +15,14 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from tenir_capture.caption_box import crop_box
-from tenir_capture.caption_pane import PaneCrop, Region
+from tenir_capture.caption_pane import RGB, PaneCrop, Region, WindowCrop
 from tenir_capture.config import WindowSpec
 
 Finder = Callable[[Image.Image], Image.Image | None]
-# A new caption finder per window, per platform. Zoom's box is found in the window's pixels;
-# Teams' pane is located by the api (screen.region) and held by its window's PaneCrop.
-FINDERS: dict[str, Callable[[], Finder]] = {"zoom": lambda: crop_box, "teams": PaneCrop}
+# A new caption finder per window, per platform. The api locates both from full frames and
+# sends screen.region: Teams' caption pane (PaneCrop), Zoom's meeting window (WindowCrop,
+# whose caption box is then found in its pixels). A window may be a whole remote desktop.
+FINDERS: dict[str, Callable[[], Finder]] = {"zoom": WindowCrop, "teams": PaneCrop}
 
 # The api decodes full frames up to this many pixels (api/src/api/screen/ocr.py
 # MAX_FRAME_PIXELS) and refuses frames over 4 MB; a bigger window is scaled down to fit.
@@ -135,7 +135,8 @@ class ServerMessage:
     org_site_key: str | None = None
     cadence: Cadence | None = None
     text: str = ""
-    region: Region | None = None  # kind "region": None means the pane is gone
+    region: Region | None = None  # kind "region": None means the pane / panel is gone
+    ground: RGB | None = None  # kind "region": Zoom's panel ground colour
 
 
 def _share(v: object) -> bool:
@@ -143,16 +144,32 @@ def _share(v: object) -> bool:
 
 
 def _region(msg: dict) -> Region | None | bool:
-    """A screen.region's box and crop height, None for "no pane", False when malformed."""
+    """A screen.region's box and crop height (None: Zoom's, which has none), None for "no
+    pane", False when malformed."""
     box, crop = msg.get("box"), msg.get("cropHeight")
     if box is None:
         return None
     if not (isinstance(box, list) and len(box) == 4 and all(map(_share, box))):
         return False
     left, top, right, bottom = (float(v) for v in box)
-    if not (left < right and top < bottom and _share(crop) and crop > 0):
+    if not (left < right and top < bottom):
+        return False
+    if crop is None:
+        return (left, top, right, bottom), None
+    if not (_share(crop) and crop > 0):
         return False
     return (left, top, right, bottom), float(crop)
+
+
+def _ground(v: object) -> RGB | None | bool:
+    """A screen.region's ground colour, None when absent, False when malformed."""
+    if v is None:
+        return None
+    if not (isinstance(v, list) and len(v) == 3):
+        return False
+    if not all(isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 255 for c in v):
+        return False
+    return v[0], v[1], v[2]
 
 
 def parse_server(raw: str | bytes) -> ServerMessage:
@@ -178,10 +195,10 @@ def parse_server(raw: str | bytes) -> ServerMessage:
             return ServerMessage("cadence", key, cad)
         return ServerMessage("other")
     if kind == "screen.region" and key is not None:
-        region = _region(msg)
-        if region is False:
+        region, ground = _region(msg), _ground(msg.get("ground"))
+        if region is False or ground is False:
             return ServerMessage("other")
-        return ServerMessage("region", key, region=region)
+        return ServerMessage("region", key, region=region, ground=ground)
     if kind == "screen.notice" and key is not None:
         return ServerMessage("notice", key, text=str(msg.get("kind", "")))
     if kind == "error":

@@ -42,6 +42,17 @@ paths:
   - The blank row a crop opens on is checked on every column: skipping lit columns moved real
     crops 9 px, OCR then read initials into the names, and a real meeting recorded nothing (QA).
     Test: `test_the_crop_opens_between_entries_not_through_an_avatar`.
+- Zoom crops run the caption-box finder only inside the caption panel the api sent
+  (`screen.region` with `ground`, `caption_pane.WindowCrop`, XERK-3027), at the frame's own
+  scale: on a remote desktop the finder's centring found no off-centre panel and cropped a
+  browser sidebar into a false meeting. No region, no crops (no whole-window fallback,
+  operator's call).
+  - Only while >= 20% of the box is within 3 levels of `ground` (`shows_ground`): real frames
+    of Slack over Zoom, or Zoom moved, left white text in the stale box. Real dark apps'
+    grounds are 5-9 levels off Zoom's (17, 21, 24); retune both if a theme comes closer.
+  - A new socket sends a full frame at once (`plan.last_full = None`): else captions stopped
+    for up to fullFrameSeconds after every reconnect (QA).
+  - Tests: `test_caption_panel.py`, `test_a_reconnect_forgets_the_pane_until_the_api_says_it_again`.
 - `ruff` is pinned in `desktop/pyproject.toml`: unpinned, CI pulled a release with new default
   rules (BLE001, RUF100) and lint flipped between runs. Bump it deliberately.
 - The client ships its INFO+ lines to the api as `screen.log` (`logship.LogShipper`, XERK-2875).

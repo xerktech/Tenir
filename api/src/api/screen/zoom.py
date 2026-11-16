@@ -292,12 +292,16 @@ def _same_name(key: str, names: dict[str, str]) -> str | None:
 
 @dataclass(frozen=True)
 class CaptionPane:
-    """Where a full frame shows its caption pane (Teams, ``teams_pane``), as shares of the
-    frame: ``box`` (left, top, right, bottom) below the pane's heading, and ``crop``, how
-    much of the pane's height above its lowest text the client sends."""
+    """Where a full frame shows its captions, as shares of the frame: ``box`` (left, top,
+    right, bottom). Teams (``teams_pane``): the pane below its heading, and ``crop``, how
+    much of its height above the lowest text the client sends. Zoom (``locate_panel``): the
+    caption panel, which the client searches for its newest entries; no ``crop``."""
 
     box: tuple[float, float, float, float]
-    crop: float
+    crop: float | None = None
+    # Zoom: the panel's ground colour (RGB). The client crops only while the box still shows
+    # it: Slack or a browser moved over Zoom must not be read as captions.
+    ground: tuple[int, int, int] | None = None
 
 
 @dataclass
@@ -309,6 +313,9 @@ class FullFrame:
     in_meeting: bool = False
     # Teams: the live-captions pane, which the client is told to crop (screen.region).
     caption_pane: CaptionPane | None = None
+    # Zoom: its caption panel, located on the frame (XERK-3027); the client finds the caption
+    # box inside it (screen.region).
+    panel: CaptionPane | None = None
 
 
 def _caption_region(lines: list[OcrLine], width: int, height: int) -> tuple[float, float] | None:
@@ -364,11 +371,12 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
         name = clean_tile_name(ln.text)
         if not _is_ui(name) and is_name_like(name):
             lines.append((name, ln))
-    img = _decode(jpeg, (w, h)) if jpeg and lines else None
-    if img is not None:
+    img = _decode(jpeg, (w, h)) if jpeg else None
+    px = np.asarray(img, dtype=np.int16).max(axis=2) if img is not None else None
+    if px is not None:
+        out.panel = locate_panel(ocr, px, np.asarray(img))
         # Before deduping: a share showing a participant's name ahead of their tile (a Jira
         # assignee) would otherwise claim the name and drop the real tile with it (QA).
-        px = np.asarray(img, dtype=np.int16).max(axis=2)
         lines = [(name, ln) for name, ln in lines if _over_tile_gap(px, ln)]
     tiles: list[tuple[str, OcrLine]] = []
     for name, ln in lines:
@@ -378,6 +386,121 @@ def parse_full_frame(ocr: OcrResult, jpeg: bytes | None = None) -> FullFrame:
     if img is not None and tiles:
         out.active_speaker = _active_tile(img, tiles)
     return out
+
+
+# Zoom's caption panel on a full frame (XERK-3027). The captured window may be a whole remote
+# desktop with Zoom floating beside other apps, its toolbar hidden while the mouse is idle (21
+# of 21 real full frames of a meeting), so the panel is found by its own look. Measured on
+# real 3075x2100 Horizon frames (two Zoom positions, dark-theme apps beside it): ground luma
+# ~21; every row starts within 3 px of one column; a name row peaks ~164, a text row ~254.
+_PANEL_GROUND = 40  # a panel row's median luma (glyphs are a minority of its pixels)
+_PANEL_TEXT = 200  # a text row's peak luma
+_PANEL_NAME = (110, 0.8)  # a name row peaks at least this, and under this share of the text's
+_PANEL_COLUMN = 0.3  # line heights rows may start apart and be one column
+_PANEL_GAP = 1.0  # line heights between rows of one panel
+_PANEL_WORDS = 6  # a caption sentence row: the panel holds at least one this long
+_PANEL_AVATAR = 3.0  # line heights kept left of the column: the avatar beside each name
+_PANEL_REACH = 10.0  # line heights the box may grow past the rows into blank panel ground
+_PANEL_DARK = 0.9  # share of a blank panel row's pixels on the ground
+
+
+def _row_luma(px: np.ndarray, ln: OcrLine) -> tuple[float, float] | None:
+    """(median, peak) luma of a line's box, or None when it is off the frame."""
+    h, w = px.shape
+    x0, y0 = max(0, int(ln.box[0])), max(0, int(ln.box[1]))
+    x1, y1 = min(w, math.ceil(ln.box[2])), min(h, math.ceil(ln.box[3]))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    box = px[y0:y1, x0:x1]
+    return float(np.median(box)), float(np.percentile(box, 99.5))
+
+
+def _panel_stacks(lines: list[tuple[OcrLine, float]]) -> list[list[tuple[OcrLine, float]]]:
+    """Rows on a dark ground, top to bottom, grouped where each starts in the column of the
+    one above and follows it within a line height."""
+    stacks: list[list[tuple[OcrLine, float]]] = []
+    for ln, peak in sorted(lines, key=lambda lp: lp[0].box[1]):
+        for stack in reversed(stacks):
+            last = stack[-1][0]
+            tol = _PANEL_COLUMN * last.height
+            if (
+                abs(ln.box[0] - stack[0][0].box[0]) <= tol
+                and -0.5 * last.height <= ln.box[1] - last.box[3] <= _PANEL_GAP * last.height
+            ):
+                stack.append((ln, peak))
+                break
+        else:
+            stacks.append([(ln, peak)])
+    return stacks
+
+
+def _is_panel(stack: list[tuple[OcrLine, float]]) -> bool:
+    """A dim display-name row right above a white text row, and a caption sentence: Zoom's
+    entry layout. A dark app's grey labels sit over grey or above nothing alike (measured:
+    a dark GitHub page, Explorer, Azure portal beside Zoom)."""
+    text = max(peak for _, peak in stack)
+    if text < _PANEL_TEXT:
+        return False
+    if not any(
+        len(ln.text.split()) >= _PANEL_WORDS and peak >= _PANEL_TEXT for ln, peak in stack
+    ):
+        return False
+    return any(
+        _PANEL_NAME[0] <= peak < _PANEL_NAME[1] * text
+        and _is_display_name(clean_tile_name(ln.text))
+        and below_peak >= _PANEL_TEXT
+        for (ln, peak), (_, below_peak) in zip(stack, stack[1:], strict=False)
+    )
+
+
+def _reach(px: np.ndarray, x0: int, x1: int, start: int, step: int, limit: int) -> int:
+    """The last row from ``start`` in direction ``step`` (at most ``limit`` rows) still blank
+    panel ground across columns ``x0:x1``."""
+    last, y = start, start + step
+    while 0 <= y < px.shape[0] and abs(y - start) <= limit:
+        if (px[y, x0:x1] <= _PANEL_GROUND).mean() < _PANEL_DARK:
+            break
+        last, y = y, y + step
+    return last
+
+
+def locate_panel(ocr: OcrResult, px: np.ndarray, rgb: np.ndarray) -> CaptionPane | None:
+    """Zoom's caption panel on a full frame (``px``: per-pixel max channel), or None.
+
+    The box holds the panel's rows, the avatars left of them, and the blank panel ground above
+    and below (where newer rows appear), so the client's finder sees the panel as it sees a
+    Zoom window's caption band. The lowest panel wins: it is the newest a frame could show.
+    """
+    h, w = px.shape
+    rows: list[tuple[OcrLine, float]] = []
+    for ln in ocr.lines[:MAX_PANEL_LINES]:
+        luma = _row_luma(px, ln)
+        if luma is not None and luma[0] <= _PANEL_GROUND:
+            rows.append((ln, luma[1]))
+    panels = [s for s in _panel_stacks(rows) if _is_panel(s)]
+    if not panels:
+        return None
+    stack = max(panels, key=lambda s: s[-1][0].box[3])
+    line_h = float(np.median([ln.height for ln, _ in stack]))
+    column = min(ln.box[0] for ln, _ in stack)
+    left = max(0, int(column - _PANEL_AVATAR * line_h))
+    right = min(w, math.ceil(max(ln.box[2] for ln, _ in stack) + line_h))
+    reach = int(_PANEL_REACH * line_h)
+    top = _reach(px, left, right, int(stack[0][0].box[1]), -1, reach)
+    bottom = min(h, _reach(px, left, right, math.ceil(stack[-1][0].box[3]), 1, reach) + 1)
+    # The ground: the box's most common colour (35-42% of real panels' pixels, exact).
+    # Sampled to at most ~65k pixels: a crafted frame's box may span the whole frame.
+    step = max(2, math.ceil(math.sqrt((bottom - top) * (right - left) / 65_536)))
+    sample = rgb[top:bottom:step, left:right:step].reshape(-1, 3).astype(np.int32)
+    packed = (sample[:, 0] << 16) | (sample[:, 1] << 8) | sample[:, 2]
+    values, counts = np.unique(packed, return_counts=True)
+    top_colour = int(values[np.argmax(counts)])
+    ground = (top_colour >> 16, (top_colour >> 8) & 255, top_colour & 255)
+    return CaptionPane(box=(left / w, top / h, right / w, bottom / h), ground=ground)
+
+
+# Lines looked at for the panel: a crafted frame's OCR is capped already (ocr.MAX_LINES).
+MAX_PANEL_LINES = 400
 
 
 def _decode(jpeg: bytes, size: tuple[int, int]):  # -> PIL.Image.Image | None

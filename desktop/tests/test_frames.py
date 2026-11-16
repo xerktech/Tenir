@@ -113,6 +113,7 @@ def test_every_configurable_platform_has_a_finder() -> None:
     assert set(FINDERS) == set(PLATFORMS)
     # Each window gets its own finder: a Teams pane located in one window isn't another's.
     assert FINDERS["teams"]() is not FINDERS["teams"]()
+    assert FINDERS["zoom"]() is not FINDERS["zoom"]()
 
 
 def test_huge_windows_are_scaled_to_what_the_server_decodes() -> None:

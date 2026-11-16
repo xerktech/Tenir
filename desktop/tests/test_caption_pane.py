@@ -149,9 +149,12 @@ def test_the_finder_holds_the_last_region() -> None:
         '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.5,0.5,0.1],"cropHeight":0.1}',
         '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,1.5,0.5],"cropHeight":0.1}',
         '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5],"cropHeight":0}',
-        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5]}',
         '{"type":"screen.region","orgSiteKey":"k","box":[true,0.1,0.5,0.5],"cropHeight":0.1}',
         '{"type":"screen.region","orgSiteKey":"k","box":"0.1,0.1,0.5,0.5","cropHeight":0.1}',
+        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5],"ground":[1,2]}',
+        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5],"ground":[1,2,256]}',
+        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5],"ground":[1,2,1.5]}',
+        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.1,0.5,0.5],"ground":[true,2,3]}',
     ],
 )
 def test_a_malformed_region_is_ignored(raw) -> None:
@@ -165,3 +168,16 @@ def test_a_region_is_parsed_and_its_absence_means_the_pane_is_gone() -> None:
     assert (m.kind, m.org_site_key, m.region) == ("region", "k", ((0.1, 0.2, 0.5, 0.9), 0.1))
     m = parse_server('{"type":"screen.region","orgSiteKey":"k"}')
     assert (m.kind, m.org_site_key, m.region) == ("region", "k", None)
+    # Zoom's region is its meeting window: no cropHeight (XERK-3027).
+    m = parse_server('{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.2,0.5,0.9]}')
+    assert (m.kind, m.region, m.ground) == ("region", ((0.1, 0.2, 0.5, 0.9), None), None)
+    m = parse_server(
+        '{"type":"screen.region","orgSiteKey":"k","box":[0.1,0.2,0.5,0.9],"ground":[17,21,24]}'
+    )
+    assert (m.region, m.ground) == (((0.1, 0.2, 0.5, 0.9), None), (17, 21, 24))
+
+
+def test_a_teams_pane_without_a_crop_height_sends_nothing() -> None:
+    img, region = make_desktop()
+    assert region is not None
+    assert crop_pane(img, (region[0], None)) is None

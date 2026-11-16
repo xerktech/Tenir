@@ -28,7 +28,15 @@ from api.persistence import ConversationStore, ScreenMeta, Segment, get_audio_st
 from api.screen import turma
 from api.screen.merge import _SAID_BETWEEN_MS, CaptionMerger, MergeBudget, OverBudget, _Line
 from api.screen.teams import _SPEAKER_LABEL
-from api.screen.zoom import _MAX_ROSTER, _NAME_MATCH, CaptionBlock, FullFrame, Roster, norm_name
+from api.screen.zoom import (
+    _MAX_ROSTER,
+    _NAME_MATCH,
+    CaptionBlock,
+    CaptionPane,
+    FullFrame,
+    Roster,
+    norm_name,
+)
 
 log = logging.getLogger("api.screen")
 
@@ -252,6 +260,9 @@ class MeetingTracker:
         # Captions-off warning: when the toolbar was last seen, and when to warn next.
         self._meeting_seen_ms: int | None = None
         self._idle_sampled_ms: int | None = None
+        # Zoom: the caption panel last located (screen.region), XERK-3027.
+        self.panel: CaptionPane | None = None
+        self._panel_seen_ms: int | None = None
         self._captions_off_at: int | None = None
         self._caption_seen_ms: int | None = None
         # Caption crops read while the warning is pending, and how many yielded no block
@@ -306,6 +317,17 @@ class MeetingTracker:
             await self._store_people(ts)
         if frame.in_meeting:
             self._meeting_seen_ms = ts
+        # Zoom's caption panel is located only while it shows a caption (XERK-3027): a pause
+        # in speech must not stop the crops, so the last panel found holds until none has
+        # been seen for MEETING_SEEN_MS and no meeting is live.
+        if frame.panel is not None:
+            self.panel, self._panel_seen_ms = frame.panel, ts
+        elif (
+            self.conversation_id is None
+            and self._panel_seen_ms is not None
+            and ts - self._panel_seen_ms > MEETING_SEEN_MS
+        ):
+            self.panel = self._panel_seen_ms = None
         await self._check_captions_off(ts)
 
     async def _check_captions_off(self, ts: int) -> None:
