@@ -901,6 +901,60 @@ class SqlConversationStore:
                 ),
             )
 
+    def import_conversation(  # pragma: no cover - requires a live database
+        self,
+        household: str,
+        conversation_id: str,
+        *,
+        owner: str | None,
+        mic_source: str | None,
+        source_lang: str | None,
+        segments: list[Segment],
+        audio_key: str,
+    ) -> None:
+        # One borrow, one transaction (the pool commits on a clean exit and rolls back on
+        # any error): a lost connection part-way leaves nothing, not a short copy.
+        with self._ensure_pool().connection() as conn:
+            now = utcnow()
+            conn.execute(
+                """
+                INSERT INTO conversations
+                    (id, household, owner, mic_source, source_lang, started_at, ended_at,
+                     status, opened_at, source, audio_key)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'ready', %s, 'mic', %s)
+                """,
+                (
+                    conversation_id,
+                    household,
+                    owner,
+                    mic_source,
+                    source_lang,
+                    now,
+                    now,
+                    now,
+                    audio_key,
+                ),
+            )
+            for segment in segments:
+                conn.execute(
+                    """
+                    INSERT INTO segments
+                        (segment_id, conversation_id, text, start_ms, end_ms, lang,
+                         translation, speaker)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        segment.segment_id,
+                        conversation_id,
+                        segment.text,
+                        segment.start_ms,
+                        segment.end_ms,
+                        segment.lang,
+                        segment.translation,
+                        segment.speaker,
+                    ),
+                )
+
     def set_segment_translation(  # pragma: no cover - requires a live database
         self, household: str, conversation_id: str, segment_id: str, translation: str
     ) -> None:
@@ -1420,8 +1474,7 @@ class SqlConversationStore:
             return []
         # A prefix match, with LIKE's wildcards in the reasons taken literally.
         patterns = [
-            r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            for r in reasons
+            r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for r in reasons
         ]
         with self._ensure_pool().connection() as conn:
             rows = conn.execute(

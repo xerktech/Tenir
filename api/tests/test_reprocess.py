@@ -159,26 +159,61 @@ def _patch(monkeypatch, *, transcriber=None, translator=None) -> None:
     monkeypatch.setattr(rp, "make_translator", lambda: translator or _Upper())
 
 
-def test_a_failure_while_writing_removes_the_partial_copy(monkeypatch) -> None:
+@pytest.mark.parametrize("error", [OSError("database went away"), KeyboardInterrupt()])
+def test_a_failure_while_writing_leaves_no_copy(monkeypatch, error) -> None:
     """QA: a copy cut short mid-write was later finished by the stale sweep and listed as a
-    normal recording with half its transcript."""
+    normal recording with half its transcript. The copy is written in one transaction now;
+    if that fails (or the run is interrupted) its audio goes too."""
     _seed()
     _patch(monkeypatch)
     store = get_conversation_store()
-    real = store.add_segment
-    calls = []
 
-    def flaky(*a, **k):
-        calls.append(1)
-        if len(calls) == 2:
-            raise OSError("database went away")
-        return real(*a, **k)
+    def fail(*a, **k):
+        raise error
 
-    monkeypatch.setattr(store, "add_segment", flaky)
-    with pytest.raises(OSError):
+    monkeypatch.setattr(store, "import_conversation", fail)
+    with pytest.raises(type(error)):
         rp.reprocess("default", "orig")
     assert _copies() == []
     assert list(get_audio_store()._blobs) == [audio_key("default", "orig")]
+
+
+def test_a_turn_stt_never_answered_writes_no_copy(monkeypatch) -> None:
+    """QA: an STT outage past the retry budget dropped turns and the copy passed as whole."""
+    t = _Scripted()
+    t.final_failures = 1
+    _seed()
+    _patch(monkeypatch, transcriber=t)
+    with pytest.raises(rp.ReprocessError, match="STT decode"):
+        rp.reprocess("default", "orig")
+    assert _copies() == []
+
+
+def test_import_conversation_is_whole_or_nothing() -> None:
+    store = get_conversation_store()
+    seg = Segment("s1", "hola", 0, 900, "es", speaker="Speaker 1")
+    store.import_conversation(
+        "default",
+        "imp",
+        owner="u1",
+        mic_source="m",
+        source_lang=None,
+        segments=[seg],
+        audio_key="default/imp.wav",
+    )
+    got = store.get("default", "imp")
+    assert got.status == "ready" and got.ended_at is not None and got.audio_key
+    assert [(s.text, s.speaker) for s in got.segments] == [("hola", "Speaker 1")]
+    with pytest.raises(ValueError):
+        store.import_conversation(
+            "default",
+            "imp",
+            owner="u1",
+            mic_source="m",
+            source_lang=None,
+            segments=[],
+            audio_key="x",
+        )
 
 
 def test_no_turns_from_stt_writes_no_copy(monkeypatch) -> None:

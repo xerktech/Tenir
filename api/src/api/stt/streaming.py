@@ -252,6 +252,9 @@ class StreamingTranscriber:
         # Off for a re-caption fed faster than real time, where every final "waits": merging
         # would fuse turns and their speakers for no live caption to rescue.
         self._shed_backlog = shed_backlog
+        # Final decodes the upstream never answered (retry budget spent): their turns are
+        # lost, or kept only as the partial already shown. A re-caption fails on any.
+        self.final_failures = 0
         self._language = language
         # Whether final decodes ask the engine for per-word timestamps. Computing
         # them dominates final-decode latency on the deployed server (~5.5x, see
@@ -776,6 +779,7 @@ class StreamingTranscriber:
                 # piece is lost, the turn's other pieces still caption.
                 log.exception("STT decode of a speaker piece failed")
                 metrics.incr("stage.stt.final_retry_exhausted")
+                self.final_failures += 1
                 continue
             text = result.text.strip()
             if not text or result.non_speech:
@@ -863,6 +867,7 @@ class StreamingTranscriber:
             # user already watched, if there was one.
             log.exception("STT final decode failed")
             metrics.incr("stage.stt.final_retry_exhausted")
+            self.final_failures += 1
             result = EngineResult(text="", words=[], language=None)
         else:
             if not result.text.strip() and has_speech and not result.non_speech:

@@ -8,9 +8,9 @@ translates its non-English turns, then saves the result as a NEW conversation wi
 copy of the audio. The original is never modified: compare the two in history, and delete the
 copy like any other recording (that removes only the copy's audio).
 
-All-or-nothing: if STT returns nothing, a diarizer call fails or a translation is lost, no copy
-is written; a failure while writing removes what was written. Each id runs on its own; the
-exit status is non-zero when any failed.
+All-or-nothing: if STT returns nothing or loses a turn, a diarizer call fails or a translation
+is lost, no copy is written; the copy itself is written in one transaction. Each id runs on its
+own; the exit status is non-zero when any failed.
 
 Run it where the api runs (it reads the same settings, database and audio store). The copy is
 created now, so it lists at the top of history; its owner and microphone are the original's.
@@ -61,8 +61,8 @@ def _pcm(wav_bytes: bytes) -> bytes:
 
 async def _caption(
     pcm: bytes, source_lang: str | None, conversation_id: str
-) -> tuple[list[CaptionFinal], int]:
-    """(finals, diarizer failures) for the whole recording."""
+) -> tuple[list[CaptionFinal], int, int]:
+    """(finals, STT final failures, diarizer failures) for the whole recording."""
     lang = Lang(source_lang) if source_lang else None
     transcriber = make_transcriber(lang, conversation_id=conversation_id, recaption=True)
     finals: list[CaptionFinal] = []
@@ -79,9 +79,10 @@ async def _caption(
             await asyncio.sleep(0)  # let the decode worker and the drain run
     await transcriber.flush()
     diarizer = getattr(transcriber, "_diarizer", None)
+    stt_failures = getattr(transcriber, "final_failures", 0)
     await transcriber.close()
     await pump
-    return finals, (diarizer.failures if diarizer is not None else 0)
+    return finals, stt_failures, (diarizer.failures if diarizer is not None else 0)
 
 
 def _translate(finals: list[CaptionFinal], translator) -> list[str | None]:
@@ -125,50 +126,52 @@ def reprocess(household: str, conversation_id: str) -> Result:
 
     # Everything that can fail on a dependency runs before anything is written.
     copy_id = str(uuid.uuid4())
-    finals, diarizer_failures = asyncio.run(_caption(_pcm(wav_bytes), src.source_lang, copy_id))
+    finals, stt_failures, diarizer_failures = asyncio.run(
+        _caption(_pcm(wav_bytes), src.source_lang, copy_id)
+    )
     if not finals:
         raise ReprocessError("STT returned no turns (is the STT route up?)")
+    if stt_failures:
+        raise ReprocessError(f"{stt_failures} STT decode(s) failed; those turns would be missing")
     if diarizer_failures:
         raise ReprocessError(
             f"{diarizer_failures} diarizer call(s) failed; those turns would be unlabelled"
         )
     translations = _translate(finals, make_translator())
 
+    segments = [
+        Segment(
+            segment_id=f.segmentId,
+            text=f.text,
+            start_ms=f.startMs,
+            end_ms=f.endMs,
+            lang=f.lang.value if f.lang is not None else None,
+            translation=text,
+            speaker=f.speaker,
+        )
+        for f, text in zip(finals, translations, strict=True)
+    ]
+    # The audio first: without a row it is an unreachable file. Then the row, every segment
+    # and the audio key in one transaction, so a database lost part-way leaves no short copy
+    # for the stale sweep to finish (QA). If that fails, take the file back out.
     key = audio_key(household, copy_id)
+    audio.put(key, wav_bytes)
     try:
-        store.create(
+        store.import_conversation(
             household,
             copy_id,
             owner=src.owner,
             mic_source=src.mic_source,
             source_lang=src.source_lang,
+            segments=segments,
+            audio_key=key,
         )
-        for f, text in zip(finals, translations, strict=True):
-            store.add_segment(
-                household,
-                copy_id,
-                Segment(
-                    segment_id=f.segmentId,
-                    text=f.text,
-                    start_ms=f.startMs,
-                    end_ms=f.endMs,
-                    lang=f.lang.value if f.lang is not None else None,
-                    translation=text,
-                    speaker=f.speaker,
-                ),
-            )
-        audio.put(key, wav_bytes)
-        store.set_audio_key(household, copy_id, key)
-        store.finish(household, copy_id)
     except BaseException:
-        # A half-written copy would later list as a normal "ready" recording with a cut-short
-        # transcript (the stale sweep finishes live rows). Take it back out.
-        log.error("writing the copy of %s failed; removing it", conversation_id)
-        for undo in (lambda: audio.delete(key), lambda: store.delete(household, copy_id)):
-            try:
-                undo()
-            except Exception:
-                log.exception("could not remove the partial copy %s", copy_id)
+        log.error("writing the copy of %s failed; nothing was stored", conversation_id)
+        try:
+            audio.delete(key)
+        except Exception:
+            log.exception("could not remove the copy's audio %s", key)
         raise
     return Result(
         conversation_id,
