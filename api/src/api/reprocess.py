@@ -8,6 +8,10 @@ translates its non-English turns, then saves the result as a NEW conversation wi
 copy of the audio. The original is never modified: compare the two in history, and delete the
 copy like any other recording (that removes only the copy's audio).
 
+All-or-nothing: if STT returns nothing, a diarizer call fails or a translation is lost, no copy
+is written; a failure while writing removes what was written. Each id runs on its own; the
+exit status is non-zero when any failed.
+
 Run it where the api runs (it reads the same settings, database and audio store). The copy is
 created now, so it lists at the top of history; its owner and microphone are the original's.
 """
@@ -18,19 +22,25 @@ import argparse
 import asyncio
 import io
 import logging
+import sys
 import uuid
 import wave
 from dataclasses import dataclass
 
-from api.contract import CaptionFinal
+from api.contract import CaptionFinal, Lang
 from api.persistence import Segment, get_audio_store, get_conversation_store
 from api.persistence.audio import audio_key
+from api.session import _same_text
 from api.stt import make_transcriber
 from api.translate import make_translator
 
 log = logging.getLogger("api.reprocess")
 
 _FRAME_BYTES = 3200  # 100 ms of 16 kHz s16le, as the clients send it
+
+
+class ReprocessError(RuntimeError):
+    """A dependency failed mid-run: no copy was kept."""
 
 
 @dataclass
@@ -49,12 +59,12 @@ def _pcm(wav_bytes: bytes) -> bytes:
         return w.readframes(w.getnframes())
 
 
-async def _caption(pcm: bytes, source_lang: str | None, conversation_id: str) -> list[CaptionFinal]:
-    from api.contract import Lang
-
+async def _caption(
+    pcm: bytes, source_lang: str | None, conversation_id: str
+) -> tuple[list[CaptionFinal], int]:
+    """(finals, diarizer failures) for the whole recording."""
     lang = Lang(source_lang) if source_lang else None
-    # Partials are for the live band; a re-caption stores finals only, so skip their decodes.
-    transcriber = make_transcriber(lang, conversation_id=conversation_id, partials=False)
+    transcriber = make_transcriber(lang, conversation_id=conversation_id, recaption=True)
     finals: list[CaptionFinal] = []
 
     async def drain() -> None:
@@ -68,9 +78,36 @@ async def _caption(pcm: bytes, source_lang: str | None, conversation_id: str) ->
         if i % (_FRAME_BYTES * 50) == 0:
             await asyncio.sleep(0)  # let the decode worker and the drain run
     await transcriber.flush()
+    diarizer = getattr(transcriber, "_diarizer", None)
     await transcriber.close()
     await pump
-    return finals
+    return finals, (diarizer.failures if diarizer is not None else 0)
+
+
+def _translate(finals: list[CaptionFinal], translator) -> list[str | None]:
+    """Translations, following the live session's rules as far as they apply after the fact:
+    a non-English turn is translated; a turn with no detected language inherits an open
+    non-English run (only an English turn closes one); a translation that just echoes or
+    rewords its source is dropped (``session._same_text``). A turn the translator could not
+    translate (None, after one retry) fails the run."""
+    out: list[str | None] = []
+    run: str | None = None
+    for f in finals:
+        lang = f.lang.value if f.lang is not None else None
+        if lang == "en":
+            run = None
+        elif lang is not None:
+            run = lang
+        if translator is None or run is None:
+            out.append(None)
+            continue
+        text = translator.translate(f.text, source_lang=lang, run_lang=run)
+        if text is None:
+            text = translator.translate(f.text, source_lang=lang, run_lang=run)
+        if text is None:
+            raise ReprocessError(f"translation failed for turn at {f.startMs} ms")
+        out.append(None if _same_text(text, f.text) else text)
+    return out
 
 
 def reprocess(household: str, conversation_id: str) -> Result:
@@ -86,60 +123,83 @@ def reprocess(household: str, conversation_id: str) -> Result:
     if not wav_bytes:
         raise LookupError(f"conversation {conversation_id} has no retained audio")
 
+    # Everything that can fail on a dependency runs before anything is written.
     copy_id = str(uuid.uuid4())
-    finals = asyncio.run(_caption(_pcm(wav_bytes), src.source_lang, copy_id))
+    finals, diarizer_failures = asyncio.run(_caption(_pcm(wav_bytes), src.source_lang, copy_id))
+    if not finals:
+        raise ReprocessError("STT returned no turns (is the STT route up?)")
+    if diarizer_failures:
+        raise ReprocessError(
+            f"{diarizer_failures} diarizer call(s) failed; those turns would be unlabelled"
+        )
+    translations = _translate(finals, make_translator())
 
-    translator = make_translator()
-    store.create(
-        household, copy_id, owner=src.owner, mic_source=src.mic_source, source_lang=src.source_lang
-    )
-    translated = 0
-    for f in finals:
-        lang = f.lang.value if f.lang is not None else None
-        text = None
-        if translator is not None and lang not in (None, "en"):
-            text = translator.translate(f.text, source_lang=lang)
-            translated += text is not None
-        store.add_segment(
+    key = audio_key(household, copy_id)
+    try:
+        store.create(
             household,
             copy_id,
-            Segment(
-                segment_id=f.segmentId,
-                text=f.text,
-                start_ms=f.startMs,
-                end_ms=f.endMs,
-                lang=lang,
-                translation=text,
-                speaker=f.speaker,
-            ),
+            owner=src.owner,
+            mic_source=src.mic_source,
+            source_lang=src.source_lang,
         )
-    key = audio_key(household, copy_id)
-    audio.put(key, wav_bytes)
-    store.set_audio_key(household, copy_id, key)
-    store.finish(household, copy_id)
+        for f, text in zip(finals, translations, strict=True):
+            store.add_segment(
+                household,
+                copy_id,
+                Segment(
+                    segment_id=f.segmentId,
+                    text=f.text,
+                    start_ms=f.startMs,
+                    end_ms=f.endMs,
+                    lang=f.lang.value if f.lang is not None else None,
+                    translation=text,
+                    speaker=f.speaker,
+                ),
+            )
+        audio.put(key, wav_bytes)
+        store.set_audio_key(household, copy_id, key)
+        store.finish(household, copy_id)
+    except BaseException:
+        # A half-written copy would later list as a normal "ready" recording with a cut-short
+        # transcript (the stale sweep finishes live rows). Take it back out.
+        log.error("writing the copy of %s failed; removing it", conversation_id)
+        for undo in (lambda: audio.delete(key), lambda: store.delete(household, copy_id)):
+            try:
+                undo()
+            except Exception:
+                log.exception("could not remove the partial copy %s", copy_id)
+        raise
     return Result(
         conversation_id,
         copy_id,
         len(finals),
         len({f.speaker for f in finals if f.speaker}),
-        translated,
+        sum(t is not None for t in translations),
     )
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("conversations", nargs="+")
     ap.add_argument("--household", default="default")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    failed = 0
     for cid in a.conversations:
-        r = reprocess(a.household, cid)
+        try:
+            r = reprocess(a.household, cid)
+        except Exception as exc:
+            failed += 1
+            print(f"{cid}: FAILED, no copy kept: {exc}", flush=True)
+            continue
         print(
             f"{r.source_id} -> {r.copy_id}: {r.segments} turns, {r.speakers} speakers, "
             f"{r.translated} translated",
             flush=True,
         )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

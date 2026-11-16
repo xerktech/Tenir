@@ -46,7 +46,13 @@ class Diarizer:
     speaker cache, so a resumed conversation keeps its numbering while the service is up."""
 
     def __init__(
-        self, url: str, conversation_id: str, *, timeout: float = 3.0, api_key: str = ""
+        self,
+        url: str,
+        conversation_id: str,
+        *,
+        timeout: float = 3.0,
+        api_key: str = "",
+        cooldown_s: float = _COOLDOWN_S,
     ) -> None:
         self._url = url.rstrip("/") + "/v1/diarize"
         self._conversation = conversation_id
@@ -68,6 +74,11 @@ class Diarizer:
         # sitting whose timeline restarted behind its own from a late resend.
         self._epoch = uuid.uuid4().hex
         self._skip_until = 0.0
+        # A live session skips the diarizer for a wall-clock cooldown after a failure. A
+        # re-caption feeds audio ~20x faster than real time, where 30 s of wall clock is
+        # ~10 minutes of recording, so it passes 0 and counts failures instead.
+        self._cooldown_s = cooldown_s
+        self.failures = 0
 
     async def diarize(self, pcm: bytes, offset_ms: int) -> list[Piece] | None:
         """Pieces for one turn starting at ``offset_ms`` on the conversation timeline, or
@@ -81,7 +92,8 @@ class Diarizer:
                 asyncio.to_thread(self._post, pcm, offset_ms), self._timeout
             )
         except Exception as exc:
-            self._skip_until = time.monotonic() + _COOLDOWN_S
+            self.failures += 1
+            self._skip_until = time.monotonic() + self._cooldown_s
             why = type(exc).__name__
             if isinstance(exc, httpx.HTTPStatusError):
                 code = exc.response.status_code
@@ -89,7 +101,7 @@ class Diarizer:
                 if code == 401:
                     why = "401: API_DIARIZER_KEY does not match the diarizer's DIAR_API_KEY"
             log.warning(
-                "diarizer unavailable (%s); captioning unlabelled for %.0f s", why, _COOLDOWN_S
+                "diarizer unavailable (%s); captioning unlabelled for %.0f s", why, self._cooldown_s
             )
             log.debug("diarizer failure", exc_info=True)
             metrics.incr("stage.diarize.errors")

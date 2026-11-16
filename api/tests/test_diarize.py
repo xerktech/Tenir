@@ -527,11 +527,60 @@ def test_an_unconfigured_diarizer_says_why_in_the_log(caplog) -> None:
     assert "DIAR_API_KEY is not set" in caplog.text
 
 
-
-def test_factory_can_build_a_finals_only_transcriber(monkeypatch) -> None:
+def test_factory_builds_an_offline_transcriber_for_a_recaption(monkeypatch) -> None:
     from api.config import settings
 
     monkeypatch.setattr(settings, "stt_backend", "parakeet")
     monkeypatch.setattr(settings, "stt_vad_model", False)
-    assert make_transcriber()._partial_bytes == settings.stt_partial_interval_ms * 32
-    assert make_transcriber(partials=False)._partial_bytes == 10**9 * 32
+    monkeypatch.setattr(settings, "diarizer_url", "http://diarizer:8000")
+    live = make_transcriber(conversation_id="c")
+    off = make_transcriber(conversation_id="c", recaption=True)
+    assert live._partial_bytes == settings.stt_partial_interval_ms * 32
+    assert off._partial_bytes == 10**9 * 32
+    assert live._shed_backlog and not off._shed_backlog
+    assert off._diarizer._cooldown_s == 0 and live._diarizer._cooldown_s == 30.0
+    assert off._diarizer._timeout == live._diarizer._timeout * 10
+
+
+def test_a_diarizer_without_cooldown_retries_every_turn_and_counts_failures() -> None:
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503)
+
+    async def run() -> None:
+        d = _client(handler)
+        d._cooldown_s = 0.0
+        for off in (0, 100, 200):
+            assert await d.diarize(_tone(100, _A), off) is None
+        assert d.failures == 3
+
+    asyncio.run(run())
+    assert len(calls) == 3
+
+
+def test_a_recaption_never_merges_its_backlog(monkeypatch) -> None:
+    """Fed faster than real time every final 'waits'; merging would fuse turns and speakers."""
+    import api.stt.streaming as streaming
+
+    async def run(shed: bool) -> int:
+        t = StreamingTranscriber(
+            AmplitudeEngine(),
+            partial_interval_ms=100_000,
+            local_agreement=False,
+            vad_adaptive=False,
+            max_segment_ms=1000,
+            shed_backlog=shed,
+        )
+        merges = []
+        monkeypatch.setattr(StreamingTranscriber, "behind_real_time", property(lambda self: True))
+        monkeypatch.setattr(streaming, "_FINAL_BEHIND_S", -1.0)
+        real = t._coalesce_backlog
+        t._coalesce_backlog = lambda pcm: merges.append(1) or real(pcm)  # type: ignore[method-assign]
+        await t.push(_tone(3000, _A))
+        await t.flush()
+        return len(merges)
+
+    assert asyncio.run(run(True)) > 0
+    assert asyncio.run(run(False)) == 0

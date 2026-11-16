@@ -51,7 +51,7 @@ def make_transcriber(
     *,
     start_offset_ms: int = 0,
     conversation_id: str | None = None,
-    partials: bool = True,
+    recaption: bool = False,
 ) -> Transcriber:
     """Factory selected by API_STT_BACKEND.
 
@@ -60,7 +60,9 @@ def make_transcriber(
     segment timeline begins — nonzero for a resumed conversation, so its segments
     continue the existing transcript/audio timeline instead of restarting at 0.
     `conversation_id` keys the diarizer's speaker cache (API_DIARIZER_URL, XERK-2958).
-    `partials=False` decodes finals only (a re-caption, ``api.reprocess``, stores no partials).
+    `recaption=True` is a re-caption of stored audio fed faster than real time
+    (``api.reprocess``): finals only, no backlog merging, and a diarizer that never cools
+    down and gets 10x the live deadline (it counts its failures instead).
     """
     backend = settings.stt_backend
 
@@ -89,14 +91,15 @@ def make_transcriber(
             diarizer = Diarizer(
                 settings.diarizer_url,
                 conversation_id,
-                timeout=settings.diarizer_timeout_seconds,
+                timeout=settings.diarizer_timeout_seconds * (10 if recaption else 1),
                 api_key=settings.diarizer_key,
+                **({"cooldown_s": 0.0} if recaption else {}),
             )
 
         return StreamingTranscriber(
             offline,
             language=source_lang.value if source_lang is not None else None,
-            partial_interval_ms=settings.stt_partial_interval_ms if partials else 10**9,
+            partial_interval_ms=10**9 if recaption else settings.stt_partial_interval_ms,
             partial_window_ms=settings.stt_partial_window_ms,
             max_segment_ms=settings.stt_max_segment_ms,
             min_segment_ms=settings.stt_min_segment_ms,
@@ -111,5 +114,6 @@ def make_transcriber(
             start_offset_ms=start_offset_ms,
             final_words=settings.stt_final_word_timestamps,
             diarizer=diarizer,
+            shed_backlog=not recaption,
         )
     raise ValueError(f"unknown STT backend: {backend!r} (expected 'stub' or 'parakeet')")

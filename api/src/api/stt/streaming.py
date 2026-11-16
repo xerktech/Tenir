@@ -57,6 +57,7 @@ class SpeechModel(Protocol):
 
     def speech_prob(self, pcm: bytes) -> float: ...
 
+
 # Ceiling on the adaptive speech threshold, as a fraction of the loudest frame in the
 # VAD window. Without it, a stretch of uniformly loud speech (no gaps to pull the
 # measured floor down) would push the threshold above the speaker's own level and
@@ -139,6 +140,8 @@ def _repeats(earlier: str, text: str) -> bool:
     """Whether ``text``'s words are mostly already in ``earlier``."""
     t = _tokens(text)
     return bool(t) and len(t & _tokens(earlier)) / len(t) >= _DUPLICATE_PIECE_SHARE
+
+
 _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
 # An engine slower than real time only ever grows the final backlog, and once its
@@ -239,11 +242,16 @@ class StreamingTranscriber:
         start_offset_ms: int = 0,
         final_words: bool = True,
         diarizer: Diarizer | None = None,
+        shed_backlog: bool = True,
     ) -> None:
         self._engine = engine
         # Speaker tracking (XERK-2958): each final turn is first cut into per-speaker
         # pieces, one caption per piece. None captions every turn whole and unlabelled.
         self._diarizer = diarizer
+        # Merge a late final backlog when the engine falls behind real time (XERK-1498).
+        # Off for a re-caption fed faster than real time, where every final "waits": merging
+        # would fuse turns and their speakers for no live caption to rescue.
+        self._shed_backlog = shed_backlog
         self._language = language
         # Whether final decodes ask the engine for per-word timestamps. Computing
         # them dominates final-decode latency on the deployed server (~5.5x, see
@@ -455,7 +463,8 @@ class StreamingTranscriber:
                     merged = 0
                     try:
                         if (
-                            self.behind_real_time
+                            self._shed_backlog
+                            and self.behind_real_time
                             and time.perf_counter() - queued_at > _FINAL_BEHIND_S
                         ):
                             pcm, merged, merged_speech = self._coalesce_backlog(pcm)
