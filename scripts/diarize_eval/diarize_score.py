@@ -24,6 +24,7 @@ import re
 import sys
 from difflib import SequenceMatcher
 from itertools import permutations
+from pathlib import Path
 
 SLACK_S = 1.0  # caption times are turn-granular; allow a little drift
 
@@ -124,10 +125,13 @@ def score(truth: dict, captions: list[dict]) -> dict:
 
 
 def main() -> None:
-    truth = json.load(open(sys.argv[1]))
+    truth = json.loads(Path(sys.argv[1]).read_text())
     for path in sys.argv[2:]:
         print(
-            path, json.dumps(score(json.loads(json.dumps(truth)), json.load(open(path))), indent=1)
+            path,
+            json.dumps(
+                score(json.loads(json.dumps(truth)), json.loads(Path(path).read_text())), indent=1
+            ),
         )
 
 

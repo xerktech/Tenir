@@ -22,7 +22,6 @@ import uuid
 from pathlib import Path
 
 import soundfile as sf
-
 from api.contract import CaptionFinal
 from api.stt.diarize import Diarizer
 from api.stt.parakeet import ParakeetEngine

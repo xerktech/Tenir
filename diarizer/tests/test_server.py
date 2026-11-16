@@ -14,10 +14,10 @@ import pytest
 
 os.environ["DIAR_NO_LOAD"] = "1"
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-import server  # noqa: E402
-from server import FRAME_SAMPLES, Engines, Sessions, create_app  # noqa: E402
+import server
+from server import FRAME_SAMPLES, Engines, Sessions, create_app
 
 
 class ScriptStream:
