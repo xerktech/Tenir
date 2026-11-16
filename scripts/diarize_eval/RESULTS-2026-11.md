@@ -46,7 +46,7 @@ Single-speaker frames given the right speaker:
     0.874 → 0.783. The only place separation recovers words the mix loses.
 - Known limits:
   - Sustained 4-way talk is hard for one mic: about half the words come through credited correctly.
-  - p1's precision means about 1 word in 5 is garbled or invented there.
+  - Separated pieces Whisper is unsure of are dropped (XERK-3006, below); p1 precision 0.801.
   - Sortformer tracks at most 4 speakers.
 
 ## After QA fixes (planner tiling, absorb/join across overlaps)
@@ -124,3 +124,35 @@ End to end (real Whisper, the shipped transcriber, CPU diarizer):
   merged at 8–10 speakers.
 - No help when more than 4 talk within the same few seconds (p1-style parallel talk is still
   Sortformer-bound).
+
+## Gating separated captions (XERK-3006)
+
+One diarized run per session recorded, for every piece of every multi-speaker turn, the
+separated decode, the mixed-span decode, Whisper's verbose_json `avg_logprob` and the
+separated stream's energy/activity correlation; gates were then replayed offline through the
+same piece logic (de-dup included). Replaying "keep every separated piece" reproduces the
+recorded finals exactly, and two runs gave identical numbers. This run's ungated p1 scores
+precision 0.747 (0.783 in the table above: a different run of the same code).
+
+| p1 policy | precision | recall | attributed |
+|---|---|---|---|
+| keep every separated piece (XERK-2958) | 0.747 | 0.671 | 0.597 |
+| no separation (overlap decoded as the mix) | 0.795 | 0.588 | 0.445 |
+| stream correlation ≥ 0.4, else the mix | 0.783 | 0.609 | 0.469 |
+| avg_logprob ≥ −0.4, else dropped | 0.805 | 0.629 | 0.560 |
+| **avg_logprob ≥ −0.5, else dropped — shipped** | **0.801** | **0.638** | **0.570** |
+| avg_logprob ≥ −0.5, else the mix | 0.799 | 0.655 | 0.551 |
+| avg_logprob ≥ −0.6, else dropped | 0.787 | 0.651 | 0.580 |
+
+- s1 and s3 are unchanged by every logprob gate (s1 separates nothing at the 1.5 s floor; s3's
+  two separated pieces decode at −0.25 and −0.17).
+- On p1, separated decodes under −0.5 had 36 of 93 words right (39 %); above, 314 of 377 (83 %).
+- Stream correlation does not tell invented from real: every threshold trades attribution for
+  precision along the line to "no separation". Not shipped.
+- Falling back to the mix for a gated piece scores the same precision with lower attribution,
+  and costs a second decode. Dropped instead.
+- MossFormer2 (ClearerVoice `MossFormer2_SS_16K`) in place of sepformer-whamr16k: s3 captions
+  were identical. Not run on p1: on this host's CPU it took 283 s for 4 s of audio (about 70x
+  slower than real time, under load), so p1's 43 separated pieces were out of reach. A GPU run
+  is the next step if precision has to go higher than the gate gives.
+

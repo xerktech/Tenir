@@ -41,6 +41,9 @@ class EngineResult:
     # The model answered with its stock output for audio without speech (blanked text):
     # the turn is non-speech, so nothing — not even a partial — may stand in for it.
     non_speech: bool = False
+    # Mean token log-probability over the decode (Whisper verbose_json segments'
+    # avg_logprob, weighted by token count); None when the server reports none.
+    avg_logprob: float | None = None
 
 
 class WhisperEngine(Protocol):

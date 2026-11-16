@@ -158,4 +158,22 @@ class ParakeetEngine:
             text=text,
             words=words,
             language=body.get("language") or language,
+            avg_logprob=_avg_logprob(body.get("segments")),
         )
+
+
+def _avg_logprob(segments: object) -> float | None:
+    """Token-weighted mean of the segments' ``avg_logprob`` (vLLM / OpenAI verbose_json);
+    None when no segment carries one. Malformed entries are skipped, never raised on."""
+    total = weight = 0.0
+    for seg in segments if isinstance(segments, list) else []:
+        if not isinstance(seg, dict):
+            continue
+        lp = seg.get("avg_logprob")
+        if not isinstance(lp, (int, float)) or isinstance(lp, bool):
+            continue
+        tokens = seg.get("tokens")
+        n = len(tokens) if isinstance(tokens, list) and tokens else 1
+        total += float(lp) * n
+        weight += n
+    return total / weight if weight else None

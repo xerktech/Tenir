@@ -150,6 +150,70 @@ def test_overlapped_speech_decodes_each_speakers_separated_stream() -> None:
     asyncio.run(run())
 
 
+class UnsureEngine(AmplitudeEngine):
+    """Whisper's confidence per decoded amplitude (verbose_json avg_logprob)."""
+
+    def __init__(self, logprob: dict[int, float | None]) -> None:
+        super().__init__()
+        self.logprob = logprob
+
+    def transcribe(
+        self, samples: np.ndarray, *, language: str | None, want_words: bool = True
+    ) -> EngineResult:
+        r = super().transcribe(samples, language=language, want_words=want_words)
+        peak = int(round(float(np.abs(samples).max()) * 32768)) if samples.size else 0
+        r.avg_logprob = next((v for a, v in self.logprob.items() if abs(peak - a) < 500), None)
+        return r
+
+
+def test_a_separated_stream_whisper_is_unsure_of_is_not_captioned() -> None:
+    # XERK-3006: separator artefacts decode as fluent lines nobody said, at low confidence.
+    # The raw span is the turn's own audio and keeps its caption at any confidence.
+    async def run() -> None:
+        d = FakeDiarizer(
+            lambda pcm, off: [
+                Piece(1, 0, 1500, True, None),
+                Piece(2, 500, 1500, True, _tone(1000, _SEP)),
+            ]
+        )
+        t = _transcriber(d, UnsureEngine({_A: -1.2, _SEP: -0.9}))
+        finals = await _turn(t, _tone(1500, _A))
+        assert [(f.speaker, f.text) for f in finals] == [("Speaker 1", _WORDS[_A])]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("logprob", [-0.3, None])
+def test_a_separated_stream_whisper_is_sure_of_or_gives_no_score_is_captioned(
+    logprob: float | None,
+) -> None:
+    async def run() -> None:
+        d = FakeDiarizer(
+            lambda pcm, off: [
+                Piece(1, 0, 1500, True, None),
+                Piece(2, 500, 1500, True, _tone(1000, _SEP)),
+            ]
+        )
+        t = _transcriber(d, UnsureEngine({_SEP: logprob}))
+        finals = await _turn(t, _tone(1500, _A))
+        assert [f.text for f in finals] == [_WORDS[_A], _WORDS[_SEP]]
+
+    asyncio.run(run())
+
+
+def test_a_turn_whose_separated_streams_are_all_unsure_is_captioned_whole() -> None:
+    async def run() -> None:
+        sep = _tone(1000, _SEP)
+        d = FakeDiarizer(
+            lambda pcm, off: [Piece(1, 0, 1000, True, sep), Piece(2, 0, 1000, True, sep)]
+        )
+        t = _transcriber(d, UnsureEngine({_SEP: -2.0}))
+        (final,) = await _turn(t, _tone(1000, _A))
+        assert final.text == _WORDS[_A]
+
+    asyncio.run(run())
+
+
 def test_a_voice_the_separator_left_in_both_streams_is_captioned_once() -> None:
     async def run() -> None:
         d = FakeDiarizer(
