@@ -525,3 +525,13 @@ def test_an_unconfigured_diarizer_says_why_in_the_log(caplog) -> None:
     d = _client(lambda req: httpx.Response(503, json={"detail": "DIAR_API_KEY is not set"}))
     assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
     assert "DIAR_API_KEY is not set" in caplog.text
+
+
+
+def test_factory_can_build_a_finals_only_transcriber(monkeypatch) -> None:
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "stt_backend", "parakeet")
+    monkeypatch.setattr(settings, "stt_vad_model", False)
+    assert make_transcriber()._partial_bytes == settings.stt_partial_interval_ms * 32
+    assert make_transcriber(partials=False)._partial_bytes == 10**9 * 32

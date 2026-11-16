@@ -51,6 +51,7 @@ def make_transcriber(
     *,
     start_offset_ms: int = 0,
     conversation_id: str | None = None,
+    partials: bool = True,
 ) -> Transcriber:
     """Factory selected by API_STT_BACKEND.
 
@@ -59,6 +60,7 @@ def make_transcriber(
     segment timeline begins — nonzero for a resumed conversation, so its segments
     continue the existing transcript/audio timeline instead of restarting at 0.
     `conversation_id` keys the diarizer's speaker cache (API_DIARIZER_URL, XERK-2958).
+    `partials=False` decodes finals only (a re-caption, ``api.reprocess``, stores no partials).
     """
     backend = settings.stt_backend
 
@@ -94,7 +96,7 @@ def make_transcriber(
         return StreamingTranscriber(
             offline,
             language=source_lang.value if source_lang is not None else None,
-            partial_interval_ms=settings.stt_partial_interval_ms,
+            partial_interval_ms=settings.stt_partial_interval_ms if partials else 10**9,
             partial_window_ms=settings.stt_partial_window_ms,
             max_segment_ms=settings.stt_max_segment_ms,
             min_segment_ms=settings.stt_min_segment_ms,
