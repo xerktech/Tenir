@@ -510,10 +510,18 @@ def test_a_padded_or_unsendable_key_never_crashes_the_session(caplog) -> None:
     assert d._client.headers["authorization"] == "Bearer k1"
     d = Diarizer("http://diarizer:8000", "c", api_key="é-key")  # no UnicodeEncodeError
     assert "authorization" not in d._client.headers
-    assert "not ASCII" in caplog.text
+    assert "not printable ASCII" in caplog.text
+    d = Diarizer("http://diarizer:8000", "c", api_key="ab\nc")  # inner control character
+    assert "authorization" not in d._client.headers
 
 
 def test_a_refused_key_is_named_in_the_log(caplog) -> None:
     d = _client(lambda req: httpx.Response(401, json={"detail": "bad"}))
     assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
     assert "API_DIARIZER_KEY does not match" in caplog.text
+
+
+def test_an_unconfigured_diarizer_says_why_in_the_log(caplog) -> None:
+    d = _client(lambda req: httpx.Response(503, json={"detail": "DIAR_API_KEY is not set"}))
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
+    assert "DIAR_API_KEY is not set" in caplog.text
