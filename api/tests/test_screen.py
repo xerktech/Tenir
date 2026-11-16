@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
@@ -7356,6 +7357,22 @@ def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
             ),
         )
     assert parse_full_frame(result, jpeg).panel is None
+
+
+def test_the_ground_is_the_colour_most_row_pixels_are_near_not_the_exact_commonest() -> None:
+    """QA (real frames at 0.5x): anti-aliasing spreads the ground over near shades, and JPEG
+    undershoot black beside glyphs was the commonest exact colour, so no panel was found."""
+    from api.screen.zoom import _ground
+
+    rgb = np.zeros((20, 200, 3), dtype=np.uint8)
+    rgb[:] = (0, 1, 4)  # 30% undershoot black, more than any one ground shade
+    shades = [(17, 21, 24), (16, 20, 23), (18, 22, 25), (17, 22, 25), (16, 21, 24),
+              (18, 21, 24), (17, 20, 24)]
+    for i, shade in enumerate(shades):  # 10% each
+        rgb[:, 60 + 20 * i : 80 + 20 * i] = shade
+    ground = _ground(rgb, [(line("Tim Mahler", 0, 0, 200, 20), 164.0)])
+    assert ground is not None
+    assert all(abs(c - z) <= 3 for c, z in zip(ground, _ZGROUND, strict=True))
 
 
 def test_the_lowest_panel_wins() -> None:

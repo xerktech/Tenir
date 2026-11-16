@@ -409,6 +409,7 @@ _PANEL_GROUND_RGB = (17, 21, 24)
 _PANEL_GROUND_TOL = 6
 _GROUND_NEAR = 3  # the client's tolerance (caption_pane.GROUND_TOL)
 _GROUND_CANDIDATES = 16
+_GROUND_SAMPLE = 65_536  # row pixels looked at, at most
 # A chat's sender row carries a time ("Alice Smith 10:42 AM") or Zoom chat's "From X to
 # Everyone"; a caption panel's name row is the name alone (QA: both look-alikes located).
 _CHAT_HEADER = re.compile(r"\d{1,2}:\d{2}|^from\s.+\sto\s|\bto (everyone|me)\b", re.IGNORECASE)
@@ -490,6 +491,8 @@ def _ground(rgb: np.ndarray, stack: list[tuple[OcrLine, float]]) -> tuple[int, i
     if not parts:
         return None
     px = np.concatenate(parts).astype(np.int32)
+    # Bounded: a crafted frame's rows of noise made each candidate scan millions of colours.
+    px = px[:: max(1, math.ceil(len(px) / _GROUND_SAMPLE))]
     values, counts = np.unique((px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2], return_counts=True)
     colours = np.stack((values >> 16, (values >> 8) & 255, values & 255), axis=1)
     # The colour with the most pixels within the client's tolerance of it, among the commonest:
