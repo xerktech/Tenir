@@ -328,6 +328,23 @@ def test_an_unconfirmable_write_keeps_the_audio_and_says_so(monkeypatch) -> None
     monkeypatch.setattr(
         store, "get", lambda h, c, **k: real_get(h, c, **k) if c == "orig" else down()
     )
-    with pytest.raises(rp.ReprocessError, match="may exist"):
+    with pytest.raises(rp.ReprocessError, match="may exist.*delete the audio file default/"):
         rp.reprocess("default", "orig")
     assert len(get_audio_store()._blobs) == 2  # the copy's file is kept
+
+
+def test_an_interrupt_after_the_commit_keeps_the_copy_and_still_stops(monkeypatch) -> None:
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+    real = store.import_conversation
+
+    def committed_then_interrupted(*a, **k):
+        real(*a, **k)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "import_conversation", committed_then_interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        rp.reprocess("default", "orig")
+    (copy_id,) = _copies()
+    assert get_audio_store().get(store.get("default", copy_id).audio_key)

@@ -8,9 +8,11 @@ translates its non-English turns, then saves the result as a NEW conversation wi
 copy of the audio. The original is never modified: compare the two in history, and delete the
 copy like any other recording (that removes only the copy's audio).
 
-All-or-nothing: if STT returns nothing or loses a turn, a diarizer call fails or a translation
-is lost, no copy is written; the copy itself is written in one transaction (a failure says
-whether a copy may exist). Each id runs on its own; the exit status is non-zero when any failed.
+All-or-nothing on failures: if STT returns nothing or an outage loses a turn, a diarizer call
+fails or a translation is lost, no copy is written; the copy itself is written in one
+transaction (a failure says whether a copy may exist). A turn STT answers blank is dropped as
+non-speech, exactly as in a live session (Whisper's verdict on noise, not a failure). Each id
+runs on its own; the exit status is non-zero when any failed.
 
 Run it where the api runs (it reads the same settings, database and audio store). The copy is
 created now, so it lists at the top of history; its owner and microphone are the original's.
@@ -176,7 +178,8 @@ def reprocess(household: str, conversation_id: str) -> Result:
         except Exception:
             log.exception("could not check whether copy %s was stored", copy_id)
             raise ReprocessError(
-                f"writing failed ({exc}); copy {copy_id} may exist - check history"
+                f"writing failed ({exc}); copy {copy_id} may exist - check history, and if it "
+                f"is not there delete the audio file {key}"
             ) from exc
         if not stored:
             log.error("writing the copy of %s failed; nothing was stored", conversation_id)
