@@ -61,7 +61,8 @@ paths:
     went unseen with no frame to diagnose it by.
     The interval is spent only on a frame the sampler queued, and restarts with the tracker.
     Tests: `test_full_frames_with_no_meeting_on_screen_are_sampled_once_per_interval`,
-    `test_an_idle_frame_the_sampler_skipped_leaves_the_next_one_due`.
+    `test_an_idle_frame_the_sampler_skipped_leaves_the_next_one_due`,
+    `test_frames_sampled_during_a_meeting_leave_the_idle_interval_unspent`.
   - "No captions showing" with captions on: the `screen captions off:` log line counts caption
     crops received (before OCR), OCR failures, and crops yielding no block. 0 received = the
     client found no box; all empty = the parser refused each (sample that org's next meeting).

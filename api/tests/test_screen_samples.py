@@ -376,14 +376,18 @@ def test_teams_full_frames_are_sampled_with_no_meeting_signal(
     base = int(time.time() * 1000)
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         ws.receive_text()
-        n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
-        jpeg = unique_jpeg(70_000)
-        ocr.register(jpeg, OcrResult(1280, 720, ()))
-        ws.send_bytes(envelope({**header(base, "full"), "platform": "teams"}, jpeg))
-        wait_handled(n + 1)
-    _wait_idle()
+        # Two frames 30 s apart: the first idle Zoom frame is always due, so one frame alone
+        # would pass with Teams behind the IDLE_SAMPLE_MS gate too (QA).
+        for i in range(2):
+            n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+            jpeg = unique_jpeg(70_000 + i)
+            ocr.register(jpeg, OcrResult(1280, 720, ()))
+            frame = {**header(base - 30_000 + 30_000 * i, "full"), "platform": "teams"}
+            ws.send_bytes(envelope(frame, jpeg))
+            wait_handled(n + 1)
+            _wait_idle()
     (d,) = root.iterdir()
-    assert d.name.startswith("teams-tesoro-") and len(list(d.glob("*.jpg"))) == 1
+    assert d.name.startswith("teams-tesoro-") and len(list(d.glob("*.jpg"))) == 2
 
 
 def test_a_full_frame_is_sampled_under_its_own_ts(
@@ -411,3 +415,35 @@ def test_a_full_frame_is_sampled_under_its_own_ts(
             _wait_idle()
     (d,) = root.iterdir()
     assert sorted(json.loads(p.read_text())["ts"] for p in d.glob("*.json")) == [base, base + 5_000]
+
+
+def test_frames_sampled_during_a_meeting_leave_the_idle_interval_unspent(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-2820 QA: a meeting's full frames are sampled anyway; had they spent the idle
+    # interval, the first frame after the meeting left the screen waited IDLE_SAMPLE_MS.
+    from api.main import app
+    from api.screen import meetings
+    from test_screen import _toolbar_frame, envelope, header, unique_jpeg, wait_handled
+
+    # Shortened: frame ts more than a minute off the server's clock are moved to it.
+    monkeypatch.setattr(meetings, "MEETING_SEEN_MS", 5_000)
+    monkeypatch.setattr(meetings, "IDLE_SAMPLE_MS", 40_000)
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    base = int(time.time() * 1000) - 30_000
+    shown = [(0, _toolbar_frame()), (10_000, OcrResult(1280, 720, ()))]
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, (t, result) in enumerate(shown):
+            n = metrics.snapshot()["counters"].get("screen.frames_handled", 0)
+            jpeg = unique_jpeg(90_000 + i)
+            ocr.register(jpeg, result)
+            ws.send_bytes(envelope(header(base + t, "full"), jpeg))
+            wait_handled(n + 1)
+            _wait_idle()
+    (d,) = root.iterdir()
+    assert sorted(json.loads(p.read_text())["ts"] - base for p in d.glob("*.json")) == [0, 10_000]
