@@ -24,17 +24,18 @@ from __future__ import annotations
 
 import base64
 import copy
+import hmac
 import logging
 import os
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 import planner
 
@@ -70,6 +71,20 @@ MAX_SEPARATE_S = float(os.environ.get("DIAR_MAX_SEPARATE_S", "12"))
 # (one starts as the other finishes) are captioned from the mix: Whisper already hears both
 # there, and separating them only added invented words (scripts/diarize_eval, Nov 2026).
 MIN_SEPARATE_OVERLAP_S = float(os.environ.get("DIAR_MIN_SEPARATE_OVERLAP_S", "1.5"))
+# Shared bearer secret the api sends on /v1/diarize (XERK-3005). Without it anyone who can
+# reach the service and knows a conversation id could post audio into that conversation's
+# speaker cache (re-numbering its speakers) or read its speaker activity back. Unset, the
+# service refuses every turn (503): the api then captions unlabelled, never unauthenticated.
+# Stripped: a key written with `echo` into a secret carries a newline no header can match.
+API_KEY = os.environ.get("DIAR_API_KEY", "").strip()
+
+
+class Abandoned(Exception):
+    """The api hung up before its turn was done (it gives up after its timeout). The
+    turn is dropped so the next one does not queue behind work nobody will read."""
+
+
+Check = Callable[[], bool]
 
 
 class Stream(Protocol):
@@ -82,7 +97,11 @@ class Stream(Protocol):
         far are kept; the scored history before the jump is dropped."""
         ...
 
-    def feed(self, audio: np.ndarray) -> None: ...
+    def feed(self, audio: np.ndarray, abandoned: Check | None = None) -> None:
+        """Feed ``audio``. ``abandoned`` is polled between model steps; when it turns true
+        :class:`Abandoned` is raised. The state stays consistent: the audio is buffered
+        and the chunks not yet scored are scored by the next feed."""
+        ...
 
     def activity(self, start_frame: int, end_frame: int) -> np.ndarray:
         """frames x speakers activity for [start, end) on the session timeline. Frames
@@ -136,10 +155,12 @@ class SortformerStream:
         self._preds = self._preds[:0]
         self.samples = sample
 
-    def feed(self, audio: np.ndarray) -> None:
+    def feed(self, audio: np.ndarray, abandoned: Check | None = None) -> None:
         self._buf = np.concatenate([self._buf, audio.astype(np.float32)])
         self.samples += len(audio)
         while self._feat_frames_ready() >= (self._head + self._chunk + self._rc) * SUB:
+            if abandoned is not None and abandoned():
+                raise Abandoned
             preds, self._state = self._step(self._state, self._head, self._chunk, self._rc)
             self._preds = np.concatenate([self._preds, preds])
             self._head += self._chunk
@@ -311,7 +332,17 @@ def diarize_turn(
     pcm: bytes,
     separator: Separator | None,
     epoch: str | None = None,
+    abandoned: Check | None = None,
 ) -> dict:
+    """Feed one turn into the session and cut it into per-speaker pieces. ``abandoned``
+    is polled before each model step and raises :class:`Abandoned` once the api has gone:
+    a turn dropped before it is fed is a gap the next turn fills, as for an api timeout."""
+
+    def check() -> None:
+        if abandoned is not None and abandoned():
+            raise Abandoned
+
+    check()
     audio = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
     start = offset_ms * SAMPLE_RATE // 1000
     if (
@@ -338,11 +369,12 @@ def diarize_turn(
         have = start
     if start > have:
         # The api skipped audio (a diarizer call that timed out): keep the clock honest.
-        stream.feed(np.zeros(start - have, np.float32))
+        stream.feed(np.zeros(start - have, np.float32), abandoned)
         have = start
     new = audio[max(0, have - start) :]
     if len(new):
-        stream.feed(new)
+        stream.feed(new, abandoned)
+    check()  # before the provisional tail is scored
 
     end = start + len(audio)
     f0, f1 = start // FRAME_SAMPLES, -(-end // FRAME_SAMPLES)
@@ -367,6 +399,7 @@ def diarize_turn(
             and p.overlap_s >= MIN_SEPARATE_OVERLAP_S
             and FRAME_SAMPLES <= b - a <= MAX_SEPARATE_S * SAMPLE_RATE
         ):
+            check()
             item["audio"] = _separated(audio[a:b], probs, a, b, p.speaker - 1, separator)
         out.append(item)
     return {"speakers": int(probs.shape[1]), "pieces": out}
@@ -447,6 +480,8 @@ def load_engines() -> Engines:
 def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
     app = FastAPI(title="tenir-diarizer")
     state = engines or Engines()
+    if not API_KEY:
+        log.error("DIAR_API_KEY is not set: every /v1/diarize call is refused (503)")
 
     if engines is None and load:
 
@@ -477,6 +512,11 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
         offset_ms: int = Query(ge=0, le=MAX_OFFSET_MS),
         epoch: str | None = Query(None, max_length=64),
     ) -> JSONResponse:
+        if not API_KEY:
+            raise HTTPException(503, "DIAR_API_KEY is not set")
+        given = request.headers.get("authorization", "")
+        if not hmac.compare_digest(given.encode(), f"Bearer {API_KEY}".encode()):
+            raise HTTPException(401, "bad or missing bearer token")
         if state.sessions is None:
             raise HTTPException(503, "model loading")
         declared = request.headers.get("content-length")
@@ -494,11 +534,24 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
 
         sess, fresh = state.sessions.get(session)
 
-        def run() -> dict:
-            with sess.lock:
-                return diarize_turn(sess, fresh, offset_ms, body, state.separator, epoch)
+        def gone() -> bool:
+            # Polled from the worker thread between model steps; asks the event loop
+            # whether the api has hung up.
+            return anyio.from_thread.run(request.is_disconnected)
 
-        return JSONResponse(await anyio.to_thread.run_sync(run))
+        def run() -> dict:
+            # The session lock is where a late turn queues; check once it is ours, before
+            # any model work.
+            with sess.lock:
+                return diarize_turn(
+                    sess, fresh, offset_ms, body, state.separator, epoch, abandoned=gone
+                )
+
+        try:
+            return JSONResponse(await anyio.to_thread.run_sync(run))
+        except Abandoned:
+            log.info("dropped a turn the api abandoned (session %s)", session)
+            return Response(status_code=499)  # nobody reads it; nginx's "client closed"
 
     return app
 

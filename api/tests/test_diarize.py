@@ -350,6 +350,24 @@ def test_factory_wires_the_diarizer_only_when_configured(monkeypatch) -> None:
     assert make_transcriber()._diarizer is None  # no conversation to key it by
     d = make_transcriber(conversation_id="c")._diarizer
     assert isinstance(d, Diarizer) and d._url == "http://diarizer:8000/v1/diarize"
+    assert "authorization" not in d._client.headers  # no key configured
+    monkeypatch.setattr(settings, "diarizer_key", "s3cret")
+    d = make_transcriber(conversation_id="c")._diarizer
+    assert d._client.headers["authorization"] == "Bearer s3cret"
+
+
+def test_client_sends_the_shared_key_on_every_turn() -> None:
+    """XERK-3005: the diarizer refuses a turn without the bearer key."""
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json={"speakers": 0, "pieces": []})
+
+    d = Diarizer("http://diarizer:8000", "conv-1", timeout=1.0, api_key="k1")
+    d._client = httpx.Client(transport=httpx.MockTransport(handler), headers=d._client.headers)
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) == []
+    assert seen == ["Bearer k1"]
 
 
 # ----------------------------------------------------------------------- session ---
@@ -485,3 +503,25 @@ def test_a_silent_turn_is_never_split() -> None:
 def test_a_piece_starting_past_the_turn_is_refused() -> None:
     with pytest.raises(ValueError):
         parse_pieces({"pieces": [{"speaker": 1, "startMs": 600, "endMs": 900}]}, turn_ms=500)
+
+
+def test_a_padded_or_unsendable_key_never_crashes_the_session(caplog) -> None:
+    d = Diarizer("http://diarizer:8000", "c", api_key="k1\n")
+    assert d._client.headers["authorization"] == "Bearer k1"
+    d = Diarizer("http://diarizer:8000", "c", api_key="é-key")  # no UnicodeEncodeError
+    assert "authorization" not in d._client.headers
+    assert "not printable ASCII" in caplog.text
+    d = Diarizer("http://diarizer:8000", "c", api_key="ab\nc")  # inner control character
+    assert "authorization" not in d._client.headers
+
+
+def test_a_refused_key_is_named_in_the_log(caplog) -> None:
+    d = _client(lambda req: httpx.Response(401, json={"detail": "bad"}))
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
+    assert "API_DIARIZER_KEY does not match" in caplog.text
+
+
+def test_an_unconfigured_diarizer_says_why_in_the_log(caplog) -> None:
+    d = _client(lambda req: httpx.Response(503, json={"detail": "DIAR_API_KEY is not set"}))
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
+    assert "DIAR_API_KEY is not set" in caplog.text

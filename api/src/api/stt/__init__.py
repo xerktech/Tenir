@@ -88,6 +88,7 @@ def make_transcriber(
                 settings.diarizer_url,
                 conversation_id,
                 timeout=settings.diarizer_timeout_seconds,
+                api_key=settings.diarizer_key,
             )
 
         return StreamingTranscriber(

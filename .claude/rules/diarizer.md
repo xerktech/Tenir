@@ -42,3 +42,12 @@ paths:
   then read a real one by hand. Never put recording audio or transcripts in the repo.
 - CPU runs ~2x slower than real time on Sortformer alone and far slower with SepFormer; a CPU
   diarizer needs `--diarizer-timeout` in the hundreds of seconds.
+- `/v1/diarize` fails closed: no `DIAR_API_KEY` → 503, wrong bearer → 401, both before any
+  session work (XERK-3005). The NetworkPolicy is a second layer; never make the key optional.
+  - Both sides `.strip()` the key: a secret written with `echo` ends in a newline no header carries.
+  - Tests: `test_server.py::test_without_a_configured_key_every_turn_is_refused`.
+- An abandoned turn (api hung up) is dropped: checked after taking the session lock and between
+  model steps, via `anyio.from_thread.run(request.is_disconnected)`. Raise `Abandoned` only
+  BEFORE a `_step`, so stream state stays consistent and the next feed scores the backlog.
+  - Tests: `::test_abandoning_mid_feed_leaves_the_stream_resumable`,
+    `::test_every_feed_of_a_turn_can_be_abandoned_between_steps`.

@@ -45,11 +45,25 @@ class Diarizer:
     """One conversation's view of the diarizer. ``conversation_id`` keys the service's
     speaker cache, so a resumed conversation keeps its numbering while the service is up."""
 
-    def __init__(self, url: str, conversation_id: str, *, timeout: float = 3.0) -> None:
+    def __init__(
+        self, url: str, conversation_id: str, *, timeout: float = 3.0, api_key: str = ""
+    ) -> None:
         self._url = url.rstrip("/") + "/v1/diarize"
         self._conversation = conversation_id
         self._timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        api_key = api_key.strip()  # a trailing newline from `echo` into a secret
+        if not (api_key.isascii() and api_key.isprintable()):
+            # Not sendable in a header: refuse it here rather than crash the session.
+            log.error(
+                "API_DIARIZER_KEY is not printable ASCII; the diarizer will refuse every turn"
+            )
+            api_key = ""
+        # httpx's per-phase read timeout also hangs up on a slow reply, so the service
+        # sees the disconnect and drops the turn rather than finishing it for nobody.
+        self._client = httpx.Client(
+            timeout=timeout,
+            headers={"authorization": f"Bearer {api_key}"} if api_key else None,
+        )
         # One token per sitting (this transcriber's life): the service tells a resumed
         # sitting whose timeline restarted behind its own from a late resend.
         self._epoch = uuid.uuid4().hex
@@ -68,10 +82,14 @@ class Diarizer:
             )
         except Exception as exc:
             self._skip_until = time.monotonic() + _COOLDOWN_S
+            why = type(exc).__name__
+            if isinstance(exc, httpx.HTTPStatusError):
+                code = exc.response.status_code
+                why = f"HTTP {code}: {exc.response.text[:200]}"  # e.g. "DIAR_API_KEY is not set"
+                if code == 401:
+                    why = "401: API_DIARIZER_KEY does not match the diarizer's DIAR_API_KEY"
             log.warning(
-                "diarizer unavailable (%s); captioning unlabelled for %.0f s",
-                type(exc).__name__,
-                _COOLDOWN_S,
+                "diarizer unavailable (%s); captioning unlabelled for %.0f s", why, _COOLDOWN_S
             )
             log.debug("diarizer failure", exc_info=True)
             metrics.incr("stage.diarize.errors")
