@@ -409,3 +409,25 @@ def test_a_key_with_a_trailing_newline_still_matches(monkeypatch: pytest.MonkeyP
     finally:
         monkeypatch.delenv("DIAR_API_KEY")
         importlib.reload(server)
+
+
+class VoiceEmbedder:
+    """Embeds a piece by its PCM level, so a test chooses who is speaking by amplitude."""
+
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        v = np.zeros(8, np.float32)
+        v[min(7, int(round(float(np.abs(audio).max()) * 10)))] = 1.0
+        return v
+
+
+def test_fingerprints_number_people_past_the_slot_they_reuse() -> None:
+    from server import _Session, diarize_turn
+
+    sess = _Session(ScriptStream({0: [(0.0, 9.0)]}))
+    level = lambda x: (np.full(16000 * 3, int(x * 32767), np.int16)).tobytes()  # noqa: E731
+    out = [
+        diarize_turn(sess, i == 0, i * 3000, level(amp), None, embedder=VoiceEmbedder())
+        for i, amp in enumerate((0.1, 0.3, 0.1))
+    ]
+    # One Sortformer slot, two voices: the second voice is person 2, then person 1 again.
+    assert [o["pieces"][0]["speaker"] for o in out] == [1, 2, 1]

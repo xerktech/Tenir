@@ -38,6 +38,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 
+import fingerprint
 import planner
 
 log = logging.getLogger("tenir-diarizer")
@@ -108,6 +109,12 @@ class Stream(Protocol):
         """frames x speakers activity for [start, end) on the session timeline. Frames
         past the committed head are scored provisionally (no right context yet) and do
         not change the session's speaker cache."""
+        ...
+
+
+class Embedder(Protocol):
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        """float32 mono → a speaker embedding (any fixed length)."""
         ...
 
 
@@ -269,6 +276,28 @@ class SepformerSeparator:
         return est[0].T.float().cpu().numpy()
 
 
+class TitanetEmbedder:
+    """NeMo TitaNet-large speaker embeddings (192-d) for voice fingerprints."""
+
+    def __init__(self, model: Any, lock: threading.Lock) -> None:
+        self._m = model
+        self._lock = lock
+
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        import torch
+
+        # Long pieces add little to a fingerprint and cost linear time: the middle 8 s.
+        cap = 8 * SAMPLE_RATE
+        if len(audio) > cap:
+            mid = (len(audio) - cap) // 2
+            audio = audio[mid : mid + cap]
+        with self._lock, torch.inference_mode():
+            x = torch.from_numpy(audio.astype(np.float32))[None].to(self._m.device)
+            n = torch.tensor([x.shape[1]], device=self._m.device)
+            _, emb = self._m.forward(input_signal=x, input_signal_length=n)
+        return emb[0].float().cpu().numpy()
+
+
 # ------------------------------------------------------------------------- sessions ---
 
 
@@ -281,6 +310,8 @@ class _Session:
     # The api's per-sitting token: a resume sends a new one. A new sitting whose offset is
     # behind what this session has heard is a timeline the api restarted, not a late turn.
     epoch: str | None = None
+    # The people heard so far, past Sortformer's 4 slots (XERK-3017).
+    people: fingerprint.Fingerprints = field(default_factory=fingerprint.Fingerprints)
 
 
 class Sessions:
@@ -334,6 +365,7 @@ def diarize_turn(
     separator: Separator | None,
     epoch: str | None = None,
     abandoned: Check | None = None,
+    embedder: Embedder | None = None,
 ) -> dict:
     """Feed one turn into the session and cut it into per-speaker pieces. ``abandoned``
     is polled before each model step and raises :class:`Abandoned` once the api has gone:
@@ -358,6 +390,7 @@ def diarize_turn(
         # retained audio): its audio is new speech, not a resend. Skipping it labelled one
         # person's turn from another's frames (QA). Numbering restarts for the conversation.
         session.stream = session.factory()
+        session.people = fingerprint.Fingerprints()
         fresh = True
     if epoch is not None:
         session.epoch = epoch
@@ -387,8 +420,17 @@ def diarize_turn(
     for p in pieces:
         a = int(p.start_s * SAMPLE_RATE)
         b = int(p.end_s * SAMPLE_RATE)
+        speaker = p.speaker
+        if embedder is not None:
+            # Sortformer's slot → the session's person (XERK-3017). Only a solo piece long
+            # enough is fingerprinted; the rest take their slot's current person.
+            voice = None
+            if not p.separate and b - a >= fingerprint.MIN_EMBED_S * SAMPLE_RATE:
+                check()
+                voice = embedder.embed(audio[a:b])
+            speaker = session.people.person(p.speaker, voice)
         item: dict[str, Any] = {
-            "speaker": p.speaker,
+            "speaker": speaker,
             "startMs": a * 1000 // SAMPLE_RATE,
             "endMs": b * 1000 // SAMPLE_RATE,
             "overlap": p.separate,
@@ -430,6 +472,7 @@ def _separated(
 class Engines:
     sessions: Sessions | None = None
     separator: Separator | None = None
+    embedder: Embedder | None = None
     error: str | None = None
 
 
@@ -475,7 +518,18 @@ def load_engines() -> Engines:
             run_opts={"device": device},
         )
         separator = SepformerSeparator(sep, lock)
-    return Engines(Sessions(lambda: SortformerStream(model, lock)), separator)
+    embedder: Embedder | None = None
+    fp_name = os.environ.get("FINGERPRINT_MODEL", "nvidia/speakerverification_en_titanet_large")
+    if fp_name:
+        from nemo.collections.asr.models import EncDecSpeakerLabelModel
+
+        if fp_name.endswith(".nemo"):
+            titanet = EncDecSpeakerLabelModel.restore_from(fp_name, map_location=device)
+        else:
+            titanet = EncDecSpeakerLabelModel.from_pretrained(fp_name, map_location=device)
+        titanet.eval()
+        embedder = TitanetEmbedder(titanet, lock)
+    return Engines(Sessions(lambda: SortformerStream(model, lock)), separator, embedder)
 
 
 def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
@@ -490,6 +544,7 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
             try:
                 loaded = load_engines()
                 state.sessions, state.separator = loaded.sessions, loaded.separator
+                state.embedder = loaded.embedder
                 log.info("diarizer ready")
             except Exception as exc:  # surfaced on /health
                 log.exception("diarizer failed to load")
@@ -545,7 +600,14 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
             # any model work.
             with sess.lock:
                 return diarize_turn(
-                    sess, fresh, offset_ms, body, state.separator, epoch, abandoned=gone
+                    sess,
+                    fresh,
+                    offset_ms,
+                    body,
+                    state.separator,
+                    epoch,
+                    abandoned=gone,
+                    embedder=state.embedder,
                 )
 
         try:
