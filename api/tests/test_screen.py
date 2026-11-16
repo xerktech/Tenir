@@ -7241,7 +7241,11 @@ _ENTRIES = (
 
 
 def _desk_frame(
-    entries=_ENTRIES, name_grey: int = 164, ground=_ZGROUND, column: int = _COLUMN
+    entries=_ENTRIES,
+    name_grey: int = 164,
+    ground=_ZGROUND,
+    column: int = _COLUMN,
+    panels: tuple[tuple[int, int], ...] = ((_COLUMN, 1240),),
 ) -> tuple[OcrResult, bytes]:
     """A remote desktop: a dark Azure-like page left, a dark GitHub-like page right (a grey
     "Name" header over a white row 29 px in, as measured), Zoom's panel between."""
@@ -7260,17 +7264,20 @@ def _desk_frame(
     ):
         d.rectangle((x, y + 6, x + 9 * len(text), y + 20), fill=(grey,) * 3)
         lines.append(line(text, x, y, x + 9 * len(text), y + 26))
-    y = 1240
-    for name, texts in entries:
-        d.ellipse((column - 50, y + 4, column - 22, y + 32), fill=(170, 150, 130))
-        d.rectangle((column, y + 8, column + 9 * len(name), y + 18), fill=(name_grey,) * 3)
-        lines.append(line(name, column, y, column + 9 * len(name), y + 24))
-        y += 24
-        for text in texts:
-            d.rectangle((column, y + 8, column + 11 * len(text), y + 20), fill=(255, 255, 255))
-            lines.append(line(text, column, y, column + 11 * len(text), y + _ROW))
-            y += _ROW
-        y += 8
+    for column, y in panels:
+        for name, texts in entries:
+            d.ellipse((column - 50, y + 4, column - 22, y + 32), fill=(170, 150, 130))
+            # Glyphs are a minority of a row's box (thin bars), as real text is.
+            d.rectangle((column, y + 10, column + 9 * len(name), y + 14), fill=(name_grey,) * 3)
+            lines.append(line(name, column, y, column + 9 * len(name), y + 24))
+            y += 24
+            for text in texts:
+                d.rectangle(
+                    (column, y + 12, column + 11 * len(text), y + 17), fill=(255, 255, 255)
+                )
+                lines.append(line(text, column, y, column + 11 * len(text), y + _ROW))
+                y += _ROW
+            y += 8
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return OcrResult(*_DESK, tuple(lines)), buf.getvalue()
@@ -7300,16 +7307,35 @@ def test_the_lowest_panel_entry_needs_only_one_caption_sentence() -> None:
     assert parse_full_frame(*_desk_frame(entries)).panel is not None
 
 
+_SENTENCE = ("thanks I will take a look at it after this meeting is over",)
+
+
 @pytest.mark.parametrize(
     "case",
-    ["bright names", "no sentence", "names off the column", "light ground"],
+    [
+        "bright names",
+        "no sentence",
+        "names off the column",
+        "light ground",
+        "another dark ground",
+        "chat time",
+        "zoom chat",
+    ],
 )
 def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
     """Slack draws names white over its messages; short chat lines are no captions; a dark
-    page's grey header sits off its rows' column; a light page isn't Zoom's dark panel."""
+    page's grey header sits off its rows' column; a light page isn't Zoom's dark panel. A
+    dark chat built like the panel (QA look-alikes) is told by its ground colour and by a
+    sender row carrying a time or Zoom chat's "From X to Everyone"."""
     kw: dict = {}
     if case == "bright names":
         kw["name_grey"] = 255
+    elif case == "another dark ground":
+        kw["ground"] = (31, 31, 31)
+    elif case == "chat time":
+        kw["entries"] = (("Alice Smith 10:42 AM", _SENTENCE),)
+    elif case == "zoom chat":
+        kw["entries"] = (("From Bob Jones to Everyone", _SENTENCE),)
     elif case == "no sentence":
         kw["entries"] = (("Tim Mahler", ("Yep.",)), ("Shad Tischer", ("Will do",)))
     elif case == "light ground":
@@ -7324,6 +7350,12 @@ def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
             ),
         )
     assert parse_full_frame(result, jpeg).panel is None
+
+
+def test_the_lowest_panel_wins() -> None:
+    """Two panel-shaped stacks: the lower holds the newest entries a frame could show."""
+    frame = parse_full_frame(*_desk_frame(panels=((700, 400), (_COLUMN, 1240))))
+    assert frame.panel is not None and _px(frame)[0] == pytest.approx(_COLUMN - 3 * _ROW, abs=2)
 
 
 def test_a_frame_without_decodable_pixels_locates_no_panel() -> None:

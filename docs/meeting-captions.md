@@ -181,10 +181,13 @@ the desktop's centre (a false meeting from a browser sidebar). Zoom's toolbar ca
 it: hidden while the mouse is idle, it showed on 0 of 21 real full frames of a meeting. On
 each Zoom full frame `zoom.locate_panel` finds the panel by its entries: OCR rows on a dark
 ground starting in one column, a dim display-name row right above a white text row, and a
-caption sentence (6+ words). The box spans the rows, three row heights left of the column
-for the avatars, and the blank panel ground above and below; `ground` is its most common
-colour. The tracker keeps the last panel until none has been found for 10 min with no
-meeting live; every Zoom full frame re-tells it on a new socket. The client runs the
+caption sentence (6+ words), on Zoom's panel colour (17, 21, 24 within 6 levels), with no
+chat sender row (a time, "From X to Everyone"). The box spans the rows, three row heights
+left of the column for the avatars, and the blank panel ground above and below; `ground` is
+the most common colour inside the rows' boxes. The tracker keeps the last panel until none
+has been found for 10 min with no meeting live, and every Zoom full frame re-tells it on a
+new socket; an idle tracker swept between sockets loses it, and the next frame showing the
+panel locates it again. The client runs the
 caption-box finder inside the box at the frame's own scale, only while at least 20% of the
 box is within 3 levels of `ground` (Slack moved over Zoom, or Zoom moved, sends nothing until
 the next full frame relocates it), and never without a region (no whole-window fallback, the

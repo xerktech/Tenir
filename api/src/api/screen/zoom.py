@@ -402,6 +402,14 @@ _PANEL_WORDS = 6  # a caption sentence row: the panel holds at least one this lo
 _PANEL_AVATAR = 3.0  # line heights kept left of the column: the avatar beside each name
 _PANEL_REACH = 10.0  # line heights the box may grow past the rows into blank panel ground
 _PANEL_DARK = 0.9  # share of a blank panel row's pixels on the ground
+# Zoom's dark caption panel is drawn on this colour (every real panel measured, JPEG q80); the
+# dark apps beside it on real frames are 7-9 levels off (Slack, Explorer, Azure) and a
+# dark chat look-alike 14 (QA). Retune if Zoom restyles its panel: a miss sends no crops.
+_PANEL_GROUND_RGB = (17, 21, 24)
+_PANEL_GROUND_TOL = 6
+# A chat's sender row carries a time ("Alice Smith 10:42 AM") or Zoom chat's "From X to
+# Everyone"; a caption panel's name row is the name alone (QA: both look-alikes located).
+_CHAT_HEADER = re.compile(r"\d{1,2}:\d{2}|^from\s.+\sto\s|\bto (everyone|me)\b", re.IGNORECASE)
 
 
 def _row_luma(px: np.ndarray, ln: OcrLine) -> tuple[float, float] | None:
@@ -448,6 +456,7 @@ def _is_panel(stack: list[tuple[OcrLine, float]]) -> bool:
     return any(
         _PANEL_NAME[0] <= peak < _PANEL_NAME[1] * text
         and _is_display_name(clean_tile_name(ln.text))
+        and not _CHAT_HEADER.search(ln.text)
         and below_peak >= _PANEL_TEXT
         for (ln, peak), (_, below_peak) in zip(stack, stack[1:], strict=False)
     )
@@ -464,6 +473,26 @@ def _reach(px: np.ndarray, x0: int, x1: int, start: int, step: int, limit: int) 
     return last
 
 
+def _ground(rgb: np.ndarray, stack: list[tuple[OcrLine, float]]) -> tuple[int, int, int] | None:
+    """The panel's ground: the most common colour inside its rows' boxes, where glyphs are a
+    minority. Not over the whole box: a share's black letterbox or video tile in the box
+    nearly tied it (34% vs 35-43%) and one resample picked black (QA). Not the median: off
+    the exact colour by up to 3 levels, the client's tolerance."""
+    h, w = rgb.shape[:2]
+    parts = []
+    for ln, _ in stack:
+        x0, y0 = max(0, int(ln.box[0])), max(0, int(ln.box[1]))
+        x1, y1 = min(w, math.ceil(ln.box[2])), min(h, math.ceil(ln.box[3]))
+        if x1 > x0 and y1 > y0:
+            parts.append(rgb[y0:y1:2, x0:x1:2].reshape(-1, 3))
+    if not parts:
+        return None
+    px = np.concatenate(parts).astype(np.int32)
+    values, counts = np.unique((px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2], return_counts=True)
+    top = int(values[np.argmax(counts)])
+    return top >> 16, (top >> 8) & 255, top & 255
+
+
 def locate_panel(ocr: OcrResult, px: np.ndarray, rgb: np.ndarray) -> CaptionPane | None:
     """Zoom's caption panel on a full frame (``px``: per-pixel max channel), or None.
 
@@ -477,10 +506,18 @@ def locate_panel(ocr: OcrResult, px: np.ndarray, rgb: np.ndarray) -> CaptionPane
         luma = _row_luma(px, ln)
         if luma is not None and luma[0] <= _PANEL_GROUND:
             rows.append((ln, luma[1]))
-    panels = [s for s in _panel_stacks(rows) if _is_panel(s)]
+    panels = []
+    for stack in _panel_stacks(rows):
+        if not _is_panel(stack):
+            continue
+        ground = _ground(rgb, stack)
+        if ground is not None and all(
+            abs(c - z) <= _PANEL_GROUND_TOL for c, z in zip(ground, _PANEL_GROUND_RGB, strict=True)
+        ):
+            panels.append((stack, ground))
     if not panels:
         return None
-    stack = max(panels, key=lambda s: s[-1][0].box[3])
+    stack, ground = max(panels, key=lambda p: p[0][-1][0].box[3])
     line_h = float(np.median([ln.height for ln, _ in stack]))
     column = min(ln.box[0] for ln, _ in stack)
     left = max(0, int(column - _PANEL_AVATAR * line_h))
@@ -488,14 +525,6 @@ def locate_panel(ocr: OcrResult, px: np.ndarray, rgb: np.ndarray) -> CaptionPane
     reach = int(_PANEL_REACH * line_h)
     top = _reach(px, left, right, int(stack[0][0].box[1]), -1, reach)
     bottom = min(h, _reach(px, left, right, math.ceil(stack[-1][0].box[3]), 1, reach) + 1)
-    # The ground: the box's most common colour (35-42% of real panels' pixels, exact).
-    # Sampled to at most ~65k pixels: a crafted frame's box may span the whole frame.
-    step = max(2, math.ceil(math.sqrt((bottom - top) * (right - left) / 65_536)))
-    sample = rgb[top:bottom:step, left:right:step].reshape(-1, 3).astype(np.int32)
-    packed = (sample[:, 0] << 16) | (sample[:, 1] << 8) | sample[:, 2]
-    values, counts = np.unique(packed, return_counts=True)
-    top_colour = int(values[np.argmax(counts)])
-    ground = (top_colour >> 16, (top_colour >> 8) & 255, top_colour & 255)
     return CaptionPane(box=(left / w, top / h, right / w, bottom / h), ground=ground)
 
 
