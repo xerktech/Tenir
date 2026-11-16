@@ -445,7 +445,9 @@ def diarize_turn(
             check()
             item["audio"] = _separated(audio[a:b], probs, a, b, p.speaker - 1, separator)
         out.append(item)
-    return {"speakers": int(probs.shape[1]), "pieces": out}
+    # People known to the conversation (unbounded with fingerprints), else Sortformer's slots.
+    known = len(session.people.sums) if embedder is not None else int(probs.shape[1])
+    return {"speakers": known, "pieces": out}
 
 
 def _separated(
@@ -577,7 +579,15 @@ def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:
                 {"status": "error" if state.error else "loading", "error": state.error},
                 status_code=503,
             )
-        return JSONResponse({"status": "ok", "sessions": len(state.sessions)})
+        # fingerprints false = 4-speaker tracking (TitaNet off or missing from the offline
+        # cache): say so, since the service is otherwise healthy (XERK-3017 QA).
+        return JSONResponse(
+            {
+                "status": "ok",
+                "sessions": len(state.sessions),
+                "fingerprints": state.embedder is not None,
+            }
+        )
 
     @app.post("/v1/diarize")
     async def diarize(

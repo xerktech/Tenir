@@ -57,3 +57,13 @@ def test_eight_people_through_four_slots_stay_distinct() -> None:
             seen.setdefault(i, set()).add(fp.person(i % 4 + 1, _voice(i)))
     assert all(len(v) == 1 for v in seen.values())
     assert len({next(iter(v)) for v in seen.values()}) == 8
+
+
+def test_a_match_folds_the_piece_into_the_fingerprint() -> None:
+    """XERK-3017 QA m7: matched pieces update the person's running mean."""
+    fp = Fingerprints()
+    fp.person(1, _voice(0))
+    fp.person(1, _voice(0))
+    assert fp.counts == [2]
+    fp.person(2, _voice(0))
+    assert fp.counts == [3]

@@ -83,6 +83,11 @@ three true speakers share slot 3). Nearest-fingerprint on 2 s solo clips picks t
 vs different p90 0.21), so the decision uses ≥ 2 s pieces and running means.
 
 Frame-level accuracy, single-speaker frames, one label ↔ one true speaker (6 s turns, no STT).
+Reproduce with `diarize_fp_tune.py` (sweep, or one setting with `--match/--new/--min`). Sessions
+(`build_session.py ... --overlap 0.2` unless noted): m6 `--speakers 6 --minutes 4 --seed 6`,
+m8 `--speakers 8 --minutes 5 --seed 8`, m6b `--speakers 6 --minutes 5 --seed 16`,
+m8b `--speakers 8 --minutes 6 --seed 18`; held out h4/h5/h6/h8/h10 `--speakers N --minutes 5
+--seed 31..35`; s1/s2/p1 as in the table at the top.
 
 Tuned jointly (match 0.55 / new 0.30 / min 2.0 s, the best setting with no session below 4-slot):
 

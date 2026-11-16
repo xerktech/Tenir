@@ -40,4 +40,8 @@ decoding and fallbacks are the shipped code. Raise `--diarizer-timeout` for a CP
 - `label_share_per_speaker` — how a true speaker's words spread over labels; one label near
   1.0 per speaker is consistent numbering.
 
+More than 4 speakers (XERK-3017): `diarize_fp_tune.py` scores 4-slot vs fingerprint tracking
+at frame level (no STT) and sweeps the fingerprint thresholds; tune on 4, 6 and 8 speaker sessions
+together and check fresh seeds.
+
 Results: `RESULTS-2026-11.md`.
