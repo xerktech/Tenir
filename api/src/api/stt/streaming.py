@@ -486,6 +486,8 @@ class StreamingTranscriber:
                 # silently stop captioning. Count it and move on to the next job.
                 log.exception("STT %s decode failed", kind)
                 metrics.incr("stage.stt.errors")
+                if kind == "final":
+                    self.final_failures += 1
             finally:
                 if kind == "partial":
                     self._partial_pending = False
@@ -672,6 +674,7 @@ class StreamingTranscriber:
         except Exception:
             log.warning("padded retry of a blank final failed", exc_info=True)
             metrics.incr("stage.stt.final_retry_errors")
+            self.final_failures += 1  # the turn may be lost (live, its partial stands in)
             return blank
         if len(retry.text.split()) < _RECOVERY_MIN_WORDS:
             metrics.incr("stage.stt.final_retry_empty")

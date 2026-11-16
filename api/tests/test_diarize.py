@@ -584,3 +584,24 @@ def test_a_recaption_never_merges_its_backlog(monkeypatch) -> None:
 
     assert asyncio.run(run(True)) > 0
     assert asyncio.run(run(False)) == 0
+
+
+def test_a_speaker_piece_stt_never_answered_counts_as_a_lost_turn() -> None:
+    class Down(AmplitudeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            if samples.size and abs(float(np.abs(samples).max()) * 32768 - _SEP) < 500:
+                raise ValueError("rejected")
+            return super().transcribe(samples, language=language, want_words=want_words)
+
+    async def run() -> int:
+        d = FakeDiarizer(
+            lambda pcm, off: [
+                Piece(1, 0, 1000, False, None),
+                Piece(2, 500, 1500, True, _tone(1000, _SEP)),
+            ]
+        )
+        t = _transcriber(d, Down())
+        await _turn(t, _tone(1000, _A) + _tone(500, _B))
+        return t.final_failures
+
+    assert asyncio.run(run()) == 1

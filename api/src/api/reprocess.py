@@ -9,8 +9,8 @@ copy of the audio. The original is never modified: compare the two in history, a
 copy like any other recording (that removes only the copy's audio).
 
 All-or-nothing: if STT returns nothing or loses a turn, a diarizer call fails or a translation
-is lost, no copy is written; the copy itself is written in one transaction. Each id runs on its
-own; the exit status is non-zero when any failed.
+is lost, no copy is written; the copy itself is written in one transaction (a failure says
+whether a copy may exist). Each id runs on its own; the exit status is non-zero when any failed.
 
 Run it where the api runs (it reads the same settings, database and audio store). The copy is
 created now, so it lists at the top of history; its owner and microphone are the original's.
@@ -166,13 +166,28 @@ def reprocess(household: str, conversation_id: str) -> Result:
             segments=segments,
             audio_key=key,
         )
-    except BaseException:
-        log.error("writing the copy of %s failed; nothing was stored", conversation_id)
+    except BaseException as exc:
+        # The commit may have landed with only its acknowledgement lost: then the copy is in
+        # history and must keep its audio (QA). Delete the file only when the row is
+        # confirmed absent; if that can't be checked, keep it (an orphan file is harmless,
+        # a listed copy without audio is not).
         try:
-            audio.delete(key)
+            stored = store.get(household, copy_id) is not None
         except Exception:
-            log.exception("could not remove the copy's audio %s", key)
-        raise
+            log.exception("could not check whether copy %s was stored", copy_id)
+            raise ReprocessError(
+                f"writing failed ({exc}); copy {copy_id} may exist - check history"
+            ) from exc
+        if not stored:
+            log.error("writing the copy of %s failed; nothing was stored", conversation_id)
+            try:
+                audio.delete(key)
+            except Exception:
+                log.exception("could not remove the copy's audio %s", key)
+            raise
+        log.warning("write of copy %s reported %r but it is stored; keeping it", copy_id, exc)
+        if not isinstance(exc, Exception):
+            raise  # interrupted after the commit: the copy stays, the interrupt propagates
     return Result(
         conversation_id,
         copy_id,
@@ -194,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             r = reprocess(a.household, cid)
         except Exception as exc:
             failed += 1
-            print(f"{cid}: FAILED, no copy kept: {exc}", flush=True)
+            print(f"{cid}: FAILED: {exc}", flush=True)
             continue
         print(
             f"{r.source_id} -> {r.copy_id}: {r.segments} turns, {r.speakers} speakers, "

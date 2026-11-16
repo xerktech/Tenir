@@ -143,7 +143,7 @@ def test_main_runs_every_id_and_fails_if_any_did(monkeypatch, capsys) -> None:
     assert rp.main(["a", "bad", "b"]) == 1
     assert capsys.readouterr().out.splitlines() == [
         "a -> new-a: 3 turns, 2 speakers, 1 translated",
-        "bad: FAILED, no copy kept: no conversation bad",
+        "bad: FAILED: no conversation bad",
         "b -> new-b: 3 turns, 2 speakers, 1 translated",
     ]
     assert rp.main(["a"]) == 0
@@ -296,3 +296,38 @@ def test_translations_follow_the_live_rules() -> None:
     assert tr.seen[1] == ("Mercurio, Venus", None, "es")
     assert len(tr.seen) == 3  # nothing after the English turn closed the run
     assert rp._translate([_final(0, "hola", Lang.es)], None) == [None]
+
+
+def test_a_lost_commit_acknowledgement_keeps_the_stored_copy(monkeypatch) -> None:
+    """QA: the commit landed, its reply was lost; the copy must keep its audio."""
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+    real = store.import_conversation
+
+    def committed_then_lost(*a, **k):
+        real(*a, **k)
+        raise OSError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(store, "import_conversation", committed_then_lost)
+    r = rp.reprocess("default", "orig")
+    copy = store.get("default", r.copy_id)
+    assert copy is not None and get_audio_store().get(copy.audio_key)
+
+
+def test_an_unconfirmable_write_keeps_the_audio_and_says_so(monkeypatch) -> None:
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+
+    def down(*a, **k):
+        raise OSError("database went away")
+
+    monkeypatch.setattr(store, "import_conversation", down)
+    real_get = store.get
+    monkeypatch.setattr(
+        store, "get", lambda h, c, **k: real_get(h, c, **k) if c == "orig" else down()
+    )
+    with pytest.raises(rp.ReprocessError, match="may exist"):
+        rp.reprocess("default", "orig")
+    assert len(get_audio_store()._blobs) == 2  # the copy's file is kept
