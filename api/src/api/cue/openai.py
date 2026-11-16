@@ -175,14 +175,22 @@ _SYSTEM = (
     "sentences — under 200 characters — with the added fact, explanation, or "
     'correction", "evidence": '
     "[numbers of the evidence items your fact came from, or omit if none]}}. "
-    'If nothing is cue-worthy, reply {{"cue": false}}.\n'
-    # XERK-2957: the listener reads English (every translation targets it), but a
-    # Spanish conversation got Spanish cues: the model mirrors the transcript's
-    # language. Last in the frame, where Sonnet 5.5 kept to it on every probe.
-    "Language: always write the title and body in English, even when the "
-    "speakers talk in Spanish or any other language. The listener reads "
-    "English; never answer in the conversation's language."
+    'If nothing is cue-worthy, reply {{"cue": false}}.'
 )
+
+# XERK-2957: the listener reads English (every translation targets it), but a Spanish
+# conversation got Spanish cues: the model mirrors the transcript's language. The rule
+# is the LAST line of the system prompt, after the per-call evidence and avoid-list
+# blocks: at the end of the fixed frame those blocks buried it, and Sonnet 5.5 still
+# wrote Spanish titles on grounded calls and on a session's second cue.
+_LANGUAGE_RULE = (
+    "\nLanguage: write the cue's title AND body in English, whatever language the "
+    "speakers or the evidence use. The listener reads English, so translate a "
+    "non-English term into English (a name stays a name)."
+)
+# Restated after the transcript (XERK-2957): a long all-Spanish window still pulled
+# about half of Sonnet 5.5's cues into Spanish with the rule in the system prompt alone.
+_LANGUAGE_REMINDER = "\n\n(Write any cue in English.)"
 
 # Grounding preamble for the evidence block (XERK-120). The model's weights are
 # years stale, so for anything time-sensitive the evidence must outrank memory —
@@ -327,11 +335,12 @@ class OpenAICueGenerator(CueGenerator):
                 'different subject entirely or reply {"cue": false}:\n'
                 + "\n".join(f"- {c.title}: {c.body}" for c in already)
             )
+        system += _LANGUAGE_RULE
         payload: dict = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_content(self._model, fixed, system)},
-                {"role": "user", "content": transcript},
+                {"role": "user", "content": transcript + _LANGUAGE_REMINDER},
             ],
             # Greedy decoding. A/B on replayed deployment sessions (temperature
             # 0.2 vs 0.0, same prompt, same 675 attempts): 0.0 cut judged-wrong

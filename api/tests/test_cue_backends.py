@@ -15,7 +15,7 @@ from api.cue.base import (
     cue_substance_similarity,
     cue_substance_tokens,
 )
-from api.cue.openai import OpenAICueGenerator
+from api.cue.openai import _LANGUAGE_REMINDER, _LANGUAGE_RULE, OpenAICueGenerator
 from api.cue.stub import StubCueGenerator, _title_from
 
 
@@ -468,7 +468,7 @@ def test_payload_enables_thinking_by_default() -> None:
     # measurably starved the JSON answer (finish_reason: length, empty content).
     assert payload["max_tokens"] == 2048
     assert [m["role"] for m in payload["messages"]] == ["system", "user"]
-    assert payload["messages"][1]["content"] == "how far is the sun?"
+    assert payload["messages"][1]["content"] == "how far is the sun?" + _LANGUAGE_REMINDER
 
 
 def test_payload_disables_thinking_when_flagged() -> None:
@@ -566,14 +566,29 @@ def test_payload_system_prompt_keeps_the_worked_examples() -> None:
     assert "reply with a single json object and nothing else" in system
 
 
-def test_payload_system_prompt_requires_english_cues() -> None:
+def test_payload_system_prompt_ends_with_the_english_rule() -> None:
     # XERK-2957: a Spanish conversation (translated to English for the listener)
-    # got Spanish cues. The output language is pinned in the fixed frame, so it
-    # holds on the grounded path too.
-    for evidence in ((), _evidence()):
-        system = _gen()._build_payload("¿Cuándo murió Frida Kahlo?", (), evidence)
-        content = system["messages"][0]["content"].lower()
-        assert "always write the title and body in english" in content
+    # got Spanish cues. The rule must be the last thing in the system prompt, after
+    # the per-call evidence and avoid-list blocks: placed before them, Sonnet 5.5
+    # kept writing Spanish titles on grounded calls and on a session's second cue.
+    avoid = [GeneratedCue(title="Warfarin", body="A blood thinner.")]
+    for args in ((), ((), _evidence()), (avoid, _evidence()), (avoid,)):
+        system = _gen()._build_payload("¿Cuándo murió Frida Kahlo?", *args)
+        content = system["messages"][0]["content"]
+        assert content.endswith(_LANGUAGE_RULE)
+        assert "title AND body in English" in _LANGUAGE_RULE
+        assert content.count(_LANGUAGE_RULE) == 1
+        # ...and restated after the transcript, the last thing the model reads.
+        assert system["messages"][1]["content"].endswith(_LANGUAGE_REMINDER)
+
+
+def test_claude_payload_keeps_the_english_rule_out_of_the_cached_block() -> None:
+    # The fixed frame is prompt-cached for Claude; the rule rides the uncached tail
+    # so it can sit after the per-call blocks without breaking the cache prefix.
+    gen = OpenAICueGenerator(endpoint="http://x/v1", model="anthropic/claude-sonnet-5-5")
+    blocks = gen._build_payload("hola", (), _evidence())["messages"][0]["content"]
+    assert _LANGUAGE_RULE not in blocks[0]["text"]
+    assert blocks[-1]["text"].endswith(_LANGUAGE_RULE)
 
 
 def test_payload_evidence_rules_require_subject_match() -> None:

@@ -67,10 +67,13 @@ def test_cue_payload_for_claude_has_no_qwen_fields_and_a_cached_prefix() -> None
     assert "temperature" not in payload
     assert "chat_template_kwargs" not in payload
     assert "thinking" not in payload  # cues keep Claude's default thinking
-    fixed = payload["messages"][0]["content"]
-    assert len(fixed) == 1 and fixed[0]["cache_control"] == {"type": "ephemeral"}
+    blocks = payload["messages"][0]["content"]
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     # Sonnet 5.5 caches prefixes of 512+ tokens; the cue rules are several thousand chars.
-    assert len(fixed[0]["text"]) > 4000
+    assert len(blocks[0]["text"]) > 4000
+    # Even a first, ungrounded call has an uncached tail: the English-output rule
+    # (XERK-2957), which must come after any per-call text.
+    assert len(blocks) == 2 and "cache_control" not in blocks[1]
 
 
 def test_claude_cue_prompt_is_the_qwen_prompt_split_in_two() -> None:
