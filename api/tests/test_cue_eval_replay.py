@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from api.cue import tuning
+from api.cue.openai import _LANGUAGE_REMINDER
 from api.cue.retrieval.base import Evidence
 
 _EVAL = Path(__file__).resolve().parents[2] / "scripts" / "cue_eval"
@@ -896,7 +897,8 @@ class _DecliningServer(_FakeServer):
 
     def post(self, url, json, timeout):  # noqa: A002
         self.cue_payloads.append(json)
-        self.newest.append(json["messages"][1]["content"].splitlines()[-1])
+        transcript = json["messages"][1]["content"].removesuffix(_LANGUAGE_REMINDER)
+        self.newest.append(transcript.splitlines()[-1])
         self.now += self.cue_ms / 1000
         return _Resp('{"cue": false}')
 
