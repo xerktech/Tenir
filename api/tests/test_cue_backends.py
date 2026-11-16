@@ -566,6 +566,16 @@ def test_payload_system_prompt_keeps_the_worked_examples() -> None:
     assert "reply with a single json object and nothing else" in system
 
 
+def test_payload_system_prompt_requires_english_cues() -> None:
+    # XERK-2957: a Spanish conversation (translated to English for the listener)
+    # got Spanish cues. The output language is pinned in the fixed frame, so it
+    # holds on the grounded path too.
+    for evidence in ((), _evidence()):
+        system = _gen()._build_payload("¿Cuándo murió Frida Kahlo?", (), evidence)
+        content = system["messages"][0]["content"].lower()
+        assert "always write the title and body in english" in content
+
+
 def test_payload_evidence_rules_require_subject_match() -> None:
     # Same review, grounded path: retrieval keyword-matches produced cues
     # about a DIFFERENT subject sharing a phrase with the conversation — an

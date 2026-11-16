@@ -175,7 +175,13 @@ _SYSTEM = (
     "sentences — under 200 characters — with the added fact, explanation, or "
     'correction", "evidence": '
     "[numbers of the evidence items your fact came from, or omit if none]}}. "
-    'If nothing is cue-worthy, reply {{"cue": false}}.'
+    'If nothing is cue-worthy, reply {{"cue": false}}.\n'
+    # XERK-2957: the listener reads English (every translation targets it), but a
+    # Spanish conversation got Spanish cues: the model mirrors the transcript's
+    # language. Last in the frame, where Sonnet 5.5 kept to it on every probe.
+    "Language: always write the title and body in English, even when the "
+    "speakers talk in Spanish or any other language. The listener reads "
+    "English; never answer in the conversation's language."
 )
 
 # Grounding preamble for the evidence block (XERK-120). The model's weights are
