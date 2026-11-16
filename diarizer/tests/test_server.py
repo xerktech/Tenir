@@ -494,3 +494,10 @@ def test_only_solo_pieces_long_enough_are_fingerprinted() -> None:
     long = ScriptStream({0: [(0.0, 2.5)]})
     diarize_turn(_Session(long), True, 0, _level(0.1, 2.5), None, embedder=emb)
     assert emb.lengths == [40000]
+
+
+def test_without_fingerprints_the_reply_counts_sortformer_slots() -> None:
+    from server import _Session, diarize_turn
+
+    out = diarize_turn(_Session(ScriptStream({0: [(0.0, 3.0)]})), True, 0, _level(0.1), None)
+    assert out["speakers"] == 4
