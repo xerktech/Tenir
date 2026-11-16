@@ -39,6 +39,10 @@ Notify = Callable[[ScreenCadence | ScreenNotice], Awaitable[None]]
 # meeting that goes silent stays unwarned, while captions turned off mid-meeting, or a next
 # meeting in the same window without them, is warned this long + CAPTIONS_OFF_MS later.
 MEETING_SEEN_MS = 600_000
+# A Zoom window with no meeting detected still has one full frame sampled this often
+# (XERK-2820): a real meeting the toolbar check missed left nothing to diagnose it by, while
+# every 30 s idle frame filled the sampler's cap in hours. 288 a day per window.
+IDLE_SAMPLE_MS = 300_000
 # Meeting on screen this long with no caption: captions are off, so warn the operator...
 CAPTIONS_OFF_MS = 120_000
 # ...and again this often while it lasts (a desktop notification each time).
@@ -247,6 +251,7 @@ class MeetingTracker:
         self.last_ts = 0
         # Captions-off warning: when the toolbar was last seen, and when to warn next.
         self._meeting_seen_ms: int | None = None
+        self._idle_sampled_ms: int | None = None
         self._captions_off_at: int | None = None
         self._caption_seen_ms: int | None = None
         # Caption crops read while the warning is pending, and how many yielded no block
@@ -431,6 +436,18 @@ class MeetingTracker:
         return [
             replace(b, speaker=as_read[b.speaker]) if b.speaker in as_read else b for b in blocks
         ]
+
+    def idle_sample_due(self, ts: int) -> bool:
+        """Whether a full frame with no meeting on screen is sampled: one per IDLE_SAMPLE_MS
+        since the last one the sampler took (``idle_sampled``). Per tracker, so it restarts
+        with the window's tracker (a reconnect, a pod restart)."""
+        last = self._idle_sampled_ms
+        return last is None or not 0 <= ts - last < IDLE_SAMPLE_MS
+
+    def idle_sampled(self, ts: int) -> None:
+        """The sampler took an idle full frame: a frame it skipped (busy, at its cap) leaves
+        the next one due (XERK-2820 QA)."""
+        self._idle_sampled_ms = ts
 
     def meeting_on_screen(self, ts: int) -> bool:
         """A meeting is live, or its toolbar showed on a full frame within MEETING_SEEN_MS."""
