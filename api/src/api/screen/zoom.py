@@ -407,6 +407,8 @@ _PANEL_DARK = 0.9  # share of a blank panel row's pixels on the ground
 # dark chat look-alike 14 (QA). Retune if Zoom restyles its panel: a miss sends no crops.
 _PANEL_GROUND_RGB = (17, 21, 24)
 _PANEL_GROUND_TOL = 6
+_GROUND_NEAR = 3  # the client's tolerance (caption_pane.GROUND_TOL)
+_GROUND_CANDIDATES = 16
 # A chat's sender row carries a time ("Alice Smith 10:42 AM") or Zoom chat's "From X to
 # Everyone"; a caption panel's name row is the name alone (QA: both look-alikes located).
 _CHAT_HEADER = re.compile(r"\d{1,2}:\d{2}|^from\s.+\sto\s|\bto (everyone|me)\b", re.IGNORECASE)
@@ -474,8 +476,8 @@ def _reach(px: np.ndarray, x0: int, x1: int, start: int, step: int, limit: int) 
 
 
 def _ground(rgb: np.ndarray, stack: list[tuple[OcrLine, float]]) -> tuple[int, int, int] | None:
-    """The panel's ground: the most common colour inside its rows' boxes, where glyphs are a
-    minority. Not over the whole box: a share's black letterbox or video tile in the box
+    """The panel's ground: the colour most of its rows' boxes' pixels are near (glyphs are a
+    minority). Not over the whole box: a share's black letterbox or video tile in the box
     nearly tied it (34% vs 35-43%) and one resample picked black (QA). Not the median: off
     the exact colour by up to 3 levels, the client's tolerance."""
     h, w = rgb.shape[:2]
@@ -489,8 +491,18 @@ def _ground(rgb: np.ndarray, stack: list[tuple[OcrLine, float]]) -> tuple[int, i
         return None
     px = np.concatenate(parts).astype(np.int32)
     values, counts = np.unique((px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2], return_counts=True)
-    top = int(values[np.argmax(counts)])
-    return top >> 16, (top >> 8) & 255, top & 255
+    colours = np.stack((values >> 16, (values >> 8) & 255, values & 255), axis=1)
+    # The colour with the most pixels within the client's tolerance of it, among the commonest:
+    # anti-aliasing and JPEG ringing leave the exact ground only 1-7% of a row's pixels, and
+    # at 0.5x an undershoot black (0, 1, 4) out-counted it exactly (QA).
+    best, best_n = None, -1
+    for i in np.argsort(counts)[::-1][:_GROUND_CANDIDATES]:
+        near = (np.abs(colours - colours[i]) <= _GROUND_NEAR).all(axis=1)
+        n = int(counts[near].sum())
+        if n > best_n:
+            best, best_n = colours[i], n
+    assert best is not None
+    return int(best[0]), int(best[1]), int(best[2])
 
 
 def locate_panel(ocr: OcrResult, px: np.ndarray, rgb: np.ndarray) -> CaptionPane | None:

@@ -154,8 +154,9 @@ paths:
     one in place of the real panel): the ground must be Zoom's panel colour (17, 21, 24
     +-6, measured on every real panel) and no name row may read as a chat sender (a time,
     "From X to Everyone"). A Zoom restyle stops all crops: retune `_PANEL_GROUND_RGB`.
-  - `ground` is the most common colour inside the rows' boxes: over the whole box a share's
-    black letterbox nearly tied it (34% vs 35-43%), and the median sat up to 3 levels off.
+  - `ground` is the colour most pixels inside the rows' boxes are within 3 levels of: over
+    the whole box a share's black letterbox nearly tied it; the median sat up to 3 levels
+    off; the exact mode lost to JPEG undershoot black at 0.5x (QA, real frames resampled).
   - Kept through frames that miss it (`MeetingTracker.panel`) until none for
     `MEETING_SEEN_MS` with no meeting live: the client's `ground` check, not the api, stops
     crops of a window moved over the box (Slack over Zoom on real frames; stored live, its

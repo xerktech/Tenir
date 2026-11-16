@@ -7320,6 +7320,8 @@ _SENTENCE = ("thanks I will take a look at it after this meeting is over",)
         "another dark ground",
         "chat time",
         "zoom chat",
+        "zoom chat to someone",
+        "zoom chat to everyone",
     ],
 )
 def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
@@ -7336,6 +7338,10 @@ def test_text_that_is_not_zooms_panel_is_not_located(case: str) -> None:
         kw["entries"] = (("Alice Smith 10:42 AM", _SENTENCE),)
     elif case == "zoom chat":
         kw["entries"] = (("From Bob Jones to Everyone", _SENTENCE),)
+    elif case == "zoom chat to someone":  # only the "From X to Y" pattern matches
+        kw["entries"] = (("From Bo to Ana Li", _SENTENCE),)
+    elif case == "zoom chat to everyone":  # only the "to Everyone" pattern matches
+        kw["entries"] = (("Bob Jones to Everyone", _SENTENCE),)
     elif case == "no sentence":
         kw["entries"] = (("Tim Mahler", ("Yep.",)), ("Shad Tischer", ("Will do",)))
     elif case == "light ground":

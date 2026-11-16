@@ -184,7 +184,7 @@ ground starting in one column, a dim display-name row right above a white text r
 caption sentence (6+ words), on Zoom's panel colour (17, 21, 24 within 6 levels), with no
 chat sender row (a time, "From X to Everyone"). The box spans the rows, three row heights
 left of the column for the avatars, and the blank panel ground above and below; `ground` is
-the most common colour inside the rows' boxes. The tracker keeps the last panel until none
+the colour most pixels inside the rows' boxes are within 3 levels of. The tracker keeps the last panel until none
 has been found for 10 min with no meeting live, and every Zoom full frame re-tells it on a
 new socket; an idle tracker swept between sockets loses it, and the next frame showing the
 panel locates it again. The client runs the
