@@ -57,9 +57,11 @@ in the same turn). Re-run on the final code:
 | session | recall | attributed | attributed, overlapped | precision |
 |---|---|---|---|---|
 | s1 | 0.918 | 0.880 | 0.845 | 0.950 |
+| p1 | 0.652 | 0.624 | 0.624 | 0.790 |
 
-Recall dips 2 points against the no-diarizer baseline (0.939): words at piece edges that a
-whole-turn decode keeps. Attribution and precision hold.
+s1 recall dips 2 points against the no-diarizer baseline (0.939): words at piece edges that a
+whole-turn decode keeps. p1 (parallel conversations) gains on every count: correctly
+credited words 0.545 → 0.624, against 0.546 recall and nothing credited without the diarizer.
 
 ## Real recordings (hand read, not scored)
 
