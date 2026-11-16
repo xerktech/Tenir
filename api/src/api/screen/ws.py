@@ -351,10 +351,10 @@ async def screen_ws(ws: WebSocket) -> None:
 
         sample_ts = ts  # the frame's own ts: full frames are sampled after tracker.clock
 
-        def submit_sample() -> None:
+        def submit_sample() -> bool:
             # Real crops to re-tune the parsers on (XERK-2705), off by default. Fire and
             # forget on the sampler's own thread: a stalled volume never holds up this frame.
-            samples.submit(
+            return samples.submit(
                 settings.screen_sample_dir,
                 settings.screen_sample_max,
                 header,
@@ -386,14 +386,15 @@ async def screen_ws(ws: WebSocket) -> None:
                             tracker.user, parser.parse_full_frame, result, jpeg
                         )
                     await tracker.on_full(frame, ts)
-                    if sample and (
-                        header.platform is Platform.teams or tracker.meeting_on_screen(ts)
-                    ):
-                        # Zoom full frames only while a meeting is on screen (XERK-2820): an
-                        # idle window sends one every 30 s, filling the cap in hours and the
-                        # volume across pod restarts. Teams frames never report a meeting
-                        # (no toolbar signal), so its full frames are all kept, as before.
-                        submit_sample()
+                    shown = header.platform is Platform.teams or tracker.meeting_on_screen(ts)
+                    if sample and (shown or tracker.idle_sample_due(ts)):
+                        # Zoom full frames while a meeting is on screen, else one per
+                        # IDLE_SAMPLE_MS (XERK-2820): an idle window sends one every 30 s,
+                        # filling the cap in hours, yet a meeting the toolbar check missed
+                        # needs frames to diagnose. Teams frames never report a meeting (no
+                        # toolbar signal), so its full frames are all kept, as before.
+                        if submit_sample() and not shown:
+                            tracker.idle_sampled(ts)
                     if pane_read:
                         await tell_pane(header.orgSiteKey, pane)
                 else:

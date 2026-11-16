@@ -290,30 +290,75 @@ def test_frames_of_an_org_not_listed_are_not_sampled(
     assert not root.exists()
 
 
-def test_full_frames_with_no_meeting_on_screen_are_not_sampled(
+def test_full_frames_with_no_meeting_on_screen_are_sampled_once_per_interval(
     screen,  # noqa: F811
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # XERK-2820: an idle Zoom window sends a full frame every 30 s; sampled, they filled the
-    # cap in hours. A caption crop outside a meeting (a false start) is still kept.
+    # XERK-2820: an idle Zoom window sends a full frame every 30 s; all sampled, they filled
+    # the cap in hours. None sampled, a real meeting whose toolbar went unseen left nothing to
+    # diagnose it by: one per IDLE_SAMPLE_MS is kept. A caption crop is always kept.
     from api.main import app
+    from api.screen import meetings
 
+    # Shortened: frame ts more than a minute off the server's clock are moved to it.
+    monkeypatch.setattr(meetings, "IDLE_SAMPLE_MS", 20_000)
+    IDLE_SAMPLE_MS = meetings.IDLE_SAMPLE_MS
     _, ocr, token, _ = screen
     root = tmp_path / "samples"
     monkeypatch.setattr(settings, "screen_sample_dir", str(root))
     idle = {"region": "full", "width": 1280, "height": 720, "lines": []}
-    # The crop goes last: it starts a meeting, and full frames during one are sampled.
-    frames = [{**idle, "t": 0}, {**idle, "t": 1_000}, {**FIXTURE["frames"][1], "t": 2_000}]
-    base = int(time.time() * 1000)
+    # The crop goes last: it starts a meeting, and full frames during one are all sampled.
+    frames = [
+        {**idle, "t": 0},
+        {**idle, "t": 1_000},
+        {**idle, "t": IDLE_SAMPLE_MS - 1},
+        {**idle, "t": IDLE_SAMPLE_MS},
+        {**FIXTURE["frames"][1], "t": IDLE_SAMPLE_MS + 1_000},
+    ]
+    base = int(time.time() * 1000) - 30_000
     with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
         ws.receive_text()
         for i, frame in enumerate(frames):
             replay(client, ws, ocr, [frame], base, start=i)
             _wait_idle()
     (d,) = root.iterdir()
-    regions = [json.loads(p.read_text())["region"] for p in d.glob("*.json")]
-    assert regions == ["caption"]
+    kept = sorted(
+        (json.loads(p.read_text())["ts"] - base, json.loads(p.read_text())["region"])
+        for p in d.glob("*.json")
+    )
+    assert kept == [(0, "full"), (IDLE_SAMPLE_MS, "full"), (IDLE_SAMPLE_MS + 1_000, "caption")]
+
+
+def test_an_idle_frame_the_sampler_skipped_leaves_the_next_one_due(
+    screen,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-2820 QA: the interval was spent before the sampler skipped a write (busy, at its
+    # cap), so nothing was kept for the next IDLE_SAMPLE_MS.
+    from api.main import app
+    from api.screen import samples as sampler
+
+    _, ocr, token, _ = screen
+    root = tmp_path / "samples"
+    monkeypatch.setattr(settings, "screen_sample_dir", str(root))
+    real, calls = sampler.submit, []
+
+    def busy_once(*args, **kwargs):
+        calls.append(args[-1])
+        return False if len(calls) == 1 else real(*args, **kwargs)
+
+    monkeypatch.setattr(sampler, "submit", busy_once)
+    idle = {"region": "full", "width": 1280, "height": 720, "lines": []}
+    base = int(time.time() * 1000) - 30_000
+    with TestClient(app) as client, client.websocket_connect(f"/ws/screen?token={token}") as ws:
+        ws.receive_text()
+        for i, frame in enumerate([{**idle, "t": 0}, {**idle, "t": 1_000}]):
+            replay(client, ws, ocr, [frame], base, start=i)
+            _wait_idle()
+    (d,) = root.iterdir()
+    assert [json.loads(p.read_text())["ts"] - base for p in d.glob("*.json")] == [1_000]
 
 
 def test_teams_full_frames_are_sampled_with_no_meeting_signal(
