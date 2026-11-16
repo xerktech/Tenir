@@ -30,8 +30,9 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request
