@@ -49,6 +49,18 @@ Single-speaker frames given the right speaker:
   - p1's precision means about 1 word in 5 is garbled or invented there.
   - Sortformer tracks at most 4 speakers.
 
+## After QA fixes (planner tiling, absorb/join across overlaps)
+
+The table above predates three planner fixes from QA (a solo piece swallowing a later overlap
+in the same turn). Re-run on the final code:
+
+| session | recall | attributed | attributed, overlapped | precision |
+|---|---|---|---|---|
+| s1 | 0.918 | 0.880 | 0.845 | 0.950 |
+
+Recall dips 2 points against the no-diarizer baseline (0.939): words at piece edges that a
+whole-turn decode keeps. Attribution and precision hold.
+
 ## Real recordings (hand read, not scored)
 
 - The incremental driver reproduces NeMo's whole-file streaming pass on a real recording
