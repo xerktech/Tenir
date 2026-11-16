@@ -416,7 +416,7 @@ class VoiceEmbedder:
 
     def embed(self, audio: np.ndarray) -> np.ndarray:
         v = np.zeros(8, np.float32)
-        v[min(7, int(round(float(np.abs(audio).max()) * 10)))] = 1.0
+        v[min(7, round(float(np.abs(audio).max()) * 10))] = 1.0
         return v
 
 
@@ -424,10 +424,26 @@ def test_fingerprints_number_people_past_the_slot_they_reuse() -> None:
     from server import _Session, diarize_turn
 
     sess = _Session(ScriptStream({0: [(0.0, 9.0)]}))
-    level = lambda x: (np.full(16000 * 3, int(x * 32767), np.int16)).tobytes()  # noqa: E731
+
+    def level(x: float) -> bytes:
+        return np.full(16000 * 3, int(x * 32767), np.int16).tobytes()
+
     out = [
         diarize_turn(sess, i == 0, i * 3000, level(amp), None, embedder=VoiceEmbedder())
         for i, amp in enumerate((0.1, 0.3, 0.1))
     ]
     # One Sortformer slot, two voices: the second voice is person 2, then person 1 again.
     assert [o["pieces"][0]["speaker"] for o in out] == [1, 2, 1]
+
+
+def test_a_fingerprint_model_that_fails_to_load_leaves_4_slot_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An offline cache without TitaNet must not take the whole diarizer down."""
+
+    def missing(*a: object) -> None:
+        raise OSError("not in the offline cache")
+
+    monkeypatch.setattr(server, "_load_titanet", missing)
+    assert server._fingerprint_embedder("nvidia/x", "cpu", None) is None
+    assert server._fingerprint_embedder("", "cpu", None) is None  # turned off

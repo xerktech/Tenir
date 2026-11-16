@@ -518,18 +518,36 @@ def load_engines() -> Engines:
             run_opts={"device": device},
         )
         separator = SepformerSeparator(sep, lock)
-    embedder: Embedder | None = None
-    fp_name = os.environ.get("FINGERPRINT_MODEL", "nvidia/speakerverification_en_titanet_large")
-    if fp_name:
-        from nemo.collections.asr.models import EncDecSpeakerLabelModel
-
-        if fp_name.endswith(".nemo"):
-            titanet = EncDecSpeakerLabelModel.restore_from(fp_name, map_location=device)
-        else:
-            titanet = EncDecSpeakerLabelModel.from_pretrained(fp_name, map_location=device)
-        titanet.eval()
-        embedder = TitanetEmbedder(titanet, lock)
+    embedder = _fingerprint_embedder(
+        os.environ.get("FINGERPRINT_MODEL", "nvidia/speakerverification_en_titanet_large"),
+        device,
+        lock,
+    )
     return Engines(Sessions(lambda: SortformerStream(model, lock)), separator, embedder)
+
+
+def _fingerprint_embedder(name: str, device: str, lock: Any) -> Embedder | None:
+    """TitaNet for voice fingerprints, or None (Sortformer's 4 slots, as before XERK-3017)
+    when turned off or unloadable: a deployment whose offline cache lacks TitaNet must
+    still diarize."""
+    if not name:
+        return None
+    try:
+        return _load_titanet(name, device, lock)
+    except Exception:
+        log.exception("fingerprint model %s failed to load; tracking 4 speakers", name)
+        return None
+
+
+def _load_titanet(name: str, device: str, lock: threading.Lock) -> TitanetEmbedder:
+    from nemo.collections.asr.models import EncDecSpeakerLabelModel
+
+    if name.endswith(".nemo"):
+        titanet = EncDecSpeakerLabelModel.restore_from(name, map_location=device)
+    else:
+        titanet = EncDecSpeakerLabelModel.from_pretrained(name, map_location=device)
+    titanet.eval()
+    return TitanetEmbedder(titanet, lock)
 
 
 def create_app(engines: Engines | None = None, *, load: bool = True) -> FastAPI:

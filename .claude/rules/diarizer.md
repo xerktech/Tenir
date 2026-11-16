@@ -36,8 +36,11 @@ paths:
   Feature frames come from audio with 2 frames of margin (center=True, n_fft 512).
   - Re-check after a NeMo bump: feed a recording turn by turn, compare against
     `model.diarize(...)` probs (was max abs diff 1.3e-6, Nov 2026).
-- Sortformer tracks at most 4 speakers; a fifth folds into one of the four. Don't add an
-  embedding re-clusterer to "fix" it without a measured win on `scripts/diarize_eval`.
+- Sortformer has 4 slots; `fingerprint.py` maps slots to an unbounded set of people (XERK-3017).
+  - Thresholds were tuned jointly on 4/6/8-speaker sessions. Lower `MATCH_COS` merged two
+    people of a 4-speaker table; re-tune on all of them, never one, and hold out fresh seeds.
+  - Fingerprints stay optional: a TitaNet load failure must leave 4-slot tracking, not a down
+    service. Tests: `test_server.py::test_a_fingerprint_model_that_fails_to_load_leaves_4_slot_tracking`.
 - Real recordings have no speaker truth: measure on `scripts/diarize_eval` synthetic sessions,
   then read a real one by hand. Never put recording audio or transcripts in the repo.
 - CPU runs ~2x slower than real time on Sortformer alone and far slower with SepFormer; a CPU
