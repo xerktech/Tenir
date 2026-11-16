@@ -571,12 +571,13 @@ def test_payload_system_prompt_ends_with_the_english_rule() -> None:
     # got Spanish cues. The rule must be the last thing in the system prompt, after
     # the per-call evidence and avoid-list blocks: placed before them, Sonnet 5.5
     # kept writing Spanish titles on grounded calls and on a session's second cue.
+    assert "title AND body in English" in _LANGUAGE_RULE
+    assert "English" in _LANGUAGE_REMINDER
     avoid = [GeneratedCue(title="Warfarin", body="A blood thinner.")]
     for args in ((), ((), _evidence()), (avoid, _evidence()), (avoid,)):
         system = _gen()._build_payload("¿Cuándo murió Frida Kahlo?", *args)
         content = system["messages"][0]["content"]
         assert content.endswith(_LANGUAGE_RULE)
-        assert "title AND body in English" in _LANGUAGE_RULE
         assert content.count(_LANGUAGE_RULE) == 1
         # ...and restated after the transcript, the last thing the model reads.
         assert system["messages"][1]["content"].endswith(_LANGUAGE_REMINDER)
