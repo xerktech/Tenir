@@ -28,6 +28,9 @@ def _local_imports(path: Path, seen: set[str]) -> set[str]:
 
 
 def test_the_dockerfile_copies_every_module_the_server_imports() -> None:
-    copied = set(re.findall(r"diarizer/(\w+)\.py", (ROOT / "Dockerfile").read_text()))
+    copy_lines = [
+        line for line in (ROOT / "Dockerfile").read_text().splitlines() if line.startswith("COPY ")
+    ]
+    copied = set(re.findall(r"diarizer/(\w+)\.py", "\n".join(copy_lines)))
     needed = _local_imports(ROOT / "server.py", {"server"})
     assert needed <= copied, f"Dockerfile lacks {sorted(needed - copied)}"
