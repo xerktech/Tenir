@@ -126,3 +126,17 @@ def test_solo_and_separated_pieces_leave_no_audio_uncovered() -> None:
         assert x.start_s <= covered + 1e-6, f"gap before {x}"
         covered = max(covered, x.end_s)
     assert covered >= 6.0  # through the last speech; trailing silence needs no caption
+
+
+def test_a_short_stretch_is_not_absorbed_across_an_overlap() -> None:
+    """QA: a short A stretch next to an overlap, absorbed into A's talk on the far side,
+    rebuilt one A piece spanning the B/C overlap."""
+    for spans in (
+        dict(s3=[(0.0, 0.9)], s0=[(1.5, 2.0), (4.6, 7.4)], s1=[(2.6, 4.6)], s2=[(2.6, 4.6)]),
+        dict(s0=[(0.0, 2.4), (5.0, 5.5)], s1=[(2.4, 4.4)], s2=[(2.4, 4.4)], s3=[(6.1, 7.0)]),
+    ):
+        pieces = plan_pieces(_probs(100, **spans), 8.0)
+        ov = (spans["s1"][0][0] + 0.1, spans["s1"][0][1] - 0.1)
+        assert not any(
+            not x.separate and x.start_s < ov[1] and x.end_s > ov[0] for x in pieces
+        ), pieces
