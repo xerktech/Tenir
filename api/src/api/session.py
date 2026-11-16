@@ -616,7 +616,9 @@ class Session:
         start_offset_ms = await self._resume_offset_ms() if self.resumed else 0
         self._start_offset_ms = start_offset_ms
         self._transcriber = make_transcriber(
-            source_lang=source_lang, start_offset_ms=start_offset_ms
+            source_lang=source_lang,
+            start_offset_ms=start_offset_ms,
+            conversation_id=self.session_id,
         )
         # Build the cue generator (None when API_CUE_BACKEND=off — the default —
         # so the stripped core does no cue work at all).
@@ -937,6 +939,7 @@ class Session:
                         start_ms=result.startMs,
                         end_ms=result.endMs,
                         lang=result.lang.value if result.lang is not None else None,
+                        speaker=result.speaker,
                     ),
                 )
             if isinstance(result, CaptionPartial):

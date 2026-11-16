@@ -57,6 +57,11 @@ export interface CaptureSegment {
    * already-rendered segment; the UIs show it turn-by-turn under the original.
    */
   translation?: string;
+  /**
+   * Who said it (XERK-2958): "Speaker N" from the diarizer, stable for the conversation.
+   * Absent when the server could not tell. Two people talking at once arrive as two turns.
+   */
+  speaker?: string;
 }
 
 // How many lyric lines the box shows around the current one (XERK-184): one
@@ -160,7 +165,7 @@ export type CaptureAction =
   | { type: "connection"; state: Connection }
   | { type: "ready"; sessionId: string; warm?: boolean }
   | { type: "partial"; text: string }
-  | { type: "final"; segmentId: string; text: string; lang?: Lang }
+  | { type: "final"; segmentId: string; text: string; lang?: Lang; speaker?: string }
   // English translation of an earlier finalized turn (XERK-160), paired by id.
   | { type: "translation"; segmentId: string; text: string }
   // `now` is the wall-clock arrival time, so the cue's on-screen window is timed
@@ -285,7 +290,12 @@ export function reduce(state: CaptureState, action: CaptureAction): CaptureState
       if (state.segments.some((s) => s.id === action.segmentId)) return state;
       const segments = [
         ...state.segments,
-        { id: action.segmentId, text: action.text, lang: action.lang },
+        {
+          id: action.segmentId,
+          text: action.text,
+          lang: action.lang,
+          ...(action.speaker ? { speaker: action.speaker } : {}),
+        },
       ];
       return { ...state, segments, partial: "" };
     }
@@ -617,7 +627,13 @@ export class CaptureSession {
       },
       onPartial: (m) => this.dispatch({ type: "partial", text: m.text }),
       onFinal: (m) =>
-        this.dispatch({ type: "final", segmentId: m.segmentId, text: m.text, lang: m.lang }),
+        this.dispatch({
+          type: "final",
+          segmentId: m.segmentId,
+          text: m.text,
+          lang: m.lang,
+          speaker: m.speaker,
+        }),
       onTranslation: (m) =>
         this.dispatch({ type: "translation", segmentId: m.segmentId, text: m.text }),
       onCue: (m) => this.showCue({ id: m.cueId, title: m.title, body: m.body, source: m.source }),

@@ -197,6 +197,9 @@ export function LiveScreen(): JSX.Element {
                       {/* Source-language chip on a translated turn's original
                           text (XERK-160) — the counterpart of the "EN" tag. */}
                       {seg.translation && seg.lang ? <LangTagText lang={seg.lang} /> : null}
+                      {/* "Speaker N" from the diarizer (XERK-2958) — the web live view's
+                          speaker-name, as history shows it. */}
+                      {seg.speaker ? <Text style={{ fontWeight: "600" }}>{seg.speaker}: </Text> : null}
                       {seg.text}
                       {/* English translation of a non-English turn (XERK-160),
                           turn-by-turn inside the same selectable run. */}

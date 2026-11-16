@@ -47,7 +47,10 @@ def _vad_model() -> SpeechModel | None:
 
 
 def make_transcriber(
-    source_lang: Lang | None = None, *, start_offset_ms: int = 0
+    source_lang: Lang | None = None,
+    *,
+    start_offset_ms: int = 0,
+    conversation_id: str | None = None,
 ) -> Transcriber:
     """Factory selected by API_STT_BACKEND.
 
@@ -55,6 +58,7 @@ def make_transcriber(
     more reliable recognition. `start_offset_ms` is where this transcriber's
     segment timeline begins — nonzero for a resumed conversation, so its segments
     continue the existing transcript/audio timeline instead of restarting at 0.
+    `conversation_id` keys the diarizer's speaker cache (API_DIARIZER_URL, XERK-2958).
     """
     backend = settings.stt_backend
 
@@ -76,6 +80,17 @@ def make_transcriber(
             api_key=settings.stt_key,
         )
 
+        diarizer = None
+        if settings.diarizer_url and conversation_id:
+            from api.stt.diarize import Diarizer
+
+            diarizer = Diarizer(
+                settings.diarizer_url,
+                conversation_id,
+                timeout=settings.diarizer_timeout_seconds,
+                api_key=settings.diarizer_key,
+            )
+
         return StreamingTranscriber(
             offline,
             language=source_lang.value if source_lang is not None else None,
@@ -93,5 +108,6 @@ def make_transcriber(
             vad_model_floor_rms=settings.stt_vad_model_floor_rms,
             start_offset_ms=start_offset_ms,
             final_words=settings.stt_final_word_timestamps,
+            diarizer=diarizer,
         )
     raise ValueError(f"unknown STT backend: {backend!r} (expected 'stub' or 'parakeet')")

@@ -143,6 +143,10 @@ class CaptionFinal(BaseModel):
         None,
         description='Per-word timing, sent only with API_STT_FINAL_WORD_TIMESTAMPS on and an engine that returns it (Parakeet; Whisper on vLLM sends none). Not aligned to text.split(): the engine can split a token the text fuses ("like\'cause" -> "like", "\'cause"), so never index one by the other.',
     )
+    speaker: constr(max_length=64) | None = Field(
+        None,
+        description='Who said it, on a mic conversation with the diarizer on (XERK-2958): "Speaker N", numbered by first appearance and stable for the conversation. Absent when the diarizer is off or could not tell. A turn two people spoke over each other arrives as one caption.final per speaker, each with its own speaker; their times may overlap.',
+    )
 
 
 class Cue(BaseModel):

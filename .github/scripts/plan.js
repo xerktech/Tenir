@@ -63,6 +63,7 @@ function main() {
     build_api: changed.api,
     build_parakeet_stt: changed["parakeet-stt"],
     build_ocr: changed.ocr,
+    build_diarizer: changed.diarizer,
     build_mobile: changed.mobile,
     build_desktop: changed.desktop,
   });

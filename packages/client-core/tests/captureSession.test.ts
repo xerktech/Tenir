@@ -49,6 +49,13 @@ describe("reduce", () => {
     expect(s.segments[0].lang).toBe("es");
   });
 
+  it("carries the diarizer's speaker on a final turn, and none when absent (XERK-2958)", () => {
+    let s = reduce(base(), { type: "final", segmentId: "a", text: "hola", speaker: "Speaker 2" });
+    s = reduce(s, { type: "final", segmentId: "b", text: "hi" });
+    expect(s.segments[0].speaker).toBe("Speaker 2");
+    expect(s.segments[1]).not.toHaveProperty("speaker");
+  });
+
   it("attaches a translation to its turn by segment id (XERK-160)", () => {
     let s = reduce(base(), { type: "final", segmentId: "a", text: "hola", lang: "es" });
     s = reduce(s, { type: "final", segmentId: "b", text: "adiós", lang: "es" });
@@ -515,6 +522,20 @@ describe("CaptureSession", () => {
       lang: "es",
       translation: "hello",
     });
+  });
+
+  it("shows the speaker a caption.final names (XERK-2958)", async () => {
+    const { session, refs } = harness();
+    await session.start();
+    refs.client!.handlers.onFinal?.({
+      type: "caption.final",
+      segmentId: "a",
+      text: "hola",
+      startMs: 0,
+      endMs: 900,
+      speaker: "Speaker 3",
+    });
+    expect(session.getState().segments[0]).toMatchObject({ id: "a", speaker: "Speaker 3" });
   });
 
   it("uploads decoded PCM while listening and drops it while paused", async () => {

@@ -1,0 +1,10 @@
+# tenir-diarizer runtime. Pinned to the set the recordings eval ran on (XERK-2958); torch
+# from PyPI is the CUDA build (sm_120 kernels included, for the RTX PRO 6000).
+torch==2.15.0
+torchaudio==2.11.1
+nemo_toolkit[asr]==3.0.0
+speechbrain==1.1.2
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy
+soundfile>=0.12
