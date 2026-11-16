@@ -75,7 +75,8 @@ MIN_SEPARATE_OVERLAP_S = float(os.environ.get("DIAR_MIN_SEPARATE_OVERLAP_S", "1.
 # reach the service and knows a conversation id could post audio into that conversation's
 # speaker cache (re-numbering its speakers) or read its speaker activity back. Unset, the
 # service refuses every turn (503): the api then captions unlabelled, never unauthenticated.
-API_KEY = os.environ.get("DIAR_API_KEY", "")
+# Stripped: a key written with `echo` into a secret carries a newline no header can match.
+API_KEY = os.environ.get("DIAR_API_KEY", "").strip()
 
 
 class Abandoned(Exception):

@@ -35,6 +35,7 @@ class ScriptStream:
         self.spans = spans
         self.samples = 0
         self.fed: list[int] = []
+        self.checks: list = []  # the abandoned callback each feed was given
         self.started_at: int | None = None
 
     def start_at(self, sample: int) -> None:
@@ -42,6 +43,7 @@ class ScriptStream:
         self.samples = sample
 
     def feed(self, audio: np.ndarray, abandoned=None) -> None:
+        self.checks.append(abandoned)
         self.fed.append(len(audio))
         self.samples += len(audio)
 
@@ -380,3 +382,30 @@ def test_abandoning_mid_feed_leaves_the_stream_resumable() -> None:
     assert steps == [0, 1, 2]
     stream.feed(np.zeros(0, np.float32))
     assert steps == list(range(len(steps))) and stream._head == len(steps) >= 9
+
+
+def test_every_feed_of_a_turn_can_be_abandoned_between_steps() -> None:
+    """The gap fill and the turn's own audio both get the check (Sortformer polls it
+    between chunks), not only diarize_turn's own checkpoints."""
+    stream = ScriptStream({0: [(0, 3)]})
+    sess, fresh = Sessions(lambda: stream).get("s")
+    server.diarize_turn(sess, fresh, 0, _pcm(1), None)
+    stream.checks.clear()
+
+    def here() -> bool:
+        return False
+
+    server.diarize_turn(sess, False, 2000, _pcm(1), None, abandoned=here)
+    assert stream.fed[-2:] == [16000, 16000]  # the 1 s gap, then the turn
+    assert stream.checks == [here, here]
+
+
+def test_a_key_with_a_trailing_newline_still_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+
+    monkeypatch.setenv("DIAR_API_KEY", f" {KEY}\n")
+    try:
+        assert importlib.reload(server).API_KEY == KEY
+    finally:
+        monkeypatch.delenv("DIAR_API_KEY")
+        importlib.reload(server)

@@ -51,6 +51,11 @@ class Diarizer:
         self._url = url.rstrip("/") + "/v1/diarize"
         self._conversation = conversation_id
         self._timeout = timeout
+        api_key = api_key.strip()  # a trailing newline from `echo` into a secret
+        if not api_key.isascii():
+            # Not sendable in a header: refuse it here rather than crash the session.
+            log.error("API_DIARIZER_KEY is not ASCII; the diarizer will refuse every turn")
+            api_key = ""
         # httpx's per-phase read timeout also hangs up on a slow reply, so the service
         # sees the disconnect and drops the turn rather than finishing it for nobody.
         self._client = httpx.Client(
@@ -75,10 +80,11 @@ class Diarizer:
             )
         except Exception as exc:
             self._skip_until = time.monotonic() + _COOLDOWN_S
+            why = type(exc).__name__
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                why = "401: API_DIARIZER_KEY does not match the diarizer's DIAR_API_KEY"
             log.warning(
-                "diarizer unavailable (%s); captioning unlabelled for %.0f s",
-                type(exc).__name__,
-                _COOLDOWN_S,
+                "diarizer unavailable (%s); captioning unlabelled for %.0f s", why, _COOLDOWN_S
             )
             log.debug("diarizer failure", exc_info=True)
             metrics.incr("stage.diarize.errors")

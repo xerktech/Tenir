@@ -503,3 +503,17 @@ def test_a_silent_turn_is_never_split() -> None:
 def test_a_piece_starting_past_the_turn_is_refused() -> None:
     with pytest.raises(ValueError):
         parse_pieces({"pieces": [{"speaker": 1, "startMs": 600, "endMs": 900}]}, turn_ms=500)
+
+
+def test_a_padded_or_unsendable_key_never_crashes_the_session(caplog) -> None:
+    d = Diarizer("http://diarizer:8000", "c", api_key="k1\n")
+    assert d._client.headers["authorization"] == "Bearer k1"
+    d = Diarizer("http://diarizer:8000", "c", api_key="é-key")  # no UnicodeEncodeError
+    assert "authorization" not in d._client.headers
+    assert "not ASCII" in caplog.text
+
+
+def test_a_refused_key_is_named_in_the_log(caplog) -> None:
+    d = _client(lambda req: httpx.Response(401, json={"detail": "bad"}))
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) is None
+    assert "API_DIARIZER_KEY does not match" in caplog.text
