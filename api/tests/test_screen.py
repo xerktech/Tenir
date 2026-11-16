@@ -7375,6 +7375,23 @@ def test_the_ground_is_the_colour_most_row_pixels_are_near_not_the_exact_commone
     assert all(abs(c - z) <= 3 for c, z in zip(ground, _ZGROUND, strict=True))
 
 
+def test_the_ground_pick_looks_at_a_bounded_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crafted noisy rows made each candidate scan millions of colours (QA: 6.3 s a frame)."""
+    from api.screen import zoom as zoom_mod
+
+    seen: list[int] = []
+    real_unique = np.unique
+
+    def unique(a, **kw):
+        seen.append(len(a))
+        return real_unique(a, **kw)
+
+    monkeypatch.setattr(zoom_mod.np, "unique", unique)
+    rgb = np.random.default_rng(1).integers(0, 256, (1200, 1600, 3), dtype=np.uint8)
+    zoom_mod._ground(rgb, [(line("x", 0, 0, 1600, 1200), 1.0)])
+    assert seen and max(seen) <= zoom_mod._GROUND_SAMPLE
+
+
 def test_the_lowest_panel_wins() -> None:
     """Two panel-shaped stacks: the lower holds the newest entries a frame could show."""
     frame = parse_full_frame(*_desk_frame(panels=((700, 400), (_COLUMN, 1240))))
