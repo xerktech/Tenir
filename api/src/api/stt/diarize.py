@@ -45,11 +45,18 @@ class Diarizer:
     """One conversation's view of the diarizer. ``conversation_id`` keys the service's
     speaker cache, so a resumed conversation keeps its numbering while the service is up."""
 
-    def __init__(self, url: str, conversation_id: str, *, timeout: float = 3.0) -> None:
+    def __init__(
+        self, url: str, conversation_id: str, *, timeout: float = 3.0, api_key: str = ""
+    ) -> None:
         self._url = url.rstrip("/") + "/v1/diarize"
         self._conversation = conversation_id
         self._timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        # httpx's per-phase read timeout also hangs up on a slow reply, so the service
+        # sees the disconnect and drops the turn rather than finishing it for nobody.
+        self._client = httpx.Client(
+            timeout=timeout,
+            headers={"authorization": f"Bearer {api_key}"} if api_key else None,
+        )
         # One token per sitting (this transcriber's life): the service tells a resumed
         # sitting whose timeline restarted behind its own from a late resend.
         self._epoch = uuid.uuid4().hex

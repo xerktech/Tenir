@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # decode on the caption path, so a slow one delays every caption: past this the turn
     # is captioned whole and unlabelled.
     diarizer_timeout_seconds: float = 3.0
+    # Shared bearer secret for the diarizer (its DIAR_API_KEY, XERK-3005). The diarizer
+    # refuses every turn without it, so leaving this empty captions turns unlabelled.
+    diarizer_key: str = ""
 
     # ---- Cues (XERK-81) ----------------------------------------------------------
     # Cues are private contextual info cards the api derives from the live

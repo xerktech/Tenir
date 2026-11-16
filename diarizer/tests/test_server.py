@@ -19,6 +19,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 import server  # noqa: E402
 from server import FRAME_SAMPLES, Engines, Sessions, create_app  # noqa: E402
 
+KEY = "test-diarizer-key"
+AUTH = {"authorization": f"Bearer {KEY}"}
+
+
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "API_KEY", KEY)
+
 
 class ScriptStream:
     """Activity from a script: speaker k talks over the sample spans given."""
@@ -33,7 +41,7 @@ class ScriptStream:
         self.started_at = sample
         self.samples = sample
 
-    def feed(self, audio: np.ndarray) -> None:
+    def feed(self, audio: np.ndarray, abandoned=None) -> None:
         self.fed.append(len(audio))
         self.samples += len(audio)
 
@@ -70,18 +78,19 @@ def _pcm(seconds: float) -> bytes:
 
 def _app(stream: ScriptStream, separator=None) -> tuple[TestClient, Sessions]:
     sessions = Sessions(lambda: stream)
-    return TestClient(create_app(Engines(sessions, separator), load=False)), sessions
+    app = create_app(Engines(sessions, separator), load=False)
+    return TestClient(app, headers=AUTH), sessions
 
 
 def test_health_reports_loading_until_the_model_is_resident() -> None:
-    c = TestClient(create_app(Engines(), load=False))
+    c = TestClient(create_app(Engines(), load=False), headers=AUTH)
     assert c.get("/health").status_code == 503
     c2, _ = _app(ScriptStream({}))
     assert c2.get("/health").json() == {"status": "ok", "sessions": 0}
 
 
 def test_a_loading_server_refuses_turns() -> None:
-    c = TestClient(create_app(Engines(), load=False))
+    c = TestClient(create_app(Engines(), load=False), headers=AUTH)
     assert c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(1)).status_code == 503
 
 
@@ -194,7 +203,7 @@ def test_a_new_sitting_behind_the_timeline_restarts_the_session() -> None:
         streams.append(ScriptStream({}))
         return streams[-1]
 
-    c = TestClient(create_app(Engines(Sessions(make), None), load=False))
+    c = TestClient(create_app(Engines(Sessions(make), None), load=False), headers=AUTH)
     for off in (0, 5000, 10000):
         c.post(f"/v1/diarize?session=s&offset_ms={off}&epoch=a", content=_pcm(5))
     c.post("/v1/diarize?session=s&offset_ms=10000&epoch=b", content=_pcm(5))
@@ -259,3 +268,115 @@ def test_a_clock_jump_drops_the_scored_history_before_it() -> None:
     s.start_at(100 * FRAME_SAMPLES)
     assert s._preds.shape == (0, 4) and s._preds_origin == s._head == 100
     assert s.activity(95, 100).max() == 0.0  # nothing committed there
+
+
+# ----------------------------------------------------------- auth and abandoned turns ---
+# XERK-3005: the service holds every conversation's speaker cache, so only the api (holding
+# the shared key) may feed or read it; and a turn the api gave up on is not worth running.
+
+
+def test_a_turn_needs_the_shared_bearer_key() -> None:
+    stream = ScriptStream({0: [(0, 1)]})
+    c, _ = _app(stream)
+    url = "/v1/diarize?session=s&offset_ms=0"
+    assert c.post(url, content=_pcm(1), headers={"authorization": ""}).status_code == 401
+    wrong = {"authorization": "Bearer nope"}
+    assert c.post(url, content=_pcm(1), headers=wrong).status_code == 401
+    bare = {"authorization": KEY}  # the key without its scheme
+    assert c.post(url, content=_pcm(1), headers=bare).status_code == 401
+    assert stream.fed == []  # a refused caller never reaches the session
+    assert c.post(url, content=_pcm(1)).status_code == 200
+    assert c.get("/health", headers={"authorization": ""}).status_code == 200  # probes
+
+
+def test_without_a_configured_key_every_turn_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "API_KEY", "")
+    stream = ScriptStream({})
+    c, _ = _app(stream)
+    no_key = {"authorization": "Bearer "}  # an empty key must not match an empty secret
+    for headers in (AUTH, no_key, {"authorization": ""}):
+        r = c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(1), headers=headers)
+        assert r.status_code == 503
+    assert stream.fed == []
+
+
+def test_a_turn_the_api_hung_up_on_is_dropped_unfed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from starlette.requests import Request
+
+    async def gone(self) -> bool:
+        return True
+
+    monkeypatch.setattr(Request, "is_disconnected", gone)
+    stream = ScriptStream({0: [(0, 1)]})
+    c, _ = _app(stream)
+    r = c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(1))
+    assert r.status_code == 499
+    assert stream.fed == [] and stream.samples == 0
+
+
+def test_a_connected_api_gets_its_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    from starlette.requests import Request
+
+    polls = []
+
+    async def here(self) -> bool:
+        polls.append(1)
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", here)
+    c, _ = _app(ScriptStream({0: [(0, 1)]}))
+    assert c.post("/v1/diarize?session=s&offset_ms=0", content=_pcm(1)).status_code == 200
+    assert polls  # really asked
+
+
+def test_abandoning_after_the_feed_skips_separation() -> None:
+    stream = ScriptStream({0: [(0, 3)], 1: [(1, 4)]})
+    sep = OppositeSeparator()
+    sess, _ = Sessions(lambda: stream).get("s")
+    calls = []
+
+    def abandoned() -> bool:
+        calls.append(1)
+        return len(calls) > 2  # entry, after the feed: connected; then gone
+
+    with pytest.raises(server.Abandoned):
+        server.diarize_turn(sess, True, 0, _pcm(4), sep, abandoned=abandoned)
+    assert stream.fed == [64000]  # the turn was fed: the timeline stays continuous
+    assert sep.calls == 0  # but the separator never ran for it
+
+
+def test_abandoning_mid_feed_leaves_the_stream_resumable() -> None:
+    """Sortformer stops between chunks; the next feed scores what was left."""
+    import threading
+
+    class Mods:
+        chunk_len, chunk_left_context, chunk_right_context, n_spk = 1, 0, 0, 4
+
+        def init_streaming_state(self, **_: object) -> None:
+            return None
+
+    class Model:
+        sortformer_modules = Mods()
+        device = "cpu"
+
+    stream = server.SortformerStream(Model(), threading.Lock())
+    steps = []
+
+    def step(state, head, chunk, rc):
+        steps.append(head)
+        return np.zeros((chunk, 4), np.float32), state
+
+    stream._step = step  # type: ignore[method-assign]
+    polls = []
+
+    def abandoned() -> bool:
+        polls.append(1)
+        return len(polls) > 3
+
+    with pytest.raises(server.Abandoned):
+        stream.feed(np.zeros(FRAME_SAMPLES * 10, np.float32), abandoned)
+    assert steps == [0, 1, 2]
+    stream.feed(np.zeros(0, np.float32))
+    assert steps == list(range(len(steps))) and stream._head == len(steps) >= 9

@@ -51,6 +51,19 @@ diarizer error or a reply slower than `API_DIARIZER_TIMEOUT_SECONDS` (3 s) capti
 whole and unlabelled, and the conversation skips the diarizer for 30 s, so a hung service
 costs one timeout per 30 s rather than one per caption.
 
+## Access control
+
+`/v1/diarize` takes `Authorization: Bearer <DIAR_API_KEY>`: the api sends its
+`API_DIARIZER_KEY`, and both come from the same secret (XERK-3005). Without the key anyone who
+reaches the pod and knows a conversation id could feed that conversation's speaker cache
+(re-numbering its speakers) or read its speaker activity. Unset, every turn is refused (503) and
+the api captions unlabelled. `/health` stays open for probes. The ArgoCD NetworkPolicy admitting
+only the api pod is a second layer, not the only one.
+
+A turn the api has hung up on (it gives up after its timeout) is dropped: the server checks for
+the disconnect once it holds the session lock and between model steps, and answers 499. A turn
+dropped before it was fed is a gap the next turn fills, as for an api timeout.
+
 ## Config (env)
 
 | var | default | |
@@ -62,6 +75,7 @@ costs one timeout per 30 s rather than one per caption.
 | `DIAR_SESSION_TTL_S` / `DIAR_MAX_SESSIONS` | 1800 / 256 | in-memory session cache |
 | `DIAR_MIN_SEPARATE_OVERLAP_S` | 1.5 | separate only talk shared this long |
 | `DIAR_MAX_GAP_S` | 10 | longer timeline jumps move the clock instead of feeding silence |
+| `DIAR_API_KEY` | none (refuse every turn) | shared bearer secret; equals the api's `API_DIARIZER_KEY` |
 | `DIAR_VRAM_CLAIM_GIB` | 0 (off) | torch memory fraction = the pod's DRA claim |
 
 ## Build, test, evaluate

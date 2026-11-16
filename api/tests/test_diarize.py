@@ -350,6 +350,24 @@ def test_factory_wires_the_diarizer_only_when_configured(monkeypatch) -> None:
     assert make_transcriber()._diarizer is None  # no conversation to key it by
     d = make_transcriber(conversation_id="c")._diarizer
     assert isinstance(d, Diarizer) and d._url == "http://diarizer:8000/v1/diarize"
+    assert "authorization" not in d._client.headers  # no key configured
+    monkeypatch.setattr(settings, "diarizer_key", "s3cret")
+    d = make_transcriber(conversation_id="c")._diarizer
+    assert d._client.headers["authorization"] == "Bearer s3cret"
+
+
+def test_client_sends_the_shared_key_on_every_turn() -> None:
+    """XERK-3005: the diarizer refuses a turn without the bearer key."""
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json={"speakers": 0, "pieces": []})
+
+    d = Diarizer("http://diarizer:8000", "conv-1", timeout=1.0, api_key="k1")
+    d._client = httpx.Client(transport=httpx.MockTransport(handler), headers=d._client.headers)
+    assert asyncio.run(d.diarize(b"\0" * 3200, 0)) == []
+    assert seen == ["Bearer k1"]
 
 
 # ----------------------------------------------------------------------- session ---
