@@ -88,7 +88,7 @@ def test_health_reports_loading_until_the_model_is_resident() -> None:
     c = TestClient(create_app(Engines(), load=False), headers=AUTH)
     assert c.get("/health").status_code == 503
     c2, _ = _app(ScriptStream({}))
-    assert c2.get("/health").json() == {"status": "ok", "sessions": 0}
+    assert c2.get("/health").json() == {"status": "ok", "sessions": 0, "fingerprints": False}
 
 
 def test_a_loading_server_refuses_turns() -> None:
@@ -409,3 +409,95 @@ def test_a_key_with_a_trailing_newline_still_matches(monkeypatch: pytest.MonkeyP
     finally:
         monkeypatch.delenv("DIAR_API_KEY")
         importlib.reload(server)
+
+
+class VoiceEmbedder:
+    """Embeds a piece by its PCM level, so a test chooses who is speaking by amplitude."""
+
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        v = np.zeros(8, np.float32)
+        v[min(7, round(float(np.abs(audio).max()) * 10))] = 1.0
+        return v
+
+
+def test_fingerprints_number_people_past_the_slot_they_reuse() -> None:
+    from server import _Session, diarize_turn
+
+    sess = _Session(ScriptStream({0: [(0.0, 9.0)]}))
+
+    def level(x: float) -> bytes:
+        return np.full(16000 * 3, int(x * 32767), np.int16).tobytes()
+
+    out = [
+        diarize_turn(sess, i == 0, i * 3000, level(amp), None, embedder=VoiceEmbedder())
+        for i, amp in enumerate((0.1, 0.3, 0.1))
+    ]
+    # One Sortformer slot, two voices: the second voice is person 2, then person 1 again.
+    assert [o["pieces"][0]["speaker"] for o in out] == [1, 2, 1]
+
+
+def test_a_fingerprint_model_that_fails_to_load_leaves_4_slot_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An offline cache without TitaNet must not take the whole diarizer down."""
+
+    def missing(*a: object) -> None:
+        raise OSError("not in the offline cache")
+
+    monkeypatch.setattr(server, "_load_titanet", missing)
+    assert server._fingerprint_embedder("nvidia/x", "cpu", None) is None
+    assert server._fingerprint_embedder("", "cpu", None) is None  # turned off
+
+
+def _level(x: float, seconds: float = 3.0) -> bytes:
+    return np.full(int(16000 * seconds), int(x * 32767), np.int16).tobytes()
+
+
+def test_health_says_whether_fingerprints_are_on() -> None:
+    app = create_app(Engines(Sessions(lambda: ScriptStream({})), None, VoiceEmbedder()), load=False)
+    assert TestClient(app).get("/health").json()["fingerprints"] is True
+
+
+def test_a_restarted_sitting_starts_its_people_over() -> None:
+    """XERK-3017 QA m3: the epoch restart must reset fingerprints with the stream."""
+    from server import _Session, diarize_turn
+
+    def make() -> ScriptStream:
+        return ScriptStream({0: [(0.0, 100.0)]})
+
+    sess = _Session(make(), make)
+    for i, amp in enumerate((0.1, 0.3, 0.5)):
+        diarize_turn(sess, i == 0, i * 3000, _level(amp), None, "a", embedder=VoiceEmbedder())
+    out = diarize_turn(sess, False, 0, _level(0.7), None, "b", embedder=VoiceEmbedder())
+    assert out["pieces"][0]["speaker"] == 1 and out["speakers"] == 1
+
+
+def test_only_solo_pieces_long_enough_are_fingerprinted() -> None:
+    """XERK-3017 QA m5/m6: separated pieces and pieces under MIN_EMBED_S are never embedded."""
+    from server import _Session, diarize_turn
+
+    class Counting(VoiceEmbedder):
+        def __init__(self) -> None:
+            self.lengths: list[int] = []
+
+        def embed(self, audio: np.ndarray) -> np.ndarray:
+            self.lengths.append(len(audio))
+            return super().embed(audio)
+
+    emb = Counting()
+    overlap = ScriptStream({0: [(0.0, 3.0)], 1: [(0.5, 3.0)]})
+    diarize_turn(_Session(overlap), True, 0, _level(0.1), None, embedder=emb)
+    assert emb.lengths == []  # both pieces are separated
+    short = ScriptStream({0: [(0.0, 1.5)]})
+    diarize_turn(_Session(short), True, 0, _level(0.1, 1.5), None, embedder=emb)
+    assert emb.lengths == []  # 1.5 s < MIN_EMBED_S
+    long = ScriptStream({0: [(0.0, 2.5)]})
+    diarize_turn(_Session(long), True, 0, _level(0.1, 2.5), None, embedder=emb)
+    assert emb.lengths == [40000]
+
+
+def test_without_fingerprints_the_reply_counts_sortformer_slots() -> None:
+    from server import _Session, diarize_turn
+
+    out = diarize_turn(_Session(ScriptStream({0: [(0.0, 3.0)]})), True, 0, _level(0.1), None)
+    assert out["speakers"] == 4

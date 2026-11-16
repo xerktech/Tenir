@@ -16,7 +16,7 @@ COPY diarizer/requirements.txt ./requirements.txt
 # hadolint ignore=DL3013
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY diarizer/server.py diarizer/planner.py ./
+COPY diarizer/server.py diarizer/planner.py diarizer/fingerprint.py ./
 
 # Unprivileged: the server needs nothing root owns. The deployment's fsGroup gives this
 # uid the cache volume.

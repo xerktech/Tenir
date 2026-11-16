@@ -71,3 +71,56 @@ credited words 0.545 → 0.624, against 0.546 recall and nothing credited withou
   thread come out as separate captions under different speakers where they overlap, which the
   stored unlabelled transcript had collapsed to one voice. Separated pieces also produced lines
   no one may have said — the p1 precision cost, seen live.
+
+## More than 4 speakers: voice fingerprints (XERK-3017)
+
+Sortformer has 4 slots. Each conversation now keeps a TitaNet fingerprint per person and re-points
+slots (diarizer/fingerprint.py).
+
+Feasibility (6 and 8 speakers, whole-file Sortformer): the extra people fold into the 4 slots (m6:
+three true speakers share slot 3). Nearest-fingerprint on 2 s solo clips picks the right person
+99 % of the time. But same- and different-speaker cosines overlap on single clips (m6 same p10 0.19
+vs different p90 0.21), so the decision uses ≥ 2 s pieces and running means.
+
+Frame-level accuracy, single-speaker frames, one label ↔ one true speaker (6 s turns, no STT).
+Reproduce with `diarize_fp_tune.py` (sweep, or one setting with `--match/--new/--min`). Sessions
+(`build_session.py ... --overlap 0.2` unless noted): m6 `--speakers 6 --minutes 4 --seed 6`,
+m8 `--speakers 8 --minutes 5 --seed 8`, m6b `--speakers 6 --minutes 5 --seed 16`,
+m8b `--speakers 8 --minutes 6 --seed 18`; held out h4/h5/h6/h8/h10 `--speakers N --minutes 5
+--seed 31..35`; s1/s2/p1 as in the table at the top.
+
+Tuned jointly (match 0.55 / new 0.30 / min 2.0 s, the best setting with no session below 4-slot):
+
+| session | speakers | 4-slot | fingerprints | labels used |
+|---|---|---|---|---|
+| s1 | 4 | 0.809 | 0.843 | 4 |
+| s2 | 4 | 0.858 | 0.883 | 4 |
+| p1 | 4 (parallel) | 0.444 | 0.444 | 4 |
+| m6 | 6 | 0.672 | 0.840 | 8 |
+| m6b | 6 | 0.794 | 0.890 | 6 |
+| m8 | 8 | 0.610 | 0.923 | 9 |
+| m8b | 8 | 0.579 | 0.807 | 9 |
+
+Held out (fresh seeds, never tuned on):
+
+| session | speakers | 4-slot | fingerprints | labels used |
+|---|---|---|---|---|
+| h4 | 4 | 0.937 | 0.937 | 4 |
+| h5 | 5 | 0.727 | 0.899 | 7 |
+| h6 | 6 | 0.619 | 0.905 | 7 |
+| h8 | 8 | 0.531 | 0.786 | 7 |
+| h10 | 10 | 0.663 | 0.806 | 8 |
+
+End to end (real Whisper, the shipped transcriber, CPU diarizer):
+
+| session | recall | attributed | precision |
+|---|---|---|---|
+| h6, 4-slot | 0.929 | 0.576 | 0.935 |
+| h6, fingerprints | 0.929 | **0.895** | 0.935 |
+| h4, fingerprints | 0.926 | 0.922 | 0.933 |
+
+- No cost to 4-person tables. With 5–10 people, attribution rises 14–31 points.
+- Label counts can be off by one or two: a person split over two numbers, or two quiet people
+  merged at 8–10 speakers.
+- No help when more than 4 talk within the same few seconds (p1-style parallel talk is still
+  Sortformer-bound).

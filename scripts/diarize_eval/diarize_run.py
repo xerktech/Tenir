@@ -8,7 +8,7 @@ and writes the caption.finals it produced:
         --stt http://tenir-stt.ai.svc.cluster.local:8000/v1 --stt-model whisper-large-v3-turbo \
         --diarizer http://127.0.0.1:8790 --diarizer-timeout 120
 
-Leave ``--diarizer`` off for the baseline. Imports the installed ``api`` package
+Leave ``--diarizer`` off for the baseline. The diarizer's key comes from ``DIAR_API_KEY``. Imports the installed ``api`` package
 (``pip install -e api``). A CPU diarizer runs slower than real time; raise the timeout.
 """
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -33,7 +34,12 @@ async def run(args: argparse.Namespace) -> list[dict]:
     assert sr == 16_000 and pcm.ndim == 1, "16 kHz mono expected"
     data = pcm.tobytes()
     diarizer = (
-        Diarizer(args.diarizer, f"eval-{uuid.uuid4()}", timeout=args.diarizer_timeout)
+        Diarizer(
+            args.diarizer,
+            f"eval-{uuid.uuid4()}",
+            timeout=args.diarizer_timeout,
+            api_key=os.environ.get("DIAR_API_KEY", ""),
+        )
         if args.diarizer
         else None
     )

@@ -9,8 +9,15 @@ words to the right person.
 
 - **Streaming Sortformer** (`nvidia/diar_streaming_sortformer_4spk-v2`, NeMo, CC-BY-4.0)
   keeps a per-conversation speaker cache. Speakers are numbered by first appearance and the
-  cache carries them through the session, so numbering stays stable. Up to **4 speakers**;
-  a fifth is folded into the most similar of the four (a model limit).
+  cache carries them through the session, so numbering stays stable. It has **4 slots**: a
+  fifth person is folded into the most similar slot (a model limit).
+- **Voice fingerprints** (`nvidia/speakerverification_en_titanet_large`, NeMo TitaNet,
+  XERK-3017) lift that limit. Each conversation keeps a mean embedding per person, and each
+  Sortformer slot points at the person using it now (`fingerprint.py`). A solo piece of 2 s or
+  more is embedded: a clear match (cosine ≥ 0.55) re-points its slot at that person, and a voice
+  unlike the slot's person (< 0.30) and unlike everyone else is a new number. Other pieces take
+  their slot's person. Numbers have no ceiling, so long as no more than 4 people talk within
+  a few seconds of each other. If TitaNet can't load, the server tracks 4 speakers as before.
 - `server.SortformerStream` drives the model a turn at a time. A chunk is committed only once
   its right context has arrived, so committed frames match NeMo's own whole-file streaming
   pass (max abs diff 1e-6 on a real recording). The turn's last ~1 s is scored on a *copy* of
@@ -75,6 +82,8 @@ dropped before it was fed is a gap the next turn fills, as for an api timeout.
 | `DIAR_SESSION_TTL_S` / `DIAR_MAX_SESSIONS` | 1800 / 256 | in-memory session cache |
 | `DIAR_MIN_SEPARATE_OVERLAP_S` | 1.5 | separate only talk shared this long |
 | `DIAR_MAX_GAP_S` | 10 | longer timeline jumps move the clock instead of feeding silence |
+| `FINGERPRINT_MODEL` | `nvidia/speakerverification_en_titanet_large` | empty: 4 slots only |
+| `DIAR_FP_MATCH_COS` / `DIAR_FP_NEW_COS` / `DIAR_FP_MIN_S` | 0.55 / 0.30 / 2.0 | tuned on 4–8 speaker sessions |
 | `DIAR_API_KEY` | none (refuse every turn) | shared bearer secret; equals the api's `API_DIARIZER_KEY` |
 | `DIAR_VRAM_CLAIM_GIB` | 0 (off) | torch memory fraction = the pod's DRA claim |
 
