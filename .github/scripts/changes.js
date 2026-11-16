@@ -26,7 +26,7 @@
 //   - desktop/**   -> the Windows capture client exe (XERK-2506). Python, outside the npm
 //                     workspace; it speaks /ws/screen by hand, so a contract change
 //                     doesn't rebuild it (it never compiles against the generated types).
-const COMPONENTS = ["api", "parakeet-stt", "ocr", "mobile", "desktop"];
+const COMPONENTS = ["api", "parakeet-stt", "ocr", "diarizer", "mobile", "desktop"];
 
 // Directory prefixes. The prefixes are disjoint top-level dirs, but each maps to
 // one OR MORE components (the fan-out above). Keep the mapping explicit rather
@@ -38,6 +38,7 @@ const PREFIX_MAP = [
   { prefix: "web/", components: ["api"] },
   { prefix: "parakeet-stt/", components: ["parakeet-stt"] },
   { prefix: "ocr/", components: ["ocr"] },
+  { prefix: "diarizer/", components: ["diarizer"] },
   { prefix: "mobile/", components: ["mobile"] },
   { prefix: "desktop/", components: ["desktop"] },
 ];

@@ -19,6 +19,7 @@ test("componentsForPath maps top-level dirs; shared dirs fan out", () => {
   assert.deepEqual(C.componentsForPath("mobile/android/app/build.gradle"), ["mobile"]);
   assert.deepEqual(C.componentsForPath("parakeet-stt/Dockerfile"), ["parakeet-stt"]);
   assert.deepEqual(C.componentsForPath("ocr/server.py"), ["ocr"]);
+  assert.deepEqual(C.componentsForPath("diarizer/server.py"), ["diarizer"]);
   assert.deepEqual(C.componentsForPath("desktop/tenir_capture/runner.py"), ["desktop"]);
 });
 
@@ -43,6 +44,7 @@ test("detectChanges unions components across the diff", () => {
     api: true,
     "parakeet-stt": false,
     ocr: false,
+    diarizer: false,
     mobile: true,
     desktop: false,
   });
@@ -54,6 +56,7 @@ test("a web-only change rebuilds the api image (the SPA is baked in)", () => {
     api: true,
     "parakeet-stt": false,
     ocr: false,
+    diarizer: false,
     mobile: false,
     desktop: false,
   });

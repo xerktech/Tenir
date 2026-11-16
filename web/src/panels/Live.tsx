@@ -274,6 +274,10 @@ export function LiveView({ controller }: { controller: CaptureController }): JSX
                     {item.segment.translation && item.segment.lang && (
                       <LangTag lang={item.segment.lang} />
                     )}
+                    {/* "Speaker N" from the diarizer (XERK-2958), as history shows it. */}
+                    {item.segment.speaker && (
+                      <span className="speaker-name">{item.segment.speaker}: </span>
+                    )}
                     {item.segment.text}
                     {/* English translation of a non-English turn (XERK-160),
                         turn-by-turn under the original as it arrives. */}

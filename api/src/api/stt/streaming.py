@@ -35,7 +35,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
@@ -44,6 +44,9 @@ from api.metrics import metrics
 from api.stt.agreement import LocalAgreement
 from api.stt.engine import BYTES_PER_SEC, EngineResult, WhisperEngine, pcm16_to_float32, rms
 from api.stt.langid import detect_lang
+
+if TYPE_CHECKING:
+    from api.stt.diarize import Diarizer, Piece
 
 log = logging.getLogger("api.stt.streaming")
 
@@ -116,6 +119,26 @@ _PARTIAL_STALE_S = 1.0
 _FINAL_RETRY_BUDGET_S = 60.0
 _FINAL_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 8.0)  # the last repeats
 _PROBE_PCM = bytes(BYTES_PER_SEC)
+
+# A speaker piece shorter than this is not decoded (XERK-2958): Whisper on a fraction of a
+# second invents ("Thank you.") far more often than it hears a word. The diarizer already
+# folds short sequential pieces into a neighbour; this guards what is left (an overlapped
+# back-channel cut to almost nothing).
+_MIN_PIECE_MS = 400
+# An overlapped piece whose words are mostly (this share) in a caption already sent for the
+# same span is one voice heard twice: the separator left it in both streams, or the raw
+# span of the other speaker carried it too. Real cross-talk shares almost no words.
+_DUPLICATE_PIECE_SHARE = 0.6
+
+
+def _tokens(text: str) -> set[str]:
+    return {w.strip(".,!?¿¡;:\"'").casefold() for w in text.split()} - {""}
+
+
+def _repeats(earlier: str, text: str) -> bool:
+    """Whether ``text``'s words are mostly already in ``earlier``."""
+    t = _tokens(text)
+    return bool(t) and len(t & _tokens(earlier)) / len(t) >= _DUPLICATE_PIECE_SHARE
 _retry_sleep = asyncio.sleep  # module seam so tests drive the backoff clock
 
 # An engine slower than real time only ever grows the final backlog, and once its
@@ -215,8 +238,12 @@ class StreamingTranscriber:
         vad_model_floor_rms: float = 0.05,
         start_offset_ms: int = 0,
         final_words: bool = True,
+        diarizer: Diarizer | None = None,
     ) -> None:
         self._engine = engine
+        # Speaker tracking (XERK-2958): each final turn is first cut into per-speaker
+        # pieces, one caption per piece. None captions every turn whole and unlabelled.
+        self._diarizer = diarizer
         self._language = language
         # Whether final decodes ask the engine for per-word timestamps. Computing
         # them dominates final-decode latency on the deployed server (~5.5x, see
@@ -687,6 +714,137 @@ class StreamingTranscriber:
         return True
 
     async def _finalize(self, pcm: bytes, start: int, has_speech: bool) -> None:
+        # Every turn goes to the diarizer, speech or not: it keeps the conversation's
+        # timeline, and a gap would shift its speaker cache against the audio.
+        pieces = await self._diarize(pcm, start)
+
+        # The last partial shown for this turn, captured before the per-turn state is
+        # reset — the fallback if the whole-turn decode comes back empty.
+        fallback = self._turn_partial
+        self._turn_partial = ""
+        # The committed prefix belongs to the turn just closed; start the next turn's
+        # word-by-word commit from scratch.
+        if self._agreement is not None:
+            self._agreement = LocalAgreement()
+
+        if pieces is not None and len(pieces) > 1 and has_speech:
+            if await self._finalize_pieces(pcm, start, pieces):
+                return
+            # Every piece came back blank: the cut was wrong, not the turn. Caption it
+            # whole, unlabelled, exactly as without the diarizer.
+            pieces = None
+        speaker = pieces[0].label if pieces else None
+        await self._finalize_turn(pcm, start, has_speech, fallback, speaker)
+
+    async def _diarize(self, pcm: bytes, start: int) -> list[Piece] | None:
+        if self._diarizer is None:
+            return None
+        t0 = time.perf_counter()
+        pieces = await self._diarizer.diarize(pcm, start)
+        metrics.observe("stage.diarize.latency_ms", (time.perf_counter() - t0) * 1000)
+        if pieces is not None and len(pieces) > 1:
+            metrics.incr("stage.diarize.split_turns")
+            if any(p.overlap for p in pieces):
+                metrics.incr("stage.diarize.overlap_turns")
+        return pieces
+
+    async def _finalize_pieces(self, pcm: bytes, start: int, pieces: list[Piece]) -> bool:
+        """One caption per speaker piece of a multi-speaker turn (XERK-2958). Returns
+        False when no piece produced text, so the caller captions the turn whole."""
+        emitted: list[tuple[Piece, str]] = []
+        for piece in pieces:
+            audio = (
+                piece.audio
+                if piece.audio is not None
+                else pcm[_ms_to_bytes(piece.start_ms) : _ms_to_bytes(piece.end_ms)]
+            )
+            if len(audio) < _ms_to_bytes(_MIN_PIECE_MS):
+                continue
+            try:
+                result = await self._decode_final(audio)
+            except Exception:
+                # Outage past the retry budget, or this audio fails every time: the
+                # piece is lost, the turn's other pieces still caption.
+                log.exception("STT decode of a speaker piece failed")
+                metrics.incr("stage.stt.final_retry_exhausted")
+                continue
+            text = result.text.strip()
+            if not text or result.non_speech:
+                continue
+            if piece.overlap and any(
+                prev.start_ms < piece.end_ms
+                and piece.start_ms < prev.end_ms
+                and _repeats(prev_text, text)
+                for prev, prev_text in emitted
+            ):
+                # One voice heard twice: the caption would repeat the earlier one
+                # under another speaker.
+                metrics.incr("stage.diarize.duplicate_pieces")
+                continue
+            emitted.append((piece, text))
+            # Word timing is only meaningful on the turn's own audio; a separated
+            # stream is the same span but not the same samples, so its words stay off.
+            words = (
+                None
+                if piece.audio is not None
+                else self._words(result, start + piece.start_ms) or None
+            )
+            await self._emit_final(
+                text,
+                result.language,
+                start + piece.start_ms,
+                start + piece.end_ms,
+                words,
+                piece.label,
+            )
+        return bool(emitted)
+
+    def _words(self, result: EngineResult, start: int) -> list[Word]:
+        return [
+            Word(
+                text=w.text,
+                startMs=max(0, start + int(w.start * 1000)),
+                endMs=max(0, start + int(w.end * 1000)),
+                confidence=w.probability,
+            )
+            for w in result.words
+        ]
+
+    async def _emit_final(
+        self,
+        text: str,
+        engine_lang: str | None,
+        start: int,
+        end: int,
+        words: list[Word] | None,
+        speaker: str | None,
+    ) -> None:
+        # The finalized turn's language, engine-reported first. The deployed
+        # Parakeet server transcribes multilingual speech but reports no detected
+        # language (the NeMo hypothesis exposes none — recorded on session
+        # a6ef5cad, a fully-Spanish conversation stored with every lang NULL, so
+        # live translation XERK-160 never triggered). When neither the engine nor
+        # a pinned session language names one, fall back to conservative
+        # text-based identification of the final itself; an ambiguous turn stays
+        # None, which decides nothing downstream.
+        lang = _lang(engine_lang or self._language) or _lang(detect_lang(text))
+        self._finals_undelivered += 1
+        await self._queue.put(
+            CaptionFinal(
+                type="caption.final",
+                segmentId=str(uuid.uuid4()),
+                text=text,
+                lang=lang,
+                startMs=start,
+                endMs=end,
+                words=words,
+                speaker=speaker,
+            )
+        )
+
+    async def _finalize_turn(
+        self, pcm: bytes, start: int, has_speech: bool, fallback: str, speaker: str | None
+    ) -> None:
         try:
             result = await self._decode_final(pcm)
         except Exception:
@@ -701,15 +859,6 @@ class StreamingTranscriber:
             if not result.text.strip() and has_speech and not result.non_speech:
                 result = await self._retry_blank_final(pcm, result)
         end = start + _bytes_to_ms(len(pcm))
-
-        # The last partial shown for this turn, captured before the per-turn state is
-        # reset below — the fallback if the whole-turn decode comes back empty.
-        fallback = self._turn_partial
-        self._turn_partial = ""
-        # The committed prefix belongs to the turn just closed; start the next turn's
-        # word-by-word commit from scratch.
-        if self._agreement is not None:
-            self._agreement = LocalAgreement()
 
         text = result.text.strip()
         # An empty whole-turn decode used to drop the turn outright. But the client
@@ -744,43 +893,8 @@ class StreamingTranscriber:
             recovered = True
             metrics.incr("stage.stt.final_recovered")
 
-        words = (
-            None
-            if recovered
-            else (
-                [
-                    Word(
-                        text=w.text,
-                        startMs=max(0, start + int(w.start * 1000)),
-                        endMs=max(0, start + int(w.end * 1000)),
-                        confidence=w.probability,
-                    )
-                    for w in result.words
-                ]
-                or None
-            )
-        )
-        # The finalized turn's language, engine-reported first. The deployed
-        # Parakeet server transcribes multilingual speech but reports no detected
-        # language (the NeMo hypothesis exposes none — recorded on session
-        # a6ef5cad, a fully-Spanish conversation stored with every lang NULL, so
-        # live translation XERK-160 never triggered). When neither the engine nor
-        # a pinned session language names one, fall back to conservative
-        # text-based identification of the final itself; an ambiguous turn stays
-        # None, which decides nothing downstream.
-        lang = _lang(result.language or self._language) or _lang(detect_lang(text))
-        self._finals_undelivered += 1
-        await self._queue.put(
-            CaptionFinal(
-                type="caption.final",
-                segmentId=str(uuid.uuid4()),
-                text=text,
-                lang=lang,
-                startMs=start,
-                endMs=end,
-                words=words,
-            )
-        )
+        words = None if recovered else (self._words(result, start) or None)
+        await self._emit_final(text, result.language, start, end, words, speaker)
 
     async def results(self) -> AsyncIterator[CaptionPartial | CaptionFinal]:
         # Keep draining after close: flush() queues the tail final right before
@@ -805,6 +919,8 @@ class StreamingTranscriber:
 
     async def close(self) -> None:
         self._closed = True
+        if self._diarizer is not None:
+            self._diarizer.close()
         if self._worker is not None:
             self._worker.cancel()
         # Unblock a pending results() get with a skipped (empty) sentinel.

@@ -19,20 +19,22 @@ const COMPONENT_HEADING = {
   api: "API",
   "parakeet-stt": "Parakeet STT",
   ocr: "OCR",
+  diarizer: "Diarizer",
   mobile: "Mobile",
   desktop: "Desktop capture",
 };
-const HEADING_ORDER = ["API", "Parakeet STT", "OCR", "Mobile", "Desktop capture", "Other"];
+const HEADING_ORDER = ["API", "Parakeet STT", "OCR", "Diarizer", "Mobile", "Desktop capture", "Other"];
 
 // Component -> row label for the release-notes summary table.
 const COMPONENT_LABEL = {
   api: "API (image, incl. web UI)",
   "parakeet-stt": "Parakeet STT (image)",
   ocr: "OCR (image)",
+  diarizer: "Diarizer (image)",
   mobile: "Android (.apk)",
   desktop: "Windows capture client (.exe)",
 };
-const TABLE_ORDER = ["api", "parakeet-stt", "ocr", "mobile", "desktop"];
+const TABLE_ORDER = ["api", "parakeet-stt", "ocr", "diarizer", "mobile", "desktop"];
 
 // First line, trimmed, internal whitespace collapsed — a PR title or commit
 // subject that somehow carries a newline can't break a markdown bullet/table.

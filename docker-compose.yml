@@ -107,6 +107,9 @@ services:
       # tenir-ocr base URL for meeting captions (docs/meeting-captions.md). Empty keeps
       # /ws/screen off (it closes 1013).
       API_OCR_URL: ${API_OCR_URL:-}
+      # tenir-diarizer base URL (XERK-2958, diarizer/README.md): "Speaker N" labels and
+      # per-voice captions for overlapped speech on mic sessions. Empty keeps it off.
+      API_DIARIZER_URL: ${API_DIARIZER_URL:-}
       # Turma hub that finished meetings are posted to (XERK-2513); empty keeps delivery off.
       API_TURMA_URL: ${API_TURMA_URL:-}
       API_TURMA_MEETINGS_TOKEN: ${API_TURMA_MEETINGS_TOKEN:-}

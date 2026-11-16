@@ -1,0 +1,52 @@
+name: Diarizer
+
+# PR gate for the tenir-diarizer image (diarizer/, XERK-2958). The image is CUDA torch +
+# NeMo, too big to build on every PR, so the gate is a Dockerfile lint plus the server's
+# own tests against a scripted model: the piece planner, the per-session timeline, the
+# HTTP surface. The real model is checked by scripts/diarize_eval (needs weights).
+# Publishing is release.yml (build-diarizer) on a push to main that changes diarizer/.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'diarizer/**'
+      - '.github/workflows/diarizer.yml'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Dockerfile lint (hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint diarizer/Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:v2.12.0 \
+            hadolint --failure-threshold error - < diarizer/Dockerfile
+
+  test:
+    name: Server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: diarizer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: diarizer/requirements-test.txt
+      - name: Install dependencies
+        run: pip install -r requirements-test.txt
+      - name: Test
+        run: python -m pytest -q

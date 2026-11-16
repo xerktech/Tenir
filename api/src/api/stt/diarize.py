@@ -1,0 +1,85 @@
+"""Client for the tenir-diarizer service (XERK-2958, ``diarizer/README.md``).
+
+The streaming transcriber posts each finalized turn's PCM here before decoding it and
+gets back the turn cut into per-speaker pieces. A piece two people spoke over each
+other carries that speaker's separated audio; every other piece is a span of the turn's
+own audio. Any failure returns ``None`` and the turn is captioned whole and unlabelled.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+from dataclasses import dataclass
+
+import httpx
+
+from api.metrics import metrics
+
+log = logging.getLogger("api.stt.diarize")
+
+
+@dataclass(frozen=True)
+class Piece:
+    speaker: int  # 1-based, stable for the conversation
+    start_ms: int  # relative to the turn start
+    end_ms: int
+    overlap: bool
+    audio: bytes | None  # separated s16le PCM for an overlapped piece, else None
+
+    @property
+    def label(self) -> str:
+        return f"Speaker {self.speaker}"
+
+
+class Diarizer:
+    """One conversation's view of the diarizer. ``conversation_id`` keys the service's
+    speaker cache, so a resumed conversation keeps its numbering while the service is up."""
+
+    def __init__(self, url: str, conversation_id: str, *, timeout: float = 3.0) -> None:
+        self._url = url.rstrip("/") + "/v1/diarize"
+        self._conversation = conversation_id
+        self._timeout = timeout
+        self._client = httpx.Client(timeout=timeout)
+
+    async def diarize(self, pcm: bytes, offset_ms: int) -> list[Piece] | None:
+        """Pieces for one turn starting at ``offset_ms`` on the conversation timeline, or
+        None when the diarizer is unavailable (the caller then captions the turn whole)."""
+        try:
+            # Whole-request deadline (httpx's timeout is per phase), as ParakeetEngine._post.
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._post, pcm, offset_ms), self._timeout
+            )
+        except Exception:
+            log.warning("diarizer unavailable; captioning the turn unlabelled", exc_info=True)
+            metrics.incr("stage.diarize.errors")
+            return None
+
+    def _post(self, pcm: bytes, offset_ms: int) -> list[Piece]:
+        r = self._client.post(
+            self._url,
+            params={"session": self._conversation, "offset_ms": offset_ms},
+            content=pcm,
+            headers={"content-type": "application/octet-stream"},
+        )
+        r.raise_for_status()
+        return parse_pieces(r.json(), turn_ms=len(pcm) // 32)
+
+    def close(self) -> None:
+        self._client.close()
+
+
+def parse_pieces(body: dict, *, turn_ms: int) -> list[Piece]:
+    """Validate the service's answer; anything malformed raises (→ unlabelled turn)."""
+    pieces = []
+    for p in body["pieces"]:
+        speaker = int(p["speaker"])
+        start, end = int(p["startMs"]), int(p["endMs"])
+        if speaker < 1 or not 0 <= start < end or start > turn_ms:
+            raise ValueError(f"bad diarizer piece: {p!r}")
+        audio = base64.b64decode(p["audio"], validate=True) if p.get("audio") else None
+        if audio is not None and len(audio) % 2:
+            audio = audio[:-1]
+        pieces.append(Piece(speaker, start, min(end, turn_ms), bool(p.get("overlap")), audio))
+    return pieces

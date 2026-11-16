@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     # gateway doesn't authenticate. Only read when stt_endpoint is set.
     stt_api_key: str = ""
 
+    # ---- Speaker tracking (XERK-2958, diarizer/README.md) ------------------------
+    # Base URL of the tenir-diarizer service (`POST {url}/v1/diarize`). Set, each mic
+    # turn is labelled "Speaker N" (stable for the conversation) and split into one
+    # caption per speaker; overlapped speech is separated and captioned per voice.
+    # Empty — the default — captions turns whole and unlabelled, as before.
+    diarizer_url: str = ""
+    # Whole-request deadline for one turn. The diarizer sits in front of the final
+    # decode on the caption path, so a slow one delays every caption: past this the turn
+    # is captioned whole and unlabelled.
+    diarizer_timeout_seconds: float = 3.0
+
     # ---- Cues (XERK-81) ----------------------------------------------------------
     # Cues are private contextual info cards the api derives from the live
     # conversation: someone asks how far the sun is and the answer appears above the

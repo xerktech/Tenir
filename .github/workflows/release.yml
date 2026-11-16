@@ -41,6 +41,7 @@ on:
       - "web/**"
       - "parakeet-stt/**"
       - "ocr/**"
+      - "diarizer/**"
       - "mobile/**"
       - "desktop/**"
       - "package.json"
@@ -98,6 +99,7 @@ jobs:
       build_api: ${{ steps.plan.outputs.build_api }}
       build_parakeet_stt: ${{ steps.plan.outputs.build_parakeet_stt }}
       build_ocr: ${{ steps.plan.outputs.build_ocr }}
+      build_diarizer: ${{ steps.plan.outputs.build_diarizer }}
       build_mobile: ${{ steps.plan.outputs.build_mobile }}
       build_desktop: ${{ steps.plan.outputs.build_desktop }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
@@ -496,6 +498,36 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           push: ${{ needs.plan.outputs.dry_run != 'true' }}
 
+  # ------------------------------------------------------- build: diarizer ---
+  # Self-hosted: CUDA torch + NeMo make a multi-GB image a hosted runner cannot hold.
+  # Not auto-deployed: ai/tenir/diarizer.yaml in the ArgoCD repo pins the version by hand.
+  build-diarizer:
+    needs: [plan, bump]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.bump.result != 'failure'
+      && needs.plan.outputs.build_diarizer == 'true'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+      - name: Lowercase owner for GHCR
+        id: owner
+        run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Build + push tenir-diarizer
+        uses: ./.github/actions/build-push-image
+        with:
+          image: ghcr.io/${{ steps.owner.outputs.lc }}/tenir-diarizer
+          tags: |
+            latest
+            ${{ needs.plan.outputs.version }}
+            sha-${{ needs.bump.outputs.sha || needs.plan.outputs.sha }}
+          context: .
+          dockerfile: diarizer/Dockerfile
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push: ${{ needs.plan.outputs.dry_run != 'true' }}
+
   # -------------------------------------------------------- build: mobile -----
   # GitHub-hosted: ubuntu-latest ships a JDK + the Android SDK, so assembleRelease
   # is a first-class hosted workload. Version name from the unified version;
@@ -598,6 +630,7 @@ jobs:
         deploy-argocd,
         build-parakeet-stt,
         build-ocr,
+        build-diarizer,
         build-mobile,
         build-desktop,
       ]
@@ -615,6 +648,7 @@ jobs:
           || (needs.schema-gate.result == 'success' && needs.build-api.result == 'success'))
       && needs.build-parakeet-stt.result != 'failure'
       && needs.build-ocr.result != 'failure'
+      && needs.build-diarizer.result != 'failure'
       && needs.build-mobile.result != 'failure'
       && needs.build-desktop.result != 'failure'
     runs-on: ubuntu-latest

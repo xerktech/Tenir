@@ -13,6 +13,7 @@ on:
       # must re-run its tests (a refactor once left it silently reporting 0 turns)
       - 'scripts/stt_eval/**'
       - 'scripts/caption_ocr/**'
+      - 'scripts/diarize_eval/**'
       # the caption-box finder the harness benchmarks ships in the capture client
       - 'desktop/tenir_capture/caption_box.py'
       - 'api/src/api/stt/streaming.py'
@@ -81,6 +82,10 @@ jobs:
       - name: Install the caption-OCR harness deps
         run: pip install rapidfuzz
 
+      # scripts/diarize_eval (XERK-2958) writes and reads its synthetic sessions as audio.
+      - name: Install the speaker-tracking harness deps
+        run: pip install soundfile
+
       # One pytest process over every harness, on purpose: each test dir puts its
       # harness on sys.path and imports modules by bare name, so two harnesses sharing
       # a module name (e.g. a top-level score.py) would import the wrong one. Separate
@@ -94,3 +99,4 @@ jobs:
           scripts/longform_eval/tests
           scripts/stt_eval/tests
           scripts/caption_ocr/tests
+          scripts/diarize_eval/tests
