@@ -916,7 +916,9 @@ def test_model_vad_hysteresis_holds_a_word_near_the_line() -> None:
 
 def test_model_vad_floor_is_configurable() -> None:
     async def run() -> None:
-        t = StreamingTranscriber(FakeEngine(), vad_model=ScriptedVad([0.0]), vad_model_floor_rms=0.5)
+        t = StreamingTranscriber(
+            FakeEngine(), vad_model=ScriptedVad([0.0]), vad_model_floor_rms=0.5
+        )
         await _push(t, _pcm(100, amplitude=9000))  # loud, but under a 0.5 floor
         assert t._has_speech is True
 
@@ -983,7 +985,10 @@ def test_energy_heard_resets_with_each_turn() -> None:
 
     async def run() -> None:
         t = StreamingTranscriber(
-            FakeEngine(), partial_interval_ms=100000, max_segment_ms=300, vad_model=ScriptedVad([0.0])
+            FakeEngine(),
+            partial_interval_ms=100000,
+            max_segment_ms=300,
+            vad_model=ScriptedVad([0.0]),
         )
         for _ in range(3):
             await _push(t, _pcm(100, amplitude=9000))  # loud: heard, then cap-closed
@@ -1050,7 +1055,9 @@ class FakeOnnx:
     def run(self, _outputs: object, feeds: dict) -> tuple[np.ndarray, np.ndarray]:
         self.inputs.append(feeds)
         score = self.scores.pop(0) if self.scores else 0.0
-        return np.array([[score]], dtype=np.float32), np.full((2, 1, 128), len(self.inputs), np.float32)
+        return np.array([[score]], dtype=np.float32), np.full(
+            (2, 1, 128), len(self.inputs), np.float32
+        )
 
 
 def _vad_with(monkeypatch: pytest.MonkeyPatch, onnx: FakeOnnx) -> object:
@@ -1073,7 +1080,9 @@ def test_silero_vad_threads_state_and_context_and_takes_the_best_frame(
     frame0 = ramp[:512].astype(np.float32) / 32768
     assert first["input"].shape == (1, 576)
     np.testing.assert_array_equal(second["input"][0, :64], frame0[-64:])  # carried context
-    np.testing.assert_array_equal(second["input"][0, 64:], ramp[512:1024].astype(np.float32) / 32768)
+    np.testing.assert_array_equal(
+        second["input"][0, 64:], ramp[512:1024].astype(np.float32) / 32768
+    )
 
 
 def test_silero_vad_scores_at_most_a_second_of_an_oversized_chunk(
@@ -1472,8 +1481,12 @@ def test_empty_final_is_retried_with_silence_padding() -> None:
         metrics.reset()
         eng = PadSensitiveEngine()
         t = StreamingTranscriber(
-            eng, language=None, partial_interval_ms=10000, silence_ms=300,
-            min_segment_ms=100, max_segment_ms=5000,
+            eng,
+            language=None,
+            partial_interval_ms=10000,
+            silence_ms=300,
+            min_segment_ms=100,
+            max_segment_ms=5000,
         )
         for _ in range(3):
             await _push(t, _pcm(100, amplitude=4000))
@@ -1505,7 +1518,10 @@ def test_silent_forced_final_is_not_retried() -> None:
     async def run() -> None:
         eng = PadSensitiveEngine()
         t = StreamingTranscriber(
-            eng, language=None, partial_interval_ms=10000, silence_ms=10000,
+            eng,
+            language=None,
+            partial_interval_ms=10000,
+            silence_ms=10000,
             max_segment_ms=1000,
         )
         for _ in range(10):
@@ -1537,8 +1553,13 @@ class _RetryEngine:
 
 async def _one_turn(eng, *, partials: bool):
     t = StreamingTranscriber(
-        eng, language=None, partial_interval_ms=100 if partials else 10000,
-        silence_ms=300, min_segment_ms=100, max_segment_ms=5000, final_words=True,
+        eng,
+        language=None,
+        partial_interval_ms=100 if partials else 10000,
+        silence_ms=300,
+        min_segment_ms=100,
+        max_segment_ms=5000,
+        final_words=True,
     )
     for _ in range(5):
         await _push(t, _pcm(100, amplitude=4000))
@@ -1585,13 +1606,18 @@ def test_short_retry_output_is_held_to_the_filler_gate() -> None:
 def test_retry_word_times_are_clamped_to_the_turn() -> None:
     # Words the model put in the leading/trailing pad land on the turn's edges.
     async def run() -> None:
-        words = [EngineWord("a", 0.2, 0.4, 0.9), EngineWord("b", 0.6, 0.9, 0.9),
-                 EngineWord("c", 1.0, 1.6, 0.9)]
+        words = [
+            EngineWord("a", 0.2, 0.4, 0.9),
+            EngineWord("b", 0.6, 0.9, 0.9),
+            EngineWord("c", 1.0, 1.6, 0.9),
+        ]
         eng = _RetryEngine(EngineResult(text="a b c", words=words, language="es"))
         (f,) = await _one_turn(eng, partials=False)
         turn_ms = f.endMs - f.startMs
         assert [(w.startMs - f.startMs, w.endMs - f.startMs) for w in f.words] == [
-            (0, 0), (100, 400), (500, turn_ms)
+            (0, 0),
+            (100, 400),
+            (500, turn_ms),
         ]
 
     asyncio.run(run())
@@ -1780,8 +1806,10 @@ def test_failed_final_is_not_retried_against_the_failing_upstream() -> None:
         await _drain(t)
         counters = metrics.snapshot()["counters"]
         assert counters["stage.stt.final_retry_exhausted"] == 1
-        assert not any(k.startswith("stage.stt.final_retry_") and k != (
-            "stage.stt.final_retry_exhausted") for k in counters)  # no padded retry
+        assert not any(
+            k.startswith("stage.stt.final_retry_") and k != ("stage.stt.final_retry_exhausted")
+            for k in counters
+        )  # no padded retry
         metrics.reset()
 
     asyncio.run(run())
@@ -2063,7 +2091,10 @@ def test_a_final_whose_decode_fails_adds_no_sample_to_the_behind_window() -> Non
 
     async def run() -> None:
         t = StreamingTranscriber(
-            FailsSecondFinal(), language="en", partial_interval_ms=60_000, silence_ms=300,
+            FailsSecondFinal(),
+            language="en",
+            partial_interval_ms=60_000,
+            silence_ms=300,
             min_segment_ms=100,
         )
         for _ in range(2):
@@ -2126,7 +2157,10 @@ def test_finalizing_clears_when_finalize_raises_after_the_decode() -> None:
 
     async def run() -> None:
         t = StreamingTranscriber(
-            BadWord(), language="en", partial_interval_ms=60_000, silence_ms=300,
+            BadWord(),
+            language="en",
+            partial_interval_ms=60_000,
+            silence_ms=300,
             min_segment_ms=100,
         )
         await _push(t, _pcm(600, amplitude=3000))
@@ -2222,6 +2256,7 @@ def test_final_retries_give_up_once_the_outage_outlasts_the_budget(_outage) -> N
         assert eng.calls.count(False) == 1
         counters = metrics.snapshot()["counters"]
         assert counters["stage.stt.final_retry_exhausted"] == 5
+        assert t.final_failures == 5  # what a re-caption (api.reprocess) aborts on
         assert "stage.stt.final_input_errors" not in counters
         assert not t.finalizing
         metrics.reset()
@@ -2477,3 +2512,41 @@ def test_cap_cut_shifts_speech_start_and_keeps_trailing_silence_into_the_tail(
         await t.close()
 
     asyncio.run(run())
+
+
+def test_a_lost_final_is_counted_wherever_it_is_lost() -> None:
+    """``final_failures`` (what a re-caption aborts on, XERK-2958) counts a blank decode whose
+    padded retry then fails, and a final job the worker could not finish at all."""
+
+    class BlankThenDown(FakeEngine):
+        def transcribe(self, samples, *, language, want_words=True):
+            self.calls += 1
+            if self.calls == 1:
+                return EngineResult(text="", words=[], language=language)
+            raise ConnectionError("upstream gone")
+
+    async def blank_retry_fails() -> int:
+        t = StreamingTranscriber(
+            BlankThenDown(), partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+        await _push(t, _pcm(1000, amplitude=8000))
+        await _push(t, _pcm(600, amplitude=0))
+        await _drain(t)
+        return t.final_failures
+
+    async def worker_catch_all() -> int:
+        t = StreamingTranscriber(
+            FakeEngine(), partial_interval_ms=60_000, silence_ms=300, min_segment_ms=100
+        )
+
+        async def broken(pcm, start, has_speech):
+            raise RuntimeError("not a decode error")
+
+        t._finalize = broken  # type: ignore[method-assign]
+        await _push(t, _pcm(1000, amplitude=8000))
+        await _push(t, _pcm(600, amplitude=0))
+        await _drain(t)
+        return t.final_failures
+
+    assert asyncio.run(blank_retry_fails()) == 1
+    assert asyncio.run(worker_catch_all()) == 1

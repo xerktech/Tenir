@@ -47,13 +47,31 @@ class ConversationStore(Protocol):
         """Create (or reopen) the row. ``screen`` makes it a screen-captured meeting
         (``source='screen'`` plus its org and platform, XERK-2505)."""
         ...
+
     def reopen(self, household: str, conversation_id: str) -> Conversation | None:
         """Mark an existing recording live again for a cold resume; None when it is gone.
 
         Never inserts: a recording deleted after the resume's existence check must stay
         deleted, which the create() upsert would undo."""
         ...
+
     def add_segment(self, household: str, conversation_id: str, segment: Segment) -> None: ...
+    def import_conversation(
+        self,
+        household: str,
+        conversation_id: str,
+        *,
+        owner: str | None,
+        mic_source: str | None,
+        source_lang: str | None,
+        segments: list[Segment],
+        audio_key: str,
+    ) -> None:
+        """Write a finished mic conversation whole, or not at all (``api.reprocess``,
+        XERK-2958): the row (ready), every segment and the audio key in one transaction, so
+        a failure part-way can never leave a short copy for the stale sweep to finish."""
+        ...
+
     def set_segment_translation(
         self, household: str, conversation_id: str, segment_id: str, translation: str
     ) -> None: ...
@@ -64,11 +82,13 @@ class ConversationStore(Protocol):
     ) -> None:
         """Record ``(name, first_seen_ms)`` tile names; a name already recorded is kept."""
         ...
+
     def speaker_aliases(self, household: str, owner: str, org_site_key: str) -> dict[str, str]:
         """``alias_key(alias) -> display name`` for one org's speakers, as ``owner`` (a
         users.id) named them. Aliases are per member: another member's renames never apply
         (XERK-2606)."""
         ...
+
     def set_speaker_alias(
         self, household: str, owner: str, org_site_key: str, alias: str, name: str
     ) -> None: ...
@@ -76,6 +96,7 @@ class ConversationStore(Protocol):
         """``(org_site_key, org_name)`` of every org the caller has a screen meeting from,
         by name; the name is the most recent meeting's."""
         ...
+
     def add_song(self, household: str, conversation_id: str, song: Song) -> None: ...
     def finish(
         self,
@@ -88,9 +109,11 @@ class ConversationStore(Protocol):
         """Close the row. With ``opened_at`` (the caller's create()/reopen().opened_at), only
         while no later sitting has reopened it since."""
         ...
+
     def set_audio_key(self, household: str, conversation_id: str, audio_key: str) -> bool:
         """Point the row at its WAV; returns False when there is no such row."""
         ...
+
     def clear_audio_key(self, household: str, conversation_id: str) -> None: ...
     def get(
         self, household: str, conversation_id: str, *, owner: str | None = None
@@ -106,6 +129,7 @@ class ConversationStore(Protocol):
     ) -> list[Conversation]:
         """Newest first; ``org`` keeps only screen meetings from that org site key."""
         ...
+
     def search(
         self,
         household: str,
@@ -126,10 +150,12 @@ class ConversationStore(Protocol):
         backing off, and a page of stuck ones must not hide the rest. A screen row with no
         state (created before delivery existed) counts as pending."""
         ...
+
     def delivered_meetings(self) -> list[tuple[str, str, str]]:
         """``(household, id, org_site_key)`` of every screen meeting the Turma hub took
         (``sent``), for the transcript back-fill (XERK-2965)."""
         ...
+
     def set_delivery(
         self, household: str, conversation_id: str, state: DeliveryState, error: str | None
     ) -> None: ...
@@ -138,6 +164,7 @@ class ConversationStore(Protocol):
         finished screen meetings, for ``/status``; failures count only for meetings that
         ended at or after ``since``."""
         ...
+
     def requeue_failed_deliveries(self, reasons: tuple[str, ...]) -> list[tuple[str, str]]:
         """Put every ``failed`` screen meeting whose error starts with one of ``reasons`` back
         to ``pending``; returns their ``(household, id)`` (XERK-2605)."""
@@ -222,6 +249,35 @@ class InMemoryConversationStore:
                     conv.segments[i] = segment
                     return
             conv.segments.append(segment)
+
+    def import_conversation(
+        self,
+        household: str,
+        conversation_id: str,
+        *,
+        owner: str | None,
+        mic_source: str | None,
+        source_lang: str | None,
+        segments: list[Segment],
+        audio_key: str,
+    ) -> None:
+        conv = Conversation(
+            id=conversation_id,
+            household=household,
+            owner=owner,
+            mic_source=mic_source,
+            source_lang=source_lang,
+            status="ready",
+            audio_key=audio_key,
+            segments=[copy.deepcopy(s) for s in segments],
+        )
+        conv.opened_at = conv.started_at
+        conv.ended_at = utcnow()
+        with self._lock:
+            convs = self._conversations(household)
+            if conversation_id in convs:
+                raise ValueError(f"conversation {conversation_id} already exists")
+            convs[conversation_id] = conv
 
     def set_segment_translation(
         self, household: str, conversation_id: str, segment_id: str, translation: str
@@ -458,9 +514,7 @@ class InMemoryConversationStore:
                 (household, conv.id, conv.org_site_key)
                 for household, convs in self._by_household.items()
                 for conv in convs.values()
-                if conv.source == "screen"
-                and conv.delivery_state == "sent"
-                and conv.org_site_key
+                if conv.source == "screen" and conv.delivery_state == "sent" and conv.org_site_key
             ]
 
     def set_delivery(

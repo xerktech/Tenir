@@ -1,0 +1,350 @@
+"""Re-captioning a stored conversation into a copy (XERK-2958)."""
+
+from __future__ import annotations
+
+import io
+import wave
+from collections.abc import AsyncIterator
+
+import pytest
+
+import api.reprocess as rp
+from api.contract import CaptionFinal, CaptionPartial, Lang
+from api.persistence import get_audio_store, get_conversation_store
+from api.persistence.audio import InMemoryAudioStore, audio_key
+from api.persistence.conversations import InMemoryConversationStore
+from api.persistence.models import Segment
+
+
+@pytest.fixture(autouse=True)
+def _clean() -> None:
+    convs, audio = get_conversation_store(), get_audio_store()
+    assert isinstance(convs, InMemoryConversationStore) and isinstance(audio, InMemoryAudioStore)
+    convs._by_household.clear()
+    audio._blobs.clear()
+
+
+def _wav(seconds: float) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(bytes(int(32000 * seconds)))
+    return buf.getvalue()
+
+
+class _Scripted:
+    """Stands in for the live transcriber: records the audio, answers two speakers' turns."""
+
+    def __init__(self) -> None:
+        self.pushed = 0
+        self.closed = False
+
+    async def push(self, pcm: bytes) -> None:
+        self.pushed += len(pcm)
+
+    async def flush(self) -> None: ...
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def results(self) -> AsyncIterator[CaptionPartial | CaptionFinal]:
+        while not self.closed:
+            import asyncio
+
+            await asyncio.sleep(0)
+        for i, (text, lang, spk) in enumerate(
+            [("hola qué tal", Lang.es, "Speaker 1"), ("fine thanks", Lang.en, "Speaker 2")]
+        ):
+            yield CaptionFinal(
+                type="caption.final",
+                segmentId=f"s{i}",
+                text=text,
+                lang=lang,
+                startMs=i * 1000,
+                endMs=i * 1000 + 900,
+                speaker=spk,
+            )
+
+
+class _Upper:
+    """A translator whose output shares no words with its input (so it is never an echo)."""
+
+    def translate(self, text: str, *, source_lang: str | None = None, run_lang=None) -> str:
+        return {"hola qué tal": "hello how are you"}.get(text, "something else entirely")
+
+
+def _seed() -> None:
+    store, audio = get_conversation_store(), get_audio_store()
+    store.create("default", "orig", owner="u1", mic_source="phone-microphone")
+    store.add_segment("default", "orig", Segment("old", "unlabelled", 0, 900, "es"))
+    audio.put(audio_key("default", "orig"), _wav(2.0))
+    store.set_audio_key("default", "orig", audio_key("default", "orig"))
+    store.finish("default", "orig")
+
+
+def test_a_reprocess_writes_a_labelled_copy_and_leaves_the_original(monkeypatch) -> None:
+    _seed()
+    seen = {}
+
+    def make(lang=None, **kw):
+        seen.update(kw)
+        seen["t"] = _Scripted()
+        return seen["t"]
+
+    monkeypatch.setattr(rp, "make_transcriber", make)
+    monkeypatch.setattr(rp, "make_translator", lambda: _Upper())
+    r = rp.reprocess("default", "orig")
+
+    store, audio = get_conversation_store(), get_audio_store()
+    copy = store.get("default", r.copy_id)
+    assert copy is not None and copy.owner == "u1" and copy.status == "ready"
+    assert [(s.text, s.speaker, s.translation) for s in copy.segments] == [
+        ("hola qué tal", "Speaker 1", "hello how are you"),
+        ("fine thanks", "Speaker 2", None),
+    ]
+    assert audio.get(copy.audio_key) == audio.get(audio_key("default", "orig"))
+    assert copy.audio_key != audio_key("default", "orig")
+    orig = store.get("default", "orig")
+    assert [s.text for s in orig.segments] == ["unlabelled"]
+    # Keyed by the copy (its own speaker numbering), fed the whole recording, finals only.
+    assert seen["conversation_id"] == r.copy_id and seen["t"].pushed == 64000
+    assert seen["recaption"] is True
+    assert (r.segments, r.speakers, r.translated) == (2, 2, 1)
+
+
+def test_a_conversation_without_audio_is_refused() -> None:
+    get_conversation_store().create("default", "noaudio")
+    with pytest.raises(LookupError):
+        rp.reprocess("default", "noaudio")
+    with pytest.raises(LookupError):
+        rp.reprocess("default", "missing")
+
+
+def test_audio_in_another_format_is_refused() -> None:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(bytes(64))
+    with pytest.raises(ValueError):
+        rp._pcm(buf.getvalue())
+
+
+def test_main_runs_every_id_and_fails_if_any_did(monkeypatch, capsys) -> None:
+    def fake(h: str, c: str) -> rp.Result:
+        if c == "bad":
+            raise LookupError("no conversation bad")
+        return rp.Result(c, "new-" + c, 3, 2, 1)
+
+    monkeypatch.setattr(rp, "reprocess", fake)
+    assert rp.main(["a", "bad", "b"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "a -> new-a: 3 turns, 2 speakers, 1 translated",
+        "bad: FAILED: no conversation bad",
+        "b -> new-b: 3 turns, 2 speakers, 1 translated",
+    ]
+    assert rp.main(["a"]) == 0
+
+
+def _copies() -> list[str]:
+    store = get_conversation_store()
+    return [c for c in store._conversations("default") if c != "orig"]
+
+
+def _patch(monkeypatch, *, transcriber=None, translator=None) -> None:
+    monkeypatch.setattr(rp, "make_transcriber", lambda lang=None, **kw: transcriber or _Scripted())
+    monkeypatch.setattr(rp, "make_translator", lambda: translator or _Upper())
+
+
+@pytest.mark.parametrize("error", [OSError("database went away"), KeyboardInterrupt()])
+def test_a_failure_while_writing_leaves_no_copy(monkeypatch, error) -> None:
+    """QA: a copy cut short mid-write was later finished by the stale sweep and listed as a
+    normal recording with half its transcript. The copy is written in one transaction now;
+    if that fails (or the run is interrupted) its audio goes too."""
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+
+    def fail(*a, **k):
+        raise error
+
+    monkeypatch.setattr(store, "import_conversation", fail)
+    with pytest.raises(type(error)):
+        rp.reprocess("default", "orig")
+    assert _copies() == []
+    assert list(get_audio_store()._blobs) == [audio_key("default", "orig")]
+
+
+def test_a_turn_stt_never_answered_writes_no_copy(monkeypatch) -> None:
+    """QA: an STT outage past the retry budget dropped turns and the copy passed as whole."""
+    t = _Scripted()
+    t.final_failures = 1
+    _seed()
+    _patch(monkeypatch, transcriber=t)
+    with pytest.raises(rp.ReprocessError, match="STT decode"):
+        rp.reprocess("default", "orig")
+    assert _copies() == []
+
+
+def test_import_conversation_is_whole_or_nothing() -> None:
+    store = get_conversation_store()
+    seg = Segment("s1", "hola", 0, 900, "es", speaker="Speaker 1")
+    store.import_conversation(
+        "default",
+        "imp",
+        owner="u1",
+        mic_source="m",
+        source_lang=None,
+        segments=[seg],
+        audio_key="default/imp.wav",
+    )
+    got = store.get("default", "imp")
+    assert got.status == "ready" and got.ended_at is not None and got.audio_key
+    assert [(s.text, s.speaker) for s in got.segments] == [("hola", "Speaker 1")]
+    with pytest.raises(ValueError):
+        store.import_conversation(
+            "default",
+            "imp",
+            owner="u1",
+            mic_source="m",
+            source_lang=None,
+            segments=[],
+            audio_key="x",
+        )
+
+
+def test_no_turns_from_stt_writes_no_copy(monkeypatch) -> None:
+    class Silent(_Scripted):
+        async def results(self):
+            while not self.closed:
+                import asyncio
+
+                await asyncio.sleep(0)
+            if False:  # pragma: no cover - makes this an async generator
+                yield
+
+    _seed()
+    _patch(monkeypatch, transcriber=Silent())
+    with pytest.raises(rp.ReprocessError, match="no turns"):
+        rp.reprocess("default", "orig")
+    assert _copies() == []
+
+
+def test_a_failed_diarizer_call_writes_no_copy(monkeypatch) -> None:
+    """QA: one timed-out call left 128 of 133 turns unlabelled and still reported success."""
+
+    class Diar:
+        failures = 1
+
+    t = _Scripted()
+    t._diarizer = Diar()
+    _seed()
+    _patch(monkeypatch, transcriber=t)
+    with pytest.raises(rp.ReprocessError, match="diarizer"):
+        rp.reprocess("default", "orig")
+    assert _copies() == []
+
+
+def test_a_lost_translation_writes_no_copy(monkeypatch) -> None:
+    class Down:
+        calls = 0
+
+        def translate(self, text, **kw):
+            Down.calls += 1
+            return None
+
+    _seed()
+    _patch(monkeypatch, translator=Down())
+    with pytest.raises(rp.ReprocessError, match="translation"):
+        rp.reprocess("default", "orig")
+    assert _copies() == [] and Down.calls == 2  # retried once
+
+
+def _final(i: int, text: str, lang: Lang | None) -> CaptionFinal:
+    return CaptionFinal(
+        type="caption.final", segmentId=f"f{i}", text=text, lang=lang, startMs=i, endMs=i + 1
+    )
+
+
+def test_translations_follow_the_live_rules() -> None:
+    """Echoes are dropped (session._same_text); an undecided turn inherits an open run; an
+    English turn closes it."""
+
+    class Tr:
+        def __init__(self) -> None:
+            self.seen = []
+
+        def translate(self, text, *, source_lang=None, run_lang=None):
+            self.seen.append((text, source_lang, run_lang))
+            return text if text.startswith("echo") else {"hola": "hello"}.get(text, "the planets")
+
+    tr = Tr()
+    out = rp._translate(
+        [
+            _final(0, "hola", Lang.es),
+            _final(1, "Mercurio, Venus", None),
+            _final(2, "echo this sentence exactly", Lang.es),
+            _final(3, "ok then", Lang.en),
+            _final(4, "Marte", None),
+        ],
+        tr,
+    )
+    assert out == ["hello", "the planets", None, None, None]
+    assert tr.seen[1] == ("Mercurio, Venus", None, "es")
+    assert len(tr.seen) == 3  # nothing after the English turn closed the run
+    assert rp._translate([_final(0, "hola", Lang.es)], None) == [None]
+
+
+def test_a_lost_commit_acknowledgement_keeps_the_stored_copy(monkeypatch) -> None:
+    """QA: the commit landed, its reply was lost; the copy must keep its audio."""
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+    real = store.import_conversation
+
+    def committed_then_lost(*a, **k):
+        real(*a, **k)
+        raise OSError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(store, "import_conversation", committed_then_lost)
+    r = rp.reprocess("default", "orig")
+    copy = store.get("default", r.copy_id)
+    assert copy is not None and get_audio_store().get(copy.audio_key)
+
+
+def test_an_unconfirmable_write_keeps_the_audio_and_says_so(monkeypatch) -> None:
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+
+    def down(*a, **k):
+        raise OSError("database went away")
+
+    monkeypatch.setattr(store, "import_conversation", down)
+    real_get = store.get
+    monkeypatch.setattr(
+        store, "get", lambda h, c, **k: real_get(h, c, **k) if c == "orig" else down()
+    )
+    with pytest.raises(rp.ReprocessError, match="may exist.*delete the audio file default/"):
+        rp.reprocess("default", "orig")
+    assert len(get_audio_store()._blobs) == 2  # the copy's file is kept
+
+
+def test_an_interrupt_after_the_commit_keeps_the_copy_and_still_stops(monkeypatch) -> None:
+    _seed()
+    _patch(monkeypatch)
+    store = get_conversation_store()
+    real = store.import_conversation
+
+    def committed_then_interrupted(*a, **k):
+        real(*a, **k)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "import_conversation", committed_then_interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        rp.reprocess("default", "orig")
+    (copy_id,) = _copies()
+    assert get_audio_store().get(store.get("default", copy_id).audio_key)
