@@ -176,14 +176,14 @@ def test_a_separated_stream_whisper_is_unsure_of_is_not_captioned() -> None:
                 Piece(2, 500, 1500, True, _tone(1000, _SEP)),
             ]
         )
-        t = _transcriber(d, UnsureEngine({_A: -1.2, _SEP: -0.9}))
+        t = _transcriber(d, UnsureEngine({_A: -1.2, _SEP: -0.51}))
         finals = await _turn(t, _tone(1500, _A))
         assert [(f.speaker, f.text) for f in finals] == [("Speaker 1", _WORDS[_A])]
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("logprob", [-0.3, None])
+@pytest.mark.parametrize("logprob", [-0.5, -0.1, None])  # -0.5: the threshold keeps
 def test_a_separated_stream_whisper_is_sure_of_or_gives_no_score_is_captioned(
     logprob: float | None,
 ) -> None:

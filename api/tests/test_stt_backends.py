@@ -228,7 +228,19 @@ def test_parakeet_reports_whispers_token_weighted_confidence(
     assert result.avg_logprob == pytest.approx(-0.4)
 
 
-@pytest.mark.parametrize("segments", [None, [], "x", [{"avg_logprob": "bad"}]])
+@pytest.mark.parametrize(
+    "segments",
+    [
+        None,
+        [],
+        "x",
+        [{"avg_logprob": "bad"}],
+        [{"avg_logprob": True}],
+        [{"avg_logprob": -(10**400)}],  # overflows float(): must not fail the decode
+        [{"avg_logprob": float("-inf")}],
+        [{"avg_logprob": float("nan")}],
+    ],
+)
 def test_parakeet_without_segment_scores_reports_no_confidence(
     monkeypatch: pytest.MonkeyPatch, segments: object
 ) -> None:

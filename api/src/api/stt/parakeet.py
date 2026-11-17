@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import unicodedata
 
@@ -172,8 +173,14 @@ def _avg_logprob(segments: object) -> float | None:
         lp = seg.get("avg_logprob")
         if not isinstance(lp, (int, float)) or isinstance(lp, bool):
             continue
+        try:
+            lp = float(lp)  # a huge JSON integer overflows here
+        except OverflowError:
+            continue
+        if not math.isfinite(lp):
+            continue
         tokens = seg.get("tokens")
         n = len(tokens) if isinstance(tokens, list) and tokens else 1
-        total += float(lp) * n
+        total += lp * n
         weight += n
     return total / weight if weight else None
