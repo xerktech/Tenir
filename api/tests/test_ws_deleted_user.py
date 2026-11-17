@@ -13,13 +13,14 @@ import json
 import logging
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from api import registry
-from api.auth import Principal, get_user_store, issue_token, reset_user_store
+from api.auth import Principal, get_user_store, issue_token, reset_user_store, tokens
 from api.contract import Pong
 from api.main import WS_CLOSE_RESUMED_ELSEWHERE, app
 from conftest import TEST_AUTH_SECRET
@@ -570,7 +571,9 @@ def test_delete_leaves_a_socket_whose_peer_is_gone_alone(
 
 
 @pytest.mark.real_auth
-def test_open_socket_outlives_its_handshake_tokens_expiry() -> None:
+def test_open_socket_outlives_its_handshake_tokens_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """XERK-2613: a mic session is not cut when its login token's ``exp`` passes.
 
     Auth is checked at the handshake only; login tokens slide on REST, so closing
@@ -578,18 +581,17 @@ def test_open_socket_outlives_its_handshake_tokens_expiry() -> None:
     what ends an open socket (covered above).
     """
     user = get_user_store().create("member", "pw", household="hh", role="member")
-    # Valid for ~1 s from now: issued 59 s ago with a 60 s lifetime.
     token = issue_token(
-        Principal(user.user_id, "hh", "member"),
-        secret=TEST_AUTH_SECRET,
-        ttl_seconds=60,
-        now=time.time() - 59,
+        Principal(user.user_id, "hh", "member"), secret=TEST_AUTH_SECRET, ttl_seconds=60
     )
     with TestClient(app) as client:
         with client.websocket_connect(f"/ws?token={token}") as ws:
             ws.send_text(START)
             assert ws.receive_json()["type"] == "session.ready"
-            time.sleep(1.5)  # the handshake token is now expired
+            # Move the token clock past exp instead of sleeping out a token issued with
+            # ~1 s left: a slow handshake on a loaded host expired it before it connected.
+            real = time.time
+            monkeypatch.setattr(tokens, "time", SimpleNamespace(time=lambda: real() + 120))
             ws.send_text(json.dumps({"type": "ping", "t": 1}))
             while (msg := ws.receive_json())["type"] != "pong":
                 pass
