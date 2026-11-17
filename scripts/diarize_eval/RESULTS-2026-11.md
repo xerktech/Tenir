@@ -46,7 +46,7 @@ Single-speaker frames given the right speaker:
     0.874 → 0.783. The only place separation recovers words the mix loses.
 - Known limits:
   - Sustained 4-way talk is hard for one mic: about half the words come through credited correctly.
-  - Separated pieces Whisper is unsure of are dropped (XERK-3006, below); p1 precision 0.801.
+  - Separated pieces Whisper is unsure of are dropped (XERK-3006, below); p1 precision 0.798.
   - Sortformer tracks at most 4 speakers.
 
 ## After QA fixes (planner tiling, absorb/join across overlaps)
@@ -131,20 +131,20 @@ One diarized run per session recorded, for every piece of every multi-speaker tu
 separated decode, the mixed-span decode, Whisper's verbose_json `avg_logprob` and the
 separated stream's energy/activity correlation; gates were then replayed offline through the
 same piece logic (de-dup included). Replaying "keep every separated piece" reproduces the
-recorded finals exactly, and two runs gave identical numbers. This run's ungated p1 scores
-precision 0.747 (0.783 in the table above: a different run of the same code).
+recorded finals exactly, repeat runs gave identical numbers, and a live run with the gate on
+(XERK-3017 code, fingerprints on) scored p1 exactly as its replay did: 0.798 / 0.641 / 0.571.
 
 | p1 policy | precision | recall | attributed |
 |---|---|---|---|
-| keep every separated piece (XERK-2958) | 0.747 | 0.671 | 0.597 |
-| no separation (overlap decoded as the mix) | 0.795 | 0.588 | 0.445 |
-| stream correlation ≥ 0.4, else the mix | 0.783 | 0.609 | 0.469 |
-| avg_logprob ≥ −0.4, else dropped | 0.805 | 0.629 | 0.560 |
-| **avg_logprob ≥ −0.5, else dropped — shipped** | **0.801** | **0.638** | **0.570** |
-| avg_logprob ≥ −0.5, else the mix | 0.799 | 0.655 | 0.551 |
-| avg_logprob ≥ −0.6, else dropped | 0.787 | 0.651 | 0.580 |
+| keep every separated piece (XERK-2958) | 0.744 | 0.674 | 0.599 |
+| no separation (overlap decoded as the mix) | 0.792 | 0.591 | 0.446 |
+| stream correlation ≥ 0.4, else the mix (pre-XERK-3017 run) | 0.783 | 0.609 | 0.469 |
+| avg_logprob ≥ −0.4, else dropped | 0.801 | 0.633 | 0.561 |
+| **avg_logprob ≥ −0.5, else dropped — shipped** | **0.798** | **0.641** | **0.571** |
+| avg_logprob ≥ −0.5, else the mix | 0.796 | 0.659 | 0.553 |
+| avg_logprob ≥ −0.6, else dropped | 0.784 | 0.654 | 0.581 |
 
-- s1 and s3 are unchanged by every logprob gate (s1 separates nothing at the 1.5 s floor; s3's
+- s1 (0.935 / 0.899 / 0.793) and s3 (0.907 / 0.897 / 0.680) are unchanged by every logprob gate (s1 separates nothing at the 1.5 s floor; s3's
   two separated pieces decode at −0.25 and −0.17).
 - On p1, separated decodes under −0.5 had 36 of 93 words right (39 %); above, 314 of 377 (83 %).
 - Stream correlation does not tell invented from real: every threshold trades attribution for
