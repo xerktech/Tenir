@@ -238,6 +238,15 @@ def test_recorder_keeps_every_decode_and_captions_nothing(tmp_path: Path) -> Non
     assert t.rows[0]["turn"] is t.rows[1]["turn"]
     assert t.rows[0]["turn"]["text"] == "mezcla" and "turn" not in t.rows[2]
     assert t.unlabelled == 1
+
+    # Every piece under _MIN_PIECE_MS: shipped captions the turn whole, so it is recorded
+    # as one unlabelled raw-span piece rather than lost.
+    tiny = [Piece(1, 0, 100, True, short_sep), Piece(2, 0, 100, True, short_sep)]
+    before = len(t.rows)
+    asyncio.run(t._finalize_pieces(pcm, 20000, tiny))
+    assert [
+        (r["speaker"], r["overlap"], r["mix"]["text"]) for r in t.rows[before:]
+    ] == [(None, False, "mezcla")]
     with wave.open(str(tmp_path / t.rows[1]["sep"]["wav"]), "rb") as w:
         assert w.getnframes() == dg.SR
 
@@ -294,6 +303,11 @@ def test_a_turn_with_no_piece_left_is_captioned_whole() -> None:
     ]
     caps = dg.captions(gated, "sep", -0.5)
     assert [(c["text"], c.get("whole_turn")) for c in caps] == [("todo el turno", True)]
+    # The whole-turn caption spans the turn, to its last piece's end.
+    longer = [gated[0], {**gated[1], "end_ms": 5000}]
+    assert [(c["start_ms"], c["end_ms"]) for c in dg.captions(longer, "sep", -0.5)] == [
+        (0, 5000)
+    ]
     # One piece through: no whole-turn caption.
     assert _texts(gated, gate=-0.85) == ["también"]
     # A record without the turn decode can't model it: nothing, not a guess.
@@ -312,8 +326,10 @@ def test_a_per_language_gate_applies_its_own_threshold() -> None:
     truth = {
         "mixes": [{"start_ms": 0, "end_ms": 3000, "refs": [{"text": "hola amigo"}]}]
     }
-    r = dg.replay(pieces, truth, {"es": -0.8})["policies"]
+    r = dg.replay(pieces, truth, [("es", -0.8), ("es", -0.6)])["policies"]
     assert r["sep gate -0.5, es at -0.8"]["precision"] == 1.0
+    # Several thresholds for one language are each scored.
+    assert r["sep gate -0.5, es at -0.6"]["words"] == 0
 
 
 def test_a_reference_word_is_credited_once_however_many_captions_repeat_it() -> None:

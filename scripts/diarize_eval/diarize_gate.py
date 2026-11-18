@@ -178,10 +178,12 @@ def _credit(left: list[Counter], mixes: list[dict], c: dict, text: str) -> int:
 
 
 def replay(
-    pieces: list[dict], truth: dict | None, lang_gates: dict[str, float] | None = None
+    pieces: list[dict],
+    truth: dict | None,
+    lang_gates: list[tuple[str, float]] | None = None,
 ) -> dict:
     """Drop counts per detected language; with ``truth``, precision / recall per policy and
-    separated-decode accuracy by avg_logprob band. ``lang_gates`` adds, per language, a
+    separated-decode accuracy by avg_logprob band. ``lang_gates`` adds, per (language, threshold), a
     policy with the shipped threshold for every other language and that one for it."""
     sep = [p for p in pieces if _decoded(p.get("sep"))]
     report: dict = {"pieces": len(pieces), "separated": len(sep), "by_lang": {}}
@@ -232,7 +234,7 @@ def replay(
     for g in GATES:
         shipped = " (shipped)" if g == SHIPPED_GATE else ""
         policies[f"sep gate {g}{shipped}"] = ("sep", g)
-    for lang, cut in (lang_gates or {}).items():
+    for lang, cut in lang_gates or []:
         policies[f"sep gate {SHIPPED_GATE}, {lang} at {cut}"] = (
             "sep",
             {"*": SHIPPED_GATE, lang: cut},
@@ -297,6 +299,7 @@ def build_mixes(
             and (p["mix"].get("avg_logprob") or -9) >= args.ref_logprob
             and args.min_s * 1000 <= p["end_ms"] - p["start_ms"] <= args.max_s * 1000
             and len(words(p["mix"]["text"])) >= 2
+            and p["speaker"] is not None  # an unlabelled turn: whose voice is unknown
         ):
             by_speaker[p["speaker"]].append(p)
     for clips in by_speaker.values():
@@ -399,7 +402,9 @@ def main(argv: list[str] | None = None) -> None:
             [load(p) for p in args.pieces],
             [json.loads(t.read_text()) for t in args.truth] if args.truth else None,
         )
-        lang_gates = {k: float(v) for k, v in (g.split("=", 1) for g in args.lang_gate)}
+        lang_gates = [
+            (k, float(v)) for k, v in (g.split("=", 1) for g in args.lang_gate)
+        ]
         json.dump(
             replay(pieces, truth, lang_gates), sys.stdout, ensure_ascii=False, indent=1
         )

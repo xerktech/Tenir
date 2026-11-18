@@ -91,6 +91,21 @@ class Recorder(StreamingTranscriber):
             if piece.audio is not None:
                 row["sep"] = await self._decode(piece.audio, f"{n}.sep.wav")
             self.rows.append(row)
+        if turn is None:
+            # Every piece under _MIN_PIECE_MS: the shipped code captions the turn whole,
+            # unlabelled. Record it as one raw-span piece (never gated), speaker unknown.
+            n = len(self.rows)
+            self.rows.append(
+                {
+                    "n": n,
+                    "turn_start_ms": start,
+                    "start_ms": start,
+                    "end_ms": start + len(pcm) * 1000 // (SR * 2),
+                    "speaker": None,
+                    "overlap": False,
+                    "mix": await self._decode(pcm, f"{n}.mix.wav"),
+                }
+            )
         return True  # nothing captioned: the replay decides what would have been
 
     async def _finalize_turn(
