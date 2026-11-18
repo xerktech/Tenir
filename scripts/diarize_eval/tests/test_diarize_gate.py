@@ -133,6 +133,7 @@ def test_mixes_pair_confident_solo_pieces_of_different_speakers(tmp_path: Path) 
             (1, -0.1, False),
             (2, -0.9, False),
             (3, -0.1, True),
+            (None, -0.1, False),  # an unlabelled whole turn: whose voice is unknown
         ]
     ):
         _wav(src / f"{n}.mix.wav", rng.normal(0, 1000, 2 * dg.SR))
@@ -151,7 +152,8 @@ def test_mixes_pair_confident_solo_pieces_of_different_speakers(tmp_path: Path) 
     out = tmp_path / "mixes"
     dg.main(["mixes", str(src / "pieces.jsonl"), str(out), "--seed", "3"])
     truth = json.loads((out / "0" / "truth.json").read_text())
-    # Only pieces 0-2 qualify (3 is unsure, 4 overlapped); one pair needs two speakers.
+    # Only pieces 0-2 qualify (3 is unsure, 4 overlapped, 5 unlabelled); one pair needs
+    # two speakers.
     assert len(truth["mixes"]) == 1
     assert {r["speaker"] for r in truth["mixes"][0]["refs"]} == {1, 2}
     with wave.open(str(out / "0" / "session.wav"), "rb") as w:
