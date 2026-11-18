@@ -175,3 +175,74 @@ recorded finals exactly, repeat runs gave identical numbers, and a live run with
   slower than real time, under load), so p1's 43 separated pieces were out of reach. A GPU run
   is the next step if precision has to go higher than the gate gives.
 
+
+## Per-language gate on real Spanish overlap (XERK-3069)
+
+Question: the −0.5 gate cost Spanish/Portuguese recall on FLEURS; should the threshold depend
+on the decode's detected language? Measured on the Nov 14 dinner (3 recordings, 22.7 min,
+Spanish + English, 6+ people). There is no real Portuguese: its `pt` turns are misdetected
+Spanish, so Portuguese stays measured on FLEURS only. Local CPU diarizer (same code and models
+as the deployed one), real Whisper large-v3-turbo.
+
+**Decision: keep one threshold (−0.5).** On real voices the shipped gate scores best of every
+policy measured; any lower Spanish threshold lowers precision and recall both.
+
+Real overlap (`diarize_pieces.py` on the recordings; no word truth):
+
+- 993 pieces, 350 separated decodes. The gate drops 262 (75 %): 109 of 148 tagged `es`,
+  137 of 184 tagged `en`. The room is hard even unseparated: 60 of 92 one-speaker stretches decode
+  under −0.5.
+- Detected language on a separated stream is unreliable: 82 Spanish raw spans gave a stream
+  tagged another language (71 `en`, 4 `pt`, 2 `id`, one each `pl`/`tr`/`ru`/`fr`/`it`); the
+  raw-span decode shares 0–12 % of their words.
+- Words of a separated decode also heard in its turn's raw decode (`replay` `sep_heard_in_raw`; a lower bound:
+  the raw decode misses the quieter voice):
+
+  | separated tag / raw span | −0.3…−0.5 | −0.5…−0.8 | < −0.8 |
+  |---|---|---|---|
+  | `es` / `es` | 65 % (23) | 46 % (44) | 33 % (40) |
+  | `en` / `en` | 75 % (16) | 38 % (22) | 20 % (33) |
+  | `en` / `es` | 5 % (3) | 9 % (13) | 5 % (53) |
+
+- Read by hand, 30 random Spanish-span pieces between −0.8 and −0.5: of the 21 tagged `es`,
+  about 16 are right or mostly right; of the 9 tagged otherwise, 7 are invented.
+
+Real-voice mixtures (`diarize_gate.py mixes` → `diarize_sepmix.py`): the recordings'
+one-speaker turns at avg_logprob ≥ −0.6, chained per speaker to ~4 s and summed in pairs
+(±4 dB, ≤ 0.5 s offset), 6 seeds, 54 mixtures, 80 separated decodes with text. The reference is
+each turn's own decode, not a hand transcript. Mostly Spanish over Spanish (10 % es+en).
+`diarize_pieces.py` on these sessions separated only 8 pieces (Sortformer seldom hears two
+new voices in a minute), so SepFormer runs directly on each mixture, as the server calls it.
+Replay models the shipped fallback: a turn none of whose pieces emits is captioned whole,
+unlabelled (`_finalize_pieces` returns False); here the whole turn is the mixture.
+
+| policy (`replay --lang-gate es=T`) | precision | recall | whole-turn captions |
+|---|---|---|---|
+| no separation (mixed decode) | 0.593 | 0.246 | 0 |
+| keep every separated piece | 0.289 | 0.192 | 2 |
+| gate −0.4 | 0.591 | 0.251 | 45 |
+| **gate −0.5 — shipped** | **0.598** | **0.256** | 44 |
+| gate −0.5, `es` at −0.6 | 0.583 | 0.244 | 42 |
+| gate −0.5, `es` at −0.8 | 0.512 | 0.218 | 31 |
+| gate −0.5, `es` at −1.0 | 0.486 | 0.206 | 22 |
+| gate −0.5, `es` ungated | 0.447 | 0.205 | 14 |
+| gate −0.5, else the piece's mixed span | 0.598 | 0.256 | 2 |
+
+- Separated decodes tagged `es` were 43 % right between −0.8 and −0.5 and 40 % under −0.8;
+  tagged `en` 32 % and 3 %; every other tag ≤ 7 % (a word both streams carry counts once).
+  FLEURS (60 % es) and English p1 (39 %) agree: at a given avg_logprob, Spanish separated
+  speech is right more often than English.
+- But under 50 % right is still worse than the whole-turn caption it displaces: in 44 of 54
+  mixtures the shipped gate drops both streams and captions the mixture, and every lower
+  Spanish threshold swaps some of those for separated lines that are mostly wrong.
+- The FLEURS recall loss came from synthetic sessions; on real voices the gate's whole-turn
+  fallback already brings recall to the no-separation level. Captioning a gated piece's own
+  mixed span instead scores the same.
+- SepFormer (whamr16k) does poorly on these voices: keeping every separated piece is worse
+  than no separation on both precision and recall (follow-up XERK-3071).
+- Limits: references are Whisper's own solo decodes (accuracy unknown, avg_logprob ≥ −0.6);
+  ~6 voices from one dinner; mixtures fully overlapped, which is harder than the real
+  recordings' mix of edges and long overlaps; attribution is not measured. The whole-turn
+  fallback is modelled from the mixture's decode; a real VAD turn may span more audio.
+  `diarize_pieces.py` records the whole-turn decode for future real runs; the Nov 14 runs
+  above predate it, so their counts carry no caption scoring.
