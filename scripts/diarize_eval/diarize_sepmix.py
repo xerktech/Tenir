@@ -95,6 +95,7 @@ def main() -> None:
                         "speaker": k + 1,
                         "overlap": True,
                         "mix": mix,
+                        "turn": mix,  # the mixture is the whole turn
                         "sep": _decode(engine, _scaled(s)),
                     }
                 )

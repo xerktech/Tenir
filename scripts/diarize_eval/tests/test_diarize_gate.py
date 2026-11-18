@@ -92,17 +92,23 @@ def test_replay_scores_policies_and_bands_against_mix_truth() -> None:
         "dropped": {"-0.4": 1, "-0.5": 1, "-0.6": 1, "-0.7": 1, "-0.8": 1, "-1.0": 0},
     }
     keep_all = r["policies"]["sep gate None"]
-    assert keep_all == {"precision": 0.5, "recall": round(3 / 7, 3), "words": 6}
-    assert r["policies"]["sep gate -0.5"] == {
+    assert keep_all == {
+        "precision": 0.5,
+        "recall": round(3 / 7, 3),
+        "words": 6,
+        "whole_turns": 0,
+    }
+    assert r["policies"]["sep gate -0.5 (shipped)"] == {
         "precision": 1.0,
         "recall": round(3 / 7, 3),
         "words": 3,
+        "whole_turns": 0,
     }
-    # Each reference word is credited once, however many captions repeat it.
     assert r["policies"]["mix (no separation)"] == {
         "precision": 1.0,
         "recall": round(3 / 7, 3),
         "words": 3,
+        "whole_turns": 0,
     }
     assert r["sep_word_accuracy"]["es"] == {">=-0.3": "3/3 (100%)", "<-0.8": "0/3 (0%)"}
 
@@ -200,7 +206,14 @@ def test_recorder_keeps_every_decode_and_captions_nothing(tmp_path: Path) -> Non
     )
     pcm = (np.full(dg.SR * 2, 16000, dtype=np.int16)).tobytes()
     sep = (np.full(dg.SR, 3000, dtype=np.int16)).tobytes()
-    pieces = [Piece(1, 0, 1000, False, None), Piece(2, 1000, 2000, True, sep)]
+    short_sep = (np.full(dg.SR // 10, 3000, dtype=np.int16)).tobytes()  # 100 ms
+    pieces = [
+        Piece(1, 0, 1000, False, None),
+        Piece(2, 1000, 2000, True, sep),
+        # A 1 s span whose separated stream is under _MIN_PIECE_MS: the shipped code
+        # skips it (it decodes the stream, not the span), so the record does too.
+        Piece(4, 1000, 2000, True, short_sep),
+    ]
 
     async def go() -> bool:
         done = await t._finalize_pieces(pcm, 5000, pieces)
@@ -220,5 +233,120 @@ def test_recorder_keeps_every_decode_and_captions_nothing(tmp_path: Path) -> Non
     assert t.rows[1]["sep"]["avg_logprob"] == -0.7
     assert (t.rows[1]["start_ms"], t.rows[1]["end_ms"]) == (6000, 7000)
     assert t.rows[2]["end_ms"] == 11000
+    # One whole-turn decode per multi-speaker turn, on every piece of it; none on a
+    # one-speaker turn (that turn's own decode is its "mix").
+    assert t.rows[0]["turn"] is t.rows[1]["turn"]
+    assert t.rows[0]["turn"]["text"] == "mezcla" and "turn" not in t.rows[2]
+    assert t.unlabelled == 1
     with wave.open(str(tmp_path / t.rows[1]["sep"]["wav"]), "rb") as w:
         assert w.getnframes() == dg.SR
+
+
+def _texts(pieces: list[dict], policy: str = "sep", gate=None) -> list[str]:
+    return [c["text"] for c in dg.captions(pieces, policy, gate)]
+
+
+def test_replay_shares_the_shipped_gate_and_dedup() -> None:
+    from api.stt import streaming
+
+    assert dg.SHIPPED_GATE == streaming._MIN_SEPARATED_LOGPROB
+    assert dg._repeats is streaming._repeats
+
+
+def test_a_piece_exactly_at_the_threshold_is_kept() -> None:
+    pieces = [_piece(0, 0, 3000, 1, _dec("m"), _dec("justo en el borde", lp=-0.5))]
+    assert _texts(pieces, gate=-0.5) == ["justo en el borde"]
+
+
+def test_dedup_needs_an_overlapped_piece_overlapping_in_time_in_one_turn() -> None:
+    same = "la casa es grande"
+    # Raw-span pieces are never de-duplicated.
+    raw = [
+        _piece(0, 0, 3000, 1, _dec(same), overlap=False),
+        _piece(1, 0, 3000, 2, _dec(same), overlap=False),
+    ]
+    assert _texts(raw) == [same, same]
+    # Overlapped pieces that don't overlap in time are both kept.
+    apart = [
+        _piece(0, 0, 3000, 1, _dec("m"), _dec(same)),
+        _piece(1, 3000, 6000, 2, _dec("m"), _dec(same)),
+    ]
+    assert _texts(apart) == [same, same]
+    # The earlier captions are per turn: the next turn may say the same.
+    turns = [
+        _piece(0, 0, 3000, 1, _dec("m"), _dec(same), turn=0),
+        _piece(1, 0, 3000, 2, _dec("m"), _dec(same), turn=1),
+    ]
+    assert _texts(turns) == [same, same]
+    # Punctuation and case don't hide a repeat (streaming._tokens normalisation).
+    noisy = [
+        _piece(0, 0, 3000, 1, _dec("m"), _dec(same)),
+        _piece(1, 0, 3000, 2, _dec("m"), _dec("¿La CASA, es grande?")),
+    ]
+    assert _texts(noisy) == [same]
+
+
+def test_a_turn_with_no_piece_left_is_captioned_whole() -> None:
+    whole = _dec("todo el turno")
+    gated = [
+        {**_piece(0, 0, 3000, 1, _dec("m"), _dec("inventado", lp=-0.9)), "turn": whole},
+        {**_piece(1, 0, 3000, 2, _dec("m"), _dec("también", lp=-0.8)), "turn": whole},
+    ]
+    caps = dg.captions(gated, "sep", -0.5)
+    assert [(c["text"], c.get("whole_turn")) for c in caps] == [("todo el turno", True)]
+    # One piece through: no whole-turn caption.
+    assert _texts(gated, gate=-0.85) == ["también"]
+    # A record without the turn decode can't model it: nothing, not a guess.
+    assert (
+        _texts([{k: v for k, v in p.items() if k != "turn"} for p in gated], gate=-0.5)
+        == []
+    )
+
+
+def test_a_per_language_gate_applies_its_own_threshold() -> None:
+    pieces = [
+        _piece(0, 0, 3000, 1, _dec("m"), _dec("hola amigo", lp=-0.7, lang="es")),
+        _piece(1, 0, 3000, 2, _dec("m"), _dec("hello friend", lp=-0.7, lang="en")),
+    ]
+    assert _texts(pieces, gate={"*": -0.5, "es": -0.8}) == ["hola amigo"]
+    truth = {
+        "mixes": [{"start_ms": 0, "end_ms": 3000, "refs": [{"text": "hola amigo"}]}]
+    }
+    r = dg.replay(pieces, truth, {"es": -0.8})["policies"]
+    assert r["sep gate -0.5, es at -0.8"]["precision"] == 1.0
+
+
+def test_a_reference_word_is_credited_once_however_many_captions_repeat_it() -> None:
+    truth = {
+        "mixes": [{"start_ms": 0, "end_ms": 3000, "refs": [{"text": "hola amigo"}]}]
+    }
+    # Raw-span pieces are not de-duplicated, so both captions stand.
+    pieces = [
+        _piece(0, 0, 3000, 1, _dec("hola amigo"), overlap=False),
+        _piece(1, 0, 3000, 2, _dec("hola amigo"), overlap=False),
+    ]
+    r = dg.replay(pieces, truth)["policies"]["mix (no separation)"]
+    assert (r["precision"], r["recall"]) == (0.5, 1.0)
+    # The same goes for separated-decode accuracy: a voice in both streams counts once.
+    leaked = [
+        _piece(0, 0, 3000, 1, _dec("m"), _dec("hola amigo", lp=-0.2)),
+        _piece(1, 0, 3000, 2, _dec("m"), _dec("hola amigo", lp=-0.2)),
+    ]
+    assert dg.replay(leaked, truth)["sep_word_accuracy"]["es"] == {
+        ">=-0.3": "2/4 (50%)"
+    }
+
+
+def test_without_truth_replay_reports_words_the_raw_span_also_heard() -> None:
+    pieces = [
+        _piece(0, 0, 3000, 1, _dec("hola amigo mío"), _dec("hola amigo tuyo", lp=-0.6)),
+        _piece(1, 0, 3000, 2, _dec("qué tal"), _dec("good night", lp=-0.9, lang="en")),
+        _piece(2, 0, 3000, 2, _dec("hola"), _dec("hola", lp=-0.6), turn=1),
+    ]
+    r = dg.replay(pieces, None)
+    assert "policies" not in r
+    # Heard anywhere in the same turn's raw decodes, never in another turn's.
+    assert r["sep_heard_in_raw"] == {
+        "en/es <-0.8": "0/2 (0%) in 1 pieces",
+        "es/es >=-0.8": "3/4 (75%) in 2 pieces",
+    }

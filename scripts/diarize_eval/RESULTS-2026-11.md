@@ -184,9 +184,8 @@ Spanish + English, 6+ people). There is no real Portuguese: its `pt` turns are m
 Spanish, so Portuguese stays measured on FLEURS only. Local CPU diarizer (same code and models
 as the deployed one), real Whisper large-v3-turbo.
 
-**Decision: keep one threshold (−0.5).** Lowering it for Spanish adds words that are mostly
-wrong. On real voices, falling back to the mixed decode for a gated piece is the bigger lever
-(below).
+**Decision: keep one threshold (−0.5).** On real voices the shipped gate scores best of every
+policy measured; any lower Spanish threshold lowers precision and recall both.
 
 Real overlap (`diarize_pieces.py` on the recordings; no word truth):
 
@@ -194,8 +193,9 @@ Real overlap (`diarize_pieces.py` on the recordings; no word truth):
   137 of 184 tagged `en`. The room is hard even unseparated: 60 of 92 one-speaker stretches decode
   under −0.5.
 - Detected language on a separated stream is unreliable: 82 Spanish raw spans gave a stream
-  tagged `en`/`pl`/`id`/`it`; the raw-span decode shares 0–12 % of their words.
-- Words of a separated decode also heard in its turn's raw decode (a lower bound on accuracy:
+  tagged another language (71 `en`, 4 `pt`, 2 `id`, one each `pl`/`tr`/`ru`/`fr`/`it`); the
+  raw-span decode shares 0–12 % of their words.
+- Words of a separated decode also heard in its turn's raw decode (`replay` `sep_heard_in_raw`; a lower bound:
   the raw decode misses the quieter voice):
 
   | separated tag / raw span | −0.3…−0.5 | −0.5…−0.8 | < −0.8 |
@@ -213,30 +213,36 @@ one-speaker turns at avg_logprob ≥ −0.6, chained per speaker to ~4 s and sum
 each turn's own decode, not a hand transcript. Mostly Spanish over Spanish (10 % es+en).
 `diarize_pieces.py` on these sessions separated only 8 pieces (Sortformer seldom hears two
 new voices in a minute), so SepFormer runs directly on each mixture, as the server calls it.
+Replay models the shipped fallback: a turn none of whose pieces emits is captioned whole,
+unlabelled (`_finalize_pieces` returns False); here the whole turn is the mixture.
 
-| policy | precision | recall | caption words |
+| policy (`replay --lang-gate es=T`) | precision | recall | whole-turn captions |
 |---|---|---|---|
-| no separation (mixed decode) | 0.593 | 0.246 | 575 |
-| keep every separated piece | 0.284 | 0.185 | 901 |
-| **gate −0.5, dropped — shipped** | **0.782** | **0.031** | 55 |
-| gate −0.5, `es` at −0.6 | 0.654 | 0.038 | |
-| gate −0.5, `es` at −0.8 | 0.530 | 0.084 | |
-| gate −0.5, `es` at −1.0 | 0.495 | 0.133 | |
-| gate −0.5, `es` ungated | 0.452 | 0.173 | |
-| gate −0.5, else the mixed decode | 0.601 | 0.249 | 572 |
+| no separation (mixed decode) | 0.593 | 0.246 | 0 |
+| keep every separated piece | 0.289 | 0.192 | 2 |
+| gate −0.4 | 0.591 | 0.251 | 45 |
+| **gate −0.5 — shipped** | **0.598** | **0.256** | 44 |
+| gate −0.5, `es` at −0.6 | 0.583 | 0.244 | 42 |
+| gate −0.5, `es` at −0.8 | 0.512 | 0.218 | 31 |
+| gate −0.5, `es` at −1.0 | 0.486 | 0.206 | 22 |
+| gate −0.5, `es` ungated | 0.447 | 0.205 | 14 |
+| gate −0.5, else the piece's mixed span | 0.598 | 0.256 | 2 |
 
-- Separated decodes tagged `es` were 45 % right between −0.8 and −0.5 and 43 % under −0.8; tagged
-  `en` 32 % and 4 %; every other tag ≤ 7 %. FLEURS (60 % es) and English p1 (39 %) agree: at a
-  given avg_logprob, Spanish separated speech is right more often.
-- But every Spanish threshold below −0.5 adds captions under 50 % right, so it trades precision
-  for recall at worse than one-for-one. No per-language point beats the shipped gate or the
-  mixed fallback.
+- Separated decodes tagged `es` were 43 % right between −0.8 and −0.5 and 40 % under −0.8;
+  tagged `en` 32 % and 3 %; every other tag ≤ 7 % (a word both streams carry counts once).
+  FLEURS (60 % es) and English p1 (39 %) agree: at a given avg_logprob, Spanish separated
+  speech is right more often than English.
+- But under 50 % right is still worse than the whole-turn caption it displaces: in 44 of 54
+  mixtures the shipped gate drops both streams and captions the mixture, and every lower
+  Spanish threshold swaps some of those for separated lines that are mostly wrong.
+- The FLEURS recall loss came from synthetic sessions; on real voices the gate's whole-turn
+  fallback already brings recall to the no-separation level. Captioning a gated piece's own
+  mixed span instead scores the same.
 - SepFormer (whamr16k) does poorly on these voices: keeping every separated piece is worse
-  than no separation on both precision and recall.
-- Gate-else-mix keeps the gate's protection against invented lines and gets recall back to
-  no-separation level. XERK-3006 rejected it on p1 (same precision, lower attribution, a
-  second decode). Attribution is not measurable here (the mixtures' speaker ids come from
-  the diarizer), so it stays a follow-up, not a change.
+  than no separation on both precision and recall (follow-up XERK-3071).
 - Limits: references are Whisper's own solo decodes (accuracy unknown, avg_logprob ≥ −0.6);
   ~6 voices from one dinner; mixtures fully overlapped, which is harder than the real
-  recordings' mix of edges and long overlaps.
+  recordings' mix of edges and long overlaps; attribution is not measured. The whole-turn
+  fallback is modelled from the mixture's decode; a real VAD turn may span more audio.
+  `diarize_pieces.py` records the whole-turn decode for future real runs; the Nov 14 runs
+  above predate it, so their counts carry no caption scoring.

@@ -4,17 +4,16 @@ Drives the api's ``StreamingTranscriber`` over a WAV with the diarizer on, exact
 ``diarize_run.py`` does, but instead of captioning a multi-speaker turn it records, per
 piece: its span, label, whether it is overlapped, and the decode of every audio the gate
 could choose between — the separated stream (when the diarizer sent one) and the turn's own
-samples for the same span ("mix"). Each decode keeps text, detected language and Whisper's
-``avg_logprob``. Pieces' audio is written next to the JSONL, so a replay can build
-references from solo pieces without another diarizer pass.
+samples for the same span ("mix") — plus, once per turn, the whole turn ("turn"), which the
+shipped code captions unlabelled when no piece emits. One-speaker turns are recorded as solo
+pieces. Each decode keeps text, detected language and Whisper's ``avg_logprob``. Pieces'
+audio is written next to the JSONL, so ``diarize_gate.py mixes`` can build references from
+solo pieces without another diarizer pass.
 
     python diarize_pieces.py dinner.wav out/dinner --stt $STT --stt-model parakeet \
         --diarizer http://127.0.0.1:8790 --diarizer-timeout 300
 
-Inside the api pod the diarizer and LiteLLM keys come from its own env
-(``API_DIARIZER_KEY``, ``API_LITELLM_API_KEY``), so no secret leaves it.
-
-Output: ``out/dinner/pieces.jsonl`` and ``out/dinner/<n>.{sep,mix}.wav``. Recordings stay
+Output: ``out/dinner/pieces.jsonl`` and ``out/dinner/<n>.{sep,mix,turn}.wav``. Recordings stay
 outside the repo (``.claude/rules/diarizer.md``).
 """
 
@@ -48,6 +47,7 @@ class Recorder(StreamingTranscriber):
         super().__init__(*args, **kwargs)
         self.out = out
         self.rows: list[dict] = []
+        self.unlabelled = 0
 
     async def _decode(self, pcm: bytes, name: str) -> dict:
         sf.write(self.out / name, np.frombuffer(pcm, dtype=np.int16), SR)
@@ -66,11 +66,18 @@ class Recorder(StreamingTranscriber):
     async def _finalize_pieces(
         self, pcm: bytes, start: int, pieces: list[Piece]
     ) -> bool:
+        # The shipped code captions the whole turn, unlabelled, when no piece emits (every
+        # piece gated or blank); the replay needs that decode to model it.
+        turn = None
         for piece in pieces:
             mix = pcm[_ms_to_bytes(piece.start_ms) : _ms_to_bytes(piece.end_ms)]
-            if len(mix) < _ms_to_bytes(streaming._MIN_PIECE_MS):
+            # Same floor as _finalize_pieces: on the audio it would decode.
+            audio = piece.audio if piece.audio is not None else mix
+            if len(audio) < _ms_to_bytes(streaming._MIN_PIECE_MS):
                 continue
             n = len(self.rows)
+            if turn is None:
+                turn = await self._decode(pcm, f"{n}.turn.wav")
             row = {
                 "n": n,
                 "turn_start_ms": start,
@@ -79,6 +86,7 @@ class Recorder(StreamingTranscriber):
                 "speaker": piece.speaker,
                 "overlap": piece.overlap,
                 "mix": await self._decode(mix, f"{n}.mix.wav"),
+                "turn": turn,
             }
             if piece.audio is not None:
                 row["sep"] = await self._decode(piece.audio, f"{n}.sep.wav")
@@ -94,8 +102,12 @@ class Recorder(StreamingTranscriber):
         speaker: str | None,
     ) -> None:
         # A one-speaker turn: recorded as a solo piece (the clean references for
-        # ``diarize_gate.py mixes``); a turn the diarizer did not label is skipped.
-        if not has_speech or speaker is None:
+        # ``diarize_gate.py mixes``); a turn the diarizer did not label is skipped and
+        # counted, so a degraded diarizer run says so.
+        if not has_speech:
+            return
+        if speaker is None:
+            self.unlabelled += 1
             return
         n = len(self.rows)
         self.rows.append(
@@ -142,6 +154,10 @@ async def run(args: argparse.Namespace) -> list[dict]:
     await t.flush()
     await t.close()
     await pump
+    if t.unlabelled:
+        print(
+            f"warning: {t.unlabelled} speech turns had no diarizer label (not recorded)"
+        )
     return t.rows
 
 

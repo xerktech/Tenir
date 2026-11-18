@@ -37,9 +37,11 @@ paths:
   nothing). Raw-span pieces are never gated.
   - Tests: `test_diarize.py::test_a_separated_stream_whisper_is_unsure_of_is_not_captioned`.
   - One threshold for every language, on purpose (XERK-3069). Spanish separated decodes are
-    right more often at a given avg_logprob, but below −0.5 they are still under 50 % right,
-    and the detected language of a separated stream is often wrong. Re-measure with
-    `diarize_gate.py replay` before keying it on language.
+    right more often at a given avg_logprob, but below −0.5 still under 50 %, so a lower `es`
+    threshold lost precision and recall on real voices. Re-measure with
+    `diarize_gate.py replay --lang-gate es=T` before keying it on language.
+  - A gate replay must model the whole-turn caption when no piece of a turn emits
+    (`_finalize_pieces` returns False); without it the shipped gate scored recall 0.03, not 0.26.
 - `SortformerStream` must stay equivalent to NeMo's whole-file `forward_streaming`. It commits
   a chunk only with its full right context, and scores the tail on a deep copy of the state.
   Feature frames come from audio with 2 frames of margin (center=True, n_fft 512).
