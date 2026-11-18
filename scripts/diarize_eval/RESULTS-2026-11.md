@@ -246,3 +246,39 @@ unlabelled (`_finalize_pieces` returns False); here the whole turn is the mixtur
   fallback is modelled from the mixture's decode; a real VAD turn may span more audio.
   `diarize_pieces.py` records the whole-turn decode for future real runs; the Nov 14 runs
   above predate it, so their counts carry no caption scoring.
+
+## MossFormer2 in place of SepFormer on real voices (XERK-3071)
+
+**Decision: keep SepFormer (`speechbrain/sepformer-whamr16k`).** MossFormer2 (ClearerVoice
+`MossFormer2_SS_16K`) separates real dinner voices far better, but behind the shipped −0.5 gate
+it scores no better, and no gate setting beats SepFormer's shipped precision.
+
+Same recipe as XERK-3069, rebuilt from the Nov 14 recordings: `diarize_pieces.py` with the
+deployed GPU diarizer and Whisper large-v3-turbo (1010 pieces, 379 separated; XERK-3069 had
+993 / 350), `mixes --ref-logprob -0.6`, seeds 1–6: 49 mixtures in 12 non-empty dirs, 98
+separated decodes per separator. Both separators ran on CPU over the same mixtures
+(`diarize_sepmix.py --separator … --out-name …`), scored with `replay --truth`.
+
+| policy | SepFormer P / R | MossFormer2 P / R |
+|---|---|---|
+| no separation (mixed decode) | 0.571 / 0.200 | 0.571 / 0.200 |
+| keep every separated piece | 0.301 / 0.209 | 0.440 / 0.278 |
+| **gate −0.5 — shipped** | **0.606 / 0.205** | 0.566 / 0.215 |
+| gate −0.6 | 0.595 / 0.204 | 0.577 / 0.230 |
+| gate −0.7 | 0.556 / 0.196 | 0.592 / 0.245 |
+| gate −0.8 | 0.471 / 0.210 | 0.575 / 0.257 |
+
+- Kept whole, MossFormer2's streams are much better than SepFormer's (+0.14 precision,
+  +0.07 recall) and beat no separation on recall. More of its streams are tagged Spanish (49
+  vs 33), and its Spanish decodes at ≥ −0.5 had 72 % of words right (SepFormer 59 %).
+- Behind the shipped gate it lets more pieces through: +0.01 recall for −0.04 precision.
+- MossFormer2 at −0.7 is the best trade (0.592 / 0.245), but a paired bootstrap over the 12
+  dirs gives it vs SepFormer-shipped: precision −0.078…+0.052, recall −0.001…+0.075 (95 %).
+  That's no clear win on 49 mixtures.
+- Not measured: LibriSpeech p1 with MossFormer2, and its GPU latency in the diarizer. A
+  swap would also need a ClearerVoice loader in `diarizer/server.py` (it loads speechbrain
+  only), `clearvoice` in the image, and the gate retuned for it on p1 + s1/s3.
+- Speed: on CPU, MossFormer2 was ~8–11x slower than real time, and SepFormer ~4x faster
+  than MossFormer2.
+- Limits are XERK-3069's: Whisper's own solo decodes as reference, one dinner, fully
+  overlapped mixtures.
