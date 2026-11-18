@@ -151,6 +151,25 @@ recorded finals exactly, repeat runs gave identical numbers, and a live run with
   precision along the line to "no separation". Not shipped.
 - Falling back to the mix for a gated piece scores the same precision with lower attribution,
   and costs a second decode. Dropped instead.
+- Non-English (FLEURS test es_419 / pt_br laid out as LibriSpeech, built with p1's flags; FLEURS
+  has no speaker ids, so each "speaker" is a bucket of same-gender clips and only precision and
+  recall mean much here):
+
+  | session | policy | precision | recall |
+  |---|---|---|---|
+  | Spanish | keep every separated piece | 0.721 | 0.622 |
+  | Spanish | no separation | 0.810 | 0.594 |
+  | Spanish | **gate −0.5** | **0.809** | **0.586** |
+  | Portuguese | keep every separated piece | 0.637 | 0.550 |
+  | Portuguese | no separation | 0.733 | 0.533 |
+  | Portuguese | **gate −0.5** | **0.748** | **0.480** |
+
+  - Precision rises in both, as in English. But Whisper is less sure of real non-English
+    separated speech: pieces between −0.8 and −0.5 had 60 % (es) and 43 % (pt) of their words
+    right, against 39 % for every English piece under −0.5. So the gate costs more recall
+    there (pt falls below no separation).
+  - A per-language threshold is not worth it on this: the sessions are synthetic and about 30
+    separated pieces each. Retune on real Spanish/Portuguese overlap before splitting it.
 - MossFormer2 (ClearerVoice `MossFormer2_SS_16K`) in place of sepformer-whamr16k: s3 captions
   were identical. Not run on p1: on this host's CPU it took 283 s for 4 s of audio (about 70x
   slower than real time, under load), so p1's 43 separated pieces were out of reach. A GPU run
