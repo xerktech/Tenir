@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import unicodedata
 
@@ -158,4 +159,30 @@ class ParakeetEngine:
             text=text,
             words=words,
             language=body.get("language") or language,
+            avg_logprob=_avg_logprob(body.get("segments")),
         )
+
+
+def _avg_logprob(segments: object) -> float | None:
+    """Token-weighted mean of the segments' ``avg_logprob`` (vLLM / OpenAI verbose_json);
+    None when no segment carries one. Malformed entries are skipped, never raised on."""
+    total = weight = 0.0
+    for seg in segments if isinstance(segments, list) else []:
+        if not isinstance(seg, dict):
+            continue
+        lp = seg.get("avg_logprob")
+        if not isinstance(lp, (int, float)) or isinstance(lp, bool):
+            continue
+        try:
+            lp = float(lp)  # a huge JSON integer overflows here
+        except OverflowError:
+            continue
+        if not math.isfinite(lp):
+            continue
+        tokens = seg.get("tokens")
+        n = len(tokens) if isinstance(tokens, list) and tokens else 1
+        total += lp * n
+        weight += n
+    mean = total / weight if weight else None
+    # Finite scores can still overflow the weighted sum (1e308 + -1e308 → nan).
+    return mean if mean is not None and math.isfinite(mean) else None

@@ -207,6 +207,50 @@ def test_parakeet_requests_verbose_json_for_the_detected_language(
     assert result.words == []
 
 
+def test_parakeet_reports_whispers_token_weighted_confidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # XERK-3006 gates separated speech on it; vLLM sends avg_logprob per segment.
+    _fake_body(
+        monkeypatch,
+        {
+            "text": " one two",
+            "segments": [
+                {"avg_logprob": -0.2, "tokens": [1, 2, 3]},
+                {"avg_logprob": -1.0, "tokens": [4]},
+                {"avg_logprob": None, "tokens": [5]},
+                "junk",
+            ],
+        },
+    )
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
+    result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+    assert result.avg_logprob == pytest.approx(-0.4)
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        None,
+        [],
+        "x",
+        [{"avg_logprob": "bad"}],
+        [{"avg_logprob": True}],
+        [{"avg_logprob": -(10**400)}],  # overflows float(): must not fail the decode
+        [{"avg_logprob": float("-inf")}],
+        [{"avg_logprob": float("nan")}],
+        [{"avg_logprob": 1e308, "tokens": [1, 2]}, {"avg_logprob": -1e308, "tokens": [3, 4]}],
+    ],
+)
+def test_parakeet_without_segment_scores_reports_no_confidence(
+    monkeypatch: pytest.MonkeyPatch, segments: object
+) -> None:
+    _fake_body(monkeypatch, {"text": " hi there", "segments": segments})
+    engine = ParakeetEngine(endpoint="http://vllm-stt:8000/v1", model="parakeet")
+    result = engine.transcribe(np.zeros(SAMPLE_RATE // 10, dtype=np.float32), language=None)
+    assert result.text == "hi there" and result.avg_logprob is None
+
+
 def test_parakeet_composes_decomposed_accents(monkeypatch: pytest.MonkeyPatch) -> None:
     # A decomposed "Já" (J + a + U+0301) tokenised to "ja" in langid, so pt "Já, já."
     # (right away) read as laughter and "Já." as German (XERK-2181).

@@ -46,7 +46,7 @@ Single-speaker frames given the right speaker:
     0.874 → 0.783. The only place separation recovers words the mix loses.
 - Known limits:
   - Sustained 4-way talk is hard for one mic: about half the words come through credited correctly.
-  - p1's precision means about 1 word in 5 is garbled or invented there.
+  - Separated pieces Whisper is unsure of are dropped (XERK-3006, below); p1 precision 0.798.
   - Sortformer tracks at most 4 speakers.
 
 ## After QA fixes (planner tiling, absorb/join across overlaps)
@@ -124,3 +124,54 @@ End to end (real Whisper, the shipped transcriber, CPU diarizer):
   merged at 8–10 speakers.
 - No help when more than 4 talk within the same few seconds (p1-style parallel talk is still
   Sortformer-bound).
+
+## Gating separated captions (XERK-3006)
+
+One diarized run per session recorded, for every piece of every multi-speaker turn, the
+separated decode, the mixed-span decode, Whisper's verbose_json `avg_logprob` and the
+separated stream's energy/activity correlation; gates were then replayed offline through the
+same piece logic (de-dup included). Replaying "keep every separated piece" reproduces the
+recorded finals exactly, repeat runs gave identical numbers, and a live run with the gate on
+(XERK-3017 code, fingerprints on) scored p1 exactly as its replay did: 0.798 / 0.641 / 0.571.
+
+| p1 policy | precision | recall | attributed |
+|---|---|---|---|
+| keep every separated piece (XERK-2958) | 0.744 | 0.674 | 0.599 |
+| no separation (overlap decoded as the mix) | 0.792 | 0.591 | 0.446 |
+| stream correlation ≥ 0.4, else the mix (pre-XERK-3017 run) | 0.783 | 0.609 | 0.469 |
+| avg_logprob ≥ −0.4, else dropped | 0.801 | 0.633 | 0.561 |
+| **avg_logprob ≥ −0.5, else dropped — shipped** | **0.798** | **0.641** | **0.571** |
+| avg_logprob ≥ −0.5, else the mix | 0.796 | 0.659 | 0.553 |
+| avg_logprob ≥ −0.6, else dropped | 0.784 | 0.654 | 0.581 |
+
+- s1 (0.935 / 0.899 / 0.793) and s3 (0.907 / 0.897 / 0.680) are unchanged by every logprob gate (s1 separates nothing at the 1.5 s floor; s3's
+  two separated pieces decode at −0.25 and −0.17).
+- On p1, separated decodes under −0.5 had 36 of 93 words right (39 %); above, 314 of 377 (83 %).
+- Stream correlation does not tell invented from real: every threshold trades attribution for
+  precision along the line to "no separation". Not shipped.
+- Falling back to the mix for a gated piece scores the same precision with lower attribution,
+  and costs a second decode. Dropped instead.
+- Non-English (FLEURS test es_419 / pt_br laid out as LibriSpeech, built with p1's flags; FLEURS
+  has no speaker ids, so each "speaker" is a bucket of same-gender clips and only precision and
+  recall mean much here):
+
+  | session | policy | precision | recall |
+  |---|---|---|---|
+  | Spanish | keep every separated piece | 0.721 | 0.622 |
+  | Spanish | no separation | 0.810 | 0.594 |
+  | Spanish | **gate −0.5** | **0.809** | **0.586** |
+  | Portuguese | keep every separated piece | 0.637 | 0.550 |
+  | Portuguese | no separation | 0.733 | 0.533 |
+  | Portuguese | **gate −0.5** | **0.748** | **0.480** |
+
+  - Precision rises in both, as in English. But Whisper is less sure of real non-English
+    separated speech: pieces between −0.8 and −0.5 had 60 % (es) and 43 % (pt) of their words
+    right, against 39 % for every English piece under −0.5. So the gate costs more recall
+    there (pt falls below no separation).
+  - A per-language threshold is not worth it on this: the sessions are synthetic and about 30
+    separated pieces each. Retune on real Spanish/Portuguese overlap before splitting it.
+- MossFormer2 (ClearerVoice `MossFormer2_SS_16K`) in place of sepformer-whamr16k: s3 captions
+  were identical. Not run on p1: on this host's CPU it took 283 s for 4 s of audio (about 70x
+  slower than real time, under load), so p1's 43 separated pieces were out of reach. A GPU run
+  is the next step if precision has to go higher than the gate gives.
+

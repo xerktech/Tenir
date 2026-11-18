@@ -130,6 +130,14 @@ _MIN_PIECE_MS = 400
 # same span is one voice heard twice: the separator left it in both streams, or the raw
 # span of the other speaker carried it too. Real cross-talk shares almost no words.
 _DUPLICATE_PIECE_SHARE = 0.6
+# A separated piece Whisper decodes below this mean token log-probability is dropped
+# (XERK-3006): the separator's artefacts decode as fluent-looking lines nobody said. On
+# scripts/diarize_eval p1 (two conversations at once) separated decodes under -0.5 had
+# 39 % of their words right, those above 83 %; the gate raised caption precision there
+# above the no-separation level while keeping most of separation's attribution gain, with
+# s1/s3 unchanged (RESULTS-2026-11.md). Captioning the gated piece's mixed span instead scored lower
+# attribution for the same precision and costs a second decode.
+_MIN_SEPARATED_LOGPROB = -0.5
 
 
 def _tokens(text: str) -> set[str]:
@@ -786,6 +794,15 @@ class StreamingTranscriber:
                 continue
             text = result.text.strip()
             if not text or result.non_speech:
+                continue
+            if (
+                piece.audio is not None
+                and result.avg_logprob is not None
+                and result.avg_logprob < _MIN_SEPARATED_LOGPROB
+            ):
+                # Whisper is unsure of a separated stream: most such lines are the
+                # separator's artefacts, not speech.
+                metrics.incr("stage.diarize.unsure_separated")
                 continue
             if piece.overlap and any(
                 prev.start_ms < piece.end_ms

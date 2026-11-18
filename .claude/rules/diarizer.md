@@ -31,6 +31,11 @@ paths:
     `::test_a_split_whose_pieces_all_come_back_blank_captions_the_turn_whole`.
 - Separated pieces carry no word timing (same span, different samples) and are de-duplicated by
   word overlap: SepFormer sometimes leaves one voice in both streams.
+- A separated piece Whisper decodes below `_MIN_SEPARATED_LOGPROB` (avg_logprob −0.5) is
+  dropped, not replaced by the mix: SepFormer artefacts decode as fluent lines nobody said
+  (XERK-3006). Retune it on p1 + s1/s3 (`RESULTS-2026-11.md`), never on s1 alone (it separates
+  nothing). Raw-span pieces are never gated.
+  - Tests: `test_diarize.py::test_a_separated_stream_whisper_is_unsure_of_is_not_captioned`.
 - `SortformerStream` must stay equivalent to NeMo's whole-file `forward_streaming`. It commits
   a chunk only with its full right context, and scores the tail on a deep copy of the state.
   Feature frames come from audio with 2 frames of margin (center=True, n_fft 512).
