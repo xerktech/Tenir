@@ -175,3 +175,68 @@ recorded finals exactly, repeat runs gave identical numbers, and a live run with
   slower than real time, under load), so p1's 43 separated pieces were out of reach. A GPU run
   is the next step if precision has to go higher than the gate gives.
 
+
+## Per-language gate on real Spanish overlap (XERK-3069)
+
+Question: the −0.5 gate cost Spanish/Portuguese recall on FLEURS; should the threshold depend
+on the decode's detected language? Measured on the Nov 14 dinner (3 recordings, 22.7 min,
+Spanish + English, 6+ people). There is no real Portuguese: its `pt` turns are misdetected
+Spanish, so Portuguese stays measured on FLEURS only. Local CPU diarizer (same code and models
+as the deployed one), real Whisper large-v3-turbo.
+
+**Decision: keep one threshold (−0.5).** Lowering it for Spanish adds words that are mostly
+wrong. On real voices, falling back to the mixed decode for a gated piece is the bigger lever
+(below).
+
+Real overlap (`diarize_pieces.py` on the recordings; no word truth):
+
+- 993 pieces, 350 separated decodes. The gate drops 262 (75 %): 109 of 148 tagged `es`,
+  137 of 184 tagged `en`. The room is hard even unseparated: 60 of 92 one-speaker stretches decode
+  under −0.5.
+- Detected language on a separated stream is unreliable: 82 Spanish raw spans gave a stream
+  tagged `en`/`pl`/`id`/`it`; the raw-span decode shares 0–12 % of their words.
+- Words of a separated decode also heard in its turn's raw decode (a lower bound on accuracy:
+  the raw decode misses the quieter voice):
+
+  | separated tag / raw span | −0.3…−0.5 | −0.5…−0.8 | < −0.8 |
+  |---|---|---|---|
+  | `es` / `es` | 65 % (23) | 46 % (44) | 33 % (40) |
+  | `en` / `en` | 75 % (16) | 38 % (22) | 20 % (33) |
+  | `en` / `es` | 5 % (3) | 9 % (13) | 5 % (53) |
+
+- Read by hand, 30 random Spanish-span pieces between −0.8 and −0.5: of the 21 tagged `es`,
+  about 16 are right or mostly right; of the 9 tagged otherwise, 7 are invented.
+
+Real-voice mixtures (`diarize_gate.py mixes` → `diarize_sepmix.py`): the recordings'
+one-speaker turns at avg_logprob ≥ −0.6, chained per speaker to ~4 s and summed in pairs
+(±4 dB, ≤ 0.5 s offset), 6 seeds, 54 mixtures, 80 separated decodes with text. The reference is
+each turn's own decode, not a hand transcript. Mostly Spanish over Spanish (10 % es+en).
+`diarize_pieces.py` on these sessions separated only 8 pieces (Sortformer seldom hears two
+new voices in a minute), so SepFormer runs directly on each mixture, as the server calls it.
+
+| policy | precision | recall | caption words |
+|---|---|---|---|
+| no separation (mixed decode) | 0.593 | 0.246 | 575 |
+| keep every separated piece | 0.284 | 0.185 | 901 |
+| **gate −0.5, dropped — shipped** | **0.782** | **0.031** | 55 |
+| gate −0.5, `es` at −0.6 | 0.654 | 0.038 | |
+| gate −0.5, `es` at −0.8 | 0.530 | 0.084 | |
+| gate −0.5, `es` at −1.0 | 0.495 | 0.133 | |
+| gate −0.5, `es` ungated | 0.452 | 0.173 | |
+| gate −0.5, else the mixed decode | 0.601 | 0.249 | 572 |
+
+- Separated decodes tagged `es` were 45 % right between −0.8 and −0.5 and 43 % under −0.8; tagged
+  `en` 32 % and 4 %; every other tag ≤ 7 %. FLEURS (60 % es) and English p1 (39 %) agree: at a
+  given avg_logprob, Spanish separated speech is right more often.
+- But every Spanish threshold below −0.5 adds captions under 50 % right, so it trades precision
+  for recall at worse than one-for-one. No per-language point beats the shipped gate or the
+  mixed fallback.
+- SepFormer (whamr16k) does poorly on these voices: keeping every separated piece is worse
+  than no separation on both precision and recall.
+- Gate-else-mix keeps the gate's protection against invented lines and gets recall back to
+  no-separation level. XERK-3006 rejected it on p1 (same precision, lower attribution, a
+  second decode). Attribution is not measurable here (the mixtures' speaker ids come from
+  the diarizer), so it stays a follow-up, not a change.
+- Limits: references are Whisper's own solo decodes (accuracy unknown, avg_logprob ≥ −0.6);
+  ~6 voices from one dinner; mixtures fully overlapped, which is harder than the real
+  recordings' mix of edges and long overlaps.

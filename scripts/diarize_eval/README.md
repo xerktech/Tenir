@@ -44,4 +44,21 @@ More than 4 speakers (XERK-3017): `diarize_fp_tune.py` scores 4-slot vs fingerpr
 at frame level (no STT) and sweeps the fingerprint thresholds; tune on 4, 6 and 8 speaker sessions
 together and check fresh seeds.
 
+Separated-caption gate (XERK-3006/3069): `diarize_pieces.py` records every piece of a run once
+(separated and mixed decodes, avg_logprob, detected language, audio) and `diarize_gate.py
+replay` sweeps gate policies over that record offline. For word truth on real voices,
+`diarize_gate.py mixes` sums a recording's confident one-speaker turns in pairs and
+`diarize_sepmix.py` (diarizer requirements + api in one env) separates each pair with the
+diarizer's SepFormer:
+
+```bash
+python diarize_pieces.py rec.wav out/rec --stt $STT --diarizer http://127.0.0.1:8790
+python diarize_gate.py replay out/rec/pieces.jsonl
+python diarize_gate.py mixes out/rec/pieces.jsonl out/mixes --seed 1 --ref-logprob -0.6
+python diarize_sepmix.py out/mixes/0 --stt $STT
+python diarize_gate.py replay out/mixes/0/pieces.jsonl --truth out/mixes/0/truth.json
+```
+
+Keep recordings and their outputs outside the repo.
+
 Results: `RESULTS-2026-11.md`.
