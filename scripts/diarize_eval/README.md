@@ -57,6 +57,9 @@ python diarize_gate.py replay out/rec/pieces.jsonl
 python diarize_gate.py mixes out/rec/pieces.jsonl out/mixes --seed 1 --ref-logprob -0.6
 python diarize_sepmix.py out/mixes/0 --stt $STT
 python diarize_gate.py replay out/mixes/0/pieces.jsonl --truth out/mixes/0/truth.json
+# another separator on the same mixtures (ClearerVoice: pip install clearvoice)
+python diarize_sepmix.py out/mixes/0 --stt $STT --separator MossFormer2_SS_16K --out-name pieces-mf2.jsonl
+python diarize_gate.py replay out/mixes/0/pieces-mf2.jsonl --truth out/mixes/0/truth.json
 ```
 
 Keep recordings and their outputs outside the repo.
