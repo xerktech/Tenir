@@ -183,4 +183,6 @@ def _avg_logprob(segments: object) -> float | None:
         n = len(tokens) if isinstance(tokens, list) and tokens else 1
         total += lp * n
         weight += n
-    return total / weight if weight else None
+    mean = total / weight if weight else None
+    # Finite scores can still overflow the weighted sum (1e308 + -1e308 → nan).
+    return mean if mean is not None and math.isfinite(mean) else None

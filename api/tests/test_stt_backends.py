@@ -239,6 +239,7 @@ def test_parakeet_reports_whispers_token_weighted_confidence(
         [{"avg_logprob": -(10**400)}],  # overflows float(): must not fail the decode
         [{"avg_logprob": float("-inf")}],
         [{"avg_logprob": float("nan")}],
+        [{"avg_logprob": 1e308, "tokens": [1, 2]}, {"avg_logprob": -1e308, "tokens": [3, 4]}],
     ],
 )
 def test_parakeet_without_segment_scores_reports_no_confidence(
