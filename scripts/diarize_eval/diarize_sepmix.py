@@ -13,6 +13,10 @@ pieces.
     python diarize_sepmix.py out/mixes/s1/0 --stt $STT --stt-model whisper-large-v3-turbo
 
 Needs the diarizer's requirements (speechbrain, torch) and the api package in one env.
+``--separator MossFormer2_SS_16K`` (or any ClearerVoice speech-separation model name) runs
+that model through ClearerVoice instead (``pip install clearvoice``; weights download to
+``<--checkpoints>/checkpoints/<model>``). Either model runs on a GPU when torch sees one;
+MossFormer2 on CPU ran 8x (idle host) to 70x (loaded) slower than real time.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import argparse
 import json
 import os
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -31,16 +36,58 @@ SR = 16_000
 
 def _read(path: Path) -> np.ndarray:
     with wave.open(str(path), "rb") as w:
-        return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(
-            np.float32
-        )
+        return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
 
 
 def _scaled(x: np.ndarray) -> np.ndarray:
     """diarizer/server.py ``_pcm16``: separator output has no meaningful scale."""
+    x = np.nan_to_num(x)  # a degenerate clip can come back NaN from MossFormer2
     peak = float(np.abs(x).max()) if len(x) else 0.0
     x = x * (0.5 / peak) if peak > 0 else x
     return (np.clip(x, -1, 1) * 32767).astype(np.int16).astype(np.float32) / 32768
+
+
+def load_separator(name: str, checkpoints: Path) -> Callable[[np.ndarray], np.ndarray]:
+    """``name`` → a function from a mono 16 kHz float clip to its two streams, shape (2, T).
+
+    A Hugging Face id with a slash is a speechbrain SepFormer (what the diarizer serves);
+    a bare name is a ClearerVoice separation model such as ``MossFormer2_SS_16K``.
+    """
+    import torch
+
+    if "/" in name:
+        from speechbrain.inference.separation import SepformerSeparation
+
+        sep = SepformerSeparation.from_hparams(
+            source=name,
+            savedir=os.path.join(os.environ.get("HF_HOME", "/tmp"), "speechbrain", name),
+            run_opts={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+        )
+
+        def sepformer(x: np.ndarray) -> np.ndarray:
+            with torch.inference_mode():
+                return sep.separate_batch(torch.from_numpy(x)[None])[0].T.cpu().numpy()
+
+        return sepformer
+
+    from clearvoice import ClearVoice
+    from clearvoice.utils.decode import decode_one_audio
+
+    # ClearerVoice resolves its checkpoint dir relative to the working directory.
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    cwd = os.getcwd()
+    os.chdir(checkpoints)
+    try:
+        model = ClearVoice(task="speech_separation", model_names=[name]).models[0]
+    finally:
+        os.chdir(cwd)
+
+    def clearvoice(x: np.ndarray) -> np.ndarray:
+        with torch.inference_mode():
+            streams = decode_one_audio(model.model, model.device, x[None], model.args)
+        return np.stack([s[: len(x)] for s in streams]).astype(np.float32)
+
+    return clearvoice
 
 
 def _decode(engine: ParakeetEngine, x: np.ndarray) -> dict:
@@ -58,23 +105,24 @@ def _decode(engine: ParakeetEngine, x: np.ndarray) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "mixes", type=Path, nargs="+", help="dirs with session.wav + truth.json"
-    )
+    ap.add_argument("mixes", type=Path, nargs="+", help="dirs with session.wav + truth.json")
     ap.add_argument("--stt", required=True)
     ap.add_argument("--stt-model", default="whisper-large-v3-turbo")
     ap.add_argument("--separator", default="speechbrain/sepformer-whamr16k")
+    ap.add_argument(
+        "--checkpoints",
+        type=Path,
+        default=Path(os.environ.get("HF_HOME", "/tmp")) / "clearvoice",
+        help="ClearerVoice models download under <this>/checkpoints/<model>",
+    )
+    ap.add_argument(
+        "--out-name",
+        default="pieces.jsonl",
+        help="output file in each mix dir, so separators can be compared side by side",
+    )
     args = ap.parse_args()
 
-    import torch
-    from speechbrain.inference.separation import SepformerSeparation
-
-    sep = SepformerSeparation.from_hparams(
-        source=args.separator,
-        savedir=os.path.join(
-            os.environ.get("HF_HOME", "/tmp"), "speechbrain", args.separator
-        ),
-    )
+    separate = load_separator(args.separator, args.checkpoints)
     engine = ParakeetEngine(endpoint=args.stt, model=args.stt_model, timeout=60.0)
     for d in args.mixes:
         audio = _read(d / "session.wav") / 32768
@@ -82,8 +130,7 @@ def main() -> None:
         rows = []
         for m in truth["mixes"]:
             x = audio[m["start_ms"] * SR // 1000 : m["end_ms"] * SR // 1000]
-            with torch.inference_mode():
-                streams = sep.separate_batch(torch.from_numpy(x)[None])[0].T.numpy()
+            streams = separate(x)
             mix = _decode(engine, x)
             for k, s in enumerate(streams):
                 rows.append(
@@ -99,9 +146,8 @@ def main() -> None:
                         "sep": _decode(engine, _scaled(s)),
                     }
                 )
-        with open(d / "pieces.jsonl", "w") as f:
-            for r in rows:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        with open(d / args.out_name, "w") as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
         print(f"{d}: {len(truth['mixes'])} mixtures")
 
 
